@@ -11,8 +11,9 @@
 #include "util/random.h"
 #include "util/reflect.h"
 #include "util/scoped_exit.h"
-
 #include "net/tcp_server.h"
+
+#include "server/router.h"
 
 static std::string get_log_dir(const std::string& app_dir) { return app_dir + "/log"; }
 static std::string get_log_fileaname(const std::string& app) { return app + ".log"; }
@@ -74,7 +75,7 @@ static webrtc::http_response_ptr on_http(webrtc::http_request_t& request)
     WEBRTC_LOG_DEBUG("http request {} cost {} ms", target, diff);
     return response;
 }
-static void on_tcp(boost::asio::ip::tcp::socket socket, boost::asio::ssl::context& ssl_ctx)
+static void on_tcp(boost::asio::ip::tcp::socket socket, boost::asio::ssl::context& ssl_ctx, std::shared_ptr<webrtc::router> http_router)
 {
     auto local_addr = webrtc::get_socket_local_address(socket);
     auto remote_addr = webrtc::get_socket_remote_address(socket);
@@ -82,7 +83,7 @@ static void on_tcp(boost::asio::ip::tcp::socket socket, boost::asio::ssl::contex
     const std::string id = webrtc::random_string(8);
     WEBRTC_LOG_INFO("tcp accept {} <-> {} id {}", local_addr, remote_addr, id);
     webrtc::http_handler http;
-    http.http = [](webrtc::http_request_t& req) -> webrtc::http_response_ptr { return on_http(req); };
+    http.http = [http_router](webrtc::http_request_t& req) -> webrtc::http_response_ptr { return http_router->handle(req); };
     std::make_shared<webrtc::detect_ssl_session>(id, std::move(http), std::move(socket), ssl_ctx)->run();
 }
 int main(int argc, char* argv[])
@@ -99,16 +100,18 @@ int main(int argc, char* argv[])
     WEBRTC_LOG_INFO("OpenSSL    version {}", OPENSSL_VERSION_STR);
     WEBRTC_LOG_INFO("Boost      version {}", BOOST_LIB_VERSION);
     WEBRTC_LOG_INFO("spdlog     version {}.{}.{}", SPDLOG_VER_MAJOR, SPDLOG_VER_MINOR, SPDLOG_VER_PATCH);
-    boost::asio::ssl::context server_ssl_ctx_{boost::asio::ssl::context::tls_server};
+    boost::asio::ssl::context ssl_ctx_{boost::asio::ssl::context::tls_server};
 
     const std::string cert_file = get_env_or_default("WEBRTC_CERT_FILE", "webrtc.pem");
     const std::string key_file = get_env_or_default("WEBRTC_KEY_FILE", "webrtc.key");
 
-    if (!load_server_certificate(server_ssl_ctx_, cert_file, key_file))
+    if (!load_server_certificate(ssl_ctx_, cert_file, key_file))
     {
         WEBRTC_LOG_ERROR("load https certificate failed");
         return 1;
     }
+    auto http_router = std::make_shared<webrtc::router>();
+
     version v;
     static const std::string version_str = R"({"name": "SimpleWebrtc", "version": "0.1"})";
     webrtc::deserialize_struct(v, version_str);
@@ -116,7 +119,7 @@ int main(int argc, char* argv[])
     boost::asio::io_context io_context;
     webrtc::tcp_handler tcp;
     tcp.create_socket = [&io_context]() { return boost::asio::ip::tcp::socket(io_context); };
-    tcp.accept_socket = [&server_ssl_ctx_](boost::asio::ip::tcp::socket socket) { on_tcp(std::move(socket), server_ssl_ctx_); };
+    tcp.accept_socket = [&ssl_ctx_, http_router](boost::asio::ip::tcp::socket socket) { on_tcp(std::move(socket), ssl_ctx_, http_router); };
     std::make_shared<webrtc::tcp_server>(8811, "webrtc", io_context, std::move(tcp))->run();
     io_context.run();
     return 0;

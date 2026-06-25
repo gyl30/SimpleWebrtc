@@ -162,13 +162,17 @@ find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(Boost 1.83.0 REQUIRED COMPONENTS filesystem)
 
-set(WEBRTC_SOURCES log/log.cpp
+set(WEBRTC_SOURCES
+    log/log.cpp
     net/http.cpp
     net/socket.cpp
     util/file.cpp
     util/random.cpp
     util/error.cpp
-    util/timestamp.cpp)
+    util/timestamp.cpp
+    server/router.cpp
+    server/whip_handler.cpp
+    server/whep_handler.cpp)
 
 add_executable(SimpleWebrtc ${WEBRTC_SOURCES} main.cpp)
 
