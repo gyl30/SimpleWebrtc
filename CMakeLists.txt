@@ -203,6 +203,7 @@ set(WEBRTC_SOURCES
     rtp/rtp_packet.cpp
     srtp/srtp_session.cpp
     srtp/srtp_transport.cpp
+    media/media_router.cpp
     ice/ice_udp_server.cpp
     signaling/webrtc_answer_factory.cpp)
 

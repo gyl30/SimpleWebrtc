@@ -16,6 +16,7 @@
 #include "dtls/dtls_packet.h"
 #include "ice/stun_message.h"
 #include "log/log.h"
+#include "media/media_router.h"
 #include "net/socket.h"
 #include "rtp/rtp_packet.h"
 #include "session/session_state.h"
@@ -175,7 +176,7 @@ uint16_t ice_udp_server::local_port() const { return bind_port_; }
 
 ice_udp_server_result ice_udp_server::init_dtls_transport()
 {
-    if (dtls_transport_ != nullptr && srtp_transport_ != nullptr)
+    if (dtls_transport_ != nullptr && srtp_transport_ != nullptr && media_router_ != nullptr)
     {
         return {};
     }
@@ -209,8 +210,11 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
 
     srtp_transport_ = std::make_shared<srtp_transport>(dtls_transport_);
 
+    media_router_ = std::make_shared<media_router>();
+
     WEBRTC_LOG_INFO("dtls transport initialized");
     WEBRTC_LOG_INFO("srtp transport initialized");
+    WEBRTC_LOG_INFO("media router initialized");
 
     return {};
 }
@@ -366,6 +370,11 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         {
             dtls_transport_->remember_peer(remote_address, make_publisher_dtls_identity(publisher));
         }
+
+        if (media_router_ != nullptr)
+        {
+            media_router_->remember_publisher(remote_address, publisher->stream_id(), publisher->session_id());
+        }
     }
 
     if (subscriber != nullptr)
@@ -375,6 +384,11 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         if (dtls_transport_ != nullptr)
         {
             dtls_transport_->remember_peer(remote_address, make_subscriber_dtls_identity(subscriber));
+        }
+
+        if (media_router_ != nullptr)
+        {
+            media_router_->remember_subscriber(remote_address, subscriber->stream_id(), subscriber->session_id());
         }
     }
 
@@ -476,6 +490,31 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
                      result->unprotected_size,
                      result->ssrc,
                      static_cast<unsigned int>(result->payload_type));
+
+    if (media_router_ == nullptr)
+    {
+        WEBRTC_LOG_WARN(
+            "media router is null remote={} kind={} size={}", remote_address, srtp_packet_kind_to_string(result->kind), result->unprotected_size);
+
+        return;
+    }
+
+    const media_route_result route = media_router_->handle_inbound_packet(remote_address, *result);
+
+    if (!route.known_peer)
+    {
+        WEBRTC_LOG_WARN(
+            "media route ignored unknown peer remote={} kind={} ssrc={}", remote_address, srtp_packet_kind_to_string(result->kind), result->ssrc);
+
+        return;
+    }
+
+    WEBRTC_LOG_DEBUG("media route resolved remote={} action={} stream={} session={} targets={}",
+                     remote_address,
+                     media_route_action_to_string(route.action),
+                     route.source.stream_id,
+                     route.source.session_id,
+                     route.target_endpoints.size());
 }
 
 void ice_udp_server::send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint)
