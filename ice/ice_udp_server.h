@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -41,12 +42,16 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]] ice_udp_server_result start();
     void stop();
 
+    void forget_session(std::string_view session_id);
+
     [[nodiscard]] uint16_t local_port() const;
 
    private:
     using udp = boost::asio::ip::udp;
 
     [[nodiscard]] ice_udp_server_result init_dtls_transport();
+
+    void register_session_removed_callback();
 
     void do_receive();
 
@@ -63,6 +68,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint);
 
     void remember_remote_endpoint(const udp::endpoint& remote_endpoint);
+
+    void remember_session_endpoint(const udp::endpoint& remote_endpoint, std::string_view session_id);
+
+    void forget_peer_endpoint(std::string_view remote_address);
+
+    void forget_peer_transport_state(std::string_view remote_address);
 
     [[nodiscard]] std::optional<udp::endpoint> find_remote_endpoint(std::string_view remote_address) const;
 
@@ -89,9 +100,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     udp::endpoint remote_endpoint_;
     std::array<uint8_t, 4096> receive_buffer_{};
 
+    mutable std::mutex endpoint_mutex_;
     std::unordered_map<std::string, udp::endpoint> endpoints_by_address_;
+    std::unordered_map<std::string, std::string> endpoint_address_by_session_id_;
+    std::unordered_map<std::string, std::string> session_id_by_endpoint_address_;
 
     bool started_ = false;
+    bool registry_callback_registered_ = false;
 };
 }    // namespace webrtc
 

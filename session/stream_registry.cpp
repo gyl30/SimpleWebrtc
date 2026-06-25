@@ -1,12 +1,39 @@
 #include "session/stream_registry.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
+#include "session/session_state.h"
 #include "util/random.h"
 #include "util/timestamp.h"
 
 namespace webrtc
 {
+namespace
+{
+void notify_removed_sessions(const stream_session_removed_callback& callback, const std::vector<stream_removed_session>& removed_sessions)
+{
+    if (!callback)
+    {
+        return;
+    }
+
+    for (const auto& removed_session : removed_sessions)
+    {
+        callback(removed_session);
+    }
+}
+}    // namespace
+
 std::string_view stream_registry_error_to_string(stream_registry_error error)
 {
     switch (error)
@@ -15,19 +42,33 @@ std::string_view stream_registry_error_to_string(stream_registry_error error)
             return "none";
 
         case stream_registry_error::stream_already_has_publisher:
-            return "stream already has publisher";
+            return "stream_already_has_publisher";
 
         case stream_registry_error::publisher_not_found:
-            return "publisher not found";
+            return "publisher_not_found";
 
         case stream_registry_error::publisher_session_not_found:
-            return "publisher session not found";
+            return "publisher_session_not_found";
 
         case stream_registry_error::subscriber_session_not_found:
-            return "subscriber session not found";
+            return "subscriber_session_not_found";
     }
 
-    return "unknown stream registry error";
+    return "unknown";
+}
+
+std::string_view stream_session_kind_to_string(stream_session_kind kind)
+{
+    switch (kind)
+    {
+        case stream_session_kind::publisher:
+            return "publisher";
+
+        case stream_session_kind::subscriber:
+            return "subscriber";
+    }
+
+    return "unknown";
 }
 
 publisher_session_result stream_registry::create_publisher_session(std::string stream_id,
@@ -42,6 +83,7 @@ publisher_session_result stream_registry::create_publisher_session(std::string s
     }
 
     const std::string session_id = make_unique_session_id_locked();
+
     const uint64_t created_at = now_milliseconds();
 
     auto session =
@@ -65,6 +107,7 @@ subscriber_session_result stream_registry::create_subscriber_session(std::string
     }
 
     const std::string session_id = make_unique_session_id_locked();
+
     const uint64_t created_at = now_milliseconds();
 
     auto session =
@@ -127,9 +170,9 @@ std::shared_ptr<publisher_session> stream_registry::find_publisher_by_local_ice_
 
     std::lock_guard lock(mutex_);
 
-    for (const auto& item : publishers_by_session_id_)
+    for (const auto& [session_id, session] : publishers_by_session_id_)
     {
-        const auto& session = item.second;
+        (void)session_id;
 
         if (session != nullptr && session->local_ice().ufrag == local_ice_ufrag)
         {
@@ -149,9 +192,9 @@ std::shared_ptr<subscriber_session> stream_registry::find_subscriber_by_local_ic
 
     std::lock_guard lock(mutex_);
 
-    for (const auto& item : subscribers_by_session_id_)
+    for (const auto& [session_id, session] : subscribers_by_session_id_)
     {
-        const auto& session = item.second;
+        (void)session_id;
 
         if (session != nullptr && session->local_ice().ufrag == local_ice_ufrag)
         {
@@ -164,76 +207,127 @@ std::shared_ptr<subscriber_session> stream_registry::find_subscriber_by_local_ic
 
 remove_session_result stream_registry::remove_publisher_session(std::string_view session_id)
 {
-    std::lock_guard lock(mutex_);
+    std::vector<stream_removed_session> removed_sessions;
+    stream_session_removed_callback callback;
 
-    const auto publisher_iterator = publishers_by_session_id_.find(std::string(session_id));
-
-    if (publisher_iterator == publishers_by_session_id_.end())
     {
-        return std::unexpected(stream_registry_error::publisher_session_not_found);
-    }
+        std::lock_guard lock(mutex_);
 
-    const auto publisher = publisher_iterator->second;
-    const std::string stream_id = publisher->stream_id();
+        const auto publisher_iterator = publishers_by_session_id_.find(std::string(session_id));
 
-    publisher->set_state(session_state::closed);
-
-    const auto subscribers_iterator = subscriber_session_ids_by_stream_id_.find(stream_id);
-
-    if (subscribers_iterator != subscriber_session_ids_by_stream_id_.end())
-    {
-        for (const auto& subscriber_session_id : subscribers_iterator->second)
+        if (publisher_iterator == publishers_by_session_id_.end())
         {
-            const auto subscriber_iterator = subscribers_by_session_id_.find(subscriber_session_id);
+            return std::unexpected(stream_registry_error::publisher_session_not_found);
+        }
 
-            if (subscriber_iterator != subscribers_by_session_id_.end())
+        const auto publisher = publisher_iterator->second;
+
+        const std::string stream_id = publisher->stream_id();
+
+        publisher->set_state(session_state::closed);
+
+        stream_removed_session removed_publisher;
+        removed_publisher.kind = stream_session_kind::publisher;
+        removed_publisher.stream_id = stream_id;
+        removed_publisher.session_id = publisher->session_id();
+        removed_sessions.push_back(std::move(removed_publisher));
+
+        const auto subscribers_iterator = subscriber_session_ids_by_stream_id_.find(stream_id);
+
+        if (subscribers_iterator != subscriber_session_ids_by_stream_id_.end())
+        {
+            for (const auto& subscriber_session_id : subscribers_iterator->second)
             {
-                subscriber_iterator->second->set_state(session_state::closed);
+                const auto subscriber_iterator = subscribers_by_session_id_.find(subscriber_session_id);
+
+                if (subscriber_iterator == subscribers_by_session_id_.end())
+                {
+                    continue;
+                }
+
+                const auto subscriber = subscriber_iterator->second;
+
+                subscriber->set_state(session_state::closed);
+
+                stream_removed_session removed_subscriber;
+                removed_subscriber.kind = stream_session_kind::subscriber;
+                removed_subscriber.stream_id = subscriber->stream_id();
+                removed_subscriber.session_id = subscriber->session_id();
+                removed_sessions.push_back(std::move(removed_subscriber));
 
                 subscribers_by_session_id_.erase(subscriber_iterator);
             }
+
+            subscriber_session_ids_by_stream_id_.erase(subscribers_iterator);
         }
 
-        subscriber_session_ids_by_stream_id_.erase(subscribers_iterator);
+        publishers_by_stream_id_.erase(stream_id);
+        publishers_by_session_id_.erase(publisher_iterator);
+
+        callback = session_removed_callback_;
     }
 
-    publishers_by_stream_id_.erase(stream_id);
-    publishers_by_session_id_.erase(publisher_iterator);
+    notify_removed_sessions(callback, removed_sessions);
 
     return {};
 }
 
 remove_session_result stream_registry::remove_subscriber_session(std::string_view session_id)
 {
-    std::lock_guard lock(mutex_);
+    std::vector<stream_removed_session> removed_sessions;
+    stream_session_removed_callback callback;
 
-    const auto subscriber_iterator = subscribers_by_session_id_.find(std::string(session_id));
-
-    if (subscriber_iterator == subscribers_by_session_id_.end())
     {
-        return std::unexpected(stream_registry_error::subscriber_session_not_found);
-    }
+        std::lock_guard lock(mutex_);
 
-    const auto subscriber = subscriber_iterator->second;
-    const std::string stream_id = subscriber->stream_id();
-    const std::string subscriber_session_id = subscriber->session_id();
+        const auto subscriber_iterator = subscribers_by_session_id_.find(std::string(session_id));
 
-    subscriber->set_state(session_state::closed);
-    subscribers_by_session_id_.erase(subscriber_iterator);
-
-    const auto stream_iterator = subscriber_session_ids_by_stream_id_.find(stream_id);
-
-    if (stream_iterator != subscriber_session_ids_by_stream_id_.end())
-    {
-        stream_iterator->second.erase(subscriber_session_id);
-
-        if (stream_iterator->second.empty())
+        if (subscriber_iterator == subscribers_by_session_id_.end())
         {
-            subscriber_session_ids_by_stream_id_.erase(stream_iterator);
+            return std::unexpected(stream_registry_error::subscriber_session_not_found);
         }
+
+        const auto subscriber = subscriber_iterator->second;
+
+        const std::string stream_id = subscriber->stream_id();
+
+        const std::string subscriber_session_id = subscriber->session_id();
+
+        subscriber->set_state(session_state::closed);
+
+        stream_removed_session removed_subscriber;
+        removed_subscriber.kind = stream_session_kind::subscriber;
+        removed_subscriber.stream_id = stream_id;
+        removed_subscriber.session_id = subscriber_session_id;
+        removed_sessions.push_back(std::move(removed_subscriber));
+
+        subscribers_by_session_id_.erase(subscriber_iterator);
+
+        const auto stream_iterator = subscriber_session_ids_by_stream_id_.find(stream_id);
+
+        if (stream_iterator != subscriber_session_ids_by_stream_id_.end())
+        {
+            stream_iterator->second.erase(subscriber_session_id);
+
+            if (stream_iterator->second.empty())
+            {
+                subscriber_session_ids_by_stream_id_.erase(stream_iterator);
+            }
+        }
+
+        callback = session_removed_callback_;
     }
+
+    notify_removed_sessions(callback, removed_sessions);
 
     return {};
+}
+
+void stream_registry::set_session_removed_callback(stream_session_removed_callback callback)
+{
+    std::lock_guard lock(mutex_);
+
+    session_removed_callback_ = std::move(callback);
 }
 
 std::size_t stream_registry::publisher_count() const
@@ -252,7 +346,7 @@ std::size_t stream_registry::subscriber_count() const
 
 std::string stream_registry::make_unique_session_id_locked() const
 {
-    while (true)
+    for (;;)
     {
         std::string session_id = random_string(24);
 
