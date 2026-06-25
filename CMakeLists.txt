@@ -188,6 +188,7 @@ set(WEBRTC_SOURCES
     ice/ice_credentials.cpp
     ice/ice_candidate.cpp
     ice/stun_message.cpp
+    ice/ice_udp_server.cpp
     signaling/webrtc_answer_factory.cpp)
 
 add_executable(SimpleWebrtc ${WEBRTC_SOURCES} main.cpp)

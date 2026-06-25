@@ -1,6 +1,7 @@
 #include "signaling/sdp/sdp_answer_builder.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <string>
 #include <string_view>
@@ -65,6 +66,59 @@ validation_result validate_token(std::string_view value, std::string_view name)
         std::string message(name);
         message.append(" contains whitespace");
         return std::unexpected(std::move(message));
+    }
+
+    return {};
+}
+
+validation_result validate_candidate_options(const sdp_answer_options& options)
+{
+    if (!options.include_host_candidate)
+    {
+        return {};
+    }
+
+    auto foundation_result = validate_token(options.local_candidate_foundation, "local candidate foundation");
+
+    if (!foundation_result)
+    {
+        return std::unexpected(foundation_result.error());
+    }
+
+    if (options.local_candidate_component == 0)
+    {
+        return make_error("local candidate component is zero");
+    }
+
+    auto transport_result = validate_token(options.local_candidate_transport, "local candidate transport");
+
+    if (!transport_result)
+    {
+        return std::unexpected(transport_result.error());
+    }
+
+    if (options.local_candidate_priority == 0)
+    {
+        return make_error("local candidate priority is zero");
+    }
+
+    auto address_result = validate_token(options.local_candidate_address, "local candidate address");
+
+    if (!address_result)
+    {
+        return std::unexpected(address_result.error());
+    }
+
+    if (options.local_candidate_port == 0)
+    {
+        return make_error("local candidate port is zero");
+    }
+
+    auto type_result = validate_token(options.local_candidate_type, "local candidate type");
+
+    if (!type_result)
+    {
+        return std::unexpected(type_result.error());
     }
 
     return {};
@@ -140,6 +194,13 @@ validation_result validate_options(const sdp_answer_options& options)
     if (!stream_id_result)
     {
         return std::unexpected(stream_id_result.error());
+    }
+
+    auto candidate_result = validate_candidate_options(options);
+
+    if (!candidate_result)
+    {
+        return std::unexpected(candidate_result.error());
     }
 
     switch (options.local_setup)
@@ -471,6 +532,30 @@ std::string make_msid_value(const sdp_answer_options& options, const media_summa
     return value;
 }
 
+std::string make_candidate_value(const sdp_answer_options& options)
+{
+    std::string value;
+
+    value.reserve(options.local_candidate_foundation.size() + options.local_candidate_transport.size() + options.local_candidate_address.size() +
+                  options.local_candidate_type.size() + 64);
+
+    value.append(options.local_candidate_foundation);
+    value.push_back(' ');
+    value.append(std::to_string(options.local_candidate_component));
+    value.push_back(' ');
+    value.append(options.local_candidate_transport);
+    value.push_back(' ');
+    value.append(std::to_string(options.local_candidate_priority));
+    value.push_back(' ');
+    value.append(options.local_candidate_address);
+    value.push_back(' ');
+    value.append(std::to_string(options.local_candidate_port));
+    value.append(" typ ");
+    value.append(options.local_candidate_type);
+
+    return value;
+}
+
 void append_codec_attributes(media_description& answer_media, const std::vector<codec_info>& codecs)
 {
     for (const auto& codec : codecs)
@@ -486,6 +571,19 @@ void append_codec_attributes(media_description& answer_media, const std::vector<
         {
             push_attribute(answer_media.attributes, k_attribute_rtcp_feedback, make_rtcp_feedback_value(codec, feedback));
         }
+    }
+}
+
+void append_ice_candidate_attributes(media_description& answer_media, const sdp_answer_options& options)
+{
+    if (options.include_host_candidate)
+    {
+        push_attribute(answer_media.attributes, "candidate", make_candidate_value(options));
+    }
+
+    if (options.end_of_candidates)
+    {
+        push_property_attribute(answer_media.attributes, "end-of-candidates");
     }
 }
 
@@ -534,6 +632,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
     push_property_attribute(answer_media.attributes, k_attribute_rtcp_mux);
 
     append_codec_attributes(answer_media, *codecs);
+    append_ice_candidate_attributes(answer_media, options);
 
     if (*answer_direction == media_direction::send_only || *answer_direction == media_direction::send_recv)
     {

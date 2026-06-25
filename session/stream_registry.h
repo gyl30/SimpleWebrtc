@@ -60,6 +60,10 @@ class stream_registry
 
     [[nodiscard]] std::shared_ptr<subscriber_session> find_subscriber_by_session_id(std::string_view session_id) const;
 
+    [[nodiscard]] std::shared_ptr<publisher_session> find_publisher_by_local_ice_ufrag(std::string_view local_ice_ufrag) const;
+
+    [[nodiscard]] std::shared_ptr<subscriber_session> find_subscriber_by_local_ice_ufrag(std::string_view local_ice_ufrag) const;
+
     [[nodiscard]] remove_session_result remove_publisher_session(std::string_view session_id);
 
     [[nodiscard]] remove_session_result remove_subscriber_session(std::string_view session_id);

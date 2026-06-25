@@ -81,6 +81,7 @@ std::shared_ptr<publisher_session> stream_registry::find_publisher_by_stream_id(
     std::lock_guard lock(mutex_);
 
     const auto iterator = publishers_by_stream_id_.find(std::string(stream_id));
+
     if (iterator == publishers_by_stream_id_.end())
     {
         return nullptr;
@@ -94,6 +95,7 @@ std::shared_ptr<publisher_session> stream_registry::find_publisher_by_session_id
     std::lock_guard lock(mutex_);
 
     const auto iterator = publishers_by_session_id_.find(std::string(session_id));
+
     if (iterator == publishers_by_session_id_.end())
     {
         return nullptr;
@@ -107,12 +109,57 @@ std::shared_ptr<subscriber_session> stream_registry::find_subscriber_by_session_
     std::lock_guard lock(mutex_);
 
     const auto iterator = subscribers_by_session_id_.find(std::string(session_id));
+
     if (iterator == subscribers_by_session_id_.end())
     {
         return nullptr;
     }
 
     return iterator->second;
+}
+
+std::shared_ptr<publisher_session> stream_registry::find_publisher_by_local_ice_ufrag(std::string_view local_ice_ufrag) const
+{
+    if (local_ice_ufrag.empty())
+    {
+        return nullptr;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (const auto& item : publishers_by_session_id_)
+    {
+        const auto& session = item.second;
+
+        if (session != nullptr && session->local_ice().ufrag == local_ice_ufrag)
+        {
+            return session;
+        }
+    }
+
+    return nullptr;
+}
+
+std::shared_ptr<subscriber_session> stream_registry::find_subscriber_by_local_ice_ufrag(std::string_view local_ice_ufrag) const
+{
+    if (local_ice_ufrag.empty())
+    {
+        return nullptr;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (const auto& item : subscribers_by_session_id_)
+    {
+        const auto& session = item.second;
+
+        if (session != nullptr && session->local_ice().ufrag == local_ice_ufrag)
+        {
+            return session;
+        }
+    }
+
+    return nullptr;
 }
 
 remove_session_result stream_registry::remove_publisher_session(std::string_view session_id)
@@ -142,6 +189,7 @@ remove_session_result stream_registry::remove_publisher_session(std::string_view
             if (subscriber_iterator != subscribers_by_session_id_.end())
             {
                 subscriber_iterator->second->set_state(session_state::closed);
+
                 subscribers_by_session_id_.erase(subscriber_iterator);
             }
         }
@@ -191,12 +239,14 @@ remove_session_result stream_registry::remove_subscriber_session(std::string_vie
 std::size_t stream_registry::publisher_count() const
 {
     std::lock_guard lock(mutex_);
+
     return publishers_by_session_id_.size();
 }
 
 std::size_t stream_registry::subscriber_count() const
 {
     std::lock_guard lock(mutex_);
+
     return subscribers_by_session_id_.size();
 }
 

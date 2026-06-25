@@ -1,4 +1,6 @@
+#include <cerrno>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -8,12 +10,13 @@
 #include <openssl/opensslv.h>
 #include <spdlog/version.h>
 
+#include "ice/ice_udp_server.h"
 #include "log/log.h"
+#include "net/detect_ssl_session.h"
 #include "net/http.h"
 #include "net/socket.h"
 #include "net/tcp_server.h"
 #include "server/router.h"
-#include "net/detect_ssl_session.h"
 #include "session/stream_registry.h"
 #include "signaling/webrtc_answer_factory.h"
 #include "util/file.h"
@@ -45,13 +48,40 @@ static std::string get_env_or_default(const char* name, const std::string& defau
     return value;
 }
 
+static uint16_t get_env_uint16_or_default(const char* name, uint16_t default_value)
+{
+    const char* value = std::getenv(name);
+
+    if (value == nullptr || value[0] == '\0')
+    {
+        return default_value;
+    }
+
+    errno = 0;
+
+    char* end = nullptr;
+    const unsigned long parsed = std::strtoul(value, &end, 10);
+
+    if (errno != 0 || end == value || *end != '\0')
+    {
+        return default_value;
+    }
+
+    if (parsed > static_cast<unsigned long>(std::numeric_limits<uint16_t>::max()))
+    {
+        return default_value;
+    }
+
+    return static_cast<uint16_t>(parsed);
+}
+
 static bool load_server_certificate(boost::asio::ssl::context& ctx, const std::string& cert_file, const std::string& key_file)
 {
     boost::system::error_code ec;
 
-    ec = ctx.set_options(boost::asio::ssl::context::default_workarounds | boost::asio::ssl::context::no_sslv2 | boost::asio::ssl::context::no_sslv3 |
-                             boost::asio::ssl::context::single_dh_use,
-                         ec);
+    ctx.set_options(boost::asio::ssl::context::default_workarounds | boost::asio::ssl::context::no_sslv2 | boost::asio::ssl::context::no_sslv3 |
+                        boost::asio::ssl::context::single_dh_use,
+                    ec);
 
     if (ec)
     {
@@ -130,12 +160,37 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    const std::string ice_bind_host = get_env_or_default("WEBRTC_ICE_BIND_HOST", "0.0.0.0");
+
+    const uint16_t ice_port = get_env_uint16_or_default("WEBRTC_ICE_PORT", 8812);
+
+    const std::string ice_public_ip = get_env_or_default("WEBRTC_ICE_PUBLIC_IP", "127.0.0.1");
+
+    boost::asio::io_context io_context;
+
+    auto registry = std::make_shared<webrtc::stream_registry>();
+
+    auto ice_server = std::make_shared<webrtc::ice_udp_server>(io_context, ice_bind_host, ice_port, registry);
+
+    auto ice_start_result = ice_server->start();
+    if (!ice_start_result)
+    {
+        WEBRTC_LOG_ERROR("start ice udp server failed: {}", ice_start_result.error());
+        return 1;
+    }
+
+    answer_factory_config->media_address = ice_public_ip;
+    answer_factory_config->ice_candidate_address = ice_public_ip;
+    answer_factory_config->ice_candidate_port = ice_server->local_port();
+    answer_factory_config->include_host_candidate = true;
+    answer_factory_config->end_of_candidates = true;
+
     WEBRTC_LOG_INFO(
         "certificate fingerprint {} {}", answer_factory_config->local_fingerprint.algorithm, answer_factory_config->local_fingerprint.value);
 
-    auto answer_factory = std::make_shared<webrtc::webrtc_answer_factory>(std::move(*answer_factory_config));
+    WEBRTC_LOG_INFO("ice host candidate {}:{}", answer_factory_config->ice_candidate_address, answer_factory_config->ice_candidate_port);
 
-    auto registry = std::make_shared<webrtc::stream_registry>();
+    auto answer_factory = std::make_shared<webrtc::webrtc_answer_factory>(std::move(*answer_factory_config));
 
     auto http_router = std::make_shared<webrtc::router>(registry, answer_factory);
 
@@ -145,8 +200,6 @@ int main(int argc, char* argv[])
     webrtc::deserialize_struct(v, version_str);
 
     WEBRTC_LOG_INFO("Webrtc     version {} {}", v.name, v.version);
-
-    boost::asio::io_context io_context;
 
     webrtc::tcp_handler tcp;
     tcp.create_socket = [&io_context]() { return boost::asio::ip::tcp::socket(io_context); };

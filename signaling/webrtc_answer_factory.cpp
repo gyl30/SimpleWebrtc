@@ -229,6 +229,52 @@ validation_result webrtc_answer_factory::validate_config() const
         return std::unexpected(setup_result.error());
     }
 
+    if (config_.include_host_candidate)
+    {
+        auto candidate_address_result = validate_token(config_.ice_candidate_address, "ice candidate address");
+
+        if (!candidate_address_result)
+        {
+            return std::unexpected(candidate_address_result.error());
+        }
+
+        if (config_.ice_candidate_port == 0)
+        {
+            return make_error("ice candidate port is zero");
+        }
+
+        auto foundation_result = validate_token(config_.ice_candidate_foundation, "ice candidate foundation");
+
+        if (!foundation_result)
+        {
+            return std::unexpected(foundation_result.error());
+        }
+
+        if (config_.ice_candidate_component == 0)
+        {
+            return make_error("ice candidate component is zero");
+        }
+
+        auto transport_result = validate_token(config_.ice_candidate_transport, "ice candidate transport");
+
+        if (!transport_result)
+        {
+            return std::unexpected(transport_result.error());
+        }
+
+        if (config_.ice_candidate_priority == 0)
+        {
+            return make_error("ice candidate priority is zero");
+        }
+
+        auto type_result = validate_token(config_.ice_candidate_type, "ice candidate type");
+
+        if (!type_result)
+        {
+            return std::unexpected(type_result.error());
+        }
+    }
+
     return {};
 }
 
@@ -256,6 +302,16 @@ sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_v
     options.ice_lite = config_.ice_lite;
     options.enable_trickle = config_.enable_trickle;
 
+    options.include_host_candidate = config_.include_host_candidate;
+    options.local_candidate_foundation = config_.ice_candidate_foundation;
+    options.local_candidate_component = config_.ice_candidate_component;
+    options.local_candidate_transport = config_.ice_candidate_transport;
+    options.local_candidate_priority = config_.ice_candidate_priority;
+    options.local_candidate_address = config_.ice_candidate_address;
+    options.local_candidate_port = config_.ice_candidate_port;
+    options.local_candidate_type = config_.ice_candidate_type;
+    options.end_of_candidates = config_.end_of_candidates;
+
     options.local_stream_id = make_local_stream_id(config_.local_stream_id_prefix, stream_id);
 
     return options;
@@ -264,12 +320,14 @@ sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_v
 generated_sdp_answer_result webrtc_answer_factory::build_answer(bool is_whip, std::string_view stream_id, const sdp::webrtc_offer_summary& offer)
 {
     auto config_result = validate_config();
+
     if (!config_result)
     {
         return std::unexpected(config_result.error());
     }
 
     auto local_ice = generate_ice_credentials();
+
     if (!local_ice)
     {
         return std::unexpected(local_ice.error());

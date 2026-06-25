@@ -632,6 +632,7 @@ std::expected<void, std::string> append_message_integrity(std::vector<uint8_t>& 
     append_u16(packet, static_cast<uint16_t>(kStunMessageIntegritySize));
 
     const std::size_t value_offset = packet.size();
+    const std::size_t attribute_offset = value_offset - 4;
 
     packet.resize(packet.size() + kStunMessageIntegritySize, 0);
 
@@ -642,7 +643,7 @@ std::expected<void, std::string> append_message_integrity(std::vector<uint8_t>& 
         return std::unexpected(length_result.error());
     }
 
-    auto digest = calculate_hmac_sha1(std::span<const uint8_t>(packet.data(), value_offset), key);
+    auto digest = calculate_hmac_sha1(std::span<const uint8_t>(packet.data(), attribute_offset), key);
 
     if (!digest)
     {
@@ -1066,7 +1067,7 @@ stun_validation_result verify_stun_message_integrity(std::span<const uint8_t> da
         return std::unexpected(find_result.error());
     }
 
-    std::vector<uint8_t> hmac_input(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(value_offset));
+    std::vector<uint8_t> hmac_input(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(attribute_offset));
 
     const std::size_t message_length = value_offset + kStunMessageIntegritySize - kStunHeaderSize;
 
