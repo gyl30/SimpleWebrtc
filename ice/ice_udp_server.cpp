@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -170,6 +171,8 @@ void ice_udp_server::stop()
     {
         WEBRTC_LOG_WARN("ice udp server close failed: {}", ec.message());
     }
+
+    endpoints_by_address_.clear();
 }
 
 uint16_t ice_udp_server::local_port() const { return bind_port_; }
@@ -362,6 +365,8 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         }
     }
 
+    remember_remote_endpoint(remote_endpoint);
+
     if (publisher != nullptr)
     {
         publisher->set_state(session_state::ice_connected);
@@ -515,6 +520,85 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
                      route.source.stream_id,
                      route.source.session_id,
                      route.target_endpoints.size());
+
+    forward_media_packet(*result, route);
+}
+
+void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet, const media_route_result& route)
+{
+    if (packet.plain_packet.empty())
+    {
+        WEBRTC_LOG_WARN("media forward skipped empty plain packet stream={} session={} kind={}",
+                        route.source.stream_id,
+                        route.source.session_id,
+                        srtp_packet_kind_to_string(packet.kind));
+
+        return;
+    }
+
+    if (route.action == media_route_action::none || route.target_endpoints.empty())
+    {
+        return;
+    }
+
+    if (srtp_transport_ == nullptr)
+    {
+        WEBRTC_LOG_WARN("media forward skipped srtp transport is null stream={} session={}", route.source.stream_id, route.source.session_id);
+
+        return;
+    }
+
+    for (const auto& target_address : route.target_endpoints)
+    {
+        auto target_endpoint = find_remote_endpoint(target_address);
+
+        if (!target_endpoint)
+        {
+            WEBRTC_LOG_WARN("media forward target endpoint not found stream={} source={} target={} kind={}",
+                            route.source.stream_id,
+                            route.source.remote_endpoint,
+                            target_address,
+                            srtp_packet_kind_to_string(packet.kind));
+
+            continue;
+        }
+
+        auto protected_packet = srtp_transport_->protect_outbound_packet(packet.plain_packet, target_address, packet.kind);
+
+        if (!protected_packet)
+        {
+            WEBRTC_LOG_WARN("media forward protect failed stream={} source={} target={} kind={} error={}",
+                            route.source.stream_id,
+                            route.source.remote_endpoint,
+                            target_address,
+                            srtp_packet_kind_to_string(packet.kind),
+                            protected_packet.error());
+
+            continue;
+        }
+
+        if (protected_packet->state == srtp_packet_process_state::ignored)
+        {
+            WEBRTC_LOG_DEBUG("media forward target ignored stream={} source={} target={} kind={} reason={}",
+                             route.source.stream_id,
+                             route.source.remote_endpoint,
+                             target_address,
+                             srtp_packet_kind_to_string(packet.kind),
+                             protected_packet->reason);
+
+            continue;
+        }
+
+        WEBRTC_LOG_DEBUG("media forward send stream={} source={} target={} kind={} plain_size={} protected_size={}",
+                         route.source.stream_id,
+                         route.source.remote_endpoint,
+                         target_address,
+                         srtp_packet_kind_to_string(packet.kind),
+                         packet.plain_packet.size(),
+                         protected_packet->protected_packet.size());
+
+        send_response(std::move(protected_packet->protected_packet), *target_endpoint);
+    }
 }
 
 void ice_udp_server::send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint)
@@ -540,6 +624,30 @@ void ice_udp_server::send_response(std::vector<uint8_t> response, const udp::end
 
                               WEBRTC_LOG_DEBUG("ice udp send success remote={} bytes={}", remote_address, bytes_transferred);
                           });
+}
+
+void ice_udp_server::remember_remote_endpoint(const udp::endpoint& remote_endpoint)
+{
+    const std::string remote_address = endpoint_to_string(remote_endpoint);
+
+    if (remote_address.empty() || remote_address == "<unknown>")
+    {
+        return;
+    }
+
+    endpoints_by_address_[remote_address] = remote_endpoint;
+}
+
+std::optional<ice_udp_server::udp::endpoint> ice_udp_server::find_remote_endpoint(std::string_view remote_address) const
+{
+    const auto iterator = endpoints_by_address_.find(std::string(remote_address));
+
+    if (iterator == endpoints_by_address_.end())
+    {
+        return std::nullopt;
+    }
+
+    return iterator->second;
 }
 
 std::shared_ptr<publisher_session> ice_udp_server::find_publisher_for_username(std::string_view username) const

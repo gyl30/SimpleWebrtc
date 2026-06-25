@@ -6,8 +6,11 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -55,7 +58,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
 
+    void forward_media_packet(const srtp_packet_process_result& packet, const media_route_result& route);
+
     void send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint);
+
+    void remember_remote_endpoint(const udp::endpoint& remote_endpoint);
+
+    [[nodiscard]] std::optional<udp::endpoint> find_remote_endpoint(std::string_view remote_address) const;
 
     [[nodiscard]] std::shared_ptr<publisher_session> find_publisher_for_username(std::string_view username) const;
 
@@ -79,6 +88,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     udp::endpoint remote_endpoint_;
     std::array<uint8_t, 4096> receive_buffer_{};
+
+    std::unordered_map<std::string, udp::endpoint> endpoints_by_address_;
 
     bool started_ = false;
 };

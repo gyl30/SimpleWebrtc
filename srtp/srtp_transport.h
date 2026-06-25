@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "dtls/dtls_transport.h"
 
@@ -24,6 +25,7 @@ enum class srtp_packet_process_state
 {
     ignored,
     unprotected,
+    protected_packet,
 };
 
 struct srtp_packet_process_result
@@ -34,6 +36,7 @@ struct srtp_packet_process_result
 
     std::size_t packet_size = 0;
     std::size_t unprotected_size = 0;
+    std::size_t protected_size = 0;
 
     uint32_t ssrc = 0;
     uint8_t payload_type = 0;
@@ -45,6 +48,9 @@ struct srtp_packet_process_result
     uint8_t rtcp_count = 0;
     uint16_t rtcp_length = 0;
     std::string packet_type_name;
+
+    std::vector<uint8_t> plain_packet;
+    std::vector<uint8_t> protected_packet;
 
     std::string reason;
 };
@@ -66,6 +72,10 @@ class srtp_transport
 
    public:
     [[nodiscard]] srtp_transport_result handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint);
+
+    [[nodiscard]] srtp_transport_result protect_outbound_packet(std::span<const uint8_t> plain_packet,
+                                                                std::string_view remote_endpoint,
+                                                                srtp_packet_kind kind);
 
     void forget_peer(std::string_view remote_endpoint);
 
