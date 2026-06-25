@@ -209,6 +209,8 @@ set(WEBRTC_SOURCES
     media/media_router.cpp
     media/rtcp_feedback_router.cpp
     media/rtp_packet_cache.cpp
+    media/media_router_stats_json.cpp
+    media/media_router_stats_prometheus.cpp
     ice/ice_udp_server.cpp
     signaling/webrtc_answer_factory.cpp)
 

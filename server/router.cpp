@@ -13,6 +13,7 @@
 #include "log/log.h"
 #include "media/media_router.h"
 #include "media/media_router_stats_json.h"
+#include "media/media_router_stats_prometheus.h"
 #include "net/http.h"
 #include "signaling/webrtc_answer_factory.h"
 
@@ -33,6 +34,8 @@ inline constexpr std::string_view k_whip_session_prefix = "/whip/session/";
 inline constexpr std::string_view k_whep_session_prefix = "/whep/session/";
 
 inline constexpr std::string_view k_media_stats_path = "/api/stats/media";
+
+inline constexpr std::string_view k_prometheus_metrics_path = "/metrics";
 
 std::string_view remove_query(std::string_view target)
 {
@@ -122,6 +125,11 @@ http_response_ptr router::handle(http_request_t& request)
         return handle_media_stats(request);
     }
 
+    if (path == k_prometheus_metrics_path)
+    {
+        return handle_prometheus_metrics(request);
+    }
+
     std::string_view session_id;
 
     if (match_single_value_path(path, k_whip_session_prefix, session_id))
@@ -188,6 +196,25 @@ http_response_ptr router::handle_media_stats(http_request_t& request)
     const std::string body = media_router_stats_snapshot_to_json(snapshot);
 
     return json_response(request, 200, body);
+}
+
+http_response_ptr router::handle_prometheus_metrics(http_request_t& request)
+{
+    if (request.req.method() != http::verb::get)
+    {
+        return method_not_allowed(request);
+    }
+
+    if (media_router_ == nullptr)
+    {
+        return text_response(request, 503, "media router unavailable");
+    }
+
+    const media_router_stats_snapshot snapshot = media_router_->get_stats_snapshot();
+
+    const std::string body = media_router_stats_snapshot_to_prometheus(snapshot);
+
+    return prometheus_response(request, 200, body);
 }
 
 http_response_ptr router::handle_whip_create(http_request_t& request, std::string_view stream_id)
@@ -326,6 +353,24 @@ http_response_ptr router::text_response(http_request_t& request, int code, std::
     auto response = create_response(request, code, content);
 
     response->set(http::field::content_type, "text/plain; charset=utf-8");
+
+    add_common_headers(response);
+
+    return response;
+}
+
+http_response_ptr router::prometheus_response(http_request_t& request, int code, std::string_view body)
+{
+    std::string content(body);
+
+    if (!content.empty() && content.back() != '\n')
+    {
+        content.push_back('\n');
+    }
+
+    auto response = create_response(request, code, content);
+
+    response->set(http::field::content_type, "text/plain; version=0.0.4; charset=utf-8");
 
     add_common_headers(response);
 

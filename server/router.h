@@ -36,6 +36,8 @@ class router
 
     http_response_ptr handle_media_stats(http_request_t& request);
 
+    http_response_ptr handle_prometheus_metrics(http_request_t& request);
+
     http_response_ptr handle_whip_create(http_request_t& request, std::string_view stream_id);
 
     http_response_ptr handle_whip_session(http_request_t& request, std::string_view session_id);
@@ -59,6 +61,8 @@ class router
     http_response_ptr json_response(http_request_t& request, int code, std::string_view body);
 
     http_response_ptr text_response(http_request_t& request, int code, std::string_view body);
+
+    http_response_ptr prometheus_response(http_request_t& request, int code, std::string_view body);
 
     void add_common_headers(const http_response_ptr& response);
 
