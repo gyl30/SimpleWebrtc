@@ -162,6 +162,14 @@ find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(Boost 1.83.0 REQUIRED COMPONENTS filesystem)
 
+set(ENABLE_TESTING
+    OFF
+    CACHE BOOL "disable libsrtp tests" FORCE)
+set(ENABLE_OPENSSL
+    OFF
+    CACHE BOOL "disable libsrtp openssl backend" FORCE)
+add_subdirectory(third/libsrtp EXCLUDE_FROM_ALL)
+
 set(WEBRTC_SOURCES
     log/log.cpp
     net/http.cpp
@@ -192,6 +200,7 @@ set(WEBRTC_SOURCES
     dtls/dtls_context.cpp
     dtls/dtls_srtp_keying_material.cpp
     dtls/dtls_transport.cpp
+    srtp/srtp_session.cpp
     ice/ice_udp_server.cpp
     signaling/webrtc_answer_factory.cpp)
 
@@ -210,5 +219,6 @@ if(UNIX
                       "${BROTLICOMMON_LIBRARY}" "-Wl,--as-needed")
 endif()
 
-target_link_libraries(SimpleWebrtc PRIVATE OpenSSL::SSL OpenSSL::Crypto
-                                           Threads::Threads ${Boost_LIBRARIES})
+target_link_libraries(
+  SimpleWebrtc PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads
+                       ${Boost_LIBRARIES} srtp2)
