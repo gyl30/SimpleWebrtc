@@ -1,5 +1,6 @@
 #include "media/media_router.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -20,6 +21,8 @@ namespace
 inline constexpr uint64_t k_media_stats_log_interval = 5000;
 inline constexpr uint16_t k_rtp_sequence_wrap_low_threshold = 1000;
 inline constexpr uint16_t k_rtp_sequence_wrap_high_threshold = 64535;
+inline constexpr uint64_t k_ntp_unix_epoch_offset_seconds = 2208988800ULL;
+inline constexpr uint64_t k_ntp_fraction_units_per_second = 65536ULL;
 
 media_peer_info make_peer_info(media_peer_role role, std::string_view remote_endpoint, std::string_view stream_id, std::string_view session_id)
 {
@@ -52,6 +55,42 @@ int32_t rtp_sequence_delta(uint16_t sequence_number, uint16_t expected_sequence_
 bool is_rtp_sequence_wrap(uint16_t previous_sequence_number, uint16_t current_sequence_number)
 {
     return previous_sequence_number >= k_rtp_sequence_wrap_high_threshold && current_sequence_number <= k_rtp_sequence_wrap_low_threshold;
+}
+
+uint32_t current_ntp_compact()
+{
+    const auto now = std::chrono::system_clock::now();
+
+    const auto duration = now.time_since_epoch();
+
+    const uint64_t seconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(duration).count());
+
+    const auto seconds_duration = std::chrono::seconds(seconds);
+
+    const uint64_t fractional_microseconds =
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(duration - seconds_duration).count());
+
+    const uint64_t ntp_seconds = seconds + k_ntp_unix_epoch_offset_seconds;
+
+    const uint64_t ntp_fraction = (fractional_microseconds * k_ntp_fraction_units_per_second) / 1000000ULL;
+
+    return static_cast<uint32_t>(((ntp_seconds & 0xffffULL) << 16U) | (ntp_fraction & 0xffffULL));
+}
+
+std::optional<uint64_t> estimate_rtcp_rtt_ms(uint32_t last_sender_report, uint32_t delay_since_last_sender_report)
+{
+    if (last_sender_report == 0)
+    {
+        return std::nullopt;
+    }
+
+    const uint32_t now = current_ntp_compact();
+
+    const uint32_t rtt_compact = now - last_sender_report - delay_since_last_sender_report;
+
+    const uint64_t rtt_ms = (static_cast<uint64_t>(rtt_compact) * 1000ULL) / k_ntp_fraction_units_per_second;
+
+    return rtt_ms;
 }
 }    // namespace
 
@@ -609,6 +648,15 @@ void media_router::update_rtcp_report_stats_locked(media_peer_stats& peer_stats,
     stream_stats.last_rtcp_cumulative_lost = packet.rtcp_last_cumulative_lost;
     stream_stats.last_rtcp_jitter = packet.rtcp_last_jitter;
 
+    if (!packet.rtcp_report_blocks.empty())
+    {
+        const rtcp_report_block& last_report_block = packet.rtcp_report_blocks.back();
+
+        peer_stats.last_rtcp_report_media_ssrc = last_report_block.ssrc;
+
+        stream_stats.last_rtcp_report_media_ssrc = last_report_block.ssrc;
+    }
+
     if (packet.rtcp_has_sender_info)
     {
         peer_stats.last_rtcp_sr_packet_count = packet.rtcp_sender_info_data.sender_packet_count;
@@ -618,25 +666,68 @@ void media_router::update_rtcp_report_stats_locked(media_peer_stats& peer_stats,
         stream_stats.last_rtcp_sr_octet_count = packet.rtcp_sender_info_data.sender_octet_count;
     }
 
-    WEBRTC_LOG_DEBUG("media router rtcp report remote={} stream={} reports={} blocks={} sr={} rr={} fraction_lost={} cumulative_lost={} jitter={}",
-                     peer_stats.peer.remote_endpoint,
-                     peer_stats.peer.stream_id,
-                     packet.rtcp_report_packet_count,
-                     packet.rtcp_report_block_count,
-                     packet.rtcp_has_sender_report ? 1 : 0,
-                     packet.rtcp_has_receiver_report ? 1 : 0,
-                     static_cast<unsigned int>(packet.rtcp_last_fraction_lost),
-                     packet.rtcp_last_cumulative_lost,
-                     packet.rtcp_last_jitter);
+    for (const auto& report_block : packet.rtcp_report_blocks)
+    {
+        const auto rtt_ms = estimate_rtcp_rtt_ms(report_block.last_sender_report, report_block.delay_since_last_sender_report);
+
+        if (!rtt_ms.has_value())
+        {
+            continue;
+        }
+
+        update_rtcp_rtt_stats_locked(peer_stats, stream_stats, *rtt_ms);
+    }
+
+    WEBRTC_LOG_DEBUG(
+        "media router rtcp report remote={} stream={} reports={} blocks={} sr={} rr={} report_ssrc={} media_ssrc={} fraction_lost={} "
+        "cumulative_lost={} jitter={} rtt_last_ms={} rtt_avg_ms={} rtt_max_ms={}",
+        peer_stats.peer.remote_endpoint,
+        peer_stats.peer.stream_id,
+        packet.rtcp_report_packet_count,
+        packet.rtcp_report_block_count,
+        packet.rtcp_has_sender_report ? 1 : 0,
+        packet.rtcp_has_receiver_report ? 1 : 0,
+        peer_stats.last_rtcp_report_ssrc,
+        peer_stats.last_rtcp_report_media_ssrc,
+        static_cast<unsigned int>(packet.rtcp_last_fraction_lost),
+        packet.rtcp_last_cumulative_lost,
+        packet.rtcp_last_jitter,
+        peer_stats.rtcp_last_rtt_ms,
+        peer_stats.rtcp_avg_rtt_ms,
+        peer_stats.rtcp_max_rtt_ms);
+}
+
+void media_router::update_rtcp_rtt_stats_locked(media_peer_stats& peer_stats, media_stream_stats& stream_stats, uint64_t rtt_ms)
+{
+    peer_stats.rtcp_rtt_sample_count += 1;
+    peer_stats.rtcp_last_rtt_ms = rtt_ms;
+    peer_stats.rtcp_rtt_sum_ms += rtt_ms;
+    peer_stats.rtcp_avg_rtt_ms = peer_stats.rtcp_rtt_sum_ms / peer_stats.rtcp_rtt_sample_count;
+
+    if (rtt_ms > peer_stats.rtcp_max_rtt_ms)
+    {
+        peer_stats.rtcp_max_rtt_ms = rtt_ms;
+    }
+
+    stream_stats.rtcp_rtt_sample_count += 1;
+    stream_stats.rtcp_last_rtt_ms = rtt_ms;
+    stream_stats.rtcp_rtt_sum_ms += rtt_ms;
+    stream_stats.rtcp_avg_rtt_ms = stream_stats.rtcp_rtt_sum_ms / stream_stats.rtcp_rtt_sample_count;
+
+    if (rtt_ms > stream_stats.rtcp_max_rtt_ms)
+    {
+        stream_stats.rtcp_max_rtt_ms = rtt_ms;
+    }
 }
 
 void media_router::log_peer_stats_locked(const media_peer_stats& peer_stats, const media_stream_stats& stream_stats) const
 {
     WEBRTC_LOG_INFO(
         "media stats peer remote={} role={} stream={} session={} rtp_packets={} rtcp_packets={} routed_targets={} feedback={} reports={} "
-        "report_blocks={} fraction_lost={} cumulative_lost={} jitter={} nack_items={} fir_items={} keyframe_requests={} generic_nacks={} "
-        "transport_cc={} remb={} rtp_gap_events={} rtp_lost={} rtp_ooo={} rtp_duplicate={} rtp_wraps={} active_publishers={} active_subscribers={} "
-        "stream_rtp={} stream_rtcp={} stream_fanout_targets={} stream_lost={} stream_ooo={} stream_duplicate={}",
+        "report_blocks={} fraction_lost={} cumulative_lost={} jitter={} rtt_last_ms={} rtt_avg_ms={} rtt_max_ms={} nack_items={} fir_items={} "
+        "keyframe_requests={} generic_nacks={} transport_cc={} remb={} rtp_gap_events={} rtp_lost={} rtp_ooo={} rtp_duplicate={} rtp_wraps={} "
+        "active_publishers={} active_subscribers={} stream_rtp={} stream_rtcp={} stream_fanout_targets={} stream_lost={} stream_ooo={} "
+        "stream_duplicate={} stream_rtt_avg_ms={}",
         peer_stats.peer.remote_endpoint,
         media_peer_role_to_string(peer_stats.peer.role),
         peer_stats.peer.stream_id,
@@ -650,6 +741,9 @@ void media_router::log_peer_stats_locked(const media_peer_stats& peer_stats, con
         static_cast<unsigned int>(peer_stats.last_rtcp_fraction_lost),
         peer_stats.last_rtcp_cumulative_lost,
         peer_stats.last_rtcp_jitter,
+        peer_stats.rtcp_last_rtt_ms,
+        peer_stats.rtcp_avg_rtt_ms,
+        peer_stats.rtcp_max_rtt_ms,
         peer_stats.rtcp_nack_items,
         peer_stats.rtcp_fir_items,
         peer_stats.rtcp_keyframe_request_packets,
@@ -668,7 +762,8 @@ void media_router::log_peer_stats_locked(const media_peer_stats& peer_stats, con
         stream_stats.fanout_target_packets,
         stream_stats.rtp_sequence_lost_packets,
         stream_stats.rtp_out_of_order_packets,
-        stream_stats.rtp_duplicate_packets);
+        stream_stats.rtp_duplicate_packets,
+        stream_stats.rtcp_avg_rtt_ms);
 }
 
 std::vector<std::string> media_router::get_subscriber_endpoints_locked(std::string_view stream_id, std::string_view excluded_endpoint) const
