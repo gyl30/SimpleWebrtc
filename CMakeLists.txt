@@ -182,7 +182,9 @@ set(WEBRTC_SOURCES
     signaling/sdp/sdp_summary.cpp
     signaling/sdp/sdp_offer_validator.cpp
     signaling/sdp/sdp_formatter.cpp
-    signaling/sdp/sdp_answer_builder.cpp)
+    signaling/sdp/sdp_answer_builder.cpp
+    security/certificate_fingerprint.cpp
+    ice/ice_credentials.cpp)
 
 add_executable(SimpleWebrtc ${WEBRTC_SOURCES} main.cpp)
 
