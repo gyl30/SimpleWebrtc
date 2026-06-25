@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "rtp/rtcp_feedback.h"
+#include "rtp/rtcp_report.h"
 #include "rtp/rtp_packet.h"
 
 namespace webrtc
@@ -75,6 +76,42 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
     packet.has_remb = packet.has_remb || block.has_remb;
 
     packet.remb_bitrate_bps = std::max(packet.remb_bitrate_bps, block.remb_bitrate_bps);
+}
+
+void fill_report_block(const rtcp_report_packet& report, rtcp_compound_block& block)
+{
+    block.is_report = true;
+    block.is_sender_report = report.is_sender_report;
+    block.is_receiver_report = report.is_receiver_report;
+    block.has_sender_info = report.has_sender_info;
+    block.report_sender_ssrc = report.sender_ssrc;
+    block.sender_info = report.sender_info;
+    block.report_blocks = report.report_blocks;
+}
+
+void aggregate_report_block(const rtcp_compound_block& block, rtcp_compound_packet& packet)
+{
+    if (!block.is_report)
+    {
+        return;
+    }
+
+    packet.report_packet_count += 1;
+    packet.report_block_count += block.report_blocks.size();
+
+    packet.has_sender_report = packet.has_sender_report || block.is_sender_report;
+
+    packet.has_receiver_report = packet.has_receiver_report || block.is_receiver_report;
+
+    packet.report_sender_ssrc = block.report_sender_ssrc;
+
+    if (block.has_sender_info)
+    {
+        packet.has_sender_info = true;
+        packet.sender_info = block.sender_info;
+    }
+
+    packet.report_blocks.insert(packet.report_blocks.end(), block.report_blocks.begin(), block.report_blocks.end());
 }
 
 rtcp_compound_block make_block_from_header(const rtcp_packet_header& header, std::size_t offset)
@@ -157,6 +194,23 @@ rtcp_compound_packet_result parse_rtcp_compound_packet(std::span<const uint8_t> 
             fill_feedback_block(*feedback, block);
 
             aggregate_feedback_block(block, packet);
+        }
+        else if (is_rtcp_report_packet(block_data))
+        {
+            auto report = parse_rtcp_report_packet(block_data);
+
+            if (!report)
+            {
+                std::string message = "rtcp compound report parse failed: ";
+
+                message.append(report.error());
+
+                return std::unexpected(std::move(message));
+            }
+
+            fill_report_block(*report, block);
+
+            aggregate_report_block(block, packet);
         }
 
         packet.blocks.push_back(std::move(block));

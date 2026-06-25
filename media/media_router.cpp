@@ -406,7 +406,7 @@ void media_router::update_inbound_stats_locked(const media_peer_info& peer,
             stream_stats.subscriber_rtcp_packets += 1;
         }
 
-        update_rtcp_feedback_stats_locked(peer_stats, stream_stats, packet);
+        update_rtcp_stats_locked(peer_stats, stream_stats, packet);
     }
 
     if (target_count > 0)
@@ -517,6 +517,13 @@ void media_router::update_rtp_quality_stats_locked(media_peer_stats& peer_stats,
                      delta);
 }
 
+void media_router::update_rtcp_stats_locked(media_peer_stats& peer_stats, media_stream_stats& stream_stats, const srtp_packet_process_result& packet)
+{
+    update_rtcp_feedback_stats_locked(peer_stats, stream_stats, packet);
+
+    update_rtcp_report_stats_locked(peer_stats, stream_stats, packet);
+}
+
 void media_router::update_rtcp_feedback_stats_locked(media_peer_stats& peer_stats,
                                                      media_stream_stats& stream_stats,
                                                      const srtp_packet_process_result& packet)
@@ -563,13 +570,73 @@ void media_router::update_rtcp_feedback_stats_locked(media_peer_stats& peer_stat
     }
 }
 
+void media_router::update_rtcp_report_stats_locked(media_peer_stats& peer_stats,
+                                                   media_stream_stats& stream_stats,
+                                                   const srtp_packet_process_result& packet)
+{
+    if (packet.rtcp_report_packet_count == 0)
+    {
+        return;
+    }
+
+    peer_stats.rtcp_report_packets += packet.rtcp_report_packet_count;
+
+    peer_stats.rtcp_report_blocks += packet.rtcp_report_block_count;
+
+    stream_stats.rtcp_report_packets += packet.rtcp_report_packet_count;
+
+    stream_stats.rtcp_report_blocks += packet.rtcp_report_block_count;
+
+    if (packet.rtcp_has_sender_report)
+    {
+        peer_stats.rtcp_sender_report_packets += 1;
+        stream_stats.rtcp_sender_report_packets += 1;
+    }
+
+    if (packet.rtcp_has_receiver_report)
+    {
+        peer_stats.rtcp_receiver_report_packets += 1;
+        stream_stats.rtcp_receiver_report_packets += 1;
+    }
+
+    peer_stats.last_rtcp_report_ssrc = packet.rtcp_report_sender_ssrc;
+    peer_stats.last_rtcp_fraction_lost = packet.rtcp_last_fraction_lost;
+    peer_stats.last_rtcp_cumulative_lost = packet.rtcp_last_cumulative_lost;
+    peer_stats.last_rtcp_jitter = packet.rtcp_last_jitter;
+
+    stream_stats.last_rtcp_report_ssrc = packet.rtcp_report_sender_ssrc;
+    stream_stats.last_rtcp_fraction_lost = packet.rtcp_last_fraction_lost;
+    stream_stats.last_rtcp_cumulative_lost = packet.rtcp_last_cumulative_lost;
+    stream_stats.last_rtcp_jitter = packet.rtcp_last_jitter;
+
+    if (packet.rtcp_has_sender_info)
+    {
+        peer_stats.last_rtcp_sr_packet_count = packet.rtcp_sender_info_data.sender_packet_count;
+        peer_stats.last_rtcp_sr_octet_count = packet.rtcp_sender_info_data.sender_octet_count;
+
+        stream_stats.last_rtcp_sr_packet_count = packet.rtcp_sender_info_data.sender_packet_count;
+        stream_stats.last_rtcp_sr_octet_count = packet.rtcp_sender_info_data.sender_octet_count;
+    }
+
+    WEBRTC_LOG_DEBUG("media router rtcp report remote={} stream={} reports={} blocks={} sr={} rr={} fraction_lost={} cumulative_lost={} jitter={}",
+                     peer_stats.peer.remote_endpoint,
+                     peer_stats.peer.stream_id,
+                     packet.rtcp_report_packet_count,
+                     packet.rtcp_report_block_count,
+                     packet.rtcp_has_sender_report ? 1 : 0,
+                     packet.rtcp_has_receiver_report ? 1 : 0,
+                     static_cast<unsigned int>(packet.rtcp_last_fraction_lost),
+                     packet.rtcp_last_cumulative_lost,
+                     packet.rtcp_last_jitter);
+}
+
 void media_router::log_peer_stats_locked(const media_peer_stats& peer_stats, const media_stream_stats& stream_stats) const
 {
     WEBRTC_LOG_INFO(
-        "media stats peer remote={} role={} stream={} session={} rtp_packets={} rtcp_packets={} routed_targets={} feedback={} nack_items={} "
-        "fir_items={} keyframe_requests={} generic_nacks={} transport_cc={} remb={} rtp_gap_events={} rtp_lost={} rtp_ooo={} rtp_duplicate={} "
-        "rtp_wraps={} active_publishers={} active_subscribers={} stream_rtp={} stream_rtcp={} stream_fanout_targets={} stream_lost={} stream_ooo={} "
-        "stream_duplicate={}",
+        "media stats peer remote={} role={} stream={} session={} rtp_packets={} rtcp_packets={} routed_targets={} feedback={} reports={} "
+        "report_blocks={} fraction_lost={} cumulative_lost={} jitter={} nack_items={} fir_items={} keyframe_requests={} generic_nacks={} "
+        "transport_cc={} remb={} rtp_gap_events={} rtp_lost={} rtp_ooo={} rtp_duplicate={} rtp_wraps={} active_publishers={} active_subscribers={} "
+        "stream_rtp={} stream_rtcp={} stream_fanout_targets={} stream_lost={} stream_ooo={} stream_duplicate={}",
         peer_stats.peer.remote_endpoint,
         media_peer_role_to_string(peer_stats.peer.role),
         peer_stats.peer.stream_id,
@@ -578,6 +645,11 @@ void media_router::log_peer_stats_locked(const media_peer_stats& peer_stats, con
         peer_stats.inbound_rtcp_packets,
         peer_stats.routed_target_packets,
         peer_stats.rtcp_feedback_packets,
+        peer_stats.rtcp_report_packets,
+        peer_stats.rtcp_report_blocks,
+        static_cast<unsigned int>(peer_stats.last_rtcp_fraction_lost),
+        peer_stats.last_rtcp_cumulative_lost,
+        peer_stats.last_rtcp_jitter,
         peer_stats.rtcp_nack_items,
         peer_stats.rtcp_fir_items,
         peer_stats.rtcp_keyframe_request_packets,

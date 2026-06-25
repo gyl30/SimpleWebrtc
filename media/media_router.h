@@ -59,6 +59,18 @@ struct media_peer_stats
     uint64_t rtcp_nack_items = 0;
     uint64_t rtcp_fir_items = 0;
 
+    uint64_t rtcp_report_packets = 0;
+    uint64_t rtcp_report_blocks = 0;
+    uint64_t rtcp_sender_report_packets = 0;
+    uint64_t rtcp_receiver_report_packets = 0;
+
+    uint8_t last_rtcp_fraction_lost = 0;
+    int32_t last_rtcp_cumulative_lost = 0;
+    uint32_t last_rtcp_jitter = 0;
+    uint32_t last_rtcp_report_ssrc = 0;
+    uint32_t last_rtcp_sr_packet_count = 0;
+    uint32_t last_rtcp_sr_octet_count = 0;
+
     bool has_rtp_sequence = false;
     uint16_t expected_rtp_sequence_number = 0;
 
@@ -104,6 +116,18 @@ struct media_stream_stats
 
     uint64_t rtcp_nack_items = 0;
     uint64_t rtcp_fir_items = 0;
+
+    uint64_t rtcp_report_packets = 0;
+    uint64_t rtcp_report_blocks = 0;
+    uint64_t rtcp_sender_report_packets = 0;
+    uint64_t rtcp_receiver_report_packets = 0;
+
+    uint8_t last_rtcp_fraction_lost = 0;
+    int32_t last_rtcp_cumulative_lost = 0;
+    uint32_t last_rtcp_jitter = 0;
+    uint32_t last_rtcp_report_ssrc = 0;
+    uint32_t last_rtcp_sr_packet_count = 0;
+    uint32_t last_rtcp_sr_octet_count = 0;
 
     uint64_t rtp_sequence_gap_events = 0;
     uint64_t rtp_sequence_lost_packets = 0;
@@ -178,7 +202,11 @@ class media_router
 
     void update_rtp_quality_stats_locked(media_peer_stats& peer_stats, media_stream_stats& stream_stats, const srtp_packet_process_result& packet);
 
+    void update_rtcp_stats_locked(media_peer_stats& peer_stats, media_stream_stats& stream_stats, const srtp_packet_process_result& packet);
+
     void update_rtcp_feedback_stats_locked(media_peer_stats& peer_stats, media_stream_stats& stream_stats, const srtp_packet_process_result& packet);
+
+    void update_rtcp_report_stats_locked(media_peer_stats& peer_stats, media_stream_stats& stream_stats, const srtp_packet_process_result& packet);
 
     void log_peer_stats_locked(const media_peer_stats& peer_stats, const media_stream_stats& stream_stats) const;
 

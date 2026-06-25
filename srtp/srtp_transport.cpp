@@ -82,6 +82,27 @@ srtp_transport_result make_unprotected_rtp_result(std::size_t packet_size, std::
     return result;
 }
 
+void fill_rtcp_report_fields_from_compound(const rtcp_compound_packet& compound, srtp_packet_process_result& result)
+{
+    result.rtcp_report_packet_count = compound.report_packet_count;
+    result.rtcp_report_block_count = compound.report_block_count;
+    result.rtcp_has_sender_report = compound.has_sender_report;
+    result.rtcp_has_receiver_report = compound.has_receiver_report;
+    result.rtcp_has_sender_info = compound.has_sender_info;
+    result.rtcp_report_sender_ssrc = compound.report_sender_ssrc;
+    result.rtcp_sender_info_data = compound.sender_info;
+    result.rtcp_report_blocks = compound.report_blocks;
+
+    if (!compound.report_blocks.empty())
+    {
+        const rtcp_report_block& last_block = compound.report_blocks.back();
+
+        result.rtcp_last_fraction_lost = last_block.fraction_lost;
+        result.rtcp_last_cumulative_lost = last_block.cumulative_lost;
+        result.rtcp_last_jitter = last_block.jitter;
+    }
+}
+
 void fill_rtcp_fields_from_compound(const rtcp_compound_packet& compound, srtp_packet_process_result& result)
 {
     result.rtcp_block_count = compound.blocks.size();
@@ -131,8 +152,10 @@ void fill_rtcp_fields_from_compound(const rtcp_compound_packet& compound, srtp_p
             result.rtcp_feedback_name = block.feedback_name;
         }
 
-        return;
+        break;
     }
+
+    fill_rtcp_report_fields_from_compound(compound, result);
 }
 
 srtp_transport_result make_unprotected_rtcp_result(std::size_t packet_size, std::vector<uint8_t> packet)
@@ -295,14 +318,16 @@ struct srtp_transport::impl
             if (result->rtcp_is_feedback)
             {
                 WEBRTC_LOG_DEBUG(
-                    "srtp inbound rtcp compound feedback unprotected remote={} size={} plain_size={} blocks={} feedback_blocks={} ssrc={} "
-                    "first_packet_type={} feedback={} sender_ssrc={} media_ssrc={} nack_count={} fir_count={} keyframe_request={} generic_nack={} "
-                    "transport_cc={} remb={} remb_bitrate={} packets={}",
+                    "srtp inbound rtcp compound feedback unprotected remote={} size={} plain_size={} blocks={} feedback_blocks={} reports={} "
+                    "report_blocks={} ssrc={} first_packet_type={} feedback={} sender_ssrc={} media_ssrc={} nack_count={} fir_count={} "
+                    "keyframe_request={} generic_nack={} transport_cc={} remb={} remb_bitrate={} packets={}",
                     remote_endpoint,
                     data.size(),
                     unprotected_size,
                     result->rtcp_block_count,
                     result->rtcp_feedback_block_count,
+                    result->rtcp_report_packet_count,
+                    result->rtcp_report_block_count,
                     result->ssrc,
                     static_cast<unsigned int>(result->payload_type),
                     result->rtcp_feedback_name,
@@ -320,17 +345,22 @@ struct srtp_transport::impl
             else
             {
                 WEBRTC_LOG_DEBUG(
-                    "srtp inbound rtcp compound unprotected remote={} size={} plain_size={} blocks={} ssrc={} packet_type={} packet_type_name={} "
-                    "count={} length={} packets={}",
+                    "srtp inbound rtcp compound unprotected remote={} size={} plain_size={} blocks={} reports={} report_blocks={} ssrc={} "
+                    "packet_type={} packet_type_name={} count={} length={} fraction_lost={} cumulative_lost={} jitter={} packets={}",
                     remote_endpoint,
                     data.size(),
                     unprotected_size,
                     result->rtcp_block_count,
+                    result->rtcp_report_packet_count,
+                    result->rtcp_report_block_count,
                     result->ssrc,
                     static_cast<unsigned int>(result->payload_type),
                     result->packet_type_name,
                     static_cast<unsigned int>(result->rtcp_count),
                     result->rtcp_length,
+                    static_cast<unsigned int>(result->rtcp_last_fraction_lost),
+                    result->rtcp_last_cumulative_lost,
+                    result->rtcp_last_jitter,
                     peer.inbound_packet_count);
             }
         }

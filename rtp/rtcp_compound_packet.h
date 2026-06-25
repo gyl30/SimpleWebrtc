@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "rtp/rtcp_feedback.h"
+#include "rtp/rtcp_report.h"
 
 namespace webrtc
 {
@@ -47,6 +48,14 @@ struct rtcp_compound_block
     bool has_transport_cc = false;
     bool has_remb = false;
     uint64_t remb_bitrate_bps = 0;
+
+    bool is_report = false;
+    bool is_sender_report = false;
+    bool is_receiver_report = false;
+    bool has_sender_info = false;
+    uint32_t report_sender_ssrc = 0;
+    rtcp_sender_info sender_info;
+    std::vector<rtcp_report_block> report_blocks;
 };
 
 struct rtcp_compound_packet
@@ -68,6 +77,15 @@ struct rtcp_compound_packet
     bool has_transport_cc = false;
     bool has_remb = false;
     uint64_t remb_bitrate_bps = 0;
+
+    std::size_t report_packet_count = 0;
+    std::size_t report_block_count = 0;
+    bool has_sender_report = false;
+    bool has_receiver_report = false;
+    bool has_sender_info = false;
+    uint32_t report_sender_ssrc = 0;
+    rtcp_sender_info sender_info;
+    std::vector<rtcp_report_block> report_blocks;
 };
 
 using rtcp_compound_packet_result = std::expected<rtcp_compound_packet, std::string>;

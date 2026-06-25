@@ -12,6 +12,7 @@
 
 #include "dtls/dtls_transport.h"
 #include "rtp/rtcp_feedback.h"
+#include "rtp/rtcp_report.h"
 
 namespace webrtc
 {
@@ -69,6 +70,19 @@ struct srtp_packet_process_result
     bool rtcp_has_transport_cc = false;
     bool rtcp_has_remb = false;
     uint64_t rtcp_remb_bitrate_bps = 0;
+
+    std::size_t rtcp_report_packet_count = 0;
+    std::size_t rtcp_report_block_count = 0;
+    bool rtcp_has_sender_report = false;
+    bool rtcp_has_receiver_report = false;
+    bool rtcp_has_sender_info = false;
+    uint32_t rtcp_report_sender_ssrc = 0;
+    rtcp_sender_info rtcp_sender_info_data;
+    std::vector<rtcp_report_block> rtcp_report_blocks;
+
+    uint8_t rtcp_last_fraction_lost = 0;
+    int32_t rtcp_last_cumulative_lost = 0;
+    uint32_t rtcp_last_jitter = 0;
 
     std::vector<uint8_t> plain_packet;
     std::vector<uint8_t> protected_packet;
