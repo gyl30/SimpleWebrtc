@@ -172,7 +172,10 @@ set(WEBRTC_SOURCES
     util/timestamp.cpp
     server/router.cpp
     server/whip_handler.cpp
-    server/whep_handler.cpp)
+    server/whep_handler.cpp
+    session/publisher_session.cpp
+    session/subscriber_session.cpp
+    session/stream_registry.cpp)
 
 add_executable(SimpleWebrtc ${WEBRTC_SOURCES} main.cpp)
 

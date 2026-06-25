@@ -1,18 +1,20 @@
 #ifndef SIMPLE_WEBRTC_SERVER_ROUTER_H
 #define SIMPLE_WEBRTC_SERVER_ROUTER_H
 
+#include <memory>
 #include <string_view>
 
 #include "net/http.h"
 #include "server/whip_handler.h"
 #include "server/whep_handler.h"
+#include "session/stream_registry.h"
 
 namespace webrtc
 {
 class router
 {
    public:
-    router();
+    explicit router(std::shared_ptr<stream_registry> registry);
 
    public:
     http_response_ptr handle(http_request_t& request);
@@ -46,6 +48,7 @@ class router
     static bool is_valid_resource_id(std::string_view value);
 
    private:
+    std::shared_ptr<stream_registry> registry_;
     whip_handler whip_;
     whep_handler whep_;
 };

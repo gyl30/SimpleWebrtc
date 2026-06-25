@@ -1,12 +1,14 @@
+#include "server/router.h"
+
+#include <algorithm>
 #include <cctype>
 #include <string>
-#include <algorithm>
+#include <utility>
 
-#include <boost/beast/http.hpp>
 #include <boost/algorithm/string/predicate.hpp>
+#include <boost/beast/http.hpp>
 
 #include "log/log.h"
-#include "server/router.h"
 
 namespace webrtc
 {
@@ -63,7 +65,7 @@ std::string beast_string_view_to_string(boost::beast::string_view value) { retur
 std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return std::string_view(value.data(), value.size()); }
 }    // namespace
 
-router::router() = default;
+router::router(std::shared_ptr<stream_registry> registry) : registry_(std::move(registry)), whip_(registry_), whep_(registry_) {}
 
 http_response_ptr router::handle(http_request_t& request)
 {
