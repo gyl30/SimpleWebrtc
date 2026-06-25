@@ -47,17 +47,6 @@ if(ENABLE_STRICT_WARNINGS)
     "$<$<COMPILE_LANGUAGE:CXX>:-Wsign-conversion>")
 endif()
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES
-                                            "AppleClang")
-  add_compile_options(-Wno-unknown-warning-option)
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  add_compile_options(-Wtrampolines)
-  check_cxx_compiler_flag("-fzero-init-padding-bits=all" HAS_ZERO_PADDING)
-  if(HAS_ZERO_PADDING)
-    add_compile_options(-fzero-init-padding-bits=all)
-  endif()
-endif()
-
 add_compile_options(-D_GLIBCXX_ASSERTIONS -fstack-protector-strong
                     -fno-delete-null-pointer-checks -fno-strict-overflow)
 
@@ -87,7 +76,8 @@ option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(ENABLE_LSAN "Enable LeakSanitizer" OFF)
 option(ENABLE_FUZZ "Enable libFuzzer targets" OFF)
-option(ENABLE_STATIC_LINK "Link executable and third-party dependencies statically" OFF)
+option(ENABLE_STATIC_LINK
+       "Link executable and third-party dependencies statically" OFF)
 
 if(ENABLE_STATIC_LINK)
   set(BUILD_SHARED_LIBS OFF)
@@ -132,7 +122,9 @@ else()
   add_compile_options("$<$<NOT:$<CONFIG:Debug>>:-D_FORTIFY_SOURCE=3>")
 endif()
 
-if(NOT ENABLE_TSAN AND NOT ENABLE_ASAN AND NOT ENABLE_LSAN)
+if(NOT ENABLE_TSAN
+   AND NOT ENABLE_ASAN
+   AND NOT ENABLE_LSAN)
   check_cxx_compiler_flag("-ftrivial-auto-var-init=zero"
                           HAS_TRIVIAL_AUTO_VAR_INIT_ZERO)
   if(HAS_TRIVIAL_AUTO_VAR_INIT_ZERO)
@@ -140,8 +132,9 @@ if(NOT ENABLE_TSAN AND NOT ENABLE_ASAN AND NOT ENABLE_LSAN)
   endif()
 endif()
 
-if(NOT DEFINED OPENSSL_ROOT_DIR AND DEFINED ENV{OPENSSL_ROOT_DIR} AND
-   NOT "$ENV{OPENSSL_ROOT_DIR}" STREQUAL "")
+if(NOT DEFINED OPENSSL_ROOT_DIR
+   AND DEFINED ENV{OPENSSL_ROOT_DIR}
+   AND NOT "$ENV{OPENSSL_ROOT_DIR}" STREQUAL "")
   set(OPENSSL_ROOT_DIR
       "$ENV{OPENSSL_ROOT_DIR}"
       CACHE PATH "Custom OpenSSL root directory")
@@ -156,8 +149,9 @@ if(DEFINED OPENSSL_ROOT_DIR AND NOT "${OPENSSL_ROOT_DIR}" STREQUAL "")
   endif()
 endif()
 
-if(NOT DEFINED BROTLI_ROOT_DIR AND DEFINED ENV{BROTLI_ROOT_DIR} AND
-   NOT "$ENV{BROTLI_ROOT_DIR}" STREQUAL "")
+if(NOT DEFINED BROTLI_ROOT_DIR
+   AND DEFINED ENV{BROTLI_ROOT_DIR}
+   AND NOT "$ENV{BROTLI_ROOT_DIR}" STREQUAL "")
   set(BROTLI_ROOT_DIR
       "$ENV{BROTLI_ROOT_DIR}"
       CACHE PATH "Custom Brotli root directory")
@@ -166,14 +160,30 @@ endif()
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
-find_package(Boost 1.83 REQUIRED)
+find_package(Boost 1.83.0 REQUIRED COMPONENTS filesystem)
 
-add_executable(SimpleWebrtc main.cpp)
+set(WEBRTC_SOURCES log/log.cpp
+    net/http.cpp
+    net/socket.cpp
+    util/file.cpp
+    util/random.cpp
+    util/error.cpp
+    util/timestamp.cpp)
 
-target_include_directories(SimpleWebrtc PRIVATE
-    ${CMAKE_SOURCE_DIR}/third/spdlog/include
-    ${CMAKE_SOURCE_DIR}/third/rapidjson/include)
+add_executable(SimpleWebrtc ${WEBRTC_SOURCES} main.cpp)
 
-if(UNIX AND NOT APPLE AND NOT ENABLE_STATIC_LINK)
-  target_link_options(SimpleWebrtc PRIVATE "-Wl,--no-as-needed" "${BROTLICOMMON_LIBRARY}" "-Wl,--as-needed")
+target_include_directories(
+  SimpleWebrtc
+  PRIVATE ${CMAKE_SOURCE_DIR} ${Boost_INCLUDE_DIRS}
+          ${CMAKE_SOURCE_DIR}/third/spdlog/include
+          ${CMAKE_SOURCE_DIR}/third/rapidjson/include)
+
+if(UNIX
+   AND NOT APPLE
+   AND NOT ENABLE_STATIC_LINK)
+  target_link_options(SimpleWebrtc PRIVATE "-Wl,--no-as-needed"
+                      "${BROTLICOMMON_LIBRARY}" "-Wl,--as-needed")
 endif()
+
+target_link_libraries(SimpleWebrtc PRIVATE OpenSSL::SSL OpenSSL::Crypto
+                                           Threads::Threads ${Boost_LIBRARIES})
