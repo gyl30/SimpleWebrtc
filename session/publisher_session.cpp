@@ -36,6 +36,14 @@ const sdp::webrtc_offer_summary& publisher_session::remote_offer_summary() const
 
 const std::string& publisher_session::local_sdp_answer() const { return local_sdp_answer_; }
 
+const ice_credentials& publisher_session::local_ice() const { return local_ice_; }
+
+const sdp::fingerprint_info& publisher_session::local_fingerprint() const { return local_fingerprint_; }
+
+uint64_t publisher_session::sdp_session_id() const { return sdp_session_id_; }
+
+uint64_t publisher_session::sdp_session_version() const { return sdp_session_version_; }
+
 session_state publisher_session::state() const { return state_; }
 
 std::string publisher_session::state_string() const { return std::string(session_state_to_string(state_)); }
@@ -53,6 +61,21 @@ void publisher_session::set_state(session_state state)
 void publisher_session::set_local_sdp_answer(std::string local_sdp_answer)
 {
     local_sdp_answer_ = std::move(local_sdp_answer);
+    state_ = session_state::sdp_answered;
+    updated_at_milliseconds_ = now_milliseconds();
+}
+
+void publisher_session::set_local_answer(std::string local_sdp_answer,
+                                         ice_credentials local_ice,
+                                         sdp::fingerprint_info local_fingerprint,
+                                         uint64_t sdp_session_id,
+                                         uint64_t sdp_session_version)
+{
+    local_sdp_answer_ = std::move(local_sdp_answer);
+    local_ice_ = std::move(local_ice);
+    local_fingerprint_ = std::move(local_fingerprint);
+    sdp_session_id_ = sdp_session_id;
+    sdp_session_version_ = sdp_session_version;
     state_ = session_state::sdp_answered;
     updated_at_milliseconds_ = now_milliseconds();
 }

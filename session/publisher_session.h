@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 
+#include "ice/ice_credentials.h"
 #include "session/session_state.h"
 #include "signaling/sdp/sdp_summary.h"
 
@@ -35,6 +36,11 @@ class publisher_session
     [[nodiscard]] const sdp::webrtc_offer_summary& remote_offer_summary() const;
 
     [[nodiscard]] const std::string& local_sdp_answer() const;
+    [[nodiscard]] const ice_credentials& local_ice() const;
+    [[nodiscard]] const sdp::fingerprint_info& local_fingerprint() const;
+
+    [[nodiscard]] uint64_t sdp_session_id() const;
+    [[nodiscard]] uint64_t sdp_session_version() const;
 
     [[nodiscard]] session_state state() const;
     [[nodiscard]] std::string state_string() const;
@@ -46,6 +52,12 @@ class publisher_session
     void set_state(session_state state);
     void set_local_sdp_answer(std::string local_sdp_answer);
 
+    void set_local_answer(std::string local_sdp_answer,
+                          ice_credentials local_ice,
+                          sdp::fingerprint_info local_fingerprint,
+                          uint64_t sdp_session_id,
+                          uint64_t sdp_session_version);
+
    private:
     std::string session_id_;
     std::string stream_id_;
@@ -54,6 +66,11 @@ class publisher_session
     sdp::webrtc_offer_summary remote_offer_summary_;
 
     std::string local_sdp_answer_;
+    ice_credentials local_ice_;
+    sdp::fingerprint_info local_fingerprint_;
+
+    uint64_t sdp_session_id_ = 0;
+    uint64_t sdp_session_version_ = 0;
 
     session_state state_ = session_state::created;
 

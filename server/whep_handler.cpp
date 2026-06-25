@@ -20,10 +20,20 @@ namespace
 namespace http = boost::beast::http;
 }    // namespace
 
-whep_handler::whep_handler(std::shared_ptr<stream_registry> registry) : registry_(std::move(registry)) {}
+whep_handler::whep_handler(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
+    : registry_(std::move(registry)), answer_factory_(std::move(answer_factory))
+{
+}
 
 http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::string_view stream_id)
 {
+    if (answer_factory_ == nullptr)
+    {
+        WEBRTC_LOG_ERROR("WHEP answer factory is null");
+
+        return json_error_response(request, 500, "answer factory not initialized");
+    }
+
     const std::string& offer = request.req.body();
 
     auto description = sdp::parse_session_description(offer);
@@ -63,7 +73,6 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
         std::string error_message;
         error_message.reserve(validation_result.error().size() + 20);
-
         error_message.append("invalid whep offer: ");
         error_message.append(validation_result.error());
 
@@ -75,6 +84,20 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                     offer_summary->bundle_mids.size(),
                     offer_summary->media.size(),
                     offer_summary->ice_ufrag.size());
+
+    auto generated_answer = answer_factory_->build_whep_answer(stream_id, *offer_summary);
+
+    if (!generated_answer)
+    {
+        WEBRTC_LOG_WARN("WHEP build SDP answer failed stream={} error={}", stream_id, generated_answer.error());
+
+        std::string error_message;
+        error_message.reserve(generated_answer.error().size() + 32);
+        error_message.append("failed to build sdp answer: ");
+        error_message.append(generated_answer.error());
+
+        return json_error_response(request, 400, error_message);
+    }
 
     auto session_result = registry_->create_subscriber_session(std::string(stream_id), offer, std::move(*offer_summary));
 
@@ -96,16 +119,20 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     const auto& session = *session_result;
 
-    WEBRTC_LOG_INFO("WHEP create subscriber stream={} session={} sdp_size={} media_count={}",
+    session->set_local_answer(generated_answer->sdp,
+                              std::move(generated_answer->local_ice),
+                              std::move(generated_answer->local_fingerprint),
+                              generated_answer->sdp_session_id,
+                              generated_answer->sdp_session_version);
+
+    WEBRTC_LOG_INFO("WHEP create subscriber stream={} session={} offer_size={} answer_size={} media_count={}",
                     session->stream_id(),
                     session->session_id(),
                     offer.size(),
+                    session->local_sdp_answer().size(),
                     session->remote_offer_summary().media.size());
 
-    const auto body = make_session_created_response_body(
-        "subscriber", session->stream_id(), session->session_id(), session->state_string(), "SDP answer not implemented");
-
-    auto response = json_response(request, 201, body);
+    auto response = sdp_response(request, 201, session->local_sdp_answer());
 
     response->set(http::field::location, "/whep/session/" + session->session_id());
 
@@ -147,6 +174,7 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
     auto response = create_response(request, 204, "");
 
     add_common_headers(response);
+
     return response;
 }
 
@@ -160,6 +188,7 @@ http_response_ptr whep_handler::json_response(http_request_t& request, int code,
     response->set(http::field::content_type, "application/json; charset=utf-8");
 
     add_common_headers(response);
+
     return response;
 }
 
@@ -168,9 +197,24 @@ http_response_ptr whep_handler::json_error_response(http_request_t& request, int
     return json_response(request, code, make_error_response_body(message));
 }
 
+http_response_ptr whep_handler::sdp_response(http_request_t& request, int code, std::string_view body)
+{
+    std::string content(body);
+
+    auto response = create_response(request, code, content);
+
+    response->set(http::field::content_type, "application/sdp");
+
+    add_common_headers(response);
+
+    return response;
+}
+
 void whep_handler::add_common_headers(const http_response_ptr& response)
 {
     response->set(http::field::access_control_allow_origin, "*");
+
+    response->set(http::field::access_control_expose_headers, "Location, ETag");
 
     response->set(http::field::cache_control, "no-store");
 }

@@ -9,6 +9,7 @@
 #include <boost/beast/http.hpp>
 
 #include "log/log.h"
+#include "server/signaling_json.h"
 
 namespace webrtc
 {
@@ -25,6 +26,7 @@ constexpr std::string_view kApplicationSdp = "application/sdp";
 std::string_view remove_query(std::string_view target)
 {
     const std::size_t query_position = target.find('?');
+
     if (query_position == std::string_view::npos)
     {
         return target;
@@ -50,22 +52,15 @@ bool match_single_value_path(std::string_view path, std::string_view prefix, std
     return value.find('/') == std::string_view::npos;
 }
 
-std::string json_error_body(std::string_view message)
-{
-    std::string body;
-    body.reserve(message.size() + 16);
-    body.append(R"({"error":")");
-    body.append(message);
-    body.append(R"("})");
-    return body;
-}
-
 std::string beast_string_view_to_string(boost::beast::string_view value) { return std::string(value.data(), value.size()); }
 
 std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return std::string_view(value.data(), value.size()); }
 }    // namespace
 
-router::router(std::shared_ptr<stream_registry> registry) : registry_(std::move(registry)), whip_(registry_), whep_(registry_) {}
+router::router(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
+    : registry_(std::move(registry)), answer_factory_(std::move(answer_factory)), whip_(registry_, answer_factory_), whep_(registry_, answer_factory_)
+{
+}
 
 http_response_ptr router::handle(http_request_t& request)
 {
@@ -90,6 +85,7 @@ http_response_ptr router::handle(http_request_t& request)
     }
 
     std::string_view session_id;
+
     if (match_single_value_path(path, kWhipSessionPrefix, session_id))
     {
         return handle_whip_session(request, session_id);
@@ -101,6 +97,7 @@ http_response_ptr router::handle(http_request_t& request)
     }
 
     std::string_view stream_id;
+
     if (match_single_value_path(path, kWhipPrefix, stream_id))
     {
         return handle_whip_create(request, stream_id);
@@ -117,9 +114,13 @@ http_response_ptr router::handle(http_request_t& request)
 http_response_ptr router::handle_options(http_request_t& request)
 {
     auto response = text_response(request, 204, "");
+
     response->set(http::field::access_control_allow_methods, "GET, POST, PATCH, DELETE, OPTIONS");
+
     response->set(http::field::access_control_allow_headers, "Content-Type, Authorization, If-Match");
+
     response->set(http::field::access_control_expose_headers, "Location, ETag");
+
     return response;
 }
 
@@ -224,28 +225,30 @@ http_response_ptr router::handle_whep_session(http_request_t& request, std::stri
     return method_not_allowed(request);
 }
 
-http_response_ptr router::not_found(http_request_t& request) { return json_response(request, 404, R"({"error":"not found"})"); }
+http_response_ptr router::not_found(http_request_t& request) { return json_response(request, 404, make_error_response_body("not found")); }
 
 http_response_ptr router::method_not_allowed(http_request_t& request)
 {
-    auto response = json_response(request, 405, R"({"error":"method not allowed"})");
+    auto response = json_response(request, 405, make_error_response_body("method not allowed"));
+
     response->set(http::field::allow, "GET, POST, PATCH, DELETE, OPTIONS");
+
     return response;
 }
 
 http_response_ptr router::bad_request(http_request_t& request, std::string_view message)
 {
-    return json_response(request, 400, json_error_body(message));
+    return json_response(request, 400, make_error_response_body(message));
 }
 
 http_response_ptr router::unsupported_media_type(http_request_t& request)
 {
-    return json_response(request, 415, R"({"error":"unsupported media type, expected application/sdp"})");
+    return json_response(request, 415, make_error_response_body("unsupported media type, expected application/sdp"));
 }
 
 http_response_ptr router::not_implemented(http_request_t& request, std::string_view message)
 {
-    return json_response(request, 501, json_error_body(message));
+    return json_response(request, 501, make_error_response_body(message));
 }
 
 http_response_ptr router::json_response(http_request_t& request, int code, std::string_view body)
@@ -254,22 +257,29 @@ http_response_ptr router::json_response(http_request_t& request, int code, std::
     content.push_back('\n');
 
     auto response = create_response(request, code, content);
+
     response->set(http::field::content_type, "application/json; charset=utf-8");
+
     add_common_headers(response);
+
     return response;
 }
 
 http_response_ptr router::text_response(http_request_t& request, int code, std::string_view body)
 {
     std::string content(body);
+
     if (!content.empty() && content.back() != '\n')
     {
         content.push_back('\n');
     }
 
     auto response = create_response(request, code, content);
+
     response->set(http::field::content_type, "text/plain; charset=utf-8");
+
     add_common_headers(response);
+
     return response;
 }
 
@@ -282,6 +292,7 @@ void router::add_common_headers(const http_response_ptr& response)
 std::string_view router::request_path(http_request_t& request)
 {
     const std::string_view target = beast_string_view_to_std_string_view(request.req.target());
+
     const std::string_view path = remove_query(target);
 
     if (path.empty())
@@ -295,6 +306,7 @@ std::string_view router::request_path(http_request_t& request)
 bool router::is_application_sdp(http_request_t& request)
 {
     const auto content_type_field = request.req[http::field::content_type];
+
     const std::string_view content_type = beast_string_view_to_std_string_view(content_type_field);
 
     if (content_type.empty())
@@ -331,6 +343,7 @@ bool router::is_valid_resource_id(std::string_view value)
                                [](char c)
                                {
                                    const auto ch = static_cast<unsigned char>(c);
+
                                    return std::isalnum(ch) != 0 || c == '-' || c == '_' || c == '.';
                                });
 }

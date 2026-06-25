@@ -8,13 +8,14 @@
 #include "server/whip_handler.h"
 #include "server/whep_handler.h"
 #include "session/stream_registry.h"
+#include "signaling/webrtc_answer_factory.h"
 
 namespace webrtc
 {
 class router
 {
    public:
-    explicit router(std::shared_ptr<stream_registry> registry);
+    router(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory);
 
    public:
     http_response_ptr handle(http_request_t& request);
@@ -25,21 +26,26 @@ class router
     http_response_ptr handle_version(http_request_t& request);
 
     http_response_ptr handle_whip_create(http_request_t& request, std::string_view stream_id);
+
     http_response_ptr handle_whip_session(http_request_t& request, std::string_view session_id);
 
     http_response_ptr handle_whep_create(http_request_t& request, std::string_view stream_id);
+
     http_response_ptr handle_whep_session(http_request_t& request, std::string_view session_id);
 
    private:
     http_response_ptr not_found(http_request_t& request);
     http_response_ptr method_not_allowed(http_request_t& request);
     http_response_ptr bad_request(http_request_t& request, std::string_view message);
+
     http_response_ptr unsupported_media_type(http_request_t& request);
     http_response_ptr not_implemented(http_request_t& request, std::string_view message);
 
    private:
     http_response_ptr json_response(http_request_t& request, int code, std::string_view body);
+
     http_response_ptr text_response(http_request_t& request, int code, std::string_view body);
+
     void add_common_headers(const http_response_ptr& response);
 
    private:
@@ -49,6 +55,8 @@ class router
 
    private:
     std::shared_ptr<stream_registry> registry_;
+    std::shared_ptr<webrtc_answer_factory> answer_factory_;
+
     whip_handler whip_;
     whep_handler whep_;
 };
