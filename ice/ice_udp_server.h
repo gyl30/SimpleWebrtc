@@ -18,6 +18,8 @@
 
 #include "dtls/dtls_transport.h"
 #include "media/media_router.h"
+#include "media/rtcp_feedback_router.h"
+#include "media/rtp_packet_cache.h"
 #include "session/stream_registry.h"
 #include "srtp/srtp_transport.h"
 
@@ -63,6 +65,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
 
+    void cache_inbound_rtp_packet(const srtp_packet_process_result& packet, const media_route_result& route);
+
+    void handle_rtcp_feedback_event(const rtcp_feedback_route_event& event);
+
+    void retransmit_cached_rtp_packets(const rtcp_feedback_route_event& event);
+
+    void erase_rtp_cache(std::string_view stream_id);
+
     void forward_media_packet(const srtp_packet_process_result& packet, const media_route_result& route);
 
     void send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint);
@@ -96,6 +106,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::shared_ptr<dtls_transport> dtls_transport_;
     std::shared_ptr<srtp_transport> srtp_transport_;
     std::shared_ptr<media_router> media_router_;
+    std::shared_ptr<rtp_packet_cache> rtp_packet_cache_;
 
     udp::endpoint remote_endpoint_;
     std::array<uint8_t, 4096> receive_buffer_{};

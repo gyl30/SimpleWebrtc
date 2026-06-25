@@ -20,7 +20,9 @@
 #include "log/log.h"
 #include "media/media_router.h"
 #include "media/rtcp_feedback_router.h"
+#include "media/rtp_packet_cache.h"
 #include "net/socket.h"
+#include "rtp/rtcp_feedback.h"
 #include "rtp/rtp_packet.h"
 #include "session/session_state.h"
 
@@ -117,6 +119,31 @@ void log_rtcp_feedback_route_event(const rtcp_feedback_route_event& event)
         event.has_transport_cc ? 1 : 0,
         event.has_remb ? 1 : 0,
         event.remb_bitrate_bps);
+}
+
+std::vector<uint16_t> expand_nack_sequences(const std::vector<rtcp_nack_item>& nack_items)
+{
+    std::vector<uint16_t> sequence_numbers;
+    sequence_numbers.reserve(nack_items.size() * 17);
+
+    for (const auto& item : nack_items)
+    {
+        sequence_numbers.push_back(item.packet_id);
+
+        for (uint16_t bit_index = 0; bit_index < 16; ++bit_index)
+        {
+            const uint16_t mask = static_cast<uint16_t>(1U << bit_index);
+
+            if ((item.lost_packet_bitmask & mask) == 0)
+            {
+                continue;
+            }
+
+            sequence_numbers.push_back(static_cast<uint16_t>(item.packet_id + static_cast<uint16_t>(bit_index + 1)));
+        }
+    }
+
+    return sequence_numbers;
 }
 }    // namespace
 
@@ -233,6 +260,11 @@ void ice_udp_server::stop()
         endpoint_address_by_session_id_.clear();
         session_id_by_endpoint_address_.clear();
     }
+
+    if (rtp_packet_cache_ != nullptr)
+    {
+        rtp_packet_cache_->clear();
+    }
 }
 
 void ice_udp_server::forget_session(std::string_view session_id)
@@ -272,7 +304,7 @@ uint16_t ice_udp_server::local_port() const { return bind_port_; }
 
 ice_udp_server_result ice_udp_server::init_dtls_transport()
 {
-    if (dtls_transport_ != nullptr && srtp_transport_ != nullptr && media_router_ != nullptr)
+    if (dtls_transport_ != nullptr && srtp_transport_ != nullptr && media_router_ != nullptr && rtp_packet_cache_ != nullptr)
     {
         return {};
     }
@@ -308,9 +340,15 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
 
     media_router_ = std::make_shared<media_router>();
 
+    rtp_packet_cache_config cache_config;
+    cache_config.max_packets = 4096;
+
+    rtp_packet_cache_ = std::make_shared<rtp_packet_cache>(cache_config);
+
     WEBRTC_LOG_INFO("dtls transport initialized");
     WEBRTC_LOG_INFO("srtp transport initialized");
     WEBRTC_LOG_INFO("media router initialized");
+    WEBRTC_LOG_INFO("rtp packet cache initialized max_packets={}", cache_config.max_packets);
 
     return {};
 }
@@ -340,6 +378,11 @@ void ice_udp_server::register_session_removed_callback()
                             removed_session.session_id);
 
             self->forget_session(removed_session.session_id);
+
+            if (removed_session.kind == stream_session_kind::publisher)
+            {
+                self->erase_rtp_cache(removed_session.stream_id);
+            }
         });
 
     registry_callback_registered_ = true;
@@ -649,14 +692,198 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
                      route.source.session_id,
                      route.target_endpoints.size());
 
+    cache_inbound_rtp_packet(*result, route);
+
     const auto feedback_event = make_rtcp_feedback_route_event(*result, route);
 
     if (feedback_event.has_value())
     {
         log_rtcp_feedback_route_event(*feedback_event);
+
+        handle_rtcp_feedback_event(*feedback_event);
     }
 
     forward_media_packet(*result, route);
+}
+
+void ice_udp_server::cache_inbound_rtp_packet(const srtp_packet_process_result& packet, const media_route_result& route)
+{
+    if (packet.kind != srtp_packet_kind::rtp)
+    {
+        return;
+    }
+
+    if (route.source.role != media_peer_role::publisher)
+    {
+        return;
+    }
+
+    if (packet.plain_packet.empty())
+    {
+        return;
+    }
+
+    if (rtp_packet_cache_ == nullptr)
+    {
+        return;
+    }
+
+    auto result = rtp_packet_cache_->put(route.source.stream_id, std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
+
+    if (!result)
+    {
+        WEBRTC_LOG_WARN("rtp cache put failed stream={} remote={} ssrc={} sequence={} error={}",
+                        route.source.stream_id,
+                        route.source.remote_endpoint,
+                        packet.ssrc,
+                        packet.sequence_number,
+                        result.error());
+
+        return;
+    }
+
+    WEBRTC_LOG_DEBUG("rtp cache put stream={} remote={} ssrc={} sequence={} payload_type={} size={}",
+                     result->stream_id,
+                     route.source.remote_endpoint,
+                     result->ssrc,
+                     result->sequence_number,
+                     static_cast<unsigned int>(result->payload_type),
+                     result->plain_packet.size());
+}
+
+void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event& event)
+{
+    if (!event.valid)
+    {
+        return;
+    }
+
+    if (event.has_generic_nack)
+    {
+        retransmit_cached_rtp_packets(event);
+    }
+}
+
+void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_event& event)
+{
+    if (event.source.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (rtp_packet_cache_ == nullptr || srtp_transport_ == nullptr)
+    {
+        return;
+    }
+
+    if (event.nack_items.empty())
+    {
+        return;
+    }
+
+    const uint32_t media_ssrc = event.media_ssrc != 0 ? event.media_ssrc : event.ssrc;
+
+    if (media_ssrc == 0)
+    {
+        WEBRTC_LOG_WARN("rtp nack retransmit skipped empty media ssrc stream={} subscriber={}", event.source.stream_id, event.source.remote_endpoint);
+
+        return;
+    }
+
+    auto target_endpoint = find_remote_endpoint(event.source.remote_endpoint);
+
+    if (!target_endpoint)
+    {
+        WEBRTC_LOG_WARN(
+            "rtp nack retransmit subscriber endpoint not found stream={} subscriber={}", event.source.stream_id, event.source.remote_endpoint);
+
+        return;
+    }
+
+    const std::vector<uint16_t> sequence_numbers = expand_nack_sequences(event.nack_items);
+
+    std::size_t hit_count = 0;
+    std::size_t miss_count = 0;
+    std::size_t sent_count = 0;
+    std::size_t ignored_count = 0;
+    std::size_t failed_count = 0;
+
+    for (uint16_t sequence_number : sequence_numbers)
+    {
+        auto cached = rtp_packet_cache_->find(event.source.stream_id, media_ssrc, sequence_number);
+
+        if (!cached)
+        {
+            miss_count += 1;
+            continue;
+        }
+
+        hit_count += 1;
+
+        auto protected_packet = srtp_transport_->protect_outbound_packet(
+            std::span<const uint8_t>(cached->plain_packet.data(), cached->plain_packet.size()), event.source.remote_endpoint, srtp_packet_kind::rtp);
+
+        if (!protected_packet)
+        {
+            failed_count += 1;
+
+            WEBRTC_LOG_WARN("rtp nack retransmit protect failed stream={} subscriber={} ssrc={} sequence={} error={}",
+                            event.source.stream_id,
+                            event.source.remote_endpoint,
+                            media_ssrc,
+                            sequence_number,
+                            protected_packet.error());
+
+            continue;
+        }
+
+        if (protected_packet->state == srtp_packet_process_state::ignored)
+        {
+            ignored_count += 1;
+
+            WEBRTC_LOG_DEBUG("rtp nack retransmit ignored stream={} subscriber={} ssrc={} sequence={} reason={}",
+                             event.source.stream_id,
+                             event.source.remote_endpoint,
+                             media_ssrc,
+                             sequence_number,
+                             protected_packet->reason);
+
+            continue;
+        }
+
+        send_response(std::move(protected_packet->protected_packet), *target_endpoint);
+
+        sent_count += 1;
+
+        WEBRTC_LOG_DEBUG("rtp nack retransmit send stream={} subscriber={} ssrc={} sequence={}",
+                         event.source.stream_id,
+                         event.source.remote_endpoint,
+                         media_ssrc,
+                         sequence_number);
+    }
+
+    WEBRTC_LOG_INFO("rtp nack retransmit summary stream={} subscriber={} media_ssrc={} requested={} hit={} miss={} sent={} ignored={} failed={}",
+                    event.source.stream_id,
+                    event.source.remote_endpoint,
+                    media_ssrc,
+                    sequence_numbers.size(),
+                    hit_count,
+                    miss_count,
+                    sent_count,
+                    ignored_count,
+                    failed_count);
+}
+
+void ice_udp_server::erase_rtp_cache(std::string_view stream_id)
+{
+    if (rtp_packet_cache_ == nullptr || stream_id.empty())
+    {
+        return;
+    }
+
+    rtp_packet_cache_->erase_stream(stream_id);
+
+    WEBRTC_LOG_INFO("rtp cache stream erased stream={} remaining={}", stream_id, rtp_packet_cache_->size());
 }
 
 void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet, const media_route_result& route)
@@ -698,7 +925,8 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
             continue;
         }
 
-        auto protected_packet = srtp_transport_->protect_outbound_packet(packet.plain_packet, target_address, packet.kind);
+        auto protected_packet = srtp_transport_->protect_outbound_packet(
+            std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()), target_address, packet.kind);
 
         if (!protected_packet)
         {
