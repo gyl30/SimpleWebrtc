@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -16,6 +17,7 @@
 #include <openssl/ssl.h>
 
 #include "dtls/dtls_packet.h"
+#include "dtls/dtls_srtp_keying_material.h"
 #include "log/log.h"
 
 namespace webrtc
@@ -109,6 +111,7 @@ std::expected<ssl_ptr, std::string> make_ssl(const std::shared_ptr<dtls_context>
     SSL_set_bio(ssl, read_bio, write_bio);
 
     SSL_set_accept_state(ssl);
+    SSL_set_options(ssl, SSL_OP_NO_QUERY_MTU);
     SSL_set_mtu(ssl, 1200);
 
     return ssl_owner;
@@ -250,6 +253,7 @@ struct dtls_transport::impl
         bool handshake_done = false;
 
         ssl_ptr ssl;
+        std::optional<srtp_keying_material> keying_material;
     };
 
     void remember_peer(std::string_view remote_endpoint, dtls_peer_identity identity)
@@ -348,20 +352,42 @@ struct dtls_transport::impl
             return std::unexpected(handshake_result.error());
         }
 
-        if (!peer->handshake_done && SSL_is_init_finished(peer->ssl.get()) == 1)
-        {
-            peer->handshake_done = true;
+        auto export_result = export_keying_material_if_ready_locked(*peer, remote_endpoint);
 
-            WEBRTC_LOG_INFO("dtls handshake complete remote={} role={} stream={} session={} packets={} bytes={}",
-                            remote_endpoint,
-                            dtls_peer_role_to_string(peer->identity.role),
-                            peer->identity.stream_id,
-                            peer->identity.session_id,
-                            peer->packet_count,
-                            peer->byte_count);
+        if (!export_result)
+        {
+            return std::unexpected(export_result.error());
         }
 
         return packets;
+    }
+
+    std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint) const
+    {
+        std::lock_guard lock(mutex_);
+
+        const auto* peer = find_peer_locked_const(remote_endpoint);
+
+        if (peer == nullptr)
+        {
+            return std::nullopt;
+        }
+
+        return peer->keying_material;
+    }
+
+    bool is_handshake_done(std::string_view remote_endpoint) const
+    {
+        std::lock_guard lock(mutex_);
+
+        const auto* peer = find_peer_locked_const(remote_endpoint);
+
+        if (peer == nullptr)
+        {
+            return false;
+        }
+
+        return peer->handshake_done;
     }
 
     std::size_t peer_count() const
@@ -381,6 +407,62 @@ struct dtls_transport::impl
         }
 
         return &iterator->second;
+    }
+
+    const dtls_peer_context* find_peer_locked_const(std::string_view remote_endpoint) const
+    {
+        const auto iterator = peers_by_endpoint_.find(std::string(remote_endpoint));
+
+        if (iterator == peers_by_endpoint_.end())
+        {
+            return nullptr;
+        }
+
+        return &iterator->second;
+    }
+
+    std::expected<void, std::string> export_keying_material_if_ready_locked(dtls_peer_context& peer, std::string_view remote_endpoint)
+    {
+        if (peer.ssl == nullptr)
+        {
+            return {};
+        }
+
+        if (peer.handshake_done)
+        {
+            return {};
+        }
+
+        if (SSL_is_init_finished(peer.ssl.get()) != 1)
+        {
+            return {};
+        }
+
+        auto material = export_srtp_keying_material(peer.ssl.get());
+
+        if (!material)
+        {
+            WEBRTC_LOG_WARN(
+                "dtls srtp keying material export failed remote={} session={} error={}", remote_endpoint, peer.identity.session_id, material.error());
+
+            return std::unexpected(material.error());
+        }
+
+        peer.keying_material = std::move(*material);
+        peer.handshake_done = true;
+
+        WEBRTC_LOG_INFO("dtls handshake complete remote={} role={} stream={} session={} profile={} key_size={} salt_size={} packets={} bytes={}",
+                        remote_endpoint,
+                        dtls_peer_role_to_string(peer.identity.role),
+                        peer.identity.stream_id,
+                        peer.identity.session_id,
+                        srtp_profile_id_to_string(peer.keying_material->profile),
+                        peer.keying_material->master_key_size,
+                        peer.keying_material->master_salt_size,
+                        peer.packet_count,
+                        peer.byte_count);
+
+        return {};
     }
 
     void log_packet_locked(dtls_peer_context& peer, std::span<const uint8_t> data, std::string_view remote_endpoint, const dtls_record_header& header)
@@ -449,6 +531,13 @@ dtls_transport_packet_result dtls_transport::handle_udp_packet(std::span<const u
 {
     return impl_->handle_udp_packet(data, remote_endpoint);
 }
+
+std::optional<srtp_keying_material> dtls_transport::get_srtp_keying_material(std::string_view remote_endpoint) const
+{
+    return impl_->get_srtp_keying_material(remote_endpoint);
+}
+
+bool dtls_transport::is_handshake_done(std::string_view remote_endpoint) const { return impl_->is_handshake_done(remote_endpoint); }
 
 std::size_t dtls_transport::peer_count() const { return impl_->peer_count(); }
 

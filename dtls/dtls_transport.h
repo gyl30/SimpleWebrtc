@@ -5,12 +5,14 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "dtls/dtls_context.h"
+#include "dtls/dtls_srtp_keying_material.h"
 
 namespace webrtc
 {
@@ -53,6 +55,10 @@ class dtls_transport
     void forget_peer(std::string_view remote_endpoint);
 
     [[nodiscard]] dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint);
+
+    [[nodiscard]] std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint) const;
+
+    [[nodiscard]] bool is_handshake_done(std::string_view remote_endpoint) const;
 
     [[nodiscard]] std::size_t peer_count() const;
 
