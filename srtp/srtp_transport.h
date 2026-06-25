@@ -49,6 +49,9 @@ struct srtp_packet_process_result
     uint16_t rtcp_length = 0;
     std::string packet_type_name;
 
+    std::size_t rtcp_block_count = 0;
+    std::size_t rtcp_feedback_block_count = 0;
+
     bool rtcp_is_feedback = false;
     uint8_t rtcp_feedback_format = 0;
     std::string rtcp_feedback_name;
@@ -56,6 +59,7 @@ struct srtp_packet_process_result
     uint32_t rtcp_media_ssrc = 0;
     std::size_t rtcp_nack_count = 0;
     std::size_t rtcp_fir_count = 0;
+    bool rtcp_has_generic_nack = false;
     bool rtcp_has_keyframe_request = false;
     bool rtcp_has_transport_cc = false;
     bool rtcp_has_remb = false;
