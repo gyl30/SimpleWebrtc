@@ -59,6 +59,15 @@ struct media_peer_stats
     uint64_t rtcp_nack_items = 0;
     uint64_t rtcp_fir_items = 0;
 
+    bool has_rtp_sequence = false;
+    uint16_t expected_rtp_sequence_number = 0;
+
+    uint64_t rtp_sequence_gap_events = 0;
+    uint64_t rtp_sequence_lost_packets = 0;
+    uint64_t rtp_out_of_order_packets = 0;
+    uint64_t rtp_duplicate_packets = 0;
+    uint64_t rtp_sequence_wraps = 0;
+
     uint32_t last_rtp_ssrc = 0;
     uint16_t last_rtp_sequence_number = 0;
     uint32_t last_rtp_timestamp = 0;
@@ -95,6 +104,12 @@ struct media_stream_stats
 
     uint64_t rtcp_nack_items = 0;
     uint64_t rtcp_fir_items = 0;
+
+    uint64_t rtp_sequence_gap_events = 0;
+    uint64_t rtp_sequence_lost_packets = 0;
+    uint64_t rtp_out_of_order_packets = 0;
+    uint64_t rtp_duplicate_packets = 0;
+    uint64_t rtp_sequence_wraps = 0;
 
     uint32_t last_rtp_ssrc = 0;
     uint16_t last_rtp_sequence_number = 0;
@@ -160,6 +175,10 @@ class media_router
                                      const srtp_packet_process_result& packet,
                                      media_route_action action,
                                      std::size_t target_count);
+
+    void update_rtp_quality_stats_locked(media_peer_stats& peer_stats, media_stream_stats& stream_stats, const srtp_packet_process_result& packet);
+
+    void update_rtcp_feedback_stats_locked(media_peer_stats& peer_stats, media_stream_stats& stream_stats, const srtp_packet_process_result& packet);
 
     void log_peer_stats_locked(const media_peer_stats& peer_stats, const media_stream_stats& stream_stats) const;
 

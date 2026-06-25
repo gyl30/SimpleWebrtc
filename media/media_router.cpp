@@ -18,6 +18,8 @@ namespace webrtc
 namespace
 {
 inline constexpr uint64_t k_media_stats_log_interval = 5000;
+inline constexpr uint16_t k_rtp_sequence_wrap_low_threshold = 1000;
+inline constexpr uint16_t k_rtp_sequence_wrap_high_threshold = 64535;
 
 media_peer_info make_peer_info(media_peer_role role, std::string_view remote_endpoint, std::string_view stream_id, std::string_view session_id)
 {
@@ -32,6 +34,25 @@ media_peer_info make_peer_info(media_peer_role role, std::string_view remote_end
 uint64_t get_total_inbound_packets(const media_peer_stats& stats) { return stats.inbound_rtp_packets + stats.inbound_rtcp_packets; }
 
 uint64_t packet_plain_size(const srtp_packet_process_result& packet) { return static_cast<uint64_t>(packet.unprotected_size); }
+
+uint16_t next_rtp_sequence_number(uint16_t sequence_number) { return static_cast<uint16_t>(sequence_number + 1U); }
+
+int32_t rtp_sequence_delta(uint16_t sequence_number, uint16_t expected_sequence_number)
+{
+    const uint16_t raw_delta = static_cast<uint16_t>(sequence_number - expected_sequence_number);
+
+    if (raw_delta <= 0x7fffU)
+    {
+        return static_cast<int32_t>(raw_delta);
+    }
+
+    return static_cast<int32_t>(raw_delta) - 0x10000;
+}
+
+bool is_rtp_sequence_wrap(uint16_t previous_sequence_number, uint16_t current_sequence_number)
+{
+    return previous_sequence_number >= k_rtp_sequence_wrap_high_threshold && current_sequence_number <= k_rtp_sequence_wrap_low_threshold;
+}
 }    // namespace
 
 void media_router::remember_publisher(std::string_view remote_endpoint, std::string_view stream_id, std::string_view session_id)
@@ -349,13 +370,17 @@ void media_router::update_inbound_stats_locked(const media_peer_info& peer,
     {
         peer_stats.inbound_rtp_packets += 1;
         peer_stats.inbound_rtp_bytes += packet_size;
+
+        stream_stats.inbound_rtp_packets += 1;
+        stream_stats.inbound_rtp_bytes += packet_size;
+
+        update_rtp_quality_stats_locked(peer_stats, stream_stats, packet);
+
         peer_stats.last_rtp_ssrc = packet.ssrc;
         peer_stats.last_rtp_sequence_number = packet.sequence_number;
         peer_stats.last_rtp_timestamp = packet.timestamp;
         peer_stats.last_rtp_payload_type = packet.payload_type;
 
-        stream_stats.inbound_rtp_packets += 1;
-        stream_stats.inbound_rtp_bytes += packet_size;
         stream_stats.last_rtp_ssrc = packet.ssrc;
         stream_stats.last_rtp_sequence_number = packet.sequence_number;
         stream_stats.last_rtp_timestamp = packet.timestamp;
@@ -381,44 +406,7 @@ void media_router::update_inbound_stats_locked(const media_peer_info& peer,
             stream_stats.subscriber_rtcp_packets += 1;
         }
 
-        if (packet.rtcp_is_feedback)
-        {
-            peer_stats.rtcp_feedback_packets += 1;
-            stream_stats.rtcp_feedback_packets += 1;
-
-            peer_stats.rtcp_nack_items += packet.rtcp_nack_items.size();
-            peer_stats.rtcp_fir_items += packet.rtcp_fir_items.size();
-
-            stream_stats.rtcp_nack_items += packet.rtcp_nack_items.size();
-            stream_stats.rtcp_fir_items += packet.rtcp_fir_items.size();
-
-            if (packet.rtcp_has_generic_nack)
-            {
-                peer_stats.rtcp_generic_nack_packets += 1;
-                stream_stats.rtcp_generic_nack_packets += 1;
-            }
-
-            if (packet.rtcp_has_keyframe_request)
-            {
-                peer_stats.rtcp_keyframe_request_packets += 1;
-                stream_stats.rtcp_keyframe_request_packets += 1;
-            }
-
-            if (packet.rtcp_has_transport_cc)
-            {
-                peer_stats.rtcp_transport_cc_packets += 1;
-                stream_stats.rtcp_transport_cc_packets += 1;
-            }
-
-            if (packet.rtcp_has_remb)
-            {
-                peer_stats.rtcp_remb_packets += 1;
-                peer_stats.last_remb_bitrate_bps = packet.rtcp_remb_bitrate_bps;
-
-                stream_stats.rtcp_remb_packets += 1;
-                stream_stats.last_remb_bitrate_bps = packet.rtcp_remb_bitrate_bps;
-            }
-        }
+        update_rtcp_feedback_stats_locked(peer_stats, stream_stats, packet);
     }
 
     if (target_count > 0)
@@ -448,12 +436,140 @@ void media_router::update_inbound_stats_locked(const media_peer_info& peer,
     }
 }
 
+void media_router::update_rtp_quality_stats_locked(media_peer_stats& peer_stats,
+                                                   media_stream_stats& stream_stats,
+                                                   const srtp_packet_process_result& packet)
+{
+    if (!peer_stats.has_rtp_sequence)
+    {
+        peer_stats.has_rtp_sequence = true;
+        peer_stats.expected_rtp_sequence_number = next_rtp_sequence_number(packet.sequence_number);
+        return;
+    }
+
+    const uint16_t expected_sequence_number = peer_stats.expected_rtp_sequence_number;
+
+    const int32_t delta = rtp_sequence_delta(packet.sequence_number, expected_sequence_number);
+
+    if (delta == 0)
+    {
+        if (is_rtp_sequence_wrap(peer_stats.last_rtp_sequence_number, packet.sequence_number))
+        {
+            peer_stats.rtp_sequence_wraps += 1;
+            stream_stats.rtp_sequence_wraps += 1;
+        }
+
+        peer_stats.expected_rtp_sequence_number = next_rtp_sequence_number(packet.sequence_number);
+
+        return;
+    }
+
+    if (delta > 0)
+    {
+        peer_stats.rtp_sequence_gap_events += 1;
+        peer_stats.rtp_sequence_lost_packets += static_cast<uint64_t>(delta);
+
+        stream_stats.rtp_sequence_gap_events += 1;
+        stream_stats.rtp_sequence_lost_packets += static_cast<uint64_t>(delta);
+
+        if (is_rtp_sequence_wrap(expected_sequence_number, packet.sequence_number))
+        {
+            peer_stats.rtp_sequence_wraps += 1;
+            stream_stats.rtp_sequence_wraps += 1;
+        }
+
+        peer_stats.expected_rtp_sequence_number = next_rtp_sequence_number(packet.sequence_number);
+
+        WEBRTC_LOG_DEBUG("media router rtp sequence gap remote={} stream={} ssrc={} expected={} actual={} missing={}",
+                         peer_stats.peer.remote_endpoint,
+                         peer_stats.peer.stream_id,
+                         packet.ssrc,
+                         expected_sequence_number,
+                         packet.sequence_number,
+                         delta);
+
+        return;
+    }
+
+    if (packet.sequence_number == peer_stats.last_rtp_sequence_number)
+    {
+        peer_stats.rtp_duplicate_packets += 1;
+        stream_stats.rtp_duplicate_packets += 1;
+
+        WEBRTC_LOG_DEBUG("media router rtp duplicate remote={} stream={} ssrc={} sequence={}",
+                         peer_stats.peer.remote_endpoint,
+                         peer_stats.peer.stream_id,
+                         packet.ssrc,
+                         packet.sequence_number);
+
+        return;
+    }
+
+    peer_stats.rtp_out_of_order_packets += 1;
+    stream_stats.rtp_out_of_order_packets += 1;
+
+    WEBRTC_LOG_DEBUG("media router rtp out of order remote={} stream={} ssrc={} expected={} actual={} delta={}",
+                     peer_stats.peer.remote_endpoint,
+                     peer_stats.peer.stream_id,
+                     packet.ssrc,
+                     expected_sequence_number,
+                     packet.sequence_number,
+                     delta);
+}
+
+void media_router::update_rtcp_feedback_stats_locked(media_peer_stats& peer_stats,
+                                                     media_stream_stats& stream_stats,
+                                                     const srtp_packet_process_result& packet)
+{
+    if (!packet.rtcp_is_feedback)
+    {
+        return;
+    }
+
+    peer_stats.rtcp_feedback_packets += 1;
+    stream_stats.rtcp_feedback_packets += 1;
+
+    peer_stats.rtcp_nack_items += packet.rtcp_nack_items.size();
+    peer_stats.rtcp_fir_items += packet.rtcp_fir_items.size();
+
+    stream_stats.rtcp_nack_items += packet.rtcp_nack_items.size();
+    stream_stats.rtcp_fir_items += packet.rtcp_fir_items.size();
+
+    if (packet.rtcp_has_generic_nack)
+    {
+        peer_stats.rtcp_generic_nack_packets += 1;
+        stream_stats.rtcp_generic_nack_packets += 1;
+    }
+
+    if (packet.rtcp_has_keyframe_request)
+    {
+        peer_stats.rtcp_keyframe_request_packets += 1;
+        stream_stats.rtcp_keyframe_request_packets += 1;
+    }
+
+    if (packet.rtcp_has_transport_cc)
+    {
+        peer_stats.rtcp_transport_cc_packets += 1;
+        stream_stats.rtcp_transport_cc_packets += 1;
+    }
+
+    if (packet.rtcp_has_remb)
+    {
+        peer_stats.rtcp_remb_packets += 1;
+        peer_stats.last_remb_bitrate_bps = packet.rtcp_remb_bitrate_bps;
+
+        stream_stats.rtcp_remb_packets += 1;
+        stream_stats.last_remb_bitrate_bps = packet.rtcp_remb_bitrate_bps;
+    }
+}
+
 void media_router::log_peer_stats_locked(const media_peer_stats& peer_stats, const media_stream_stats& stream_stats) const
 {
     WEBRTC_LOG_INFO(
         "media stats peer remote={} role={} stream={} session={} rtp_packets={} rtcp_packets={} routed_targets={} feedback={} nack_items={} "
-        "fir_items={} keyframe_requests={} generic_nacks={} transport_cc={} remb={} active_publishers={} active_subscribers={} stream_rtp={} "
-        "stream_rtcp={} stream_fanout_targets={}",
+        "fir_items={} keyframe_requests={} generic_nacks={} transport_cc={} remb={} rtp_gap_events={} rtp_lost={} rtp_ooo={} rtp_duplicate={} "
+        "rtp_wraps={} active_publishers={} active_subscribers={} stream_rtp={} stream_rtcp={} stream_fanout_targets={} stream_lost={} stream_ooo={} "
+        "stream_duplicate={}",
         peer_stats.peer.remote_endpoint,
         media_peer_role_to_string(peer_stats.peer.role),
         peer_stats.peer.stream_id,
@@ -468,11 +584,19 @@ void media_router::log_peer_stats_locked(const media_peer_stats& peer_stats, con
         peer_stats.rtcp_generic_nack_packets,
         peer_stats.rtcp_transport_cc_packets,
         peer_stats.rtcp_remb_packets,
+        peer_stats.rtp_sequence_gap_events,
+        peer_stats.rtp_sequence_lost_packets,
+        peer_stats.rtp_out_of_order_packets,
+        peer_stats.rtp_duplicate_packets,
+        peer_stats.rtp_sequence_wraps,
         stream_stats.active_publishers,
         stream_stats.active_subscribers,
         stream_stats.inbound_rtp_packets,
         stream_stats.inbound_rtcp_packets,
-        stream_stats.fanout_target_packets);
+        stream_stats.fanout_target_packets,
+        stream_stats.rtp_sequence_lost_packets,
+        stream_stats.rtp_out_of_order_packets,
+        stream_stats.rtp_duplicate_packets);
 }
 
 std::vector<std::string> media_router::get_subscriber_endpoints_locked(std::string_view stream_id, std::string_view excluded_endpoint) const
