@@ -59,30 +59,38 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                     offer_summary->media.size(),
                     offer_summary->ice_ufrag.size());
 
-    auto result = registry_->create_subscriber_session(stream_id, offer);
+    auto session_result = registry_->create_subscriber_session(std::string(stream_id), offer, std::move(*offer_summary));
 
-    if (result.error == stream_registry_error::publisher_not_found)
+    if (!session_result)
     {
-        WEBRTC_LOG_WARN("WHEP create subscriber failed stream={} publisher not found", stream_id);
-        return json_error_response(request, 404, "publisher not found");
-    }
+        const auto error = session_result.error();
 
-    if (result.error != stream_registry_error::none || result.session == nullptr)
-    {
-        WEBRTC_LOG_ERROR("WHEP create subscriber failed stream={} error={}", stream_id, stream_registry_error_to_string(result.error));
+        if (error == stream_registry_error::publisher_not_found)
+        {
+            WEBRTC_LOG_WARN("WHEP create subscriber failed stream={} publisher not found", stream_id);
+
+            return json_error_response(request, 404, "publisher not found");
+        }
+
+        WEBRTC_LOG_ERROR("WHEP create subscriber failed stream={} error={}", stream_id, stream_registry_error_to_string(error));
 
         return json_error_response(request, 500, "create subscriber session failed");
     }
 
-    auto session = result.session;
+    const auto& session = *session_result;
 
-    WEBRTC_LOG_INFO("WHEP create subscriber stream={} session={} sdp_size={}", session->stream_id(), session->session_id(), offer.size());
+    WEBRTC_LOG_INFO("WHEP create subscriber stream={} session={} sdp_size={} media_count={}",
+                    session->stream_id(),
+                    session->session_id(),
+                    offer.size(),
+                    session->remote_offer_summary().media.size());
 
     const auto body = make_session_created_response_body(
         "subscriber", session->stream_id(), session->session_id(), session->state_string(), "SDP answer not implemented");
 
     auto response = json_response(request, 201, body);
     response->set(http::field::location, "/whep/session/" + session->session_id());
+
     return response;
 }
 
@@ -104,13 +112,15 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
     WEBRTC_LOG_INFO("WHEP delete session={}", session_id);
 
     auto result = registry_->remove_subscriber_session(session_id);
-    if (result.error == stream_registry_error::subscriber_session_not_found)
+    if (!result)
     {
-        return json_error_response(request, 404, "subscriber session not found");
-    }
+        if (result.error() == stream_registry_error::subscriber_session_not_found)
+        {
+            return json_error_response(request, 404, "subscriber session not found");
+        }
 
-    if (result.error != stream_registry_error::none)
-    {
+        WEBRTC_LOG_ERROR("WHEP delete subscriber failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
+
         return json_error_response(request, 500, "delete subscriber session failed");
     }
 
@@ -126,6 +136,7 @@ http_response_ptr whep_handler::json_response(http_request_t& request, int code,
 
     auto response = create_response(request, code, content);
     response->set(http::field::content_type, "application/json; charset=utf-8");
+
     add_common_headers(response);
     return response;
 }
@@ -138,6 +149,7 @@ http_response_ptr whep_handler::json_error_response(http_request_t& request, int
 void whep_handler::add_common_headers(const http_response_ptr& response)
 {
     response->set(http::field::access_control_allow_origin, "*");
+
     response->set(http::field::cache_control, "no-store");
 }
 }    // namespace webrtc

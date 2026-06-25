@@ -59,32 +59,38 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
                     offer_summary->media.size(),
                     offer_summary->ice_ufrag.size());
 
-    auto result = registry_->create_publisher_session(stream_id, offer);
+    auto session_result = registry_->create_publisher_session(std::string(stream_id), offer, std::move(*offer_summary));
 
-    if (result.error == stream_registry_error::stream_already_has_publisher)
+    if (!session_result)
     {
-        WEBRTC_LOG_WARN(
-            "WHIP create publisher conflict stream={} existing_session={}", stream_id, result.session ? result.session->session_id() : "");
+        const auto error = session_result.error();
 
-        return json_error_response(request, 409, "stream already has publisher");
-    }
+        if (error == stream_registry_error::stream_already_has_publisher)
+        {
+            WEBRTC_LOG_WARN("WHIP create publisher conflict stream={}", stream_id);
 
-    if (result.error != stream_registry_error::none || result.session == nullptr)
-    {
-        WEBRTC_LOG_ERROR("WHIP create publisher failed stream={} error={}", stream_id, stream_registry_error_to_string(result.error));
+            return json_error_response(request, 409, "stream already has publisher");
+        }
+
+        WEBRTC_LOG_ERROR("WHIP create publisher failed stream={} error={}", stream_id, stream_registry_error_to_string(error));
 
         return json_error_response(request, 500, "create publisher session failed");
     }
 
-    auto session = result.session;
+    const auto& session = *session_result;
 
-    WEBRTC_LOG_INFO("WHIP create publisher stream={} session={} sdp_size={}", session->stream_id(), session->session_id(), offer.size());
+    WEBRTC_LOG_INFO("WHIP create publisher stream={} session={} sdp_size={} media_count={}",
+                    session->stream_id(),
+                    session->session_id(),
+                    offer.size(),
+                    session->remote_offer_summary().media.size());
 
     const auto body = make_session_created_response_body(
         "publisher", session->stream_id(), session->session_id(), session->state_string(), "SDP answer not implemented");
 
     auto response = json_response(request, 201, body);
     response->set(http::field::location, "/whip/session/" + session->session_id());
+
     return response;
 }
 
@@ -106,13 +112,15 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
     WEBRTC_LOG_INFO("WHIP delete session={}", session_id);
 
     auto result = registry_->remove_publisher_session(session_id);
-    if (result.error == stream_registry_error::publisher_session_not_found)
+    if (!result)
     {
-        return json_error_response(request, 404, "publisher session not found");
-    }
+        if (result.error() == stream_registry_error::publisher_session_not_found)
+        {
+            return json_error_response(request, 404, "publisher session not found");
+        }
 
-    if (result.error != stream_registry_error::none)
-    {
+        WEBRTC_LOG_ERROR("WHIP delete publisher failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
+
         return json_error_response(request, 500, "delete publisher session failed");
     }
 
@@ -128,6 +136,7 @@ http_response_ptr whip_handler::json_response(http_request_t& request, int code,
 
     auto response = create_response(request, code, content);
     response->set(http::field::content_type, "application/json; charset=utf-8");
+
     add_common_headers(response);
     return response;
 }
@@ -140,6 +149,7 @@ http_response_ptr whip_handler::json_error_response(http_request_t& request, int
 void whip_handler::add_common_headers(const http_response_ptr& response)
 {
     response->set(http::field::access_control_allow_origin, "*");
+
     response->set(http::field::cache_control, "no-store");
 }
 }    // namespace webrtc
