@@ -179,7 +179,8 @@ set(WEBRTC_SOURCES
     signaling/sdp/sdp_types.cpp
     signaling/sdp/sdp_lexer.cpp
     signaling/sdp/sdp_parser.cpp
-    signaling/sdp/sdp_summary.cpp)
+    signaling/sdp/sdp_summary.cpp
+    signaling/sdp/sdp_offer_validator.cpp)
 
 add_executable(SimpleWebrtc ${WEBRTC_SOURCES} main.cpp)
 

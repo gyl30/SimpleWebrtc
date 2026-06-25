@@ -9,6 +9,7 @@
 #include "log/log.h"
 #include "net/http.h"
 #include "server/signaling_json.h"
+#include "signaling/sdp/sdp_offer_validator.h"
 #include "signaling/sdp/sdp_parser.h"
 #include "signaling/sdp/sdp_summary.h"
 
@@ -41,6 +42,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     WEBRTC_LOG_INFO("WHEP parsed SDP offer stream={} media_count={}", stream_id, description->media_descriptions.size());
 
     auto offer_summary = sdp::extract_webrtc_offer_summary(*description);
+
     if (!offer_summary)
     {
         WEBRTC_LOG_WARN("WHEP extract WebRTC offer failed stream={} error={}", stream_id, offer_summary.error());
@@ -53,7 +55,22 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         return json_error_response(request, 400, error_message);
     }
 
-    WEBRTC_LOG_INFO("WHEP extracted WebRTC offer stream={} bundle_mid_count={} media_count={} ice_ufrag_size={}",
+    auto validation_result = sdp::validate_whep_offer(*offer_summary);
+
+    if (!validation_result)
+    {
+        WEBRTC_LOG_WARN("WHEP validate offer failed stream={} error={}", stream_id, validation_result.error());
+
+        std::string error_message;
+        error_message.reserve(validation_result.error().size() + 20);
+
+        error_message.append("invalid whep offer: ");
+        error_message.append(validation_result.error());
+
+        return json_error_response(request, 400, error_message);
+    }
+
+    WEBRTC_LOG_INFO("WHEP validated WebRTC offer stream={} bundle_mid_count={} media_count={} ice_ufrag_size={}",
                     stream_id,
                     offer_summary->bundle_mids.size(),
                     offer_summary->media.size(),
@@ -89,6 +106,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         "subscriber", session->stream_id(), session->session_id(), session->state_string(), "SDP answer not implemented");
 
     auto response = json_response(request, 201, body);
+
     response->set(http::field::location, "/whep/session/" + session->session_id());
 
     return response;
@@ -99,6 +117,7 @@ http_response_ptr whep_handler::patch_session(http_request_t& request, std::stri
     WEBRTC_LOG_INFO("WHEP patch session={} body_size={}", session_id, request.req.body().size());
 
     auto session = registry_->find_subscriber_by_session_id(session_id);
+
     if (session == nullptr)
     {
         return json_error_response(request, 404, "subscriber session not found");
@@ -112,6 +131,7 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
     WEBRTC_LOG_INFO("WHEP delete session={}", session_id);
 
     auto result = registry_->remove_subscriber_session(session_id);
+
     if (!result)
     {
         if (result.error() == stream_registry_error::subscriber_session_not_found)
@@ -125,6 +145,7 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
     }
 
     auto response = create_response(request, 204, "");
+
     add_common_headers(response);
     return response;
 }
@@ -135,6 +156,7 @@ http_response_ptr whep_handler::json_response(http_request_t& request, int code,
     content.push_back('\n');
 
     auto response = create_response(request, code, content);
+
     response->set(http::field::content_type, "application/json; charset=utf-8");
 
     add_common_headers(response);
