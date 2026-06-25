@@ -174,7 +174,7 @@ uint16_t ice_udp_server::local_port() const { return bind_port_; }
 
 ice_udp_server_result ice_udp_server::init_dtls_transport()
 {
-    if (dtls_transport_ != nullptr)
+    if (dtls_transport_ != nullptr && srtp_transport_ != nullptr)
     {
         return {};
     }
@@ -206,7 +206,10 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
 
     dtls_transport_ = std::make_shared<dtls_transport>(*context);
 
+    srtp_transport_ = std::make_shared<srtp_transport>(dtls_transport_);
+
     WEBRTC_LOG_INFO("dtls transport initialized");
+    WEBRTC_LOG_INFO("srtp transport initialized");
 
     return {};
 }
@@ -438,7 +441,40 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
 
-    WEBRTC_LOG_DEBUG("ice udp rtp rtcp packet ignored remote={} size={}", remote_address, data.size());
+    if (srtp_transport_ == nullptr)
+    {
+        WEBRTC_LOG_WARN("srtp transport is null remote={} size={}", remote_address, data.size());
+
+        return;
+    }
+
+    auto result = srtp_transport_->handle_inbound_packet(data, remote_address);
+
+    if (!result)
+    {
+        WEBRTC_LOG_WARN("srtp inbound packet handle failed remote={} error={}", remote_address, result.error());
+
+        return;
+    }
+
+    if (result->state == srtp_packet_process_state::ignored)
+    {
+        WEBRTC_LOG_DEBUG("srtp inbound packet ignored remote={} kind={} size={} reason={}",
+                         remote_address,
+                         srtp_packet_kind_to_string(result->kind),
+                         result->packet_size,
+                         result->reason);
+
+        return;
+    }
+
+    WEBRTC_LOG_DEBUG("srtp inbound packet accepted remote={} kind={} size={} plain_size={} ssrc={} payload_type={}",
+                     remote_address,
+                     srtp_packet_kind_to_string(result->kind),
+                     result->packet_size,
+                     result->unprotected_size,
+                     result->ssrc,
+                     static_cast<unsigned int>(result->payload_type));
 }
 
 void ice_udp_server::send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint)

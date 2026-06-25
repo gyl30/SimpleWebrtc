@@ -201,6 +201,7 @@ set(WEBRTC_SOURCES
     dtls/dtls_srtp_keying_material.cpp
     dtls/dtls_transport.cpp
     srtp/srtp_session.cpp
+    srtp/srtp_transport.cpp
     ice/ice_udp_server.cpp
     signaling/webrtc_answer_factory.cpp)
 

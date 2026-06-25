@@ -14,6 +14,7 @@
 
 #include "dtls/dtls_transport.h"
 #include "session/stream_registry.h"
+#include "srtp/srtp_transport.h"
 
 namespace webrtc
 {
@@ -72,6 +73,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     std::shared_ptr<stream_registry> registry_;
     std::shared_ptr<dtls_transport> dtls_transport_;
+    std::shared_ptr<srtp_transport> srtp_transport_;
 
     udp::endpoint remote_endpoint_;
     std::array<uint8_t, 4096> receive_buffer_{};
