@@ -8,9 +8,11 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 #include <boost/asio.hpp>
 
+#include "dtls/dtls_transport.h"
 #include "session/stream_registry.h"
 
 namespace webrtc
@@ -45,6 +47,10 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
 
+    void handle_dtls_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
+
+    void handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
+
     void send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint);
 
     [[nodiscard]] std::shared_ptr<publisher_session> find_publisher_for_username(std::string_view username) const;
@@ -63,6 +69,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     uint16_t bind_port_ = 0;
 
     std::shared_ptr<stream_registry> registry_;
+    std::shared_ptr<dtls_transport> dtls_transport_;
 
     udp::endpoint remote_endpoint_;
     std::array<uint8_t, 2048> receive_buffer_{};

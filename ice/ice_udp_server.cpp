@@ -11,6 +11,7 @@
 
 #include <boost/system/error_code.hpp>
 
+#include "dtls/dtls_packet.h"
 #include "ice/stun_message.h"
 #include "log/log.h"
 #include "net/socket.h"
@@ -33,13 +34,38 @@ std::string endpoint_to_string(const boost::asio::ip::udp::endpoint& endpoint)
 
     return value;
 }
+
+dtls_peer_identity make_publisher_dtls_identity(const std::shared_ptr<publisher_session>& session)
+{
+    dtls_peer_identity identity;
+    identity.role = dtls_peer_role::publisher;
+    identity.session_id = session->session_id();
+    identity.stream_id = session->stream_id();
+    identity.local_ice_ufrag = session->local_ice().ufrag;
+    return identity;
+}
+
+dtls_peer_identity make_subscriber_dtls_identity(const std::shared_ptr<subscriber_session>& session)
+{
+    dtls_peer_identity identity;
+    identity.role = dtls_peer_role::subscriber;
+    identity.session_id = session->session_id();
+    identity.stream_id = session->stream_id();
+    identity.local_ice_ufrag = session->local_ice().ufrag;
+    return identity;
+}
 }    // namespace
 
 ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
                                std::string bind_host,
                                uint16_t bind_port,
                                std::shared_ptr<stream_registry> registry)
-    : io_context_(io_context), socket_(io_context), bind_host_(std::move(bind_host)), bind_port_(bind_port), registry_(std::move(registry))
+    : io_context_(io_context),
+      socket_(io_context),
+      bind_host_(std::move(bind_host)),
+      bind_port_(bind_port),
+      registry_(std::move(registry)),
+      dtls_transport_(std::make_shared<dtls_transport>())
 {
 }
 
@@ -163,11 +189,22 @@ void ice_udp_server::on_receive(boost::system::error_code ec, std::size_t bytes_
     {
         handle_stun_packet(packet, remote_endpoint_);
     }
+    else if (is_dtls_packet(packet))
+    {
+        handle_dtls_packet(packet, remote_endpoint_);
+    }
+    else if (is_rtp_or_rtcp_packet(packet))
+    {
+        handle_rtp_or_rtcp_packet(packet, remote_endpoint_);
+    }
     else
     {
         const std::string remote_address = endpoint_to_string(remote_endpoint_);
 
-        WEBRTC_LOG_DEBUG("ice udp non stun packet remote={} size={}", remote_address, bytes_transferred);
+        WEBRTC_LOG_DEBUG("ice udp unknown packet remote={} size={} first_byte={}",
+                         remote_address,
+                         bytes_transferred,
+                         bytes_transferred == 0 ? 0U : static_cast<unsigned int>(receive_buffer_[0]));
     }
 
     do_receive();
@@ -260,6 +297,26 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         }
     }
 
+    if (publisher != nullptr)
+    {
+        publisher->set_state(session_state::ice_connected);
+
+        if (dtls_transport_ != nullptr)
+        {
+            dtls_transport_->remember_peer(remote_address, make_publisher_dtls_identity(publisher));
+        }
+    }
+
+    if (subscriber != nullptr)
+    {
+        subscriber->set_state(session_state::ice_connected);
+
+        if (dtls_transport_ != nullptr)
+        {
+            dtls_transport_->remember_peer(remote_address, make_subscriber_dtls_identity(subscriber));
+        }
+    }
+
     const std::string remote_ip = endpoint_ip(remote_endpoint);
 
     if (remote_ip.empty())
@@ -287,19 +344,30 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         return;
     }
 
-    if (publisher != nullptr)
-    {
-        publisher->set_state(session_state::ice_connected);
-    }
-
-    if (subscriber != nullptr)
-    {
-        subscriber->set_state(session_state::ice_connected);
-    }
-
     WEBRTC_LOG_INFO("ice stun binding success username={} remote={} response_size={}", *message->username, remote_address, response->size());
 
     send_response(std::move(*response), remote_endpoint);
+}
+
+void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
+{
+    const std::string remote_address = endpoint_to_string(remote_endpoint);
+
+    if (dtls_transport_ == nullptr)
+    {
+        WEBRTC_LOG_WARN("dtls transport is null remote={} size={}", remote_address, data.size());
+
+        return;
+    }
+
+    dtls_transport_->handle_udp_packet(data, remote_address);
+}
+
+void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
+{
+    const std::string remote_address = endpoint_to_string(remote_endpoint);
+
+    WEBRTC_LOG_DEBUG("ice udp rtp rtcp packet ignored remote={} size={}", remote_address, data.size());
 }
 
 void ice_udp_server::send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint)
