@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "rtp/rtcp_feedback.h"
+
 namespace webrtc
 {
 struct rtcp_compound_block
@@ -37,6 +39,9 @@ struct rtcp_compound_block
     std::size_t nack_count = 0;
     std::size_t fir_count = 0;
 
+    std::vector<rtcp_nack_item> nack_items;
+    std::vector<rtcp_fir_item> fir_items;
+
     bool has_generic_nack = false;
     bool has_keyframe_request = false;
     bool has_transport_cc = false;
@@ -53,6 +58,9 @@ struct rtcp_compound_packet
     std::size_t feedback_block_count = 0;
     std::size_t nack_count = 0;
     std::size_t fir_count = 0;
+
+    std::vector<rtcp_nack_item> nack_items;
+    std::vector<rtcp_fir_item> fir_items;
 
     bool has_feedback = false;
     bool has_generic_nack = false;

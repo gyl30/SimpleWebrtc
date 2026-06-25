@@ -78,6 +78,9 @@ std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const sr
     event.nack_count = packet.rtcp_nack_count;
     event.fir_count = packet.rtcp_fir_count;
 
+    event.nack_items = packet.rtcp_nack_items;
+    event.fir_items = packet.rtcp_fir_items;
+
     event.has_generic_nack = packet.rtcp_has_generic_nack;
     event.has_keyframe_request = packet.rtcp_has_keyframe_request;
     event.has_transport_cc = packet.rtcp_has_transport_cc;

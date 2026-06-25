@@ -107,6 +107,8 @@ void fill_rtcp_fields_from_compound(const rtcp_compound_packet& compound, srtp_p
     result.rtcp_feedback_name = rtcp_compound_feedback_summary_to_string(compound);
     result.rtcp_nack_count = compound.nack_count;
     result.rtcp_fir_count = compound.fir_count;
+    result.rtcp_nack_items = compound.nack_items;
+    result.rtcp_fir_items = compound.fir_items;
     result.rtcp_has_generic_nack = compound.has_generic_nack;
     result.rtcp_has_keyframe_request = compound.has_keyframe_request;
     result.rtcp_has_transport_cc = compound.has_transport_cc;

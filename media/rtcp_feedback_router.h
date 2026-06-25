@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "media/media_router.h"
+#include "rtp/rtcp_feedback.h"
 #include "srtp/srtp_transport.h"
 
 namespace webrtc
@@ -41,6 +42,9 @@ struct rtcp_feedback_route_event
 
     std::size_t nack_count = 0;
     std::size_t fir_count = 0;
+
+    std::vector<rtcp_nack_item> nack_items;
+    std::vector<rtcp_fir_item> fir_items;
 
     bool has_generic_nack = false;
     bool has_keyframe_request = false;

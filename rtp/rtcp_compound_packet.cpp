@@ -35,6 +35,9 @@ void fill_feedback_block(const rtcp_feedback_packet& feedback, rtcp_compound_blo
     block.nack_count = feedback.nack_items.size();
     block.fir_count = feedback.fir_items.size();
 
+    block.nack_items = feedback.nack_items;
+    block.fir_items = feedback.fir_items;
+
     block.has_generic_nack = feedback.has_generic_nack;
     block.has_keyframe_request = feedback.has_keyframe_request;
     block.has_transport_cc = feedback.has_transport_cc;
@@ -58,6 +61,10 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
 
     packet.nack_count += block.nack_count;
     packet.fir_count += block.fir_count;
+
+    packet.nack_items.insert(packet.nack_items.end(), block.nack_items.begin(), block.nack_items.end());
+
+    packet.fir_items.insert(packet.fir_items.end(), block.fir_items.begin(), block.fir_items.end());
 
     packet.has_generic_nack = packet.has_generic_nack || block.has_generic_nack;
 

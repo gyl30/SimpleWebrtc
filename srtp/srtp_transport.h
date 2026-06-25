@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "dtls/dtls_transport.h"
+#include "rtp/rtcp_feedback.h"
 
 namespace webrtc
 {
@@ -59,6 +60,10 @@ struct srtp_packet_process_result
     uint32_t rtcp_media_ssrc = 0;
     std::size_t rtcp_nack_count = 0;
     std::size_t rtcp_fir_count = 0;
+
+    std::vector<rtcp_nack_item> rtcp_nack_items;
+    std::vector<rtcp_fir_item> rtcp_fir_items;
+
     bool rtcp_has_generic_nack = false;
     bool rtcp_has_keyframe_request = false;
     bool rtcp_has_transport_cc = false;
