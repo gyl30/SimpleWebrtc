@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "signaling/sdp/sdp_codec_negotiator.h"
 #include "signaling/sdp/sdp_formatter.h"
 
 namespace webrtc::sdp
@@ -37,19 +38,6 @@ std::unexpected<std::string> make_media_error(std::string_view prefix, const med
     return std::unexpected(std::move(message));
 }
 
-bool contains_line_break(std::string_view value)
-{
-    for (const auto ch : value)
-    {
-        if (ch == '\r' || ch == '\n')
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 bool contains_whitespace(std::string_view value)
 {
     for (const auto ch : value)
@@ -76,18 +64,6 @@ validation_result validate_token(std::string_view value, std::string_view name)
     {
         std::string message(name);
         message.append(" contains whitespace");
-        return std::unexpected(std::move(message));
-    }
-
-    return {};
-}
-
-validation_result validate_line_value(std::string_view value, std::string_view name)
-{
-    if (contains_line_break(value))
-    {
-        std::string message(name);
-        message.append(" contains line break");
         return std::unexpected(std::move(message));
     }
 
@@ -495,81 +471,6 @@ std::string make_msid_value(const sdp_answer_options& options, const media_summa
     return value;
 }
 
-validation_result validate_codec(const codec_info& codec)
-{
-    if (codec.payload_type > 127)
-    {
-        return make_error("codec payload type out of range");
-    }
-
-    auto name_result = validate_token(codec.name, "codec name");
-    if (!name_result)
-    {
-        return std::unexpected(name_result.error());
-    }
-
-    if (codec.clock_rate == 0)
-    {
-        return make_error("codec clock rate is zero");
-    }
-
-    if (!codec.encoding_parameters.empty())
-    {
-        auto encoding_result = validate_token(codec.encoding_parameters, "codec encoding parameters");
-
-        if (!encoding_result)
-        {
-            return std::unexpected(encoding_result.error());
-        }
-    }
-
-    auto fmtp_result = validate_line_value(codec.fmtp, "codec fmtp");
-    if (!fmtp_result)
-    {
-        return std::unexpected(fmtp_result.error());
-    }
-
-    for (const auto& feedback : codec.rtcp_feedback)
-    {
-        auto feedback_result = validate_line_value(feedback, "codec rtcp feedback");
-
-        if (!feedback_result)
-        {
-            return std::unexpected(feedback_result.error());
-        }
-
-        if (feedback.empty())
-        {
-            return make_error("codec rtcp feedback is empty");
-        }
-    }
-
-    return {};
-}
-
-std::expected<std::vector<codec_info>, std::string> select_answer_codecs(const media_summary& media)
-{
-    std::vector<codec_info> codecs;
-
-    for (const auto& codec : media.codecs)
-    {
-        auto codec_result = validate_codec(codec);
-        if (!codec_result)
-        {
-            return std::unexpected(codec_result.error());
-        }
-
-        codecs.push_back(codec);
-    }
-
-    if (codecs.empty())
-    {
-        return make_media_error("offer", media, "has no supported codecs");
-    }
-
-    return codecs;
-}
-
 void append_codec_attributes(media_description& answer_media, const std::vector<codec_info>& codecs)
 {
     for (const auto& codec : codecs)
@@ -592,7 +493,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
                                                                 const sdp_answer_options& options,
                                                                 const media_summary& media)
 {
-    auto codecs = select_answer_codecs(media);
+    auto codecs = negotiate_codecs(media);
     if (!codecs)
     {
         return std::unexpected(codecs.error());
