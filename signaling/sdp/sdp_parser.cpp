@@ -2,9 +2,11 @@
 
 #include <charconv>
 #include <cstdint>
-#include <stdexcept>
+#include <expected>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 #include "signaling/sdp/sdp_lexer.h"
@@ -13,6 +15,8 @@ namespace webrtc::sdp
 {
 namespace
 {
+std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+
 std::string_view trim_left(std::string_view value)
 {
     const auto position = value.find_first_not_of(" \t");
@@ -88,48 +92,56 @@ std::vector<std::string_view> split_by_char(std::string_view value, char separat
     return result;
 }
 
-uint64_t parse_uint64_text(std::string_view value, std::string_view field_name)
+std::expected<uint64_t, std::string> parse_uint64_text(std::string_view value, std::string_view field_name)
 {
     value = trim(value);
     if (value.empty())
     {
-        throw std::invalid_argument(std::string(field_name) + " is empty");
+        std::string error(field_name);
+        error += " is empty";
+        return make_error(error);
     }
 
     uint64_t number = 0;
     const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
     if (result.ec != std::errc() || result.ptr != value.data() + value.size())
     {
-        throw std::invalid_argument(std::string(field_name) + " is invalid");
+        std::string error(field_name);
+        error += " is invalid";
+        return make_error(error);
     }
 
     return number;
 }
 
-int32_t parse_int32_text(std::string_view value, std::string_view field_name)
+std::expected<int32_t, std::string> parse_int32_text(std::string_view value, std::string_view field_name)
 {
     value = trim(value);
     if (value.empty())
     {
-        throw std::invalid_argument(std::string(field_name) + " is empty");
+        std::string error(field_name);
+        error += " is empty";
+        return make_error(error);
     }
 
     int32_t number = 0;
     const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
     if (result.ec != std::errc() || result.ptr != value.data() + value.size())
     {
-        throw std::invalid_argument(std::string(field_name) + " is invalid");
+        std::string error(field_name);
+        error += " is invalid";
+        return make_error(error);
     }
 
     return number;
 }
 
-sdp_attribute parse_attribute_line(std::string_view value)
+std::expected<sdp_attribute, std::string> parse_attribute_line(std::string_view value)
 {
     value = trim(value);
     if (value.empty())
     {
-        throw std::invalid_argument("empty attribute");
+        return make_error("empty attribute");
     }
 
     const auto colon_position = value.find(':');
@@ -141,13 +153,13 @@ sdp_attribute parse_attribute_line(std::string_view value)
     return make_attribute(std::string(value.substr(0, colon_position)), std::string(value.substr(colon_position + 1)));
 }
 
-connection_information parse_connection_information_line(std::string_view value)
+std::expected<connection_information, std::string> parse_connection_information_line(std::string_view value)
 {
     const auto fields = split_whitespace(value);
 
     if (fields.size() < 2)
     {
-        throw std::invalid_argument("invalid connection information");
+        return make_error("invalid connection information");
     }
 
     connection_information connection;
@@ -156,12 +168,12 @@ connection_information parse_connection_information_line(std::string_view value)
 
     if (!is_any_of(connection.network_type, {"IN"}))
     {
-        throw std::invalid_argument("invalid connection network type");
+        return make_error("invalid connection network type");
     }
 
     if (!is_any_of(connection.address_type, {"IP4", "IP6"}))
     {
-        throw std::invalid_argument("invalid connection address type");
+        return make_error("invalid connection address type");
     }
 
     if (fields.size() >= 3)
@@ -174,14 +186,14 @@ connection_information parse_connection_information_line(std::string_view value)
     return connection;
 }
 
-bandwidth_line parse_bandwidth_line(std::string_view value)
+std::expected<bandwidth_line, std::string> parse_bandwidth_line(std::string_view value)
 {
     value = trim(value);
 
     const auto colon_position = value.find(':');
     if (colon_position == std::string_view::npos || colon_position == 0 || colon_position + 1 >= value.size())
     {
-        throw std::invalid_argument("invalid bandwidth line");
+        return make_error("invalid bandwidth line");
     }
 
     auto type = value.substr(0, colon_position);
@@ -196,394 +208,563 @@ bandwidth_line parse_bandwidth_line(std::string_view value)
     }
     else if (!is_any_of(type, {"CT", "AS", "TIAS", "RS", "RR"}))
     {
-        throw std::invalid_argument("invalid bandwidth type");
+        return make_error("invalid bandwidth type");
+    }
+
+    auto parsed_value = parse_uint64_text(bandwidth_value, "bandwidth value");
+    if (!parsed_value)
+    {
+        return make_error(parsed_value.error());
     }
 
     line.type = std::string(type);
-    line.value = parse_uint64_text(bandwidth_value, "bandwidth value");
+    line.value = *parsed_value;
 
     return line;
 }
 
-timing_line parse_timing_line(std::string_view value)
+std::expected<timing_line, std::string> parse_timing_line(std::string_view value)
 {
     const auto fields = split_whitespace(value);
     if (fields.size() != 2)
     {
-        throw std::invalid_argument("invalid timing line");
+        return make_error("invalid timing line");
+    }
+
+    auto start_time = parse_uint64_text(fields[0], "timing start time");
+    if (!start_time)
+    {
+        return make_error(start_time.error());
+    }
+
+    auto stop_time = parse_uint64_text(fields[1], "timing stop time");
+    if (!stop_time)
+    {
+        return make_error(stop_time.error());
     }
 
     timing_line timing;
-    timing.start_time = parse_uint64_text(fields[0], "timing start time");
-    timing.stop_time = parse_uint64_text(fields[1], "timing stop time");
+    timing.start_time = *start_time;
+    timing.stop_time = *stop_time;
 
     return timing;
 }
 
-repeat_time parse_repeat_time_line(std::string_view value)
+std::expected<repeat_time, std::string> parse_repeat_time_line(std::string_view value)
 {
     const auto fields = split_whitespace(value);
     if (fields.size() < 2)
     {
-        throw std::invalid_argument("invalid repeat time line");
+        return make_error("invalid repeat time line");
+    }
+
+    auto interval = parse_time_units(fields[0]);
+    if (!interval)
+    {
+        return make_error(interval.error());
+    }
+
+    auto duration = parse_time_units(fields[1]);
+    if (!duration)
+    {
+        return make_error(duration.error());
     }
 
     repeat_time repeat;
-    repeat.interval = parse_time_units(fields[0]);
-    repeat.duration = parse_time_units(fields[1]);
+    repeat.interval = *interval;
+    repeat.duration = *duration;
 
     for (std::size_t i = 2; i < fields.size(); ++i)
     {
-        repeat.offsets.push_back(parse_time_units(fields[i]));
+        auto offset = parse_time_units(fields[i]);
+        if (!offset)
+        {
+            return make_error(offset.error());
+        }
+
+        repeat.offsets.push_back(*offset);
     }
 
     return repeat;
 }
 
-std::vector<time_zone> parse_time_zone_line(std::string_view value)
+std::expected<std::vector<time_zone>, std::string> parse_time_zone_line(std::string_view value)
 {
     const auto fields = split_whitespace(value);
     if (fields.empty() || fields.size() % 2 != 0)
     {
-        throw std::invalid_argument("invalid time zone line");
+        return make_error("invalid time zone line");
     }
 
     std::vector<time_zone> result;
 
     for (std::size_t i = 0; i < fields.size(); i += 2)
     {
+        auto adjustment_time = parse_uint64_text(fields[i], "time zone adjustment time");
+        if (!adjustment_time)
+        {
+            return make_error(adjustment_time.error());
+        }
+
+        auto offset = parse_time_units(fields[i + 1]);
+        if (!offset)
+        {
+            return make_error(offset.error());
+        }
+
         time_zone zone;
-        zone.adjustment_time = parse_uint64_text(fields[i], "time zone adjustment time");
-        zone.offset = parse_time_units(fields[i + 1]);
+        zone.adjustment_time = *adjustment_time;
+        zone.offset = *offset;
         result.push_back(zone);
     }
 
     return result;
 }
 
-ranged_port parse_ranged_port(std::string_view value)
+std::expected<ranged_port, std::string> parse_ranged_port(std::string_view value)
 {
     ranged_port port;
 
     const auto slash_position = value.find('/');
     const auto port_text = slash_position == std::string_view::npos ? value : value.substr(0, slash_position);
 
-    const int parsed_port = parse_port(port_text);
-    if (parsed_port < 0)
+    auto parsed_port = parse_port(port_text);
+    if (!parsed_port)
     {
-        throw std::invalid_argument("invalid media port");
+        return make_error("invalid media port");
     }
 
-    port.value = parsed_port;
+    port.value = *parsed_port;
 
     if (slash_position != std::string_view::npos)
     {
         const auto range_text = value.substr(slash_position + 1);
-        port.range = parse_int32_text(range_text, "media port range");
-
-        if (port.range.value() <= 0)
+        auto range = parse_int32_text(range_text, "media port range");
+        if (!range)
         {
-            throw std::invalid_argument("invalid media port range");
+            return make_error(range.error());
         }
+
+        if (*range <= 0)
+        {
+            return make_error("invalid media port range");
+        }
+
+        port.range = *range;
     }
 
     return port;
 }
 
-media_name_line parse_media_name_line(std::string_view value)
+std::expected<media_name_line, std::string> parse_media_name_line(std::string_view value)
 {
     const auto fields = split_whitespace(value);
 
     if (fields.size() < 4)
     {
-        throw std::invalid_argument("invalid media line");
+        return make_error("invalid media line");
     }
-
-    media_name_line media_name;
 
     if (!is_any_of(fields[0], {"audio", "video", "text", "application", "message"}))
     {
-        throw std::invalid_argument("invalid media type");
+        return make_error("invalid media type");
     }
 
+    auto port = parse_ranged_port(fields[1]);
+    if (!port)
+    {
+        return make_error(port.error());
+    }
+
+    media_name_line media_name;
     media_name.media = std::string(fields[0]);
-    media_name.port = parse_ranged_port(fields[1]);
+    media_name.port = *port;
 
     const auto protocols = split_by_char(fields[2], '/');
     if (protocols.empty())
     {
-        throw std::invalid_argument("empty media protocol");
+        return make_error("empty media protocol");
     }
 
     for (const auto protocol : protocols)
     {
         if (protocol.empty())
         {
-            throw std::invalid_argument("invalid media protocol");
+            return make_error("invalid media protocol");
         }
 
         if (!is_any_of(protocol,
                        {"UDP", "RTP", "AVP", "SAVP", "SAVPF", "TLS", "DTLS", "SCTP", "AVPF", "TCP", "MSRP", "BFCP", "UDT", "IX", "MRCPv2", "FEC"}))
         {
-            throw std::invalid_argument("unsupported media protocol");
+            return make_error("unsupported media protocol");
         }
 
-        media_name.protocols.emplace_back(protocol);
+        media_name.protocols.push_back(std::string(protocol));
     }
 
     for (std::size_t i = 3; i < fields.size(); ++i)
     {
-        media_name.formats.emplace_back(fields[i]);
+        media_name.formats.push_back(std::string(fields[i]));
     }
 
     return media_name;
 }
 
-origin_line parse_origin_line(std::string_view value)
+std::expected<origin_line, std::string> parse_origin_line(std::string_view value)
 {
     const auto fields = split_whitespace(value);
 
     if (fields.size() != 6)
     {
-        throw std::invalid_argument("invalid origin line");
+        return make_error("invalid origin line");
+    }
+
+    auto session_id = parse_uint64_text(fields[1], "origin session id");
+    if (!session_id)
+    {
+        return make_error(session_id.error());
+    }
+
+    auto session_version = parse_uint64_text(fields[2], "origin session version");
+    if (!session_version)
+    {
+        return make_error(session_version.error());
     }
 
     origin_line origin;
     origin.username = std::string(fields[0]);
-    origin.session_id = parse_uint64_text(fields[1], "origin session id");
-    origin.session_version = parse_uint64_text(fields[2], "origin session version");
+    origin.session_id = *session_id;
+    origin.session_version = *session_version;
     origin.network_type = std::string(fields[3]);
     origin.address_type = std::string(fields[4]);
     origin.unicast_address = std::string(fields[5]);
 
     if (!is_any_of(origin.network_type, {"IN"}))
     {
-        throw std::invalid_argument("invalid origin network type");
+        return make_error("invalid origin network type");
     }
 
     if (!is_any_of(origin.address_type, {"IP4", "IP6"}))
     {
-        throw std::invalid_argument("invalid origin address type");
+        return make_error("invalid origin address type");
     }
 
     return origin;
 }
 
-void parse_session_level_line(session_description& description,
-                              bool& has_version,
-                              bool& has_origin,
-                              bool& has_session_name,
-                              bool& has_timing,
-                              char type,
-                              std::string_view value)
+std::expected<void, std::string> parse_session_level_line(session_description& description,
+                                                          bool& has_version,
+                                                          bool& has_origin,
+                                                          bool& has_session_name,
+                                                          bool& has_timing,
+                                                          char type,
+                                                          std::string_view value)
 {
     switch (type)
     {
         case 'v':
         {
-            const auto version = parse_uint64_text(value, "sdp version");
-            if (version != 0)
+            auto version = parse_uint64_text(value, "sdp version");
+            if (!version)
             {
-                throw std::invalid_argument("unsupported sdp version");
+                return make_error(version.error());
+            }
+
+            if (*version != 0)
+            {
+                return make_error("unsupported sdp version");
             }
 
             description.version.value = 0;
             has_version = true;
-            break;
+            return {};
         }
 
         case 'o':
-            description.origin = parse_origin_line(value);
+        {
+            auto origin = parse_origin_line(value);
+            if (!origin)
+            {
+                return make_error(origin.error());
+            }
+
+            description.origin = *origin;
             has_origin = true;
-            break;
+            return {};
+        }
 
         case 's':
             description.session_name = std::string(value);
             has_session_name = true;
-            break;
+            return {};
 
         case 'i':
             description.session_information = std::string(value);
-            break;
+            return {};
 
         case 'u':
             if (trim(value).empty())
             {
-                throw std::invalid_argument("empty uri line");
+                return make_error("empty uri line");
             }
 
             description.uri = std::string(value);
-            break;
+            return {};
 
         case 'e':
             description.email_address = std::string(value);
-            break;
+            return {};
 
         case 'p':
             description.phone_number = std::string(value);
-            break;
+            return {};
 
         case 'c':
-            description.connection = parse_connection_information_line(value);
-            break;
+        {
+            auto connection = parse_connection_information_line(value);
+            if (!connection)
+            {
+                return make_error(connection.error());
+            }
+
+            description.connection = *connection;
+            return {};
+        }
 
         case 'b':
-            description.bandwidth_lines.push_back(parse_bandwidth_line(value));
-            break;
+        {
+            auto bandwidth = parse_bandwidth_line(value);
+            if (!bandwidth)
+            {
+                return make_error(bandwidth.error());
+            }
+
+            description.bandwidth_lines.push_back(*bandwidth);
+            return {};
+        }
 
         case 't':
         {
+            auto timing = parse_timing_line(value);
+            if (!timing)
+            {
+                return make_error(timing.error());
+            }
+
             time_description time;
-            time.timing = parse_timing_line(value);
+            time.timing = *timing;
             description.time_descriptions.push_back(time);
             has_timing = true;
-            break;
+            return {};
         }
 
         case 'r':
+        {
             if (description.time_descriptions.empty())
             {
-                throw std::invalid_argument("repeat time appears before timing");
+                return make_error("repeat time appears before timing");
             }
 
-            description.time_descriptions.back().repeat_times.push_back(parse_repeat_time_line(value));
-            break;
+            auto repeat = parse_repeat_time_line(value);
+            if (!repeat)
+            {
+                return make_error(repeat.error());
+            }
+
+            description.time_descriptions.back().repeat_times.push_back(*repeat);
+            return {};
+        }
 
         case 'z':
         {
             auto zones = parse_time_zone_line(value);
-            description.time_zones.insert(description.time_zones.end(), zones.begin(), zones.end());
-            break;
+            if (!zones)
+            {
+                return make_error(zones.error());
+            }
+
+            description.time_zones.insert(description.time_zones.end(), zones->begin(), zones->end());
+            return {};
         }
 
         case 'k':
             description.encryption_key = std::string(value);
-            break;
+            return {};
 
         case 'a':
-            description.attributes.push_back(parse_attribute_line(value));
-            break;
+        {
+            auto attribute = parse_attribute_line(value);
+            if (!attribute)
+            {
+                return make_error(attribute.error());
+            }
+
+            description.attributes.push_back(*attribute);
+            return {};
+        }
 
         default:
-            throw std::invalid_argument("unsupported session-level sdp line");
+            return make_error("unsupported session-level sdp line");
     }
 }
 
-void parse_media_level_line(media_description& media, char type, std::string_view value)
+std::expected<void, std::string> parse_media_level_line(media_description& media, char type, std::string_view value)
 {
     switch (type)
     {
         case 'i':
             media.media_title = std::string(value);
-            break;
+            return {};
 
         case 'c':
-            media.connection = parse_connection_information_line(value);
-            break;
+        {
+            auto connection = parse_connection_information_line(value);
+            if (!connection)
+            {
+                return make_error(connection.error());
+            }
+
+            media.connection = *connection;
+            return {};
+        }
 
         case 'b':
-            media.bandwidth_lines.push_back(parse_bandwidth_line(value));
-            break;
+        {
+            auto bandwidth = parse_bandwidth_line(value);
+            if (!bandwidth)
+            {
+                return make_error(bandwidth.error());
+            }
+
+            media.bandwidth_lines.push_back(*bandwidth);
+            return {};
+        }
 
         case 'k':
             media.encryption_key = std::string(value);
-            break;
+            return {};
 
         case 'a':
-            media.attributes.push_back(parse_attribute_line(value));
-            break;
+        {
+            auto attribute = parse_attribute_line(value);
+            if (!attribute)
+            {
+                return make_error(attribute.error());
+            }
+
+            media.attributes.push_back(*attribute);
+            return {};
+        }
 
         default:
-            throw std::invalid_argument("unsupported media-level sdp line");
+            return make_error("unsupported media-level sdp line");
     }
 }
 
-void validate_required_session_lines(bool has_version, bool has_origin, bool has_session_name, bool has_timing)
+std::expected<void, std::string> validate_required_session_lines(bool has_version, bool has_origin, bool has_session_name, bool has_timing)
 {
     if (!has_version)
     {
-        throw std::invalid_argument("missing v= line");
+        return make_error("missing v= line");
     }
 
     if (!has_origin)
     {
-        throw std::invalid_argument("missing o= line");
+        return make_error("missing o= line");
     }
 
     if (!has_session_name)
     {
-        throw std::invalid_argument("missing s= line");
+        return make_error("missing s= line");
     }
 
     if (!has_timing)
     {
-        throw std::invalid_argument("missing t= line");
+        return make_error("missing t= line");
     }
+
+    return {};
 }
 }    // namespace
 
-sdp_parse_result parse_session_description(std::string_view text)
+session_description_result parse_session_description(std::string_view text)
 {
-    sdp_parse_result result;
+    sdp_lexer lexer(text);
+    session_description description;
 
-    try
+    bool has_version = false;
+    bool has_origin = false;
+    bool has_session_name = false;
+    bool has_timing = false;
+
+    media_description* current_media = nullptr;
+
+    while (true)
     {
-        sdp_lexer lexer(text);
-
-        bool has_version = false;
-        bool has_origin = false;
-        bool has_session_name = false;
-        bool has_timing = false;
-
-        media_description* current_media = nullptr;
-
-        while (true)
+        lexer.skip_line_breaks();
+        if (lexer.eof())
         {
-            lexer.skip_line_breaks();
-            if (lexer.eof())
-            {
-                break;
-            }
-
-            const char type = lexer.read_type();
-            const std::string_view value = lexer.read_line();
-
-            if (type == 'm')
-            {
-                media_description media;
-                media.media_name = parse_media_name_line(value);
-                result.description.media_descriptions.push_back(std::move(media));
-                current_media = &result.description.media_descriptions.back();
-                continue;
-            }
-
-            if (current_media == nullptr)
-            {
-                parse_session_level_line(result.description, has_version, has_origin, has_session_name, has_timing, type, value);
-            }
-            else
-            {
-                if (type == 'v' || type == 'o' || type == 's' || type == 'u' || type == 'e' || type == 'p' || type == 't' || type == 'r' ||
-                    type == 'z')
-                {
-                    throw std::invalid_argument("session-level line appears after media section");
-                }
-
-                parse_media_level_line(*current_media, type, value);
-            }
+            break;
         }
 
-        validate_required_session_lines(has_version, has_origin, has_session_name, has_timing);
+        auto type = lexer.read_type();
+        if (!type)
+        {
+            return make_error(type.error());
+        }
 
-        result.success = true;
-        return result;
+        auto value = lexer.read_line();
+        if (!value)
+        {
+            return make_error(value.error());
+        }
+
+        if (*type == 'm')
+        {
+            auto media_name = parse_media_name_line(*value);
+            if (!media_name)
+            {
+                return make_error(media_name.error());
+            }
+
+            media_description media;
+            media.media_name = *media_name;
+            description.media_descriptions.push_back(std::move(media));
+            current_media = &description.media_descriptions.back();
+            continue;
+        }
+
+        if (current_media == nullptr)
+        {
+            auto parse_result = parse_session_level_line(description, has_version, has_origin, has_session_name, has_timing, *type, *value);
+
+            if (!parse_result)
+            {
+                return make_error(parse_result.error());
+            }
+        }
+        else
+        {
+            if (*type == 'v' || *type == 'o' || *type == 's' || *type == 'u' || *type == 'e' || *type == 'p' || *type == 't' || *type == 'r' ||
+                *type == 'z')
+            {
+                return make_error("session-level line appears after media section");
+            }
+
+            auto parse_result = parse_media_level_line(*current_media, *type, *value);
+            if (!parse_result)
+            {
+                return make_error(parse_result.error());
+            }
+        }
     }
-    catch (const std::exception& e)
+
+    auto validate_result = validate_required_session_lines(has_version, has_origin, has_session_name, has_timing);
+    if (!validate_result)
     {
-        result.success = false;
-        result.error = e.what();
-        result.description = session_description{};
-        return result;
+        return make_error(validate_result.error());
     }
+
+    return description;
 }
 }    // namespace webrtc::sdp

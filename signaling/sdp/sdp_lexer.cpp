@@ -2,11 +2,17 @@
 
 #include <charconv>
 #include <string>
+#include <system_error>
 
 namespace webrtc::sdp
 {
 namespace
 {
+std::unexpected<std::string> make_error(std::string_view message)
+{
+    return std::unexpected(std::string(message));
+}
+
 std::string escape_char_for_error(char ch)
 {
     switch (ch)
@@ -29,42 +35,6 @@ std::string escape_char_for_error(char ch)
 }
 }    // namespace
 
-sdp_syntax_error::sdp_syntax_error(std::string_view text, std::size_t position)
-    : std::runtime_error(make_message(text, position)), position_(position)
-{
-}
-
-std::size_t sdp_syntax_error::position() const { return position_; }
-
-std::string sdp_syntax_error::make_message(std::string_view text, std::size_t position)
-{
-    if (text.empty())
-    {
-        return "sdp syntax error at position 0: \"\"";
-    }
-
-    if (position >= text.size())
-    {
-        position = text.size() - 1;
-    }
-
-    const char ch = text[position];
-
-    std::string message;
-    message.reserve(64);
-    message += "sdp syntax error at position ";
-    message += std::to_string(position);
-    message += ": \"";
-    message += escape_char_for_error(ch);
-    message += "\"";
-
-    return message;
-}
-
-sdp_document_start_error::sdp_document_start_error() : std::runtime_error("already at document start") {}
-
-sdp_field_missing_error::sdp_field_missing_error() : std::runtime_error("sdp field missing") {}
-
 sdp_lexer::sdp_lexer(std::string_view text) : text_(text) {}
 
 void sdp_lexer::reset(std::string_view text)
@@ -73,13 +43,22 @@ void sdp_lexer::reset(std::string_view text)
     position_ = 0;
 }
 
-std::string_view sdp_lexer::text() const { return text_; }
+std::string_view sdp_lexer::text() const
+{
+    return text_;
+}
 
-std::size_t sdp_lexer::position() const { return position_; }
+std::size_t sdp_lexer::position() const
+{
+    return position_;
+}
 
-bool sdp_lexer::eof() const { return position_ >= text_.size(); }
+bool sdp_lexer::eof() const
+{
+    return position_ >= text_.size();
+}
 
-char sdp_lexer::read_byte()
+std::expected<char, std::string> sdp_lexer::read_byte()
 {
     if (eof())
     {
@@ -91,26 +70,42 @@ char sdp_lexer::read_byte()
     return ch;
 }
 
-void sdp_lexer::unread_byte()
+std::expected<void, std::string> sdp_lexer::unread_byte()
 {
     if (position_ == 0)
     {
-        throw sdp_document_start_error();
+        return make_error("already at document start");
     }
 
     --position_;
+    return {};
 }
 
 void sdp_lexer::skip_line_breaks()
 {
     while (!eof())
     {
-        const char ch = read_byte();
-        if (!is_line_break(ch))
+        const char ch = text_[position_];
+
+        if (ch == '\r')
         {
-            unread_byte();
-            return;
+            ++position_;
+
+            if (!eof() && text_[position_] == '\n')
+            {
+                ++position_;
+            }
+
+            continue;
         }
+
+        if (ch == '\n')
+        {
+            ++position_;
+            continue;
+        }
+
+        return;
     }
 }
 
@@ -118,27 +113,32 @@ void sdp_lexer::skip_whitespace()
 {
     while (!eof())
     {
-        const char ch = read_byte();
+        const char ch = text_[position_];
         if (!is_whitespace(ch))
         {
-            unread_byte();
             return;
         }
+
+        ++position_;
     }
 }
 
-uint64_t sdp_lexer::read_uint64_field()
+std::expected<uint64_t, std::string> sdp_lexer::read_uint64_field()
 {
+    if (eof())
+    {
+        return make_error("unexpected end of sdp");
+    }
+
     uint64_t value = 0;
     bool has_digit = false;
 
     while (!eof())
     {
-        const char ch = read_byte();
+        const char ch = text_[position_];
 
         if (is_line_break(ch))
         {
-            unread_byte();
             break;
         }
 
@@ -150,141 +150,168 @@ uint64_t sdp_lexer::read_uint64_field()
 
         if (ch < '0' || ch > '9')
         {
-            throw sdp_syntax_error(text_, position_ == 0 ? 0 : position_ - 1);
+            return make_error(make_syntax_error(position_));
         }
 
         value = value * 10 + static_cast<uint64_t>(ch - '0');
         has_digit = true;
+        ++position_;
     }
 
     if (!has_digit)
     {
-        throw sdp_syntax_error(text_, position_);
+        return make_error(make_syntax_error(position_));
     }
 
     return value;
 }
 
-std::string_view sdp_lexer::read_field()
-{
-    const std::size_t start = position_;
-    std::size_t stop = position_;
-
-    while (!eof())
-    {
-        stop = position_;
-
-        const char ch = read_byte();
-
-        if (is_line_break(ch))
-        {
-            unread_byte();
-            break;
-        }
-
-        if (is_whitespace(ch))
-        {
-            skip_whitespace();
-            break;
-        }
-    }
-
-    if (eof())
-    {
-        stop = position_;
-    }
-
-    if (stop < start)
-    {
-        return {};
-    }
-
-    return text_.substr(start, stop - start);
-}
-
-std::string_view sdp_lexer::read_required_field()
-{
-    auto field = read_field();
-    if (field.empty())
-    {
-        throw sdp_field_missing_error();
-    }
-
-    return field;
-}
-
-std::string_view sdp_lexer::read_line()
+std::expected<std::string_view, std::string> sdp_lexer::read_field()
 {
     const std::size_t start = position_;
 
     while (!eof())
     {
-        const char ch = read_byte();
+        const char ch = text_[position_];
 
-        if (ch == '\n')
+        if (is_line_break(ch) || is_whitespace(ch))
         {
-            std::size_t end = position_ - 1;
-            if (end > start && text_[end - 1] == '\r')
-            {
-                --end;
-            }
-
-            return text_.substr(start, end - start);
+            break;
         }
 
-        if (ch == '\r')
-        {
-            if (!eof() && text_[position_] == '\n')
-            {
-                ++position_;
-            }
-
-            const std::size_t end = position_ >= 2 && text_[position_ - 2] == '\r' ? position_ - 2 : position_ - 1;
-            return text_.substr(start, end - start);
-        }
+        ++position_;
     }
 
-    std::size_t end = position_;
-    if (end > start && text_[end - 1] == '\r')
+    const std::size_t end = position_;
+
+    if (!eof() && is_whitespace(text_[position_]))
     {
-        --end;
+        skip_whitespace();
     }
 
     return text_.substr(start, end - start);
 }
 
-char sdp_lexer::read_type()
+std::expected<std::string_view, std::string> sdp_lexer::read_required_field()
+{
+    auto field = read_field();
+    if (!field)
+    {
+        return make_error(field.error());
+    }
+
+    if (field->empty())
+    {
+        return make_error("sdp field missing");
+    }
+
+    return *field;
+}
+
+std::expected<std::string_view, std::string> sdp_lexer::read_line()
+{
+    const std::size_t start = position_;
+
+    while (!eof())
+    {
+        const char ch = text_[position_];
+
+        if (ch == '\n')
+        {
+            std::size_t end = position_;
+            if (end > start && text_[end - 1] == '\r')
+            {
+                --end;
+            }
+
+            ++position_;
+            return text_.substr(start, end - start);
+        }
+
+        if (ch == '\r')
+        {
+            const std::size_t end = position_;
+            ++position_;
+
+            if (!eof() && text_[position_] == '\n')
+            {
+                ++position_;
+            }
+
+            return text_.substr(start, end - start);
+        }
+
+        ++position_;
+    }
+
+    return text_.substr(start, position_ - start);
+}
+
+std::expected<char, std::string> sdp_lexer::read_type()
 {
     while (!eof())
     {
-        const char first = read_byte();
+        const char first = text_[position_];
 
         if (is_line_break(first))
         {
+            skip_line_breaks();
             continue;
         }
 
+        ++position_;
+
         if (eof())
         {
-            throw sdp_syntax_error(text_, position_ == 0 ? 0 : position_ - 1);
+            return make_error(make_syntax_error(position_ - 1));
         }
 
-        const char second = read_byte();
+        const char second = text_[position_];
+        ++position_;
+
         if (second != '=')
         {
-            unread_byte();
-            throw sdp_syntax_error(text_, position_ == 0 ? 0 : position_ - 1);
+            return make_error(make_syntax_error(position_ - 1));
         }
 
         return first;
     }
 
-    throw sdp_syntax_error(text_, position_);
+    return make_error("unexpected end of sdp");
 }
 
-bool is_line_break(char ch) { return ch == '\n' || ch == '\r'; }
+std::string sdp_lexer::make_syntax_error(std::size_t position) const
+{
+    if (text_.empty())
+    {
+        return "sdp syntax error at position 0: \"\"";
+    }
 
-bool is_whitespace(char ch) { return ch == ' ' || ch == '\t'; }
+    if (position >= text_.size())
+    {
+        position = text_.size() - 1;
+    }
+
+    std::string message;
+    message.reserve(64);
+    message += "sdp syntax error at position ";
+    message += std::to_string(position);
+    message += ": \"";
+    message += escape_char_for_error(text_[position]);
+    message += "\"";
+
+    return message;
+}
+
+bool is_line_break(char ch)
+{
+    return ch == '\n' || ch == '\r';
+}
+
+bool is_whitespace(char ch)
+{
+    return ch == ' ' || ch == '\t';
+}
 
 bool is_any_of(std::string_view value, std::initializer_list<std::string_view> candidates)
 {
@@ -299,11 +326,11 @@ bool is_any_of(std::string_view value, std::initializer_list<std::string_view> c
     return false;
 }
 
-int64_t parse_time_units(std::string_view value)
+std::expected<int64_t, std::string> parse_time_units(std::string_view value)
 {
     if (value.empty())
     {
-        return 0;
+        return make_error("empty sdp time value");
     }
 
     int64_t multiplier = 1;
@@ -335,31 +362,31 @@ int64_t parse_time_units(std::string_view value)
 
     if (number_text.empty())
     {
-        throw std::invalid_argument("invalid sdp time value");
+        return make_error("invalid sdp time value");
     }
 
     int64_t number = 0;
     const auto result = std::from_chars(number_text.data(), number_text.data() + number_text.size(), number);
-    if (result.ec != std::errc())
+    if (result.ec != std::errc() || result.ptr != number_text.data() + number_text.size())
     {
-        throw std::invalid_argument("invalid sdp time value");
+        return make_error("invalid sdp time value");
     }
 
     return number * multiplier;
 }
 
-int parse_port(std::string_view value)
+std::expected<int, std::string> parse_port(std::string_view value)
 {
     int port = 0;
     const auto result = std::from_chars(value.data(), value.data() + value.size(), port);
-    if (result.ec != std::errc())
+    if (result.ec != std::errc() || result.ptr != value.data() + value.size())
     {
-        return -1;
+        return make_error("invalid port");
     }
 
     if (port < 0 || port > 65535)
     {
-        return -1;
+        return make_error("port out of range");
     }
 
     return port;
