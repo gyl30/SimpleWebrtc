@@ -41,6 +41,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
    private:
     using udp = boost::asio::ip::udp;
 
+    [[nodiscard]] ice_udp_server_result init_dtls_transport();
+
     void do_receive();
 
     void on_receive(boost::system::error_code ec, std::size_t bytes_transferred);
@@ -72,7 +74,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::shared_ptr<dtls_transport> dtls_transport_;
 
     udp::endpoint remote_endpoint_;
-    std::array<uint8_t, 2048> receive_buffer_{};
+    std::array<uint8_t, 4096> receive_buffer_{};
 
     bool started_ = false;
 };

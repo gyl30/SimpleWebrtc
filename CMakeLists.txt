@@ -189,6 +189,7 @@ set(WEBRTC_SOURCES
     ice/ice_candidate.cpp
     ice/stun_message.cpp
     dtls/dtls_packet.cpp
+    dtls/dtls_context.cpp
     dtls/dtls_transport.cpp
     ice/ice_udp_server.cpp
     signaling/webrtc_answer_factory.cpp)

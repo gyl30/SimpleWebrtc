@@ -3,11 +3,14 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
+#include <expected>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_map>
+#include <vector>
+
+#include "dtls/dtls_context.h"
 
 namespace webrtc
 {
@@ -27,11 +30,16 @@ struct dtls_peer_identity
     std::string local_ice_ufrag;
 };
 
+using dtls_transport_packet_list = std::vector<std::vector<uint8_t>>;
+
+using dtls_transport_packet_result = std::expected<dtls_transport_packet_list, std::string>;
+
 class dtls_transport
 {
    public:
-    dtls_transport() = default;
-    ~dtls_transport() = default;
+    explicit dtls_transport(std::shared_ptr<dtls_context> context);
+
+    ~dtls_transport();
 
     dtls_transport(const dtls_transport&) = delete;
     dtls_transport& operator=(const dtls_transport&) = delete;
@@ -44,30 +52,15 @@ class dtls_transport
 
     void forget_peer(std::string_view remote_endpoint);
 
-    void handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint);
+    [[nodiscard]] dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint);
 
     [[nodiscard]] std::size_t peer_count() const;
 
    private:
-    struct dtls_peer_context
-    {
-        dtls_peer_identity identity;
-
-        uint64_t packet_count = 0;
-        uint64_t byte_count = 0;
-
-        bool saw_client_hello = false;
-        bool saw_dtls_packet = false;
-    };
+    struct impl;
 
    private:
-    [[nodiscard]] dtls_peer_context* find_peer_locked(std::string_view remote_endpoint);
-
-    void handle_known_peer_packet_locked(dtls_peer_context& context, std::span<const uint8_t> data, std::string_view remote_endpoint);
-
-   private:
-    mutable std::mutex mutex_;
-    std::unordered_map<std::string, dtls_peer_context> peers_by_endpoint_;
+    std::unique_ptr<impl> impl_;
 };
 
 [[nodiscard]] std::string dtls_peer_role_to_string(dtls_peer_role role);

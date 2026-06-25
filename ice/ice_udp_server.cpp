@@ -1,5 +1,6 @@
 #include "ice/ice_udp_server.h"
 
+#include <cstdlib>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -11,6 +12,7 @@
 
 #include <boost/system/error_code.hpp>
 
+#include "dtls/dtls_context.h"
 #include "dtls/dtls_packet.h"
 #include "ice/stun_message.h"
 #include "log/log.h"
@@ -22,6 +24,20 @@ namespace webrtc
 namespace
 {
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+
+std::expected<std::string, std::string> get_required_env(const char* name)
+{
+    const char* value = std::getenv(name);
+
+    if (value == nullptr || value[0] == '\0')
+    {
+        std::string message(name);
+        message.append(" is empty");
+        return std::unexpected(std::move(message));
+    }
+
+    return std::string(value);
+}
 
 std::string endpoint_to_string(const boost::asio::ip::udp::endpoint& endpoint)
 {
@@ -60,12 +76,7 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
                                std::string bind_host,
                                uint16_t bind_port,
                                std::shared_ptr<stream_registry> registry)
-    : io_context_(io_context),
-      socket_(io_context),
-      bind_host_(std::move(bind_host)),
-      bind_port_(bind_port),
-      registry_(std::move(registry)),
-      dtls_transport_(std::make_shared<dtls_transport>())
+    : io_context_(io_context), socket_(io_context), bind_host_(std::move(bind_host)), bind_port_(bind_port), registry_(std::move(registry))
 {
 }
 
@@ -79,6 +90,13 @@ ice_udp_server_result ice_udp_server::start()
     if (registry_ == nullptr)
     {
         return make_error("ice udp server registry is null");
+    }
+
+    auto dtls_result = init_dtls_transport();
+
+    if (!dtls_result)
+    {
+        return std::unexpected(dtls_result.error());
     }
 
     boost::system::error_code ec;
@@ -153,6 +171,45 @@ void ice_udp_server::stop()
 }
 
 uint16_t ice_udp_server::local_port() const { return bind_port_; }
+
+ice_udp_server_result ice_udp_server::init_dtls_transport()
+{
+    if (dtls_transport_ != nullptr)
+    {
+        return {};
+    }
+
+    auto certificate_file = get_required_env("WEBRTC_CERT_FILE");
+
+    if (!certificate_file)
+    {
+        return std::unexpected(certificate_file.error());
+    }
+
+    auto private_key_file = get_required_env("WEBRTC_KEY_FILE");
+
+    if (!private_key_file)
+    {
+        return std::unexpected(private_key_file.error());
+    }
+
+    dtls_context_config config;
+    config.certificate_file = *certificate_file;
+    config.private_key_file = *private_key_file;
+
+    auto context = make_dtls_context(config);
+
+    if (!context)
+    {
+        return std::unexpected(context.error());
+    }
+
+    dtls_transport_ = std::make_shared<dtls_transport>(*context);
+
+    WEBRTC_LOG_INFO("dtls transport initialized");
+
+    return {};
+}
 
 void ice_udp_server::do_receive()
 {
@@ -360,7 +417,21 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
         return;
     }
 
-    dtls_transport_->handle_udp_packet(data, remote_address);
+    auto packets = dtls_transport_->handle_udp_packet(data, remote_address);
+
+    if (!packets)
+    {
+        WEBRTC_LOG_WARN("dtls packet handle failed remote={} error={}", remote_address, packets.error());
+
+        return;
+    }
+
+    for (auto& packet : *packets)
+    {
+        WEBRTC_LOG_DEBUG("dtls send packet remote={} size={}", remote_address, packet.size());
+
+        send_response(std::move(packet), remote_endpoint);
+    }
 }
 
 void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
