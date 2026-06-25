@@ -175,7 +175,10 @@ set(WEBRTC_SOURCES
     server/whep_handler.cpp
     session/publisher_session.cpp
     session/subscriber_session.cpp
-    session/stream_registry.cpp)
+    session/stream_registry.cpp
+    signaling/sdp/sdp_types.cpp
+    signaling/sdp/sdp_lexer.cpp
+    signaling/sdp/sdp_parser.cpp)
 
 add_executable(SimpleWebrtc ${WEBRTC_SOURCES} main.cpp)
 

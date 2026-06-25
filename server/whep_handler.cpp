@@ -7,6 +7,7 @@
 
 #include "log/log.h"
 #include "net/http.h"
+#include "signaling/sdp/sdp_parser.h"
 
 namespace webrtc
 {
@@ -14,12 +15,58 @@ namespace
 {
 namespace http = boost::beast::http;
 
+std::string json_escape(std::string_view value)
+{
+    std::string result;
+    result.reserve(value.size());
+
+    for (const auto ch : value)
+    {
+        switch (ch)
+        {
+            case '\\':
+                result += "\\\\";
+                break;
+            case '"':
+                result += "\\\"";
+                break;
+            case '\n':
+                result += "\\n";
+                break;
+            case '\r':
+                result += "\\r";
+                break;
+            case '\t':
+                result += "\\t";
+                break;
+            default:
+            {
+                const auto byte = static_cast<unsigned char>(ch);
+                if (byte < 0x20)
+                {
+                    constexpr char digits[] = "0123456789abcdef";
+                    result += "\\u00";
+                    result.push_back(digits[byte >> 4]);
+                    result.push_back(digits[byte & 0x0f]);
+                }
+                else
+                {
+                    result.push_back(ch);
+                }
+                break;
+            }
+        }
+    }
+
+    return result;
+}
+
 std::string json_error_body(std::string_view message)
 {
     std::string body;
-    body.reserve(message.size() + 16);
+    body.reserve(message.size() + 32);
     body.append(R"({"error":")");
-    body.append(message);
+    body.append(json_escape(message));
     body.append(R"("})");
     return body;
 }
@@ -30,6 +77,21 @@ whep_handler::whep_handler(std::shared_ptr<stream_registry> registry) : registry
 http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::string_view stream_id)
 {
     const std::string& offer = request.req.body();
+
+    auto sdp_parse_result = sdp::parse_session_description(offer);
+    if (!sdp_parse_result.success)
+    {
+        WEBRTC_LOG_WARN("WHEP parse SDP offer failed stream={} error={}", stream_id, sdp_parse_result.error);
+
+        std::string error_message;
+        error_message.reserve(sdp_parse_result.error.size() + 20);
+        error_message.append("invalid sdp offer: ");
+        error_message.append(sdp_parse_result.error);
+
+        return json_error_response(request, 400, error_message);
+    }
+
+    WEBRTC_LOG_INFO("WHEP parsed SDP offer stream={} media_count={}", stream_id, sdp_parse_result.description.media_descriptions.size());
 
     auto result = registry_->create_subscriber_session(stream_id, offer);
 
@@ -52,9 +114,9 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     std::string body;
     body.reserve(256);
     body.append(R"({"type":"subscriber","stream_id":")");
-    body.append(session->stream_id());
+    body.append(json_escape(session->stream_id()));
     body.append(R"(","session_id":")");
-    body.append(session->session_id());
+    body.append(json_escape(session->session_id()));
     body.append(R"(","state":")");
     body.append(session->state_string());
     body.append(R"(","message":"SDP answer not implemented"})");
