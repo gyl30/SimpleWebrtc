@@ -2,14 +2,19 @@
 
 #include <algorithm>
 #include <cctype>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/beast/http.hpp>
 
 #include "log/log.h"
-#include "server/signaling_json.h"
+#include "media/media_router.h"
+#include "media/media_router_stats_json.h"
+#include "net/http.h"
+#include "signaling/webrtc_answer_factory.h"
 
 namespace webrtc
 {
@@ -17,11 +22,17 @@ namespace
 {
 namespace http = boost::beast::http;
 
-constexpr std::string_view kWhipPrefix = "/whip/";
-constexpr std::string_view kWhepPrefix = "/whep/";
-constexpr std::string_view kWhipSessionPrefix = "/whip/session/";
-constexpr std::string_view kWhepSessionPrefix = "/whep/session/";
-constexpr std::string_view kApplicationSdp = "application/sdp";
+inline constexpr std::string_view k_application_sdp = "application/sdp";
+
+inline constexpr std::string_view k_whip_prefix = "/whip/";
+
+inline constexpr std::string_view k_whep_prefix = "/whep/";
+
+inline constexpr std::string_view k_whip_session_prefix = "/whip/session/";
+
+inline constexpr std::string_view k_whep_session_prefix = "/whep/session/";
+
+inline constexpr std::string_view k_media_stats_path = "/api/stats/media";
 
 std::string_view remove_query(std::string_view target)
 {
@@ -52,19 +63,41 @@ bool match_single_value_path(std::string_view path, std::string_view prefix, std
     return value.find('/') == std::string_view::npos;
 }
 
+std::string json_error_body(std::string_view message)
+{
+    std::string body;
+    body.reserve(message.size() + 16);
+    body.append(R"({"error":")");
+    body.append(message);
+    body.append(R"("})");
+    return body;
+}
+
 std::string beast_string_view_to_string(boost::beast::string_view value) { return std::string(value.data(), value.size()); }
 
 std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return std::string_view(value.data(), value.size()); }
 }    // namespace
 
 router::router(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
-    : registry_(std::move(registry)), answer_factory_(std::move(answer_factory)), whip_(registry_, answer_factory_), whep_(registry_, answer_factory_)
+    : router(std::move(registry), std::move(answer_factory), nullptr)
+{
+}
+
+router::router(std::shared_ptr<stream_registry> registry,
+               std::shared_ptr<webrtc_answer_factory> answer_factory,
+               std::shared_ptr<media_router> media_router)
+    : registry_(std::move(registry)),
+      answer_factory_(std::move(answer_factory)),
+      media_router_(std::move(media_router)),
+      whip_(registry_, answer_factory_),
+      whep_(registry_, answer_factory_)
 {
 }
 
 http_response_ptr router::handle(http_request_t& request)
 {
     const auto method = request.req.method();
+
     const std::string_view path = request_path(request);
 
     WEBRTC_LOG_DEBUG("http route method={} path={}", beast_string_view_to_string(request.req.method_string()), path);
@@ -84,32 +117,39 @@ http_response_ptr router::handle(http_request_t& request)
         return handle_version(request);
     }
 
+    if (path == k_media_stats_path)
+    {
+        return handle_media_stats(request);
+    }
+
     std::string_view session_id;
 
-    if (match_single_value_path(path, kWhipSessionPrefix, session_id))
+    if (match_single_value_path(path, k_whip_session_prefix, session_id))
     {
         return handle_whip_session(request, session_id);
     }
 
-    if (match_single_value_path(path, kWhepSessionPrefix, session_id))
+    if (match_single_value_path(path, k_whep_session_prefix, session_id))
     {
         return handle_whep_session(request, session_id);
     }
 
     std::string_view stream_id;
 
-    if (match_single_value_path(path, kWhipPrefix, stream_id))
+    if (match_single_value_path(path, k_whip_prefix, stream_id))
     {
         return handle_whip_create(request, stream_id);
     }
 
-    if (match_single_value_path(path, kWhepPrefix, stream_id))
+    if (match_single_value_path(path, k_whep_prefix, stream_id))
     {
         return handle_whep_create(request, stream_id);
     }
 
     return not_found(request);
 }
+
+void router::set_media_router(std::shared_ptr<media_router> media_router) { media_router_ = std::move(media_router); }
 
 http_response_ptr router::handle_options(http_request_t& request)
 {
@@ -131,6 +171,25 @@ http_response_ptr router::handle_version(http_request_t& request)
     return json_response(request, 200, R"({"name":"SimpleWebrtc","version":"0.1"})");
 }
 
+http_response_ptr router::handle_media_stats(http_request_t& request)
+{
+    if (request.req.method() != http::verb::get)
+    {
+        return method_not_allowed(request);
+    }
+
+    if (media_router_ == nullptr)
+    {
+        return json_response(request, 503, json_error_body("media router unavailable"));
+    }
+
+    const media_router_stats_snapshot snapshot = media_router_->get_stats_snapshot();
+
+    const std::string body = media_router_stats_snapshot_to_json(snapshot);
+
+    return json_response(request, 200, body);
+}
+
 http_response_ptr router::handle_whip_create(http_request_t& request, std::string_view stream_id)
 {
     if (request.req.method() != http::verb::post)
@@ -146,11 +205,6 @@ http_response_ptr router::handle_whip_create(http_request_t& request, std::strin
     if (!is_application_sdp(request))
     {
         return unsupported_media_type(request);
-    }
-
-    if (request.req.body().empty())
-    {
-        return bad_request(request, "empty sdp offer");
     }
 
     return whip_.create_publisher(request, stream_id);
@@ -195,11 +249,6 @@ http_response_ptr router::handle_whep_create(http_request_t& request, std::strin
         return unsupported_media_type(request);
     }
 
-    if (request.req.body().empty())
-    {
-        return bad_request(request, "empty sdp offer");
-    }
-
     return whep_.create_subscriber(request, stream_id);
 }
 
@@ -225,11 +274,11 @@ http_response_ptr router::handle_whep_session(http_request_t& request, std::stri
     return method_not_allowed(request);
 }
 
-http_response_ptr router::not_found(http_request_t& request) { return json_response(request, 404, make_error_response_body("not found")); }
+http_response_ptr router::not_found(http_request_t& request) { return json_response(request, 404, R"({"error":"not found"})"); }
 
 http_response_ptr router::method_not_allowed(http_request_t& request)
 {
-    auto response = json_response(request, 405, make_error_response_body("method not allowed"));
+    auto response = json_response(request, 405, R"({"error":"method not allowed"})");
 
     response->set(http::field::allow, "GET, POST, PATCH, DELETE, OPTIONS");
 
@@ -238,17 +287,17 @@ http_response_ptr router::method_not_allowed(http_request_t& request)
 
 http_response_ptr router::bad_request(http_request_t& request, std::string_view message)
 {
-    return json_response(request, 400, make_error_response_body(message));
+    return json_response(request, 400, json_error_body(message));
 }
 
 http_response_ptr router::unsupported_media_type(http_request_t& request)
 {
-    return json_response(request, 415, make_error_response_body("unsupported media type, expected application/sdp"));
+    return json_response(request, 415, R"({"error":"unsupported media type, expected application/sdp"})");
 }
 
 http_response_ptr router::not_implemented(http_request_t& request, std::string_view message)
 {
-    return json_response(request, 501, make_error_response_body(message));
+    return json_response(request, 501, json_error_body(message));
 }
 
 http_response_ptr router::json_response(http_request_t& request, int code, std::string_view body)
@@ -286,6 +335,7 @@ http_response_ptr router::text_response(http_request_t& request, int code, std::
 void router::add_common_headers(const http_response_ptr& response)
 {
     response->set(http::field::access_control_allow_origin, "*");
+
     response->set(http::field::cache_control, "no-store");
 }
 
@@ -314,22 +364,22 @@ bool router::is_application_sdp(http_request_t& request)
         return false;
     }
 
-    if (boost::algorithm::iequals(content_type, kApplicationSdp))
+    if (boost::algorithm::iequals(content_type, k_application_sdp))
     {
         return true;
     }
 
-    if (!boost::algorithm::istarts_with(content_type, kApplicationSdp))
+    if (!boost::algorithm::istarts_with(content_type, k_application_sdp))
     {
         return false;
     }
 
-    if (content_type.size() <= kApplicationSdp.size())
+    if (content_type.size() <= k_application_sdp.size())
     {
         return false;
     }
 
-    return content_type[kApplicationSdp.size()] == ';';
+    return content_type[k_application_sdp.size()] == ';';
 }
 
 bool router::is_valid_resource_id(std::string_view value)
