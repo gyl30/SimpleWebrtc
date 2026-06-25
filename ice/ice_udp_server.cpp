@@ -19,6 +19,7 @@
 #include "ice/stun_message.h"
 #include "log/log.h"
 #include "media/media_router.h"
+#include "media/rtcp_feedback_router.h"
 #include "net/socket.h"
 #include "rtp/rtp_packet.h"
 #include "session/session_state.h"
@@ -89,6 +90,33 @@ dtls_peer_identity make_subscriber_dtls_identity(const std::shared_ptr<subscribe
     identity.stream_id = session->stream_id();
     identity.local_ice_ufrag = session->local_ice().ufrag;
     return identity;
+}
+
+void log_rtcp_feedback_route_event(const rtcp_feedback_route_event& event)
+{
+    WEBRTC_LOG_INFO(
+        "rtcp feedback route event={} action={} role={} stream={} session={} remote={} targets={} packet_type={} format={} feedback={} ssrc={} "
+        "sender_ssrc={} media_ssrc={} nack_count={} fir_count={} keyframe_request={} generic_nack={} transport_cc={} remb={} remb_bitrate={}",
+        rtcp_feedback_event_type_to_string(event.event_type),
+        media_route_action_to_string(event.action),
+        media_peer_role_to_string(event.source.role),
+        event.source.stream_id,
+        event.source.session_id,
+        event.source.remote_endpoint,
+        event.target_endpoints.size(),
+        static_cast<unsigned int>(event.packet_type),
+        static_cast<unsigned int>(event.feedback_format),
+        event.feedback_name,
+        event.ssrc,
+        event.sender_ssrc,
+        event.media_ssrc,
+        event.nack_count,
+        event.fir_count,
+        event.has_keyframe_request ? 1 : 0,
+        event.has_generic_nack ? 1 : 0,
+        event.has_transport_cc ? 1 : 0,
+        event.has_remb ? 1 : 0,
+        event.remb_bitrate_bps);
 }
 }    // namespace
 
@@ -620,6 +648,13 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
                      route.source.stream_id,
                      route.source.session_id,
                      route.target_endpoints.size());
+
+    const auto feedback_event = make_rtcp_feedback_route_event(*result, route);
+
+    if (feedback_event.has_value())
+    {
+        log_rtcp_feedback_route_event(*feedback_event);
+    }
 
     forward_media_packet(*result, route);
 }
