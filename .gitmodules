@@ -4,3 +4,6 @@
 [submodule "third/spdlog"]
 	path = third/spdlog
 	url = https://github.com/gabime/spdlog.git
+[submodule "third/libsrtp"]
+	path = third/libsrtp
+	url = https://github.com/cisco/libsrtp.git
