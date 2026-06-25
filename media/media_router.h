@@ -157,6 +157,47 @@ struct media_stream_stats
     uint64_t last_remb_bitrate_bps = 0;
 };
 
+struct media_router_stats_snapshot
+{
+    std::size_t peer_count = 0;
+    std::size_t stream_count = 0;
+    std::size_t active_publisher_count = 0;
+    std::size_t active_subscriber_count = 0;
+
+    uint64_t inbound_rtp_packets = 0;
+    uint64_t inbound_rtp_bytes = 0;
+    uint64_t inbound_rtcp_packets = 0;
+    uint64_t inbound_rtcp_bytes = 0;
+
+    uint64_t routed_target_packets = 0;
+    uint64_t routed_target_bytes = 0;
+
+    uint64_t rtcp_feedback_packets = 0;
+    uint64_t rtcp_report_packets = 0;
+    uint64_t rtcp_report_blocks = 0;
+    uint64_t rtcp_nack_items = 0;
+    uint64_t rtcp_fir_items = 0;
+    uint64_t rtcp_keyframe_request_packets = 0;
+    uint64_t rtcp_generic_nack_packets = 0;
+    uint64_t rtcp_transport_cc_packets = 0;
+    uint64_t rtcp_remb_packets = 0;
+
+    uint64_t rtcp_rtt_sample_count = 0;
+    uint64_t rtcp_last_rtt_ms = 0;
+    uint64_t rtcp_max_rtt_ms = 0;
+    uint64_t rtcp_avg_rtt_ms = 0;
+    uint64_t rtcp_rtt_sum_ms = 0;
+
+    uint64_t rtp_sequence_gap_events = 0;
+    uint64_t rtp_sequence_lost_packets = 0;
+    uint64_t rtp_out_of_order_packets = 0;
+    uint64_t rtp_duplicate_packets = 0;
+    uint64_t rtp_sequence_wraps = 0;
+
+    std::vector<media_peer_stats> peers;
+    std::vector<media_stream_stats> streams;
+};
+
 struct media_route_result
 {
     bool known_peer = false;
@@ -197,6 +238,8 @@ class media_router
     [[nodiscard]] std::optional<media_peer_stats> get_peer_stats(std::string_view remote_endpoint) const;
 
     [[nodiscard]] std::optional<media_stream_stats> get_stream_stats(std::string_view stream_id) const;
+
+    [[nodiscard]] media_router_stats_snapshot get_stats_snapshot() const;
 
     [[nodiscard]] std::size_t peer_count() const;
 

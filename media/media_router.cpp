@@ -92,6 +92,57 @@ std::optional<uint64_t> estimate_rtcp_rtt_ms(uint32_t last_sender_report, uint32
 
     return rtt_ms;
 }
+
+void add_peer_to_snapshot(const media_peer_stats& peer, media_router_stats_snapshot& snapshot)
+{
+    snapshot.inbound_rtp_packets += peer.inbound_rtp_packets;
+    snapshot.inbound_rtp_bytes += peer.inbound_rtp_bytes;
+    snapshot.inbound_rtcp_packets += peer.inbound_rtcp_packets;
+    snapshot.inbound_rtcp_bytes += peer.inbound_rtcp_bytes;
+
+    snapshot.routed_target_packets += peer.routed_target_packets;
+    snapshot.routed_target_bytes += peer.routed_target_bytes;
+
+    snapshot.rtcp_feedback_packets += peer.rtcp_feedback_packets;
+    snapshot.rtcp_report_packets += peer.rtcp_report_packets;
+    snapshot.rtcp_report_blocks += peer.rtcp_report_blocks;
+    snapshot.rtcp_nack_items += peer.rtcp_nack_items;
+    snapshot.rtcp_fir_items += peer.rtcp_fir_items;
+    snapshot.rtcp_keyframe_request_packets += peer.rtcp_keyframe_request_packets;
+    snapshot.rtcp_generic_nack_packets += peer.rtcp_generic_nack_packets;
+    snapshot.rtcp_transport_cc_packets += peer.rtcp_transport_cc_packets;
+    snapshot.rtcp_remb_packets += peer.rtcp_remb_packets;
+
+    snapshot.rtcp_rtt_sample_count += peer.rtcp_rtt_sample_count;
+    snapshot.rtcp_rtt_sum_ms += peer.rtcp_rtt_sum_ms;
+
+    if (peer.rtcp_last_rtt_ms != 0)
+    {
+        snapshot.rtcp_last_rtt_ms = peer.rtcp_last_rtt_ms;
+    }
+
+    if (peer.rtcp_max_rtt_ms > snapshot.rtcp_max_rtt_ms)
+    {
+        snapshot.rtcp_max_rtt_ms = peer.rtcp_max_rtt_ms;
+    }
+
+    snapshot.rtp_sequence_gap_events += peer.rtp_sequence_gap_events;
+    snapshot.rtp_sequence_lost_packets += peer.rtp_sequence_lost_packets;
+    snapshot.rtp_out_of_order_packets += peer.rtp_out_of_order_packets;
+    snapshot.rtp_duplicate_packets += peer.rtp_duplicate_packets;
+    snapshot.rtp_sequence_wraps += peer.rtp_sequence_wraps;
+}
+
+void finalize_snapshot(media_router_stats_snapshot& snapshot)
+{
+    if (snapshot.rtcp_rtt_sample_count == 0)
+    {
+        snapshot.rtcp_avg_rtt_ms = 0;
+        return;
+    }
+
+    snapshot.rtcp_avg_rtt_ms = snapshot.rtcp_rtt_sum_ms / snapshot.rtcp_rtt_sample_count;
+}
 }    // namespace
 
 void media_router::remember_publisher(std::string_view remote_endpoint, std::string_view stream_id, std::string_view session_id)
@@ -253,6 +304,44 @@ std::optional<media_stream_stats> media_router::get_stream_stats(std::string_vie
     }
 
     return iterator->second;
+}
+
+media_router_stats_snapshot media_router::get_stats_snapshot() const
+{
+    std::lock_guard lock(mutex_);
+
+    media_router_stats_snapshot snapshot;
+    snapshot.peer_count = peers_by_endpoint_.size();
+    snapshot.stream_count = stream_stats_by_stream_.size();
+    snapshot.active_publisher_count = publisher_by_stream_.size();
+
+    snapshot.peers.reserve(peer_stats_by_endpoint_.size());
+    snapshot.streams.reserve(stream_stats_by_stream_.size());
+
+    for (const auto& [unused_endpoint, peer_stats] : peer_stats_by_endpoint_)
+    {
+        (void)unused_endpoint;
+
+        if (peer_stats.peer.role == media_peer_role::subscriber)
+        {
+            snapshot.active_subscriber_count += 1;
+        }
+
+        add_peer_to_snapshot(peer_stats, snapshot);
+
+        snapshot.peers.push_back(peer_stats);
+    }
+
+    for (const auto& [unused_stream_id, stream_stats] : stream_stats_by_stream_)
+    {
+        (void)unused_stream_id;
+
+        snapshot.streams.push_back(stream_stats);
+    }
+
+    finalize_snapshot(snapshot);
+
+    return snapshot;
 }
 
 std::size_t media_router::peer_count() const
