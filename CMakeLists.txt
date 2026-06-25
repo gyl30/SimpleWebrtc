@@ -201,6 +201,7 @@ set(WEBRTC_SOURCES
     dtls/dtls_srtp_keying_material.cpp
     dtls/dtls_transport.cpp
     rtp/rtp_packet.cpp
+    rtp/rtcp_feedback.cpp
     srtp/srtp_session.cpp
     srtp/srtp_transport.cpp
     media/media_router.cpp

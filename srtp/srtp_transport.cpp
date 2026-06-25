@@ -16,6 +16,7 @@
 
 #include "dtls/dtls_srtp_keying_material.h"
 #include "log/log.h"
+#include "rtp/rtcp_feedback.h"
 #include "rtp/rtp_packet.h"
 #include "srtp/srtp_session.h"
 
@@ -81,6 +82,31 @@ srtp_transport_result make_unprotected_rtp_result(std::size_t packet_size, std::
     return result;
 }
 
+void fill_feedback_fields(const rtcp_feedback_packet& feedback, srtp_packet_process_result& result)
+{
+    result.rtcp_is_feedback = true;
+    result.rtcp_feedback_format = feedback.format;
+    result.rtcp_feedback_name = rtcp_feedback_format_to_string(feedback.packet_type, feedback.format);
+
+    if (feedback.remb.has_value())
+    {
+        result.rtcp_feedback_name = "remb";
+    }
+
+    result.rtcp_sender_ssrc = feedback.sender_ssrc;
+    result.rtcp_media_ssrc = feedback.media_ssrc;
+    result.rtcp_nack_count = feedback.nack_items.size();
+    result.rtcp_fir_count = feedback.fir_items.size();
+    result.rtcp_has_keyframe_request = feedback.has_keyframe_request;
+    result.rtcp_has_transport_cc = feedback.has_transport_cc;
+    result.rtcp_has_remb = feedback.remb.has_value();
+
+    if (feedback.remb.has_value())
+    {
+        result.rtcp_remb_bitrate_bps = feedback.remb->bitrate_bps;
+    }
+}
+
 srtp_transport_result make_unprotected_rtcp_result(std::size_t packet_size, std::vector<uint8_t> packet)
 {
     auto header = parse_rtcp_packet_header(packet);
@@ -103,12 +129,29 @@ srtp_transport_result make_unprotected_rtcp_result(std::size_t packet_size, std:
     result.rtcp_count = header->count;
     result.rtcp_length = header->length;
     result.packet_type_name = rtcp_packet_type_to_string(header->packet_type);
-    result.plain_packet = std::move(packet);
 
     if (header->has_ssrc)
     {
         result.ssrc = header->ssrc;
     }
+
+    if (is_rtcp_feedback_packet(packet))
+    {
+        auto feedback = parse_rtcp_feedback_packet(packet);
+
+        if (!feedback)
+        {
+            std::string message = "rtcp feedback parse failed after srtp unprotect: ";
+
+            message.append(feedback.error());
+
+            return std::unexpected(std::move(message));
+        }
+
+        fill_feedback_fields(*feedback, result);
+    }
+
+    result.plain_packet = std::move(packet);
 
     return result;
 }
@@ -244,18 +287,42 @@ struct srtp_transport::impl
         {
             peer.inbound_rtcp_count += 1;
 
-            WEBRTC_LOG_DEBUG(
-                "srtp inbound rtcp unprotected remote={} size={} plain_size={} ssrc={} packet_type={} packet_type_name={} count={} length={} "
-                "packets={}",
-                remote_endpoint,
-                data.size(),
-                unprotected_size,
-                result->ssrc,
-                static_cast<unsigned int>(result->payload_type),
-                result->packet_type_name,
-                static_cast<unsigned int>(result->rtcp_count),
-                result->rtcp_length,
-                peer.inbound_packet_count);
+            if (result->rtcp_is_feedback)
+            {
+                WEBRTC_LOG_DEBUG(
+                    "srtp inbound rtcp feedback unprotected remote={} size={} plain_size={} ssrc={} packet_type={} feedback={} sender_ssrc={} "
+                    "media_ssrc={} nack_count={} fir_count={} keyframe_request={} transport_cc={} remb={} remb_bitrate={} packets={}",
+                    remote_endpoint,
+                    data.size(),
+                    unprotected_size,
+                    result->ssrc,
+                    static_cast<unsigned int>(result->payload_type),
+                    result->rtcp_feedback_name,
+                    result->rtcp_sender_ssrc,
+                    result->rtcp_media_ssrc,
+                    result->rtcp_nack_count,
+                    result->rtcp_fir_count,
+                    result->rtcp_has_keyframe_request ? 1 : 0,
+                    result->rtcp_has_transport_cc ? 1 : 0,
+                    result->rtcp_has_remb ? 1 : 0,
+                    result->rtcp_remb_bitrate_bps,
+                    peer.inbound_packet_count);
+            }
+            else
+            {
+                WEBRTC_LOG_DEBUG(
+                    "srtp inbound rtcp unprotected remote={} size={} plain_size={} ssrc={} packet_type={} packet_type_name={} count={} length={} "
+                    "packets={}",
+                    remote_endpoint,
+                    data.size(),
+                    unprotected_size,
+                    result->ssrc,
+                    static_cast<unsigned int>(result->payload_type),
+                    result->packet_type_name,
+                    static_cast<unsigned int>(result->rtcp_count),
+                    result->rtcp_length,
+                    peer.inbound_packet_count);
+            }
         }
 
         return std::move(*result);
