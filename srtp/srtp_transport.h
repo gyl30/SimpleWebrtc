@@ -38,6 +38,14 @@ struct srtp_packet_process_result
     uint32_t ssrc = 0;
     uint8_t payload_type = 0;
 
+    bool marker = false;
+    uint16_t sequence_number = 0;
+    uint32_t timestamp = 0;
+
+    uint8_t rtcp_count = 0;
+    uint16_t rtcp_length = 0;
+    std::string packet_type_name;
+
     std::string reason;
 };
 

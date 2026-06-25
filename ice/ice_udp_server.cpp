@@ -17,6 +17,7 @@
 #include "ice/stun_message.h"
 #include "log/log.h"
 #include "net/socket.h"
+#include "rtp/rtp_packet.h"
 #include "session/session_state.h"
 
 namespace webrtc

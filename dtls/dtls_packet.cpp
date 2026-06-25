@@ -118,16 +118,6 @@ bool is_dtls_packet(std::span<const uint8_t> data)
     return true;
 }
 
-bool is_rtp_or_rtcp_packet(std::span<const uint8_t> data)
-{
-    if (data.empty())
-    {
-        return false;
-    }
-
-    return data[0] >= 128U && data[0] <= 191U;
-}
-
 dtls_record_header_result parse_dtls_record_header(std::span<const uint8_t> data)
 {
     if (data.size() < k_dtls_record_header_size)

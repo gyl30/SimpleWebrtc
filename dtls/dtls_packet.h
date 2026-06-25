@@ -53,8 +53,6 @@ using dtls_record_header_result = std::expected<dtls_record_header, std::string>
 
 [[nodiscard]] bool is_dtls_packet(std::span<const uint8_t> data);
 
-[[nodiscard]] bool is_rtp_or_rtcp_packet(std::span<const uint8_t> data);
-
 [[nodiscard]] dtls_record_header_result parse_dtls_record_header(std::span<const uint8_t> data);
 
 [[nodiscard]] bool is_dtls_client_hello(std::span<const uint8_t> data);

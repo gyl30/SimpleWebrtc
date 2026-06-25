@@ -15,6 +15,7 @@
 
 #include "dtls/dtls_srtp_keying_material.h"
 #include "log/log.h"
+#include "rtp/rtp_packet.h"
 #include "srtp/srtp_session.h"
 
 namespace webrtc
@@ -22,37 +23,6 @@ namespace webrtc
 namespace
 {
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
-
-uint16_t read_u16(std::span<const uint8_t> data, std::size_t offset)
-{
-    return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
-}
-
-uint32_t read_u32(std::span<const uint8_t> data, std::size_t offset)
-{
-    return (static_cast<uint32_t>(data[offset]) << 24U) | (static_cast<uint32_t>(data[offset + 1]) << 16U) |
-           (static_cast<uint32_t>(data[offset + 2]) << 8U) | static_cast<uint32_t>(data[offset + 3]);
-}
-
-bool is_rtp_or_rtcp_packet(std::span<const uint8_t> data)
-{
-    if (data.empty())
-    {
-        return false;
-    }
-
-    return data[0] >= 128U && data[0] <= 191U;
-}
-
-bool is_rtcp_packet(std::span<const uint8_t> data)
-{
-    if (data.size() < 2)
-    {
-        return false;
-    }
-
-    return data[1] >= 192U && data[1] <= 223U;
-}
 
 srtp_packet_kind classify_packet(std::span<const uint8_t> data)
 {
@@ -80,30 +50,78 @@ srtp_packet_process_result make_ignored_result(srtp_packet_kind kind, std::size_
     return result;
 }
 
-srtp_packet_process_result make_unprotected_result(srtp_packet_kind kind,
-                                                   std::size_t packet_size,
-                                                   std::size_t unprotected_size,
-                                                   std::span<const uint8_t> packet)
+srtp_transport_result make_unprotected_rtp_result(std::size_t packet_size, std::span<const uint8_t> packet)
 {
+    auto header = parse_rtp_packet_header(packet);
+
+    if (!header)
+    {
+        std::string message = "rtp header parse failed after srtp unprotect: ";
+
+        message.append(header.error());
+
+        return std::unexpected(std::move(message));
+    }
+
     srtp_packet_process_result result;
     result.state = srtp_packet_process_state::unprotected;
-    result.kind = kind;
+    result.kind = srtp_packet_kind::rtp;
     result.packet_size = packet_size;
-    result.unprotected_size = unprotected_size;
+    result.unprotected_size = packet.size();
+    result.ssrc = header->ssrc;
+    result.payload_type = header->payload_type;
+    result.marker = header->marker;
+    result.sequence_number = header->sequence_number;
+    result.timestamp = header->timestamp;
+    result.packet_type_name = "rtp";
 
-    if (kind == srtp_packet_kind::rtp && packet.size() >= 12)
+    return result;
+}
+
+srtp_transport_result make_unprotected_rtcp_result(std::size_t packet_size, std::span<const uint8_t> packet)
+{
+    auto header = parse_rtcp_packet_header(packet);
+
+    if (!header)
     {
-        result.payload_type = static_cast<uint8_t>(packet[1] & 0x7FU);
+        std::string message = "rtcp header parse failed after srtp unprotect: ";
 
-        result.ssrc = read_u32(packet, 8);
+        message.append(header.error());
+
+        return std::unexpected(std::move(message));
     }
-    else if (kind == srtp_packet_kind::rtcp && packet.size() >= 8)
+
+    srtp_packet_process_result result;
+    result.state = srtp_packet_process_state::unprotected;
+    result.kind = srtp_packet_kind::rtcp;
+    result.packet_size = packet_size;
+    result.unprotected_size = packet.size();
+    result.payload_type = header->packet_type;
+    result.rtcp_count = header->count;
+    result.rtcp_length = header->length;
+    result.packet_type_name = rtcp_packet_type_to_string(header->packet_type);
+
+    if (header->has_ssrc)
     {
-        result.payload_type = packet[1];
-        result.ssrc = read_u32(packet, 4);
+        result.ssrc = header->ssrc;
     }
 
     return result;
+}
+
+srtp_transport_result make_unprotected_result(srtp_packet_kind kind, std::size_t packet_size, std::span<const uint8_t> packet)
+{
+    if (kind == srtp_packet_kind::rtp)
+    {
+        return make_unprotected_rtp_result(packet_size, packet);
+    }
+
+    if (kind == srtp_packet_kind::rtcp)
+    {
+        return make_unprotected_rtcp_result(packet_size, packet);
+    }
+
+    return make_error("srtp packet kind is unknown");
 }
 }    // namespace
 
@@ -176,30 +194,51 @@ struct srtp_transport::impl
 
         packet.resize(unprotected_size);
 
+        auto result = make_unprotected_result(kind, data.size(), packet);
+
+        if (!result)
+        {
+            return std::unexpected(result.error());
+        }
+
         peer.inbound_packet_count += 1;
         peer.inbound_byte_count += static_cast<uint64_t>(unprotected_size);
 
         if (kind == srtp_packet_kind::rtp)
         {
             peer.inbound_rtp_count += 1;
+
+            WEBRTC_LOG_DEBUG(
+                "srtp inbound rtp unprotected remote={} size={} plain_size={} ssrc={} payload_type={} marker={} sequence={} timestamp={} packets={}",
+                remote_endpoint,
+                data.size(),
+                unprotected_size,
+                result->ssrc,
+                static_cast<unsigned int>(result->payload_type),
+                result->marker ? 1 : 0,
+                result->sequence_number,
+                result->timestamp,
+                peer.inbound_packet_count);
         }
         else
         {
             peer.inbound_rtcp_count += 1;
+
+            WEBRTC_LOG_DEBUG(
+                "srtp inbound rtcp unprotected remote={} size={} plain_size={} ssrc={} packet_type={} packet_type_name={} count={} length={} "
+                "packets={}",
+                remote_endpoint,
+                data.size(),
+                unprotected_size,
+                result->ssrc,
+                static_cast<unsigned int>(result->payload_type),
+                result->packet_type_name,
+                static_cast<unsigned int>(result->rtcp_count),
+                result->rtcp_length,
+                peer.inbound_packet_count);
         }
 
-        auto result = make_unprotected_result(kind, data.size(), unprotected_size, packet);
-
-        WEBRTC_LOG_DEBUG("srtp inbound packet unprotected remote={} kind={} size={} plain_size={} ssrc={} payload_type={} packets={}",
-                         remote_endpoint,
-                         srtp_packet_kind_to_string(kind),
-                         data.size(),
-                         unprotected_size,
-                         result.ssrc,
-                         static_cast<unsigned int>(result.payload_type),
-                         peer.inbound_packet_count);
-
-        return result;
+        return std::move(*result);
     }
 
     void forget_peer(std::string_view remote_endpoint)
