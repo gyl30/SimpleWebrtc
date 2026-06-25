@@ -38,6 +38,72 @@ struct media_peer_info
     std::string remote_endpoint;
 };
 
+struct media_peer_stats
+{
+    media_peer_info peer;
+
+    uint64_t inbound_rtp_packets = 0;
+    uint64_t inbound_rtp_bytes = 0;
+    uint64_t inbound_rtcp_packets = 0;
+    uint64_t inbound_rtcp_bytes = 0;
+
+    uint64_t routed_target_packets = 0;
+    uint64_t routed_target_bytes = 0;
+
+    uint64_t rtcp_feedback_packets = 0;
+    uint64_t rtcp_generic_nack_packets = 0;
+    uint64_t rtcp_keyframe_request_packets = 0;
+    uint64_t rtcp_transport_cc_packets = 0;
+    uint64_t rtcp_remb_packets = 0;
+
+    uint64_t rtcp_nack_items = 0;
+    uint64_t rtcp_fir_items = 0;
+
+    uint32_t last_rtp_ssrc = 0;
+    uint16_t last_rtp_sequence_number = 0;
+    uint32_t last_rtp_timestamp = 0;
+    uint8_t last_rtp_payload_type = 0;
+
+    uint32_t last_rtcp_ssrc = 0;
+    uint8_t last_rtcp_packet_type = 0;
+    uint64_t last_remb_bitrate_bps = 0;
+};
+
+struct media_stream_stats
+{
+    std::string stream_id;
+
+    std::size_t active_publishers = 0;
+    std::size_t active_subscribers = 0;
+
+    uint64_t inbound_rtp_packets = 0;
+    uint64_t inbound_rtp_bytes = 0;
+    uint64_t inbound_rtcp_packets = 0;
+    uint64_t inbound_rtcp_bytes = 0;
+
+    uint64_t publisher_rtp_packets = 0;
+    uint64_t subscriber_rtcp_packets = 0;
+
+    uint64_t fanout_target_packets = 0;
+    uint64_t route_to_publisher_packets = 0;
+
+    uint64_t rtcp_feedback_packets = 0;
+    uint64_t rtcp_generic_nack_packets = 0;
+    uint64_t rtcp_keyframe_request_packets = 0;
+    uint64_t rtcp_transport_cc_packets = 0;
+    uint64_t rtcp_remb_packets = 0;
+
+    uint64_t rtcp_nack_items = 0;
+    uint64_t rtcp_fir_items = 0;
+
+    uint32_t last_rtp_ssrc = 0;
+    uint16_t last_rtp_sequence_number = 0;
+    uint32_t last_rtp_timestamp = 0;
+
+    uint32_t last_rtcp_ssrc = 0;
+    uint64_t last_remb_bitrate_bps = 0;
+};
+
 struct media_route_result
 {
     bool known_peer = false;
@@ -75,6 +141,10 @@ class media_router
 
     [[nodiscard]] std::optional<media_peer_info> get_peer(std::string_view remote_endpoint) const;
 
+    [[nodiscard]] std::optional<media_peer_stats> get_peer_stats(std::string_view remote_endpoint) const;
+
+    [[nodiscard]] std::optional<media_stream_stats> get_stream_stats(std::string_view stream_id) const;
+
     [[nodiscard]] std::size_t peer_count() const;
 
     [[nodiscard]] std::size_t subscriber_count(std::string_view stream_id) const;
@@ -84,6 +154,15 @@ class media_router
 
     void forget_peer_locked(std::string_view remote_endpoint);
 
+    void update_stream_member_counts_locked(std::string_view stream_id);
+
+    void update_inbound_stats_locked(const media_peer_info& peer,
+                                     const srtp_packet_process_result& packet,
+                                     media_route_action action,
+                                     std::size_t target_count);
+
+    void log_peer_stats_locked(const media_peer_stats& peer_stats, const media_stream_stats& stream_stats) const;
+
     [[nodiscard]] std::vector<std::string> get_subscriber_endpoints_locked(std::string_view stream_id, std::string_view excluded_endpoint) const;
 
     [[nodiscard]] std::vector<std::string> get_publisher_endpoint_locked(std::string_view stream_id, std::string_view excluded_endpoint) const;
@@ -92,6 +171,9 @@ class media_router
     mutable std::mutex mutex_;
 
     std::unordered_map<std::string, media_peer_info> peers_by_endpoint_;
+    std::unordered_map<std::string, media_peer_stats> peer_stats_by_endpoint_;
+    std::unordered_map<std::string, media_stream_stats> stream_stats_by_stream_;
+
     std::unordered_map<std::string, std::string> publisher_by_stream_;
     std::unordered_map<std::string, std::unordered_set<std::string>> subscribers_by_stream_;
 };
