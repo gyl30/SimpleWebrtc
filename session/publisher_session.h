@@ -2,9 +2,12 @@
 #define SIMPLE_WEBRTC_SESSION_PUBLISHER_SESSION_H
 
 #include <cstdint>
+#include <expected>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "ice/ice_candidate.h"
 #include "ice/ice_credentials.h"
 #include "session/session_state.h"
 #include "signaling/sdp/sdp_summary.h"
@@ -42,6 +45,9 @@ class publisher_session
     [[nodiscard]] uint64_t sdp_session_id() const;
     [[nodiscard]] uint64_t sdp_session_version() const;
 
+    [[nodiscard]] const std::vector<remote_ice_candidate>& remote_ice_candidates() const;
+    [[nodiscard]] bool remote_ice_completed() const;
+
     [[nodiscard]] session_state state() const;
     [[nodiscard]] std::string state_string() const;
 
@@ -58,6 +64,8 @@ class publisher_session
                           uint64_t sdp_session_id,
                           uint64_t sdp_session_version);
 
+    [[nodiscard]] std::expected<void, std::string> add_remote_ice_candidate(remote_ice_candidate candidate);
+
    private:
     std::string session_id_;
     std::string stream_id_;
@@ -71,6 +79,9 @@ class publisher_session
 
     uint64_t sdp_session_id_ = 0;
     uint64_t sdp_session_version_ = 0;
+
+    std::vector<remote_ice_candidate> remote_ice_candidates_;
+    bool remote_ice_completed_ = false;
 
     session_state state_ = session_state::created;
 

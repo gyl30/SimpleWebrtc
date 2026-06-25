@@ -4,20 +4,65 @@
 #include <string_view>
 #include <utility>
 
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/beast/http.hpp>
 
+#include "ice/ice_candidate.h"
 #include "log/log.h"
 #include "net/http.h"
 #include "server/signaling_json.h"
+#include "server/trickle_ice_json.h"
 #include "signaling/sdp/sdp_offer_validator.h"
 #include "signaling/sdp/sdp_parser.h"
 #include "signaling/sdp/sdp_summary.h"
+#include "util/timestamp.h"
 
 namespace webrtc
 {
 namespace
 {
 namespace http = boost::beast::http;
+
+constexpr std::string_view kApplicationJson = "application/json";
+constexpr std::string_view kApplicationTrickleIceJson = "application/trickle-ice+json";
+
+std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return std::string_view(value.data(), value.size()); }
+
+bool content_type_matches(std::string_view content_type, std::string_view expected)
+{
+    if (boost::algorithm::iequals(content_type, expected))
+    {
+        return true;
+    }
+
+    if (!boost::algorithm::istarts_with(content_type, expected))
+    {
+        return false;
+    }
+
+    if (content_type.size() <= expected.size())
+    {
+        return false;
+    }
+
+    return content_type[expected.size()] == ';';
+}
+
+bool is_supported_trickle_ice_content_type(http_request_t& request)
+{
+    const auto content_type_field = request.req[http::field::content_type];
+
+    const std::string_view content_type = beast_string_view_to_std_string_view(content_type_field);
+
+    if (content_type.empty())
+    {
+        return false;
+    }
+
+    return content_type_matches(content_type, kApplicationJson) || content_type_matches(content_type, kApplicationTrickleIceJson);
+}
+
+uint64_t now_milliseconds() { return static_cast<uint64_t>(timestamp::now().milliseconds()); }
 }    // namespace
 
 whip_handler::whip_handler(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
@@ -150,7 +195,44 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
         return json_error_response(request, 404, "publisher session not found");
     }
 
-    return json_error_response(request, 501, "WHIP trickle ICE not implemented");
+    if (!is_supported_trickle_ice_content_type(request))
+    {
+        return json_error_response(request, 415, "unsupported media type, expected application/trickle-ice+json or application/json");
+    }
+
+    auto trickle_request = parse_trickle_ice_candidate_request(request.req.body());
+
+    if (!trickle_request)
+    {
+        return json_error_response(request, 400, trickle_request.error());
+    }
+
+    auto candidate =
+        make_remote_ice_candidate(trickle_request->candidate, trickle_request->sdpMid, trickle_request->sdpMLineIndex, now_milliseconds());
+
+    if (!candidate)
+    {
+        return json_error_response(request, 400, candidate.error());
+    }
+
+    auto add_result = session->add_remote_ice_candidate(std::move(*candidate));
+
+    if (!add_result)
+    {
+        return json_error_response(request, 400, add_result.error());
+    }
+
+    WEBRTC_LOG_INFO("WHIP stored remote ice candidate stream={} session={} candidate_count={} ice_completed={}",
+                    session->stream_id(),
+                    session->session_id(),
+                    session->remote_ice_candidates().size(),
+                    session->remote_ice_completed());
+
+    auto response = create_response(request, 204, "");
+
+    add_common_headers(response);
+
+    return response;
 }
 
 http_response_ptr whip_handler::delete_session(http_request_t& request, std::string_view session_id)

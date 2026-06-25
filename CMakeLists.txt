@@ -186,6 +186,7 @@ set(WEBRTC_SOURCES
     signaling/sdp/sdp_codec_negotiator.cpp
     security/certificate_fingerprint.cpp
     ice/ice_credentials.cpp
+    ice/ice_candidate.cpp
     signaling/webrtc_answer_factory.cpp)
 
 add_executable(SimpleWebrtc ${WEBRTC_SOURCES} main.cpp)

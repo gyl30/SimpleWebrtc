@@ -1,5 +1,8 @@
 #include "session/publisher_session.h"
 
+#include <cstddef>
+#include <expected>
+#include <string>
 #include <utility>
 
 #include "util/timestamp.h"
@@ -8,7 +11,11 @@ namespace webrtc
 {
 namespace
 {
+constexpr std::size_t k_max_remote_ice_candidates = 256;
+
 uint64_t now_milliseconds() { return static_cast<uint64_t>(timestamp::now().milliseconds()); }
+
+std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 }    // namespace
 
 publisher_session::publisher_session(std::string session_id,
@@ -44,6 +51,10 @@ uint64_t publisher_session::sdp_session_id() const { return sdp_session_id_; }
 
 uint64_t publisher_session::sdp_session_version() const { return sdp_session_version_; }
 
+const std::vector<remote_ice_candidate>& publisher_session::remote_ice_candidates() const { return remote_ice_candidates_; }
+
+bool publisher_session::remote_ice_completed() const { return remote_ice_completed_; }
+
 session_state publisher_session::state() const { return state_; }
 
 std::string publisher_session::state_string() const { return std::string(session_state_to_string(state_)); }
@@ -78,5 +89,23 @@ void publisher_session::set_local_answer(std::string local_sdp_answer,
     sdp_session_version_ = sdp_session_version;
     state_ = session_state::sdp_answered;
     updated_at_milliseconds_ = now_milliseconds();
+}
+
+std::expected<void, std::string> publisher_session::add_remote_ice_candidate(remote_ice_candidate candidate)
+{
+    if (remote_ice_candidates_.size() >= k_max_remote_ice_candidates)
+    {
+        return make_error("too many remote ice candidates");
+    }
+
+    if (candidate.end_of_candidates)
+    {
+        remote_ice_completed_ = true;
+    }
+
+    remote_ice_candidates_.push_back(std::move(candidate));
+    updated_at_milliseconds_ = now_milliseconds();
+
+    return {};
 }
 }    // namespace webrtc
