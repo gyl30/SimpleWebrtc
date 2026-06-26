@@ -30,18 +30,25 @@ using ice_udp_server_result = std::expected<void, std::string>;
 class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 {
    public:
-    ice_udp_server(boost::asio::io_context& io_context, std::string bind_host, uint16_t bind_port, std::shared_ptr<stream_registry> registry);
+    ice_udp_server(boost::asio::io_context& io_context,
+                   std::string bind_host,
+                   uint16_t bind_port,
+                   std::shared_ptr<stream_registry> registry,
+                   std::shared_ptr<media_router> media_router);
 
     ~ice_udp_server() = default;
 
     ice_udp_server(const ice_udp_server&) = delete;
+
     ice_udp_server& operator=(const ice_udp_server&) = delete;
 
     ice_udp_server(ice_udp_server&&) = delete;
+
     ice_udp_server& operator=(ice_udp_server&&) = delete;
 
    public:
     [[nodiscard]] ice_udp_server_result start();
+
     void stop();
 
     void forget_session(std::string_view session_id);
@@ -112,8 +119,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::array<uint8_t, 4096> receive_buffer_{};
 
     mutable std::mutex endpoint_mutex_;
+
     std::unordered_map<std::string, udp::endpoint> endpoints_by_address_;
+
     std::unordered_map<std::string, std::string> endpoint_address_by_session_id_;
+
     std::unordered_map<std::string, std::string> session_id_by_endpoint_address_;
 
     bool started_ = false;

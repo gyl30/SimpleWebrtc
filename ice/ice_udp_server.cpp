@@ -40,6 +40,7 @@ std::expected<std::string, std::string> get_required_env(const char* name)
     {
         std::string message(name);
         message.append(" is empty");
+
         return std::unexpected(std::move(message));
     }
 
@@ -81,6 +82,7 @@ dtls_peer_identity make_publisher_dtls_identity(const std::shared_ptr<publisher_
     identity.session_id = session->session_id();
     identity.stream_id = session->stream_id();
     identity.local_ice_ufrag = session->local_ice().ufrag;
+
     return identity;
 }
 
@@ -91,6 +93,7 @@ dtls_peer_identity make_subscriber_dtls_identity(const std::shared_ptr<subscribe
     identity.session_id = session->session_id();
     identity.stream_id = session->stream_id();
     identity.local_ice_ufrag = session->local_ice().ufrag;
+
     return identity;
 }
 
@@ -124,6 +127,7 @@ void log_rtcp_feedback_route_event(const rtcp_feedback_route_event& event)
 std::vector<uint16_t> expand_nack_sequences(const std::vector<rtcp_nack_item>& nack_items)
 {
     std::vector<uint16_t> sequence_numbers;
+
     sequence_numbers.reserve(nack_items.size() * 17);
 
     for (const auto& item : nack_items)
@@ -150,8 +154,14 @@ std::vector<uint16_t> expand_nack_sequences(const std::vector<rtcp_nack_item>& n
 ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
                                std::string bind_host,
                                uint16_t bind_port,
-                               std::shared_ptr<stream_registry> registry)
-    : io_context_(io_context), socket_(io_context), bind_host_(std::move(bind_host)), bind_port_(bind_port), registry_(std::move(registry))
+                               std::shared_ptr<stream_registry> registry,
+                               std::shared_ptr<media_router> media_router)
+    : io_context_(io_context),
+      socket_(io_context),
+      bind_host_(std::move(bind_host)),
+      bind_port_(bind_port),
+      registry_(std::move(registry)),
+      media_router_(std::move(media_router))
 {
 }
 
@@ -165,6 +175,11 @@ ice_udp_server_result ice_udp_server::start()
     if (registry_ == nullptr)
     {
         return make_error("ice udp server registry is null");
+    }
+
+    if (media_router_ == nullptr)
+    {
+        return make_error("ice udp server media router is null");
     }
 
     register_session_removed_callback();
@@ -183,33 +198,42 @@ ice_udp_server_result ice_udp_server::start()
     if (ec)
     {
         std::string message = "ice udp bind address is invalid: ";
+
         message.append(ec.message());
+
         return std::unexpected(std::move(message));
     }
 
     udp::endpoint endpoint(address, bind_port_);
 
     socket_.open(endpoint.protocol(), ec);
+
     if (ec)
     {
         std::string message = "ice udp socket open failed: ";
+
         message.append(ec.message());
+
         return std::unexpected(std::move(message));
     }
 
     boost::asio::socket_base::reuse_address reuse_address(true);
 
     socket_.set_option(reuse_address, ec);
+
     if (ec)
     {
         WEBRTC_LOG_WARN("ice udp socket set reuse_address failed: {}", ec.message());
     }
 
     socket_.bind(endpoint, ec);
+
     if (ec)
     {
         std::string message = "ice udp socket bind failed: ";
+
         message.append(ec.message());
+
         return std::unexpected(std::move(message));
     }
 
@@ -246,6 +270,7 @@ void ice_udp_server::stop()
     }
 
     boost::system::error_code ec;
+
     socket_.close(ec);
 
     if (ec)
@@ -291,7 +316,9 @@ void ice_udp_server::forget_session(std::string_view session_id)
         remote_address = iterator->second;
 
         endpoint_address_by_session_id_.erase(iterator);
+
         session_id_by_endpoint_address_.erase(remote_address);
+
         endpoints_by_address_.erase(remote_address);
     }
 
@@ -304,7 +331,7 @@ uint16_t ice_udp_server::local_port() const { return bind_port_; }
 
 ice_udp_server_result ice_udp_server::init_dtls_transport()
 {
-    if (dtls_transport_ != nullptr && srtp_transport_ != nullptr && media_router_ != nullptr && rtp_packet_cache_ != nullptr)
+    if (dtls_transport_ != nullptr && srtp_transport_ != nullptr && rtp_packet_cache_ != nullptr)
     {
         return {};
     }
@@ -338,16 +365,15 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
 
     srtp_transport_ = std::make_shared<srtp_transport>(dtls_transport_);
 
-    media_router_ = std::make_shared<media_router>();
-
     rtp_packet_cache_config cache_config;
     cache_config.max_packets = 4096;
 
     rtp_packet_cache_ = std::make_shared<rtp_packet_cache>(cache_config);
 
     WEBRTC_LOG_INFO("dtls transport initialized");
+
     WEBRTC_LOG_INFO("srtp transport initialized");
-    WEBRTC_LOG_INFO("media router initialized");
+
     WEBRTC_LOG_INFO("rtp packet cache initialized max_packets={}", cache_config.max_packets);
 
     return {};
@@ -414,6 +440,7 @@ void ice_udp_server::on_receive(boost::system::error_code ec, std::size_t bytes_
         WEBRTC_LOG_WARN("ice udp receive failed: {}", ec.message());
 
         do_receive();
+
         return;
     }
 
@@ -545,10 +572,7 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
             dtls_transport_->remember_peer(remote_address, make_publisher_dtls_identity(publisher));
         }
 
-        if (media_router_ != nullptr)
-        {
-            media_router_->remember_publisher(remote_address, publisher->stream_id(), publisher->session_id());
-        }
+        media_router_->remember_publisher(remote_address, publisher->stream_id(), publisher->session_id());
     }
 
     if (subscriber != nullptr)
@@ -562,10 +586,7 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
             dtls_transport_->remember_peer(remote_address, make_subscriber_dtls_identity(subscriber));
         }
 
-        if (media_router_ != nullptr)
-        {
-            media_router_->remember_subscriber(remote_address, subscriber->stream_id(), subscriber->session_id());
-        }
+        media_router_->remember_subscriber(remote_address, subscriber->stream_id(), subscriber->session_id());
     }
 
     const std::string remote_ip = endpoint_ip(remote_endpoint);
@@ -666,14 +687,6 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
                      result->unprotected_size,
                      result->ssrc,
                      static_cast<unsigned int>(result->payload_type));
-
-    if (media_router_ == nullptr)
-    {
-        WEBRTC_LOG_WARN(
-            "media router is null remote={} kind={} size={}", remote_address, srtp_packet_kind_to_string(result->kind), result->unprotected_size);
-
-        return;
-    }
 
     const media_route_result route = media_router_->handle_inbound_packet(remote_address, *result);
 
@@ -815,6 +828,7 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         if (!cached)
         {
             miss_count += 1;
+
             continue;
         }
 
@@ -1027,6 +1041,7 @@ void ice_udp_server::remember_session_endpoint(const udp::endpoint& remote_endpo
         if (existing_session != session_id_by_endpoint_address_.end() && existing_session->second != session_id)
         {
             endpoint_address_by_session_id_.erase(existing_session->second);
+
             session_id_by_endpoint_address_.erase(existing_session);
 
             transport_peers_to_forget.push_back(remote_address);
@@ -1039,13 +1054,16 @@ void ice_udp_server::remember_session_endpoint(const udp::endpoint& remote_endpo
             const std::string old_remote_address = existing_endpoint->second;
 
             session_id_by_endpoint_address_.erase(old_remote_address);
+
             endpoints_by_address_.erase(old_remote_address);
 
             transport_peers_to_forget.push_back(old_remote_address);
         }
 
         endpoints_by_address_[remote_address] = remote_endpoint;
+
         endpoint_address_by_session_id_[std::string(session_id)] = remote_address;
+
         session_id_by_endpoint_address_[remote_address] = std::string(session_id);
     }
 
@@ -1076,6 +1094,7 @@ void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
         if (session_iterator != session_id_by_endpoint_address_.end())
         {
             session_id = session_iterator->second;
+
             session_id_by_endpoint_address_.erase(session_iterator);
         }
 
