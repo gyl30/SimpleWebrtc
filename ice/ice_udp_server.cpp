@@ -2416,21 +2416,40 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
 
         return;
     }
-
-    WEBRTC_LOG_INFO(
-        "ice stun binding success username={} recipient_ufrag={} sender_ufrag={} stream={} session={} remote={} nominated={} selected={} "
-        "selection_changed={} priority={} response_size={}",
-        *message->username,
-        username_parts->recipient_ufrag,
-        username_parts->sender_ufrag,
-        stream_id,
-        session_id,
-        remote_address,
-        message->use_candidate ? 1 : 0,
-        selected ? 1 : 0,
-        selection_changed ? 1 : 0,
-        remote_priority,
-        response->size());
+    if (selection_changed)
+    {
+        WEBRTC_LOG_INFO(
+            "ice stun binding success username={} recipient_ufrag={} sender_ufrag={} stream={} session={} remote={} nominated={} selected={} "
+            "selection_changed={} priority={} response_size={}",
+            *message->username,
+            username_parts->recipient_ufrag,
+            username_parts->sender_ufrag,
+            stream_id,
+            session_id,
+            remote_address,
+            message->use_candidate ? 1 : 0,
+            selected ? 1 : 0,
+            selection_changed ? 1 : 0,
+            remote_priority,
+            response->size());
+    }
+    else
+    {
+        WEBRTC_LOG_DEBUG(
+            "ice stun binding success username={} recipient_ufrag={} sender_ufrag={} stream={} session={} remote={} nominated={} selected={} "
+            "selection_changed={} priority={} response_size={}",
+            *message->username,
+            username_parts->recipient_ufrag,
+            username_parts->sender_ufrag,
+            stream_id,
+            session_id,
+            remote_address,
+            message->use_candidate ? 1 : 0,
+            selected ? 1 : 0,
+            selection_changed ? 1 : 0,
+            remote_priority,
+            response->size());
+    }
 
     send_response(std::move(*response), remote_endpoint);
 }
@@ -2441,10 +2460,7 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
 
     if (!is_selected_endpoint(remote_address))
     {
-        WEBRTC_LOG_DEBUG(
-            "dtls packet ignored from unselected ice endpoint remote={} size={}",
-            remote_address,
-            data.size());
+        WEBRTC_LOG_DEBUG("dtls packet ignored from unselected ice endpoint remote={} size={}", remote_address, data.size());
 
         return;
     }
@@ -2607,10 +2623,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     const std::string remote_address = endpoint_to_string(remote_endpoint);
     if (!is_selected_endpoint(remote_address))
     {
-        WEBRTC_LOG_DEBUG(
-            "srtp packet ignored from unselected ice endpoint remote={} size={}",
-            remote_address,
-            data.size());
+        WEBRTC_LOG_DEBUG("srtp packet ignored from unselected ice endpoint remote={} size={}", remote_address, data.size());
 
         return;
     }
