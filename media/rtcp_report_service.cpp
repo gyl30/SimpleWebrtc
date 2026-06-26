@@ -48,6 +48,50 @@ std::string make_source_error(const rtcp_report_source_config& source, std::stri
 
     return error;
 }
+
+void append_json_uint64(std::string& output, std::string_view name, uint64_t value, bool& first)
+{
+    if (!first)
+    {
+        output.push_back(',');
+    }
+
+    first = false;
+
+    output.push_back('"');
+    output.append(name);
+    output.append("\":");
+    output.append(std::to_string(value));
+}
+
+void append_json_size(std::string& output, std::string_view name, std::size_t value, bool& first)
+{
+    append_json_uint64(output, name, static_cast<uint64_t>(value), first);
+}
+
+void append_metric_header(std::string& output, std::string_view name, std::string_view help, std::string_view type)
+{
+    output.append("# HELP ");
+    output.append(name);
+    output.push_back(' ');
+    output.append(help);
+    output.push_back('\n');
+
+    output.append("# TYPE ");
+    output.append(name);
+    output.push_back(' ');
+    output.append(type);
+    output.push_back('\n');
+}
+
+void append_metric_value(std::string& output, std::string_view name, uint64_t value)
+{
+    output.append(name);
+    output.push_back(' ');
+    output.append(std::to_string(value));
+    output.push_back('\n');
+}
+
 }    // namespace
 
 rtcp_report_service::rtcp_report_service() : config_() {}
@@ -713,5 +757,103 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
     result.append(std::to_string(snapshot.last_generation_failed));
 
     return result;
+}
+
+std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_service_runtime_snapshot& snapshot)
+{
+    std::string output;
+
+    output.reserve(384);
+
+    bool first = true;
+
+    output.push_back('{');
+
+    append_json_size(output, "configured_sources", snapshot.configured_sources, first);
+
+    append_json_size(output, "stats_sources", snapshot.stats_sources, first);
+
+    append_json_uint64(output, "generated_report_rounds", snapshot.generated_report_rounds, first);
+
+    append_json_uint64(output, "generated_packets", snapshot.generated_packets, first);
+
+    append_json_uint64(output, "skipped_packets", snapshot.skipped_packets, first);
+
+    append_json_uint64(output, "failed_packets", snapshot.failed_packets, first);
+
+    append_json_uint64(output, "observed_sender_reports", snapshot.observed_sender_reports, first);
+
+    append_json_uint64(output, "last_generation_time_milliseconds", snapshot.last_generation_time_milliseconds, first);
+
+    append_json_size(output, "last_generation_packets", snapshot.last_generation_packets, first);
+
+    append_json_size(output, "last_generation_skipped", snapshot.last_generation_skipped, first);
+
+    append_json_size(output, "last_generation_failed", snapshot.last_generation_failed, first);
+
+    output.push_back('}');
+
+    return output;
+}
+
+std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report_service_runtime_snapshot& snapshot)
+{
+    std::string output;
+
+    output.reserve(4096);
+
+    append_metric_header(output, "simplewebrtc_rtcp_report_service_configured_sources", "configured active rtcp report sources", "gauge");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_configured_sources", snapshot.configured_sources);
+
+    append_metric_header(output, "simplewebrtc_rtcp_report_service_stats_sources", "rtcp statistics source count", "gauge");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_stats_sources", snapshot.stats_sources);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_generated_report_rounds_total", "total rtcp active report generation rounds", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_generated_report_rounds_total", snapshot.generated_report_rounds);
+
+    append_metric_header(output, "simplewebrtc_rtcp_report_service_generated_packets_total", "total generated rtcp active report packets", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_generated_packets_total", snapshot.generated_packets);
+
+    append_metric_header(output, "simplewebrtc_rtcp_report_service_skipped_packets_total", "total skipped rtcp active report packets", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_skipped_packets_total", snapshot.skipped_packets);
+
+    append_metric_header(output, "simplewebrtc_rtcp_report_service_failed_packets_total", "total failed rtcp active report packets", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_failed_packets_total", snapshot.failed_packets);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_observed_sender_reports_total", "total observed inbound rtcp sender reports", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_observed_sender_reports_total", snapshot.observed_sender_reports);
+
+    append_metric_header(output,
+                         "simplewebrtc_rtcp_report_service_last_generation_time_milliseconds",
+                         "last rtcp active report generation timestamp in milliseconds",
+                         "gauge");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_last_generation_time_milliseconds", snapshot.last_generation_time_milliseconds);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_last_generation_packets", "generated rtcp active report packets in the last round", "gauge");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_last_generation_packets", snapshot.last_generation_packets);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_last_generation_skipped", "skipped rtcp active report packets in the last round", "gauge");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_last_generation_skipped", snapshot.last_generation_skipped);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_last_generation_failed", "failed rtcp active report packets in the last round", "gauge");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_last_generation_failed", snapshot.last_generation_failed);
+
+    return output;
 }
 }    // namespace webrtc

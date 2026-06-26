@@ -218,6 +218,12 @@ std::string rtcp_report_service_generation_to_string(const rtcp_report_service_g
 
 [[nodiscard]]
 std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_service_runtime_snapshot& snapshot);
+
+[[nodiscard]]
+std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_service_runtime_snapshot& snapshot);
+
+[[nodiscard]]
+std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report_service_runtime_snapshot& snapshot);
 }    // namespace webrtc
 
 #endif
