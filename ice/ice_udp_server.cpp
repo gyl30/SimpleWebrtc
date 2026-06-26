@@ -1058,6 +1058,8 @@ void ice_udp_server::stop()
 
     last_empty_rtcp_report_log_milliseconds_ = 0;
 
+    reset_rtcp_report_send_counters();
+
     if (rtp_packet_cache_ != nullptr)
     {
         rtp_packet_cache_->clear();
@@ -1467,7 +1469,7 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
         }
     }
 
-    const rtcp_report_service_runtime_snapshot snapshot = rtcp_report_service_->runtime_snapshot();
+    const rtcp_report_service_runtime_snapshot snapshot = rtcp_report_runtime_snapshot();
 
     if (generation.packets.empty())
     {
@@ -1491,10 +1493,14 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
     for (const auto& report_packet : generation.packets)
     {
+        rtcp_report_send_attempts_total_.fetch_add(1, std::memory_order_relaxed);
+
         auto remote_endpoint = find_remote_endpoint(report_packet.source.remote_endpoint);
 
         if (!remote_endpoint.has_value())
         {
+            rtcp_report_endpoint_not_found_total_.fetch_add(1, std::memory_order_relaxed);
+
             WEBRTC_LOG_WARN("rtcp active report endpoint not found stream={} session={} remote={} local_ssrc={}",
                             report_packet.source.stream_id,
                             report_packet.source.session_id,
@@ -1511,6 +1517,8 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
         if (!protected_packet)
         {
+            rtcp_report_protect_failed_total_.fetch_add(1, std::memory_order_relaxed);
+
             WEBRTC_LOG_WARN("rtcp active report protect failed stream={} session={} remote={} local_ssrc={} error={}",
                             report_packet.source.stream_id,
                             report_packet.source.session_id,
@@ -1523,6 +1531,8 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
         if (protected_packet->state == srtp_packet_process_state::ignored)
         {
+            rtcp_report_protect_ignored_total_.fetch_add(1, std::memory_order_relaxed);
+
             WEBRTC_LOG_DEBUG("rtcp active report protect ignored stream={} session={} remote={} local_ssrc={} reason={}",
                              report_packet.source.stream_id,
                              report_packet.source.session_id,
@@ -1542,7 +1552,21 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
                          protected_packet->protected_packet.size());
 
         send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
+
+        rtcp_report_send_success_total_.fetch_add(1, std::memory_order_relaxed);
     }
+}
+void ice_udp_server::reset_rtcp_report_send_counters()
+{
+    rtcp_report_send_attempts_total_.store(0, std::memory_order_relaxed);
+
+    rtcp_report_send_success_total_.store(0, std::memory_order_relaxed);
+
+    rtcp_report_endpoint_not_found_total_.store(0, std::memory_order_relaxed);
+
+    rtcp_report_protect_failed_total_.store(0, std::memory_order_relaxed);
+
+    rtcp_report_protect_ignored_total_.store(0, std::memory_order_relaxed);
 }
 
 void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)

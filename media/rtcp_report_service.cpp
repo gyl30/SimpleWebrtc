@@ -907,7 +907,7 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
 {
     std::string result;
 
-    result.reserve(384);
+    result.reserve(512);
 
     result.append("configured_sources=");
     result.append(std::to_string(snapshot.configured_sources));
@@ -926,6 +926,21 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
 
     result.append(" max_packets_per_generation=");
     result.append(std::to_string(snapshot.max_packets_per_generation));
+
+    result.append(" send_attempts=");
+    result.append(std::to_string(snapshot.send_attempts));
+
+    result.append(" send_success=");
+    result.append(std::to_string(snapshot.send_success));
+
+    result.append(" endpoint_not_found=");
+    result.append(std::to_string(snapshot.endpoint_not_found));
+
+    result.append(" protect_failed=");
+    result.append(std::to_string(snapshot.protect_failed));
+
+    result.append(" protect_ignored=");
+    result.append(std::to_string(snapshot.protect_ignored));
 
     result.append(" rounds=");
     result.append(std::to_string(snapshot.generated_report_rounds));
@@ -970,7 +985,7 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
 {
     std::string output;
 
-    output.reserve(768);
+    output.reserve(1024);
 
     bool first = true;
 
@@ -987,6 +1002,16 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
     append_json_uint64(output, "report_jitter_milliseconds", snapshot.report_jitter_milliseconds, first);
 
     append_json_size(output, "max_packets_per_generation", snapshot.max_packets_per_generation, first);
+
+    append_json_uint64(output, "send_attempts", snapshot.send_attempts, first);
+
+    append_json_uint64(output, "send_success", snapshot.send_success, first);
+
+    append_json_uint64(output, "endpoint_not_found", snapshot.endpoint_not_found, first);
+
+    append_json_uint64(output, "protect_failed", snapshot.protect_failed, first);
+
+    append_json_uint64(output, "protect_ignored", snapshot.protect_ignored, first);
 
     append_json_uint64(output, "generated_report_rounds", snapshot.generated_report_rounds, first);
 
@@ -1020,7 +1045,7 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
 {
     std::string output;
 
-    output.reserve(8192);
+    output.reserve(12288);
 
     append_metric_header(output, "simplewebrtc_rtcp_report_service_configured_sources", "configured active rtcp report sources", "gauge");
 
@@ -1052,6 +1077,33 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
 
     append_metric_value(
         output, "simplewebrtc_rtcp_report_service_max_packets_per_generation", static_cast<uint64_t>(snapshot.max_packets_per_generation));
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_send_attempts_total", "total rtcp active report packets selected for outbound send", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_send_attempts_total", snapshot.send_attempts);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_send_success_total", "total rtcp active report packets submitted to udp send", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_send_success_total", snapshot.send_success);
+
+    append_metric_header(output,
+                         "simplewebrtc_rtcp_report_service_endpoint_not_found_total",
+                         "total rtcp active report packets skipped because endpoint was not found",
+                         "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_endpoint_not_found_total", snapshot.endpoint_not_found);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_protect_failed_total", "total rtcp active report packets that failed srtp protection", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_protect_failed_total", snapshot.protect_failed);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_protect_ignored_total", "total rtcp active report packets ignored by srtp protection", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_protect_ignored_total", snapshot.protect_ignored);
 
     append_metric_header(
         output, "simplewebrtc_rtcp_report_service_generated_report_rounds_total", "total rtcp active report generation rounds", "counter");

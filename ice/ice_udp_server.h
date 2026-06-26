@@ -2,6 +2,7 @@
 #define SIMPLE_WEBRTC_ICE_ICE_UDP_SERVER_H
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -64,12 +65,24 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     rtcp_report_service_runtime_snapshot rtcp_report_runtime_snapshot() const
     {
-        if (rtcp_report_service_ == nullptr)
+        rtcp_report_service_runtime_snapshot snapshot;
+
+        if (rtcp_report_service_ != nullptr)
         {
-            return {};
+            snapshot = rtcp_report_service_->runtime_snapshot();
         }
 
-        return rtcp_report_service_->runtime_snapshot();
+        snapshot.send_attempts = rtcp_report_send_attempts_total_.load(std::memory_order_relaxed);
+
+        snapshot.send_success = rtcp_report_send_success_total_.load(std::memory_order_relaxed);
+
+        snapshot.endpoint_not_found = rtcp_report_endpoint_not_found_total_.load(std::memory_order_relaxed);
+
+        snapshot.protect_failed = rtcp_report_protect_failed_total_.load(std::memory_order_relaxed);
+
+        snapshot.protect_ignored = rtcp_report_protect_ignored_total_.load(std::memory_order_relaxed);
+
+        return snapshot;
     }
 
    private:
@@ -128,6 +141,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void on_rtcp_report_timer(boost::system::error_code ec);
 
     void send_rtcp_reports(uint64_t now_milliseconds);
+
+    void reset_rtcp_report_send_counters();
 
     void handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
 
@@ -290,6 +305,16 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     bool registry_callback_registered_ = false;
 
     uint64_t last_empty_rtcp_report_log_milliseconds_ = 0;
+
+    std::atomic<uint64_t> rtcp_report_send_attempts_total_{0};
+
+    std::atomic<uint64_t> rtcp_report_send_success_total_{0};
+
+    std::atomic<uint64_t> rtcp_report_endpoint_not_found_total_{0};
+
+    std::atomic<uint64_t> rtcp_report_protect_failed_total_{0};
+
+    std::atomic<uint64_t> rtcp_report_protect_ignored_total_{0};
 };
 }    // namespace webrtc
 
