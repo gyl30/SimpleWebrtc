@@ -51,6 +51,8 @@ constexpr auto k_ice_consent_check_interval = std::chrono::seconds(5);
 
 constexpr auto k_rtcp_report_interval = std::chrono::milliseconds(200);
 
+constexpr auto k_rtcp_report_empty_generation_log_interval = std::chrono::seconds(60);
+
 constexpr uint64_t k_ice_consent_timeout_milliseconds = 30000;
 
 constexpr uint64_t k_unselected_candidate_pair_retention_milliseconds = 120000;
@@ -472,6 +474,36 @@ rtcp_report_service_config make_rtcp_report_service_config_from_env()
 std::shared_ptr<rtcp_report_service> make_rtcp_report_service_from_env()
 {
     return std::make_shared<rtcp_report_service>(make_rtcp_report_service_config_from_env());
+}
+uint64_t rtcp_empty_generation_log_interval_milliseconds()
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(k_rtcp_report_empty_generation_log_interval).count());
+}
+
+bool has_elapsed_milliseconds(uint64_t now_milliseconds, uint64_t last_milliseconds, uint64_t interval_milliseconds)
+{
+    if (last_milliseconds == 0)
+    {
+        return true;
+    }
+
+    if (now_milliseconds < last_milliseconds)
+    {
+        return true;
+    }
+
+    return now_milliseconds - last_milliseconds >= interval_milliseconds;
+}
+
+bool should_log_empty_rtcp_generation(const rtcp_report_service_generation& generation, uint64_t now_milliseconds, uint64_t last_log_milliseconds)
+{
+    if (!generation.errors.empty() || generation.failed != 0 || generation.skipped != 0 || generation.due_sources != 0 ||
+        generation.throttled_sources != 0)
+    {
+        return true;
+    }
+
+    return has_elapsed_milliseconds(now_milliseconds, last_log_milliseconds, rtcp_empty_generation_log_interval_milliseconds());
 }
 std::expected<std::string, std::string> get_required_env(const char* name)
 {
@@ -1024,6 +1056,8 @@ void ice_udp_server::stop()
 
     rtcp_report_service_ = make_rtcp_report_service_from_env();
 
+    last_empty_rtcp_report_log_milliseconds_ = 0;
+
     if (rtp_packet_cache_ != nullptr)
     {
         rtp_packet_cache_->clear();
@@ -1437,12 +1471,19 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
     if (generation.packets.empty())
     {
-        WEBRTC_LOG_DEBUG("rtcp active report generation {} runtime={}",
-                         rtcp_report_service_generation_to_string(generation),
-                         rtcp_report_service_runtime_snapshot_to_string(snapshot));
+        if (should_log_empty_rtcp_generation(generation, current_time_milliseconds, last_empty_rtcp_report_log_milliseconds_))
+        {
+            last_empty_rtcp_report_log_milliseconds_ = current_time_milliseconds;
+
+            WEBRTC_LOG_DEBUG("rtcp active report generation empty {} runtime={}",
+                             rtcp_report_service_generation_to_string(generation),
+                             rtcp_report_service_runtime_snapshot_to_string(snapshot));
+        }
 
         return;
     }
+
+    last_empty_rtcp_report_log_milliseconds_ = current_time_milliseconds;
 
     WEBRTC_LOG_INFO("rtcp active report generation {} runtime={}",
                     rtcp_report_service_generation_to_string(generation),
@@ -1503,6 +1544,7 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
         send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
     }
 }
+
 void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);

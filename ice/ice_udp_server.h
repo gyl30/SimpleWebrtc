@@ -288,6 +288,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     bool started_ = false;
 
     bool registry_callback_registered_ = false;
+
+    uint64_t last_empty_rtcp_report_log_milliseconds_ = 0;
 };
 }    // namespace webrtc
 
