@@ -5,16 +5,17 @@
 #include <string>
 #include <utility>
 
-#include <boost/algorithm/string/predicate.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 
 #include "log/log.h"
-#include "media/media_router.h"
-#include "media/media_router_stats_json.h"
-#include "media/media_router_stats_prometheus.h"
-#include "media/rtcp_report_service.h"
 #include "net/http.h"
+#include "media/media_router.h"
+#include "server/trickle_ice_http.h"
+#include "media/rtcp_report_service.h"
+#include "media/media_router_stats_json.h"
 #include "signaling/webrtc_answer_factory.h"
+#include "media/media_router_stats_prometheus.h"
 
 namespace webrtc
 {
@@ -244,7 +245,9 @@ http_response_ptr router::handle_options(http_request_t& request)
 
     response->set(http::field::access_control_allow_headers, "Content-Type, Authorization, If-Match");
 
-    response->set(http::field::access_control_expose_headers, "Location, ETag");
+    response->set(http::field::access_control_expose_headers, std::string(k_trickle_ice_expose_headers_value));
+
+    set_trickle_ice_patch_headers(response);
 
     return response;
 }

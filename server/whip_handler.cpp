@@ -12,6 +12,7 @@
 #include "util/timestamp.h"
 #include "ice/ice_candidate.h"
 #include "server/signaling_json.h"
+#include "server/trickle_ice_http.h"
 #include "server/trickle_ice_json.h"
 #include "server/trickle_ice_sdpfrag.h"
 #include "signaling/sdp/sdp_parser.h"
@@ -430,8 +431,10 @@ void whip_handler::add_common_headers(const http_response_ptr& response)
 {
     response->set(http::field::access_control_allow_origin, "*");
 
-    response->set(http::field::access_control_expose_headers, "Location, ETag");
-
     response->set(http::field::cache_control, "no-store");
+
+    response->set(http::field::access_control_expose_headers, std::string(k_trickle_ice_expose_headers_value));
+
+    set_trickle_ice_patch_headers(response);
 }
 }    // namespace webrtc
