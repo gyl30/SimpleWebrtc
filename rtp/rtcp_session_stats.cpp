@@ -410,6 +410,28 @@ void rtcp_session_stats::forget_session(std::string_view session_id)
     }
 }
 
+void rtcp_session_stats::forget_stream(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (auto iterator = sources_by_key_.begin(); iterator != sources_by_key_.end();)
+    {
+        if (iterator->second.stream_id == stream_id)
+        {
+            iterator = sources_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
 void rtcp_session_stats::forget_peer(std::string_view remote_endpoint)
 {
     if (remote_endpoint.empty())

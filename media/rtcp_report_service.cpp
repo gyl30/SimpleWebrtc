@@ -5,11 +5,13 @@
 #include <expected>
 #include <limits>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "rtp/rtcp_compound_packet.h"
 #include "rtp/rtcp_report_generator.h"
 #include "rtp/rtcp_session_stats.h"
 
@@ -90,6 +92,64 @@ rtcp_report_service_result rtcp_report_service::observe_sent_rtp(const rtcp_sent
 rtcp_report_service_result rtcp_report_service::observe_sender_report(const rtcp_received_sender_report& report)
 {
     return stats_.observe_sender_report(report);
+}
+
+rtcp_report_service_result rtcp_report_service::observe_received_rtcp(std::string_view stream_id,
+                                                                      std::string_view session_id,
+                                                                      std::string_view remote_endpoint,
+                                                                      std::span<const uint8_t> plain_packet,
+                                                                      uint64_t arrival_time_milliseconds)
+{
+    auto validation_result = validate_rtcp_observation(session_id, remote_endpoint, plain_packet);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
+    auto compound = parse_rtcp_compound_packet(plain_packet);
+
+    if (!compound)
+    {
+        std::string message = "rtcp report service compound parse failed: ";
+
+        message.append(compound.error());
+
+        return std::unexpected(std::move(message));
+    }
+
+    for (const auto& block : compound->blocks)
+    {
+        if (!block.is_sender_report || !block.has_sender_info || block.report_sender_ssrc == 0)
+        {
+            continue;
+        }
+
+        rtcp_received_sender_report report;
+
+        report.stream_id = std::string(stream_id);
+
+        report.session_id = std::string(session_id);
+
+        report.remote_endpoint = std::string(remote_endpoint);
+
+        report.ssrc = block.report_sender_ssrc;
+
+        report.ntp_msw = block.sender_info.ntp_msw;
+
+        report.ntp_lsw = block.sender_info.ntp_lsw;
+
+        report.arrival_time_milliseconds = arrival_time_milliseconds;
+
+        auto observe_result = observe_sender_report(report);
+
+        if (!observe_result)
+        {
+            return std::unexpected(observe_result.error());
+        }
+    }
+
+    return {};
 }
 
 rtcp_report_service_generation rtcp_report_service::generate_reports(uint64_t now_milliseconds)
@@ -190,6 +250,32 @@ void rtcp_report_service::forget_session(std::string_view session_id)
     }
 
     stats_.forget_session(session_id);
+}
+
+void rtcp_report_service::forget_stream(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return;
+    }
+
+    {
+        std::lock_guard lock(mutex_);
+
+        for (auto iterator = sources_by_key_.begin(); iterator != sources_by_key_.end();)
+        {
+            if (iterator->second.stream_id == stream_id)
+            {
+                iterator = sources_by_key_.erase(iterator);
+
+                continue;
+            }
+
+            ++iterator;
+        }
+    }
+
+    stats_.forget_stream(stream_id);
 }
 
 void rtcp_report_service::forget_peer(std::string_view remote_endpoint)
@@ -310,6 +396,28 @@ rtcp_report_service_result rtcp_report_service::validate_source(const rtcp_repor
     if (source.max_report_blocks > k_max_rtcp_report_blocks)
     {
         return make_error("rtcp report source max report blocks is too large");
+    }
+
+    return {};
+}
+
+rtcp_report_service_result rtcp_report_service::validate_rtcp_observation(std::string_view session_id,
+                                                                          std::string_view remote_endpoint,
+                                                                          std::span<const uint8_t> plain_packet)
+{
+    if (session_id.empty())
+    {
+        return make_error("rtcp observation session id is empty");
+    }
+
+    if (remote_endpoint.empty())
+    {
+        return make_error("rtcp observation remote endpoint is empty");
+    }
+
+    if (plain_packet.empty())
+    {
+        return make_error("rtcp observation packet is empty");
     }
 
     return {};

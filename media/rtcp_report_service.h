@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -88,12 +89,21 @@ class rtcp_report_service
     rtcp_report_service_result observe_sender_report(const rtcp_received_sender_report& report);
 
     [[nodiscard]]
+    rtcp_report_service_result observe_received_rtcp(std::string_view stream_id,
+                                                     std::string_view session_id,
+                                                     std::string_view remote_endpoint,
+                                                     std::span<const uint8_t> plain_packet,
+                                                     uint64_t arrival_time_milliseconds);
+
+    [[nodiscard]]
     rtcp_report_service_generation generate_reports(uint64_t now_milliseconds);
 
     [[nodiscard]]
     rtcp_report_service_packet_result generate_report_for_source(const rtcp_report_source_config& source, uint64_t now_milliseconds);
 
     void forget_session(std::string_view session_id);
+
+    void forget_stream(std::string_view stream_id);
 
     void forget_peer(std::string_view remote_endpoint);
 
@@ -120,6 +130,11 @@ class rtcp_report_service
 
     [[nodiscard]]
     static rtcp_report_service_result validate_source(const rtcp_report_source_config& source);
+
+    [[nodiscard]]
+    static rtcp_report_service_result validate_rtcp_observation(std::string_view session_id,
+                                                                std::string_view remote_endpoint,
+                                                                std::span<const uint8_t> plain_packet);
 
     [[nodiscard]]
     rtcp_report_source_config normalize_source(const rtcp_report_source_config& source) const;
