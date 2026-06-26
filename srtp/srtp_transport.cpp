@@ -154,7 +154,10 @@ void fill_rtcp_fields_from_compound(const rtcp_compound_packet& compound, srtp_p
 
         break;
     }
-
+    result.rtcp_bye_packet_count = compound.bye_packet_count;
+    result.rtcp_has_bye = compound.has_bye;
+    result.rtcp_bye_ssrcs = compound.bye_ssrcs;
+    result.rtcp_bye_reason = compound.bye_reason;
     fill_rtcp_report_fields_from_compound(compound, result);
 }
 

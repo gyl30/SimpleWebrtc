@@ -210,6 +210,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                      const std::optional<media_ssrc_mapping>& ssrc_mapping);
     void cache_inbound_rtp_packet(const srtp_packet_process_result& packet, const media_route_result& route);
 
+    void handle_rtcp_bye_packet(const srtp_packet_process_result& packet, const media_route_result& route);
+
     void handle_rtcp_feedback_event(const rtcp_feedback_route_event& event);
 
     void retransmit_cached_rtp_packets(const rtcp_feedback_route_event& event);

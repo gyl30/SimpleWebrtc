@@ -3146,6 +3146,12 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
     cache_inbound_rtp_packet(*result, route);
 
+    if (result->kind == srtp_packet_kind::rtcp && result->rtcp_has_bye)
+    {
+        handle_rtcp_bye_packet(*result, route);
+        return;
+    }
+
     const auto feedback_event = make_rtcp_feedback_route_event(*result, route);
 
     if (feedback_event.has_value())
@@ -4136,6 +4142,38 @@ void ice_udp_server::cache_inbound_rtp_packet(const srtp_packet_process_result& 
                      result->plain_packet.size());
 }
 
+void ice_udp_server::handle_rtcp_bye_packet(const srtp_packet_process_result& packet, const media_route_result& route)
+{
+    if (packet.kind != srtp_packet_kind::rtcp)
+    {
+        return;
+    }
+
+    if (!packet.rtcp_has_bye)
+    {
+        return;
+    }
+
+    if (!route.known_peer)
+    {
+        return;
+    }
+
+    if (route.source.session_id.empty())
+    {
+        return;
+    }
+
+    WEBRTC_LOG_INFO("rtcp bye received stream={} session={} role={} remote={} ssrc_count={} reason={}",
+                    route.source.stream_id,
+                    route.source.session_id,
+                    media_peer_role_to_string(route.source.role),
+                    route.source.remote_endpoint,
+                    packet.rtcp_bye_ssrcs.size(),
+                    packet.rtcp_bye_reason);
+
+    remove_expired_session(route.source.session_id, "rtcp bye");
+}
 void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event& event)
 {
     if (!event.valid)

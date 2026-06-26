@@ -56,6 +56,10 @@ struct rtcp_compound_block
     uint32_t report_sender_ssrc = 0;
     rtcp_sender_info sender_info;
     std::vector<rtcp_report_block> report_blocks;
+
+    bool is_bye = false;
+    std::vector<uint32_t> bye_ssrcs;
+    std::string bye_reason;
 };
 
 struct rtcp_compound_packet
@@ -86,6 +90,11 @@ struct rtcp_compound_packet
     uint32_t report_sender_ssrc = 0;
     rtcp_sender_info sender_info;
     std::vector<rtcp_report_block> report_blocks;
+
+    std::size_t bye_packet_count = 0;
+    bool has_bye = false;
+    std::vector<uint32_t> bye_ssrcs;
+    std::string bye_reason;
 };
 
 using rtcp_compound_packet_result = std::expected<rtcp_compound_packet, std::string>;

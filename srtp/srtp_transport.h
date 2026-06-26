@@ -80,6 +80,11 @@ struct srtp_packet_process_result
     rtcp_sender_info rtcp_sender_info_data;
     std::vector<rtcp_report_block> rtcp_report_blocks;
 
+    std::size_t rtcp_bye_packet_count = 0;
+    bool rtcp_has_bye = false;
+    std::vector<uint32_t> rtcp_bye_ssrcs;
+    std::string rtcp_bye_reason;
+
     uint8_t rtcp_last_fraction_lost = 0;
     int32_t rtcp_last_cumulative_lost = 0;
     uint32_t rtcp_last_jitter = 0;

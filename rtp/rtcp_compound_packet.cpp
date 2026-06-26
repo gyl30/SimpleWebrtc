@@ -17,6 +17,10 @@ namespace webrtc
 {
 namespace
 {
+inline constexpr uint8_t k_rtcp_packet_type_bye = 203;
+inline constexpr std::size_t k_rtcp_common_header_size = 4;
+inline constexpr std::size_t k_rtcp_ssrc_size = 4;
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 void fill_feedback_block(const rtcp_feedback_packet& feedback, rtcp_compound_block& block)
@@ -130,6 +134,131 @@ rtcp_compound_block make_block_from_header(const rtcp_packet_header& header, std
 
     return block;
 }
+struct rtcp_bye_packet
+{
+    std::vector<uint32_t> ssrcs;
+
+    std::string reason;
+};
+
+using rtcp_bye_packet_result = std::expected<rtcp_bye_packet, std::string>;
+
+uint32_t read_network_u32(std::span<const uint8_t> data, std::size_t offset)
+{
+    return (static_cast<uint32_t>(data[offset]) << 24U) | (static_cast<uint32_t>(data[offset + 1]) << 16U) |
+           (static_cast<uint32_t>(data[offset + 2]) << 8U) | static_cast<uint32_t>(data[offset + 3]);
+}
+
+rtcp_bye_packet_result parse_rtcp_bye_packet(std::span<const uint8_t> data)
+{
+    auto header = parse_rtcp_packet_header(data);
+
+    if (!header)
+    {
+        return std::unexpected(header.error());
+    }
+
+    if (header->packet_type != k_rtcp_packet_type_bye)
+    {
+        return make_error("rtcp packet is not bye");
+    }
+
+    if (header->packet_size > data.size())
+    {
+        return make_error("rtcp bye packet is truncated");
+    }
+
+    std::size_t payload_end = header->packet_size;
+
+    if (header->padding)
+    {
+        if (payload_end == 0)
+        {
+            return make_error("rtcp bye padding packet is empty");
+        }
+
+        const std::size_t padding_size = data[payload_end - 1];
+
+        if (padding_size == 0)
+        {
+            return make_error("rtcp bye padding size is zero");
+        }
+
+        if (padding_size > payload_end - k_rtcp_common_header_size)
+        {
+            return make_error("rtcp bye padding exceeds packet size");
+        }
+
+        payload_end -= padding_size;
+    }
+
+    std::size_t offset = k_rtcp_common_header_size;
+
+    const std::size_t ssrc_count = header->count;
+
+    const std::size_t ssrc_bytes = ssrc_count * k_rtcp_ssrc_size;
+
+    if (offset + ssrc_bytes > payload_end)
+    {
+        return make_error("rtcp bye ssrc list is truncated");
+    }
+
+    rtcp_bye_packet packet;
+
+    packet.ssrcs.reserve(ssrc_count);
+
+    for (std::size_t index = 0; index < ssrc_count; ++index)
+    {
+        packet.ssrcs.push_back(read_network_u32(data, offset));
+
+        offset += k_rtcp_ssrc_size;
+    }
+
+    if (offset < payload_end)
+    {
+        const std::size_t reason_size = data[offset];
+
+        offset += 1;
+
+        if (offset + reason_size > payload_end)
+        {
+            return make_error("rtcp bye reason is truncated");
+        }
+
+        if (reason_size != 0)
+        {
+            packet.reason.assign(reinterpret_cast<const char*>(data.data() + offset), reason_size);
+        }
+    }
+
+    return packet;
+}
+
+void fill_bye_block(const rtcp_bye_packet& bye, rtcp_compound_block& block)
+{
+    block.is_bye = true;
+    block.bye_ssrcs = bye.ssrcs;
+    block.bye_reason = bye.reason;
+}
+
+void aggregate_bye_block(const rtcp_compound_block& block, rtcp_compound_packet& packet)
+{
+    if (!block.is_bye)
+    {
+        return;
+    }
+
+    packet.has_bye = true;
+
+    packet.bye_packet_count += 1;
+
+    packet.bye_ssrcs.insert(packet.bye_ssrcs.end(), block.bye_ssrcs.begin(), block.bye_ssrcs.end());
+
+    if (packet.bye_reason.empty() && !block.bye_reason.empty())
+    {
+        packet.bye_reason = block.bye_reason;
+    }
+}
 }    // namespace
 
 rtcp_compound_packet_result parse_rtcp_compound_packet(std::span<const uint8_t> data)
@@ -212,6 +341,23 @@ rtcp_compound_packet_result parse_rtcp_compound_packet(std::span<const uint8_t> 
 
             aggregate_report_block(block, packet);
         }
+        else if (header->packet_type == k_rtcp_packet_type_bye)
+        {
+            auto bye = parse_rtcp_bye_packet(block_data);
+
+            if (!bye)
+            {
+                std::string message = "rtcp compound bye parse failed: ";
+
+                message.append(bye.error());
+
+                return std::unexpected(std::move(message));
+            }
+
+            fill_bye_block(*bye, block);
+
+            aggregate_bye_block(block, packet);
+        }
 
         packet.blocks.push_back(std::move(block));
 
@@ -231,6 +377,11 @@ std::string rtcp_compound_feedback_summary_to_string(const rtcp_compound_packet&
     if (!packet.has_feedback)
     {
         return "none";
+    }
+
+    if (packet.has_bye)
+    {
+        return "bye";
     }
 
     if (packet.has_remb)
