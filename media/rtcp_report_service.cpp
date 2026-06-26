@@ -1,5 +1,6 @@
 #include "media/rtcp_report_service.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -20,6 +21,17 @@ namespace webrtc
 namespace
 {
 constexpr std::size_t k_max_rtcp_report_blocks = 31;
+
+constexpr uint64_t k_fnv_offset_basis = 1469598103934665603ULL;
+
+constexpr uint64_t k_fnv_prime = 1099511628211ULL;
+
+struct pending_rtcp_report_source
+{
+    std::string key;
+
+    rtcp_report_source_config source;
+};
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
@@ -47,6 +59,46 @@ std::string make_source_error(const rtcp_report_source_config& source, std::stri
     error.append(message);
 
     return error;
+}
+
+void hash_byte(uint64_t& hash, uint8_t value)
+{
+    hash ^= static_cast<uint64_t>(value);
+
+    hash *= k_fnv_prime;
+}
+
+void hash_string(uint64_t& hash, std::string_view value)
+{
+    for (char item : value)
+    {
+        hash_byte(hash, static_cast<uint8_t>(item));
+    }
+
+    hash_byte(hash, 0xffU);
+}
+
+void hash_u64(uint64_t& hash, uint64_t value)
+{
+    for (std::size_t index = 0; index < 8; ++index)
+    {
+        const uint8_t byte = static_cast<uint8_t>((value >> ((7U - index) * 8U)) & 0xffU);
+
+        hash_byte(hash, byte);
+    }
+}
+
+uint64_t make_schedule_hash(std::string_view key, uint64_t generation_round)
+{
+    uint64_t hash = k_fnv_offset_basis;
+
+    hash_string(hash, "simplewebrtc-rtcp-report-schedule");
+
+    hash_string(hash, key);
+
+    hash_u64(hash, generation_round);
+
+    return hash;
 }
 
 void append_json_uint64(std::string& output, std::string_view name, uint64_t value, bool& first)
@@ -91,7 +143,6 @@ void append_metric_value(std::string& output, std::string_view name, uint64_t va
     output.append(std::to_string(value));
     output.push_back('\n');
 }
-
 }    // namespace
 
 rtcp_report_service::rtcp_report_service() : config_() {}
@@ -102,7 +153,7 @@ rtcp_report_service::rtcp_report_service(rtcp_report_service_config config) : co
 
     if (!validation_result)
     {
-        config_.max_report_blocks = k_max_rtcp_report_blocks;
+        config_ = rtcp_report_service_config{};
     }
 }
 
@@ -121,7 +172,14 @@ rtcp_report_service_result rtcp_report_service::remember_source(const rtcp_repor
 
     std::lock_guard lock(mutex_);
 
-    sources_by_key_[key] = std::move(normalized_source);
+    auto [iterator, inserted] = sources_by_key_.try_emplace(key);
+
+    iterator->second.source = std::move(normalized_source);
+
+    if (inserted)
+    {
+        iterator->second.next_due_milliseconds = 0;
+    }
 
     return {};
 }
@@ -239,28 +297,57 @@ rtcp_report_service_rtcp_observation_result rtcp_report_service::observe_receive
 
 rtcp_report_service_generation rtcp_report_service::generate_reports(uint64_t now_milliseconds)
 {
-    std::vector<rtcp_report_source_config> sources;
+    rtcp_report_service_generation generation;
+
+    std::vector<pending_rtcp_report_source> pending_sources;
 
     {
         std::lock_guard lock(mutex_);
 
-        sources.reserve(sources_by_key_.size());
+        pending_sources.reserve(sources_by_key_.size());
 
-        for (const auto& [key, source] : sources_by_key_)
+        const uint64_t next_generation_round = generated_report_rounds_ + 1;
+
+        for (auto& [key, record] : sources_by_key_)
         {
-            (void)key;
+            if (record.next_due_milliseconds == 0)
+            {
+                record.next_due_milliseconds = add_milliseconds_saturated(now_milliseconds, make_initial_delay_milliseconds(key, config_));
+            }
 
-            sources.push_back(source);
+            if (record.next_due_milliseconds > now_milliseconds)
+            {
+                continue;
+            }
+
+            generation.due_sources += 1;
+
+            if (config_.max_packets_per_generation != 0 && pending_sources.size() >= config_.max_packets_per_generation)
+            {
+                generation.throttled_sources += 1;
+
+                continue;
+            }
+
+            pending_rtcp_report_source pending_source;
+
+            pending_source.key = key;
+
+            pending_source.source = record.source;
+
+            pending_sources.push_back(std::move(pending_source));
+
+            const uint64_t next_delay_milliseconds = make_next_delay_milliseconds(key, next_generation_round, config_);
+
+            record.next_due_milliseconds = add_milliseconds_saturated(now_milliseconds, next_delay_milliseconds);
         }
     }
 
-    rtcp_report_service_generation generation;
+    generation.packets.reserve(pending_sources.size());
 
-    generation.packets.reserve(sources.size());
-
-    for (const auto& source : sources)
+    for (const auto& pending_source : pending_sources)
     {
-        auto packet = generate_report_for_source(source, now_milliseconds);
+        auto packet = generate_report_for_source(pending_source.source, now_milliseconds);
 
         if (!packet)
         {
@@ -292,6 +379,8 @@ rtcp_report_service_generation rtcp_report_service::generate_reports(uint64_t no
 
         failed_packets_ += generation.failed;
 
+        throttled_sources_ += generation.throttled_sources;
+
         last_generation_time_milliseconds_ = now_milliseconds;
 
         last_generation_packets_ = generation.packets.size();
@@ -299,6 +388,10 @@ rtcp_report_service_generation rtcp_report_service::generate_reports(uint64_t no
         last_generation_skipped_ = generation.skipped;
 
         last_generation_failed_ = generation.failed;
+
+        last_generation_due_sources_ = generation.due_sources;
+
+        last_generation_throttled_sources_ = generation.throttled_sources;
     }
 
     return generation;
@@ -343,7 +436,7 @@ void rtcp_report_service::forget_session(std::string_view session_id)
 
         for (auto iterator = sources_by_key_.begin(); iterator != sources_by_key_.end();)
         {
-            if (iterator->second.session_id == session_id)
+            if (iterator->second.source.session_id == session_id)
             {
                 iterator = sources_by_key_.erase(iterator);
 
@@ -369,7 +462,7 @@ void rtcp_report_service::forget_stream(std::string_view stream_id)
 
         for (auto iterator = sources_by_key_.begin(); iterator != sources_by_key_.end();)
         {
-            if (iterator->second.stream_id == stream_id)
+            if (iterator->second.source.stream_id == stream_id)
             {
                 iterator = sources_by_key_.erase(iterator);
 
@@ -395,7 +488,7 @@ void rtcp_report_service::forget_peer(std::string_view remote_endpoint)
 
         for (auto iterator = sources_by_key_.begin(); iterator != sources_by_key_.end();)
         {
-            if (iterator->second.remote_endpoint == remote_endpoint)
+            if (iterator->second.source.remote_endpoint == remote_endpoint)
             {
                 iterator = sources_by_key_.erase(iterator);
 
@@ -448,6 +541,8 @@ rtcp_report_service_runtime_snapshot rtcp_report_service::runtime_snapshot() con
 
         snapshot.failed_packets = failed_packets_;
 
+        snapshot.throttled_sources = throttled_sources_;
+
         snapshot.observed_sender_reports = observed_sender_reports_;
 
         snapshot.last_generation_time_milliseconds = last_generation_time_milliseconds_;
@@ -457,6 +552,10 @@ rtcp_report_service_runtime_snapshot rtcp_report_service::runtime_snapshot() con
         snapshot.last_generation_skipped = last_generation_skipped_;
 
         snapshot.last_generation_failed = last_generation_failed_;
+
+        snapshot.last_generation_due_sources = last_generation_due_sources_;
+
+        snapshot.last_generation_throttled_sources = last_generation_throttled_sources_;
     }
 
     snapshot.stats_sources = stats_.source_count();
@@ -488,6 +587,16 @@ rtcp_report_service_result rtcp_report_service::validate_config(const rtcp_repor
     if (config.max_report_blocks > k_max_rtcp_report_blocks)
     {
         return make_error("rtcp report service max report blocks is too large");
+    }
+
+    if (config.report_interval_milliseconds == 0)
+    {
+        return make_error("rtcp report service interval is zero");
+    }
+
+    if (config.report_jitter_milliseconds > config.report_interval_milliseconds)
+    {
+        return make_error("rtcp report service jitter is greater than interval");
     }
 
     return {};
@@ -561,6 +670,67 @@ rtcp_report_service_result rtcp_report_service::validate_rtcp_observation(std::s
     }
 
     return {};
+}
+
+uint64_t rtcp_report_service::make_initial_delay_milliseconds(std::string_view key, const rtcp_report_service_config& config)
+{
+    if (config.report_interval_milliseconds <= 1)
+    {
+        return 0;
+    }
+
+    return make_schedule_hash(key, 0) % config.report_interval_milliseconds;
+}
+
+uint64_t rtcp_report_service::make_next_delay_milliseconds(std::string_view key, uint64_t generation_round, const rtcp_report_service_config& config)
+{
+    const uint64_t interval = config.report_interval_milliseconds;
+
+    const uint64_t jitter = config.report_jitter_milliseconds;
+
+    if (jitter == 0)
+    {
+        return interval;
+    }
+
+    const uint64_t max_uint64 = std::numeric_limits<uint64_t>::max();
+
+    const uint64_t range = jitter > (max_uint64 - 1) / 2 ? max_uint64 : jitter * 2 + 1;
+
+    const uint64_t value = make_schedule_hash(key, generation_round) % range;
+
+    if (value <= jitter)
+    {
+        const uint64_t negative_offset = jitter - value;
+
+        if (negative_offset >= interval)
+        {
+            return 1;
+        }
+
+        return interval - negative_offset;
+    }
+
+    const uint64_t positive_offset = value - jitter;
+
+    if (max_uint64 - interval < positive_offset)
+    {
+        return max_uint64;
+    }
+
+    return interval + positive_offset;
+}
+
+uint64_t rtcp_report_service::add_milliseconds_saturated(uint64_t timestamp_milliseconds, uint64_t delay_milliseconds)
+{
+    const uint64_t max_uint64 = std::numeric_limits<uint64_t>::max();
+
+    if (max_uint64 - timestamp_milliseconds < delay_milliseconds)
+    {
+        return max_uint64;
+    }
+
+    return timestamp_milliseconds + delay_milliseconds;
 }
 
 rtcp_report_source_config rtcp_report_service::normalize_source(const rtcp_report_source_config& source) const
@@ -654,6 +824,7 @@ void rtcp_report_service::reset_runtime_counters_locked()
     generated_packets_ = 0;
     skipped_packets_ = 0;
     failed_packets_ = 0;
+    throttled_sources_ = 0;
 
     observed_sender_reports_ = 0;
 
@@ -661,6 +832,8 @@ void rtcp_report_service::reset_runtime_counters_locked()
     last_generation_packets_ = 0;
     last_generation_skipped_ = 0;
     last_generation_failed_ = 0;
+    last_generation_due_sources_ = 0;
+    last_generation_throttled_sources_ = 0;
 }
 
 std::string rtcp_report_source_config_to_string(const rtcp_report_source_config& source)
@@ -700,7 +873,7 @@ std::string rtcp_report_service_generation_to_string(const rtcp_report_service_g
 {
     std::string result;
 
-    result.reserve(128);
+    result.reserve(192);
 
     result.append("packets=");
     result.append(std::to_string(generation.packets.size()));
@@ -714,6 +887,12 @@ std::string rtcp_report_service_generation_to_string(const rtcp_report_service_g
     result.append(" errors=");
     result.append(std::to_string(generation.errors.size()));
 
+    result.append(" due_sources=");
+    result.append(std::to_string(generation.due_sources));
+
+    result.append(" throttled_sources=");
+    result.append(std::to_string(generation.throttled_sources));
+
     return result;
 }
 
@@ -721,7 +900,7 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
 {
     std::string result;
 
-    result.reserve(192);
+    result.reserve(256);
 
     result.append("configured_sources=");
     result.append(std::to_string(snapshot.configured_sources));
@@ -741,6 +920,9 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
     result.append(" failed=");
     result.append(std::to_string(snapshot.failed_packets));
 
+    result.append(" throttled_sources=");
+    result.append(std::to_string(snapshot.throttled_sources));
+
     result.append(" observed_sender_reports=");
     result.append(std::to_string(snapshot.observed_sender_reports));
 
@@ -756,6 +938,12 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
     result.append(" last_failed=");
     result.append(std::to_string(snapshot.last_generation_failed));
 
+    result.append(" last_due_sources=");
+    result.append(std::to_string(snapshot.last_generation_due_sources));
+
+    result.append(" last_throttled_sources=");
+    result.append(std::to_string(snapshot.last_generation_throttled_sources));
+
     return result;
 }
 
@@ -763,7 +951,7 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
 {
     std::string output;
 
-    output.reserve(384);
+    output.reserve(512);
 
     bool first = true;
 
@@ -781,6 +969,8 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
 
     append_json_uint64(output, "failed_packets", snapshot.failed_packets, first);
 
+    append_json_uint64(output, "throttled_sources", snapshot.throttled_sources, first);
+
     append_json_uint64(output, "observed_sender_reports", snapshot.observed_sender_reports, first);
 
     append_json_uint64(output, "last_generation_time_milliseconds", snapshot.last_generation_time_milliseconds, first);
@@ -791,6 +981,10 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
 
     append_json_size(output, "last_generation_failed", snapshot.last_generation_failed, first);
 
+    append_json_size(output, "last_generation_due_sources", snapshot.last_generation_due_sources, first);
+
+    append_json_size(output, "last_generation_throttled_sources", snapshot.last_generation_throttled_sources, first);
+
     output.push_back('}');
 
     return output;
@@ -800,15 +994,15 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
 {
     std::string output;
 
-    output.reserve(4096);
+    output.reserve(6144);
 
     append_metric_header(output, "simplewebrtc_rtcp_report_service_configured_sources", "configured active rtcp report sources", "gauge");
 
-    append_metric_value(output, "simplewebrtc_rtcp_report_service_configured_sources", snapshot.configured_sources);
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_configured_sources", static_cast<uint64_t>(snapshot.configured_sources));
 
     append_metric_header(output, "simplewebrtc_rtcp_report_service_stats_sources", "rtcp statistics source count", "gauge");
 
-    append_metric_value(output, "simplewebrtc_rtcp_report_service_stats_sources", snapshot.stats_sources);
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_stats_sources", static_cast<uint64_t>(snapshot.stats_sources));
 
     append_metric_header(
         output, "simplewebrtc_rtcp_report_service_generated_report_rounds_total", "total rtcp active report generation rounds", "counter");
@@ -827,6 +1021,13 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
 
     append_metric_value(output, "simplewebrtc_rtcp_report_service_failed_packets_total", snapshot.failed_packets);
 
+    append_metric_header(output,
+                         "simplewebrtc_rtcp_report_service_throttled_sources_total",
+                         "total rtcp active report sources throttled by generation limit",
+                         "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_throttled_sources_total", snapshot.throttled_sources);
+
     append_metric_header(
         output, "simplewebrtc_rtcp_report_service_observed_sender_reports_total", "total observed inbound rtcp sender reports", "counter");
 
@@ -842,17 +1043,32 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
     append_metric_header(
         output, "simplewebrtc_rtcp_report_service_last_generation_packets", "generated rtcp active report packets in the last round", "gauge");
 
-    append_metric_value(output, "simplewebrtc_rtcp_report_service_last_generation_packets", snapshot.last_generation_packets);
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_last_generation_packets", static_cast<uint64_t>(snapshot.last_generation_packets));
 
     append_metric_header(
         output, "simplewebrtc_rtcp_report_service_last_generation_skipped", "skipped rtcp active report packets in the last round", "gauge");
 
-    append_metric_value(output, "simplewebrtc_rtcp_report_service_last_generation_skipped", snapshot.last_generation_skipped);
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_last_generation_skipped", static_cast<uint64_t>(snapshot.last_generation_skipped));
 
     append_metric_header(
         output, "simplewebrtc_rtcp_report_service_last_generation_failed", "failed rtcp active report packets in the last round", "gauge");
 
-    append_metric_value(output, "simplewebrtc_rtcp_report_service_last_generation_failed", snapshot.last_generation_failed);
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_last_generation_failed", static_cast<uint64_t>(snapshot.last_generation_failed));
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_last_generation_due_sources", "rtcp active report sources due in the last round", "gauge");
+
+    append_metric_value(
+        output, "simplewebrtc_rtcp_report_service_last_generation_due_sources", static_cast<uint64_t>(snapshot.last_generation_due_sources));
+
+    append_metric_header(output,
+                         "simplewebrtc_rtcp_report_service_last_generation_throttled_sources",
+                         "rtcp active report sources throttled in the last round",
+                         "gauge");
+
+    append_metric_value(output,
+                        "simplewebrtc_rtcp_report_service_last_generation_throttled_sources",
+                        static_cast<uint64_t>(snapshot.last_generation_throttled_sources));
 
     return output;
 }

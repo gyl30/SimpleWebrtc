@@ -19,6 +19,11 @@ namespace webrtc
 struct rtcp_report_service_config
 {
     std::size_t max_report_blocks = 31;
+
+    uint64_t report_interval_milliseconds = 5000;
+    uint64_t report_jitter_milliseconds = 1000;
+
+    std::size_t max_packets_per_generation = 32;
 };
 
 struct rtcp_report_source_config
@@ -52,6 +57,9 @@ struct rtcp_report_service_generation
 
     std::size_t skipped = 0;
     std::size_t failed = 0;
+
+    std::size_t due_sources = 0;
+    std::size_t throttled_sources = 0;
 };
 
 struct rtcp_report_service_rtcp_observation
@@ -74,6 +82,7 @@ struct rtcp_report_service_runtime_snapshot
     uint64_t generated_packets = 0;
     uint64_t skipped_packets = 0;
     uint64_t failed_packets = 0;
+    uint64_t throttled_sources = 0;
 
     uint64_t observed_sender_reports = 0;
 
@@ -81,6 +90,8 @@ struct rtcp_report_service_runtime_snapshot
     std::size_t last_generation_packets = 0;
     std::size_t last_generation_skipped = 0;
     std::size_t last_generation_failed = 0;
+    std::size_t last_generation_due_sources = 0;
+    std::size_t last_generation_throttled_sources = 0;
 };
 
 using rtcp_report_service_result = std::expected<void, std::string>;
@@ -163,6 +174,14 @@ class rtcp_report_service
     const rtcp_session_stats& stats() const;
 
    private:
+    struct rtcp_report_source_record
+    {
+        rtcp_report_source_config source;
+
+        uint64_t next_due_milliseconds = 0;
+    };
+
+   private:
     [[nodiscard]]
     static std::string make_source_key(std::string_view session_id, std::string_view remote_endpoint, uint32_t local_ssrc);
 
@@ -176,6 +195,15 @@ class rtcp_report_service
     static rtcp_report_service_result validate_rtcp_observation(std::string_view session_id,
                                                                 std::string_view remote_endpoint,
                                                                 std::span<const uint8_t> plain_packet);
+
+    [[nodiscard]]
+    static uint64_t make_initial_delay_milliseconds(std::string_view key, const rtcp_report_service_config& config);
+
+    [[nodiscard]]
+    static uint64_t make_next_delay_milliseconds(std::string_view key, uint64_t generation_round, const rtcp_report_service_config& config);
+
+    [[nodiscard]]
+    static uint64_t add_milliseconds_saturated(uint64_t timestamp_milliseconds, uint64_t delay_milliseconds);
 
     [[nodiscard]]
     rtcp_report_source_config normalize_source(const rtcp_report_source_config& source) const;
@@ -193,12 +221,13 @@ class rtcp_report_service
 
     mutable std::mutex mutex_;
 
-    std::unordered_map<std::string, rtcp_report_source_config> sources_by_key_;
+    std::unordered_map<std::string, rtcp_report_source_record> sources_by_key_;
 
     uint64_t generated_report_rounds_ = 0;
     uint64_t generated_packets_ = 0;
     uint64_t skipped_packets_ = 0;
     uint64_t failed_packets_ = 0;
+    uint64_t throttled_sources_ = 0;
 
     uint64_t observed_sender_reports_ = 0;
 
@@ -206,6 +235,8 @@ class rtcp_report_service
     std::size_t last_generation_packets_ = 0;
     std::size_t last_generation_skipped_ = 0;
     std::size_t last_generation_failed_ = 0;
+    std::size_t last_generation_due_sources_ = 0;
+    std::size_t last_generation_throttled_sources_ = 0;
 
     rtcp_session_stats stats_;
 };

@@ -49,7 +49,7 @@ constexpr auto k_minimum_dtls_timer_delay = std::chrono::milliseconds(1);
 
 constexpr auto k_ice_consent_check_interval = std::chrono::seconds(5);
 
-constexpr auto k_rtcp_report_interval = std::chrono::seconds(5);
+constexpr auto k_rtcp_report_interval = std::chrono::milliseconds(200);
 
 constexpr uint64_t k_ice_consent_timeout_milliseconds = 30000;
 
