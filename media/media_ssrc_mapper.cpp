@@ -469,4 +469,51 @@ std::string media_ssrc_mapping_to_string(const media_ssrc_mapping& mapping)
 
     return result;
 }
+std::vector<media_ssrc_mapping> media_ssrc_mapper::find_by_subscriber_session(std::string_view subscriber_session_id) const
+{
+    std::vector<media_ssrc_mapping> mappings;
+
+    if (subscriber_session_id.empty())
+    {
+        return mappings;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (const auto& [key, mapping] : mappings_by_publisher_key_)
+    {
+        (void)key;
+
+        if (mapping.subscriber_session_id == subscriber_session_id)
+        {
+            mappings.push_back(mapping);
+        }
+    }
+
+    return mappings;
+}
+
+std::vector<media_ssrc_mapping> media_ssrc_mapper::find_by_stream_id(std::string_view stream_id) const
+{
+    std::vector<media_ssrc_mapping> mappings;
+
+    if (stream_id.empty())
+    {
+        return mappings;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (const auto& [key, mapping] : mappings_by_publisher_key_)
+    {
+        (void)key;
+
+        if (mapping.stream_id == stream_id)
+        {
+            mappings.push_back(mapping);
+        }
+    }
+
+    return mappings;
+}
 }    // namespace webrtc

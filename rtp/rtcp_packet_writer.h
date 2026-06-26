@@ -34,11 +34,20 @@ struct rtcp_sdes_write_options
     std::vector<rtcp_sdes_chunk> chunks;
 };
 
+struct rtcp_bye_write_options
+{
+    std::vector<uint32_t> ssrcs;
+
+    std::string reason;
+};
+
 struct rtcp_compound_packet_write_options
 {
     std::vector<rtcp_report_write_options> reports;
 
     std::vector<rtcp_sdes_chunk> sdes_chunks;
+
+    std::vector<rtcp_bye_write_options> bye_packets;
 };
 
 using rtcp_packet_write_result = std::expected<std::vector<uint8_t>, std::string>;
@@ -51,6 +60,9 @@ rtcp_packet_write_result write_rtcp_receiver_report(const rtcp_report_write_opti
 
 [[nodiscard]]
 rtcp_packet_write_result write_rtcp_sdes(const rtcp_sdes_write_options& options);
+
+[[nodiscard]]
+rtcp_packet_write_result write_rtcp_bye_packet(const rtcp_bye_write_options& options);
 
 [[nodiscard]]
 rtcp_packet_write_result write_rtcp_compound_packet(const rtcp_compound_packet_write_options& options);

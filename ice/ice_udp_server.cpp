@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <map>
 #include <vector>
 
 #include <boost/system/error_code.hpp>
@@ -34,6 +35,7 @@
 #include "rtp/rtcp_feedback.h"
 #include "rtp/rtp_packet.h"
 #include "rtp/rtp_packet_rewriter.h"
+#include "rtp/rtcp_packet_writer.h"
 #include "session/session_state.h"
 #include "util/timestamp.h"
 
@@ -41,6 +43,8 @@ namespace webrtc
 {
 namespace
 {
+constexpr std::size_t k_rtcp_bye_max_ssrcs_per_packet = 31;
+
 constexpr std::size_t k_max_ice_username_fragment_size = 256;
 
 constexpr std::size_t k_max_ice_username_size = k_max_ice_username_fragment_size * 2 + 1;
@@ -1080,6 +1084,29 @@ nack_sequence_expansion expand_nack_sequences(const std::vector<rtcp_nack_item>&
 
     return expansion;
 }
+struct rtcp_bye_target
+{
+    std::string subscriber_session_id;
+
+    std::string remote_address;
+
+    std::vector<uint32_t> ssrcs;
+};
+
+void append_unique_rtcp_bye_ssrc(std::vector<uint32_t>& ssrcs, uint32_t ssrc)
+{
+    if (ssrc == 0)
+    {
+        return;
+    }
+
+    if (std::find(ssrcs.begin(), ssrcs.end(), ssrc) != ssrcs.end())
+    {
+        return;
+    }
+
+    ssrcs.push_back(ssrc);
+}
 }    // namespace
 
 ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
@@ -1738,6 +1765,232 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
     return {};
 }
 
+std::optional<std::string> ice_udp_server::remote_address_for_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto iterator = endpoint_address_by_session_id_.find(std::string(session_id));
+
+    if (iterator == endpoint_address_by_session_id_.end())
+    {
+        return std::nullopt;
+    }
+
+    if (iterator->second.empty())
+    {
+        return std::nullopt;
+    }
+
+    return iterator->second;
+}
+
+void ice_udp_server::send_rtcp_bye_for_removed_stream(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return;
+    }
+
+    if (ssrc_mapper_ == nullptr)
+    {
+        return;
+    }
+
+    const std::vector<media_ssrc_mapping> mappings = ssrc_mapper_->find_by_stream_id(stream_id);
+
+    send_rtcp_bye_for_mappings(stream_id, mappings);
+}
+
+void ice_udp_server::send_rtcp_bye_for_removed_session(const stream_removed_session& removed_session)
+{
+    if (removed_session.kind != stream_session_kind::subscriber)
+    {
+        return;
+    }
+
+    if (removed_session.session_id.empty())
+    {
+        return;
+    }
+
+    if (ssrc_mapper_ == nullptr)
+    {
+        return;
+    }
+
+    const std::vector<media_ssrc_mapping> mappings = ssrc_mapper_->find_by_subscriber_session(removed_session.session_id);
+
+    send_rtcp_bye_for_mappings(removed_session.stream_id, mappings);
+}
+
+void ice_udp_server::send_rtcp_bye_for_mappings(std::string_view stream_id, const std::vector<media_ssrc_mapping>& mappings)
+{
+    if (mappings.empty())
+    {
+        return;
+    }
+
+    std::unordered_map<std::string, rtcp_bye_target> targets_by_session_id;
+
+    for (const auto& mapping : mappings)
+    {
+        if (mapping.subscriber_session_id.empty())
+        {
+            continue;
+        }
+
+        auto& target = targets_by_session_id[mapping.subscriber_session_id];
+
+        if (target.subscriber_session_id.empty())
+        {
+            target.subscriber_session_id = mapping.subscriber_session_id;
+
+            auto remote_address = remote_address_for_session(mapping.subscriber_session_id);
+
+            if (remote_address.has_value())
+            {
+                target.remote_address = std::move(*remote_address);
+            }
+        }
+
+        append_unique_rtcp_bye_ssrc(target.ssrcs, mapping.subscriber_ssrc);
+    }
+
+    for (const auto& [subscriber_session_id, target] : targets_by_session_id)
+    {
+        (void)subscriber_session_id;
+
+        if (target.remote_address.empty())
+        {
+            continue;
+        }
+
+        if (target.ssrcs.empty())
+        {
+            continue;
+        }
+
+        send_rtcp_bye_to_subscriber(stream_id, target.subscriber_session_id, target.remote_address, target.ssrcs);
+    }
+}
+
+void ice_udp_server::send_rtcp_bye_to_subscriber(std::string_view stream_id,
+                                                 std::string_view subscriber_session_id,
+                                                 std::string_view remote_address,
+                                                 const std::vector<uint32_t>& ssrcs)
+{
+    if (stream_id.empty())
+    {
+        return;
+    }
+
+    if (subscriber_session_id.empty())
+    {
+        return;
+    }
+
+    if (remote_address.empty())
+    {
+        return;
+    }
+
+    if (ssrcs.empty())
+    {
+        return;
+    }
+
+    if (srtp_transport_ == nullptr)
+    {
+        return;
+    }
+
+    auto remote_endpoint = find_remote_endpoint(remote_address);
+
+    if (!remote_endpoint.has_value())
+    {
+        WEBRTC_LOG_DEBUG("rtcp bye skipped endpoint not found stream={} subscriber={} remote={}", stream_id, subscriber_session_id, remote_address);
+
+        return;
+    }
+
+    std::size_t offset = 0;
+
+    while (offset < ssrcs.size())
+    {
+        const std::size_t chunk_end = std::min(offset + k_rtcp_bye_max_ssrcs_per_packet, ssrcs.size());
+
+        rtcp_bye_write_options bye_options;
+
+        bye_options.ssrcs.reserve(chunk_end - offset);
+
+        for (std::size_t index = offset; index < chunk_end; ++index)
+        {
+            bye_options.ssrcs.push_back(ssrcs[index]);
+        }
+
+        auto bye_packet = write_rtcp_bye_packet(bye_options);
+
+        if (!bye_packet)
+        {
+            WEBRTC_LOG_WARN("rtcp bye write failed stream={} subscriber={} remote={} ssrc_count={} error={}",
+                            stream_id,
+                            subscriber_session_id,
+                            remote_address,
+                            bye_options.ssrcs.size(),
+                            bye_packet.error());
+
+            offset = chunk_end;
+
+            continue;
+        }
+
+        auto protected_packet = srtp_transport_->protect_outbound_packet(
+            std::span<const uint8_t>(bye_packet->data(), bye_packet->size()), remote_address, srtp_packet_kind::rtcp);
+
+        if (!protected_packet)
+        {
+            WEBRTC_LOG_WARN("rtcp bye protect failed stream={} subscriber={} remote={} ssrc_count={} error={}",
+                            stream_id,
+                            subscriber_session_id,
+                            remote_address,
+                            bye_options.ssrcs.size(),
+                            protected_packet.error());
+
+            offset = chunk_end;
+
+            continue;
+        }
+
+        if (protected_packet->state == srtp_packet_process_state::ignored)
+        {
+            WEBRTC_LOG_DEBUG("rtcp bye ignored stream={} subscriber={} remote={} ssrc_count={} reason={}",
+                             stream_id,
+                             subscriber_session_id,
+                             remote_address,
+                             bye_options.ssrcs.size(),
+                             protected_packet->reason);
+
+            offset = chunk_end;
+
+            continue;
+        }
+
+        send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
+
+        WEBRTC_LOG_INFO("rtcp bye sent stream={} subscriber={} remote={} ssrc_count={}",
+                        stream_id,
+                        subscriber_session_id,
+                        remote_address,
+                        bye_options.ssrcs.size());
+
+        offset = chunk_end;
+    }
+}
 void ice_udp_server::register_session_removed_callback()
 {
     if (registry_ == nullptr || registry_callback_registered_)
@@ -1761,6 +2014,15 @@ void ice_udp_server::register_session_removed_callback()
                             stream_session_kind_to_string(removed_session.kind),
                             removed_session.stream_id,
                             removed_session.session_id);
+
+            if (removed_session.kind == stream_session_kind::publisher)
+            {
+                self->send_rtcp_bye_for_removed_stream(removed_session.stream_id);
+            }
+            else if (removed_session.kind == stream_session_kind::subscriber)
+            {
+                self->send_rtcp_bye_for_removed_session(removed_session);
+            }
 
             self->forget_session(removed_session.session_id);
 

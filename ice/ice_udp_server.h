@@ -290,6 +290,20 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     static std::string endpoint_ip(const udp::endpoint& endpoint);
 
+    void send_rtcp_bye_for_removed_session(const stream_removed_session& removed_session);
+
+    void send_rtcp_bye_for_removed_stream(std::string_view stream_id);
+
+    void send_rtcp_bye_for_mappings(std::string_view stream_id, const std::vector<media_ssrc_mapping>& mappings);
+
+    void send_rtcp_bye_to_subscriber(std::string_view stream_id,
+                                     std::string_view subscriber_session_id,
+                                     std::string_view remote_address,
+                                     const std::vector<uint32_t>& ssrcs);
+
+    [[nodiscard]]
+    std::optional<std::string> remote_address_for_session(std::string_view session_id);
+
    private:
     boost::asio::io_context& io_context_;
 

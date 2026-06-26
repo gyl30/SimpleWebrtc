@@ -21,6 +21,10 @@ constexpr uint8_t k_rtcp_packet_type_sender_report = 200;
 constexpr uint8_t k_rtcp_packet_type_receiver_report = 201;
 constexpr uint8_t k_rtcp_packet_type_sdes = 202;
 
+inline constexpr std::size_t k_rtcp_common_header_size = 4;
+inline constexpr uint8_t k_rtcp_packet_type_bye = 203;
+inline constexpr std::size_t k_rtcp_bye_reason_length_size = 1;
+
 constexpr uint8_t k_rtcp_sdes_item_type_end = 0;
 constexpr uint8_t k_rtcp_sdes_item_type_cname = 1;
 
@@ -270,6 +274,53 @@ void append_sdes_cname_chunk(std::vector<uint8_t>& packet, const rtcp_sdes_chunk
         append_u8(packet, 0);
     }
 }
+std::expected<void, std::string> validate_bye_options(const rtcp_bye_write_options& options)
+{
+    if (options.ssrcs.empty())
+    {
+        return make_error("rtcp bye ssrc list is empty");
+    }
+
+    if (options.ssrcs.size() > k_rtcp_max_count)
+    {
+        return make_error("rtcp bye ssrc count is too large");
+    }
+
+    for (uint32_t ssrc : options.ssrcs)
+    {
+        if (ssrc == 0)
+        {
+            return make_error("rtcp bye ssrc is zero");
+        }
+    }
+
+    if (options.reason.size() > static_cast<std::size_t>(std::numeric_limits<uint8_t>::max()))
+    {
+        return make_error("rtcp bye reason is too large");
+    }
+
+    for (char value : options.reason)
+    {
+        if (value == '\0' || value == '\r' || value == '\n')
+        {
+            return make_error("rtcp bye reason contains invalid characters");
+        }
+    }
+
+    return {};
+}
+
+std::size_t padding_to_32bit(std::size_t size)
+{
+    const std::size_t remainder = size % 4;
+
+    if (remainder == 0)
+    {
+        return 0;
+    }
+
+    return 4 - remainder;
+}
 }    // namespace
 
 rtcp_packet_write_result write_rtcp_sender_report(const rtcp_report_write_options& options) { return write_rtcp_report_packet(options, true); }
@@ -302,6 +353,61 @@ rtcp_packet_write_result write_rtcp_sdes(const rtcp_sdes_write_options& options)
     }
 
     patch_u16(packet, 2, static_cast<uint16_t>(length_words));
+
+    return packet;
+}
+rtcp_packet_write_result write_rtcp_bye_packet(const rtcp_bye_write_options& options)
+{
+    auto validation_result = validate_bye_options(options);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
+    std::size_t packet_size = k_rtcp_common_header_size + options.ssrcs.size() * sizeof(uint32_t);
+
+    if (!options.reason.empty())
+    {
+        packet_size += k_rtcp_bye_reason_length_size;
+        packet_size += options.reason.size();
+        packet_size += padding_to_32bit(packet_size);
+    }
+
+    if ((packet_size % 4) != 0)
+    {
+        return make_error("rtcp bye packet size is not aligned");
+    }
+
+    const std::size_t length_words = packet_size / 4 - 1;
+
+    if (length_words > static_cast<std::size_t>(std::numeric_limits<uint16_t>::max()))
+    {
+        return make_error("rtcp bye packet is too large");
+    }
+
+    std::vector<uint8_t> packet;
+
+    packet.reserve(packet_size);
+
+    append_rtcp_header(packet, static_cast<uint8_t>(options.ssrcs.size()), k_rtcp_packet_type_bye, static_cast<uint16_t>(length_words));
+
+    for (uint32_t ssrc : options.ssrcs)
+    {
+        append_u32(packet, ssrc);
+    }
+
+    if (!options.reason.empty())
+    {
+        append_u8(packet, static_cast<uint8_t>(options.reason.size()));
+
+        packet.insert(packet.end(), options.reason.begin(), options.reason.end());
+
+        while ((packet.size() % 4) != 0)
+        {
+            append_u8(packet, 0);
+        }
+    }
 
     return packet;
 }
@@ -341,6 +447,17 @@ rtcp_packet_write_result write_rtcp_compound_packet(const rtcp_compound_packet_w
         }
 
         packet.insert(packet.end(), sdes_packet->begin(), sdes_packet->end());
+    }
+    for (const auto& bye_options : options.bye_packets)
+    {
+        auto bye_packet = write_rtcp_bye_packet(bye_options);
+
+        if (!bye_packet)
+        {
+            return std::unexpected(bye_packet.error());
+        }
+
+        packet.insert(packet.end(), bye_packet->begin(), bye_packet->end());
     }
 
     return packet;
