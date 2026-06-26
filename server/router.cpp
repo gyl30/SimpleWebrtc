@@ -45,6 +45,8 @@ inline constexpr std::string_view k_whep_session_prefix = "/whep/session/";
 
 inline constexpr std::string_view k_sessions_path = "/api/sessions";
 
+inline constexpr std::string_view k_streams_prefix = "/api/streams/";
+
 inline constexpr std::string_view k_media_stats_path = "/api/stats/media";
 
 inline constexpr std::string_view k_prometheus_metrics_path = "/metrics";
@@ -246,6 +248,13 @@ http_response_ptr router::handle(http_request_t& request)
         return handle_sessions(request);
     }
 
+    std::string_view api_stream_id;
+
+    if (match_single_value_path(path, k_streams_prefix, api_stream_id))
+    {
+        return handle_stream(request, api_stream_id);
+    }
+
     if (path == k_media_stats_path)
     {
         return handle_media_stats(request);
@@ -335,6 +344,41 @@ http_response_ptr router::handle_sessions(http_request_t& request)
     const std::string body = make_session_lifecycle_response_body(snapshots);
 
     return json_response(request, 200, body);
+}
+http_response_ptr router::handle_stream(http_request_t& request, std::string_view stream_id)
+{
+    if (request.req.method() != http::verb::delete_)
+    {
+        return method_not_allowed(request);
+    }
+
+    if (registry_ == nullptr)
+    {
+        return json_response(request, 503, json_error_body("session registry unavailable"));
+    }
+
+    auto publisher = registry_->find_publisher_by_stream_id(stream_id);
+
+    if (publisher == nullptr)
+    {
+        return json_response(request, 404, json_error_body("stream publisher not found"));
+    }
+
+    const std::string publisher_session_id = publisher->session_id();
+
+    auto result = registry_->remove_publisher_session(publisher_session_id);
+
+    if (!result)
+    {
+        if (result.error() == stream_registry_error::publisher_session_not_found)
+        {
+            return json_response(request, 404, json_error_body("stream publisher not found"));
+        }
+
+        return json_response(request, 500, json_error_body("delete stream failed"));
+    }
+
+    return text_response(request, 204, "");
 }
 http_response_ptr router::handle_media_stats(http_request_t& request)
 {
