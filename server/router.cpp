@@ -97,6 +97,14 @@ void trim_trailing_space(std::string& value)
     }
 }
 
+bool rtcp_report_runtime_snapshot_has_data(const rtcp_report_service_runtime_snapshot& snapshot)
+{
+    return snapshot.configured_sources != 0 || snapshot.stats_sources != 0 || snapshot.generated_report_rounds != 0 ||
+           snapshot.generated_packets != 0 || snapshot.skipped_packets != 0 || snapshot.failed_packets != 0 ||
+           snapshot.observed_sender_reports != 0 || snapshot.last_generation_time_milliseconds != 0 || snapshot.last_generation_packets != 0 ||
+           snapshot.last_generation_skipped != 0 || snapshot.last_generation_failed != 0;
+}
+
 std::string append_rtcp_report_service_json(std::string media_json, const rtcp_report_service_runtime_snapshot& rtcp_snapshot)
 {
     trim_trailing_space(media_json);
@@ -219,6 +227,8 @@ void router::set_media_router(std::shared_ptr<media_router> media_router) { medi
 void router::set_rtcp_report_runtime_snapshot_provider(rtcp_report_runtime_snapshot_provider provider)
 {
     rtcp_report_runtime_snapshot_provider_ = std::move(provider);
+
+    WEBRTC_LOG_INFO("rtcp report runtime snapshot provider {}", rtcp_report_runtime_snapshot_provider_ ? "mounted" : "cleared");
 }
 
 http_response_ptr router::handle_options(http_request_t& request)
@@ -259,7 +269,17 @@ http_response_ptr router::handle_media_stats(http_request_t& request)
 
     if (rtcp_report_runtime_snapshot_provider_)
     {
-        body = append_rtcp_report_service_json(std::move(body), rtcp_report_runtime_snapshot_provider_());
+        const rtcp_report_service_runtime_snapshot rtcp_snapshot = rtcp_report_runtime_snapshot_provider_();
+
+        WEBRTC_LOG_DEBUG("http media stats rtcp report provider mounted=1 has_data={} snapshot={}",
+                         rtcp_report_runtime_snapshot_has_data(rtcp_snapshot) ? 1 : 0,
+                         rtcp_report_service_runtime_snapshot_to_string(rtcp_snapshot));
+
+        body = append_rtcp_report_service_json(std::move(body), rtcp_snapshot);
+    }
+    else
+    {
+        WEBRTC_LOG_DEBUG("http media stats rtcp report provider mounted=0 has_data=0");
     }
 
     return json_response(request, 200, body);
@@ -283,7 +303,17 @@ http_response_ptr router::handle_prometheus_metrics(http_request_t& request)
 
     if (rtcp_report_runtime_snapshot_provider_)
     {
-        append_rtcp_report_service_prometheus(body, rtcp_report_runtime_snapshot_provider_());
+        const rtcp_report_service_runtime_snapshot rtcp_snapshot = rtcp_report_runtime_snapshot_provider_();
+
+        WEBRTC_LOG_INFO("http prometheus metrics rtcp report provider mounted=1 has_data={} snapshot={}",
+                        rtcp_report_runtime_snapshot_has_data(rtcp_snapshot) ? 1 : 0,
+                        rtcp_report_service_runtime_snapshot_to_string(rtcp_snapshot));
+
+        append_rtcp_report_service_prometheus(body, rtcp_snapshot);
+    }
+    else
+    {
+        WEBRTC_LOG_INFO("http prometheus metrics rtcp report provider mounted=0 has_data=0");
     }
 
     return prometheus_response(request, 200, body);
