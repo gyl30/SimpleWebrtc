@@ -940,7 +940,39 @@ optional_mid_rewrite_result make_mid_header_extension_rewrite(const media_payloa
 
 void log_rtcp_feedback_route_event(const rtcp_feedback_route_event& event)
 {
-    WEBRTC_LOG_INFO(
+    const bool has_hard_event = event.action == media_route_action::none || event.source.role == media_peer_role::unknown ||
+                                event.event_type == rtcp_feedback_event_type::none || event.target_endpoints.empty();
+
+    if (has_hard_event)
+    {
+        WEBRTC_LOG_WARN(
+            "rtcp feedback route event={} action={} role={} stream={} session={} remote={} targets={} packet_type={} format={} feedback={} ssrc={} "
+            "sender_ssrc={} media_ssrc={} nack_count={} fir_count={} keyframe_request={} generic_nack={} transport_cc={} remb={} remb_bitrate={}",
+            rtcp_feedback_event_type_to_string(event.event_type),
+            media_route_action_to_string(event.action),
+            media_peer_role_to_string(event.source.role),
+            event.source.stream_id,
+            event.source.session_id,
+            event.source.remote_endpoint,
+            event.target_endpoints.size(),
+            static_cast<unsigned int>(event.packet_type),
+            static_cast<unsigned int>(event.feedback_format),
+            event.feedback_name,
+            event.ssrc,
+            event.sender_ssrc,
+            event.media_ssrc,
+            event.nack_count,
+            event.fir_count,
+            event.has_keyframe_request ? 1 : 0,
+            event.has_generic_nack ? 1 : 0,
+            event.has_transport_cc ? 1 : 0,
+            event.has_remb ? 1 : 0,
+            event.remb_bitrate_bps);
+
+        return;
+    }
+
+    WEBRTC_LOG_DEBUG(
         "rtcp feedback route event={} action={} role={} stream={} session={} remote={} targets={} packet_type={} format={} feedback={} ssrc={} "
         "sender_ssrc={} media_ssrc={} nack_count={} fir_count={} keyframe_request={} generic_nack={} transport_cc={} remb={} remb_bitrate={}",
         rtcp_feedback_event_type_to_string(event.event_type),
