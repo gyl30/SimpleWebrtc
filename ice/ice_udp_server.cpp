@@ -1111,7 +1111,9 @@ void ice_udp_server::forget_session(std::string_view session_id)
     {
         std::lock_guard lock(endpoint_mutex_);
 
-        const auto iterator = endpoint_address_by_session_id_.find(std::string(session_id));
+        const std::string session_id_text(session_id);
+
+        const auto iterator = endpoint_address_by_session_id_.find(session_id_text);
 
         if (iterator == endpoint_address_by_session_id_.end())
         {
@@ -1131,6 +1133,15 @@ void ice_udp_server::forget_session(std::string_view session_id)
 
             endpoint_removed = true;
         }
+
+        erase_candidate_pairs_for_session_locked(session_id);
+
+        erase_payload_type_mappings_for_session_locked(session_id);
+    }
+
+    if (ssrc_mapper_ != nullptr)
+    {
+        ssrc_mapper_->forget_session(session_id);
     }
 
     if (rtcp_report_service_ != nullptr)
@@ -1146,6 +1157,7 @@ void ice_udp_server::forget_session(std::string_view session_id)
     WEBRTC_LOG_INFO(
         "ice udp session cleanup completed session={} endpoint_removed={} remote={}", session_id, endpoint_removed ? 1 : 0, remote_address);
 }
+
 void ice_udp_server::touch_endpoint_activity(const boost::asio::ip::udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
@@ -1202,7 +1214,7 @@ void ice_udp_server::on_endpoint_idle_cleanup(boost::system::error_code ec)
     {
         WEBRTC_LOG_WARN("endpoint idle session expired session={} timeout_ms={}", session_id, endpoint_idle_timeout_milliseconds_);
 
-        remove_idle_session(session_id);
+        remove_expired_session(session_id, "endpoint idle");
     }
 
     schedule_endpoint_idle_cleanup();
@@ -1269,7 +1281,7 @@ std::vector<std::string> ice_udp_server::collect_idle_session_ids(uint64_t curre
     return expired_session_ids;
 }
 
-void ice_udp_server::remove_idle_session(std::string_view session_id)
+void ice_udp_server::remove_expired_session(std::string_view session_id, std::string_view reason)
 {
     if (session_id.empty())
     {
@@ -1278,6 +1290,8 @@ void ice_udp_server::remove_idle_session(std::string_view session_id)
 
     if (registry_ == nullptr)
     {
+        WEBRTC_LOG_WARN("{} session removal fallback registry missing session={}", reason, session_id);
+
         forget_session(session_id);
 
         return;
@@ -1287,15 +1301,29 @@ void ice_udp_server::remove_idle_session(std::string_view session_id)
 
     if (publisher != nullptr)
     {
+        const std::string stream_id = publisher->stream_id();
+
         auto result = registry_->remove_publisher_session(session_id);
 
         if (!result)
         {
-            WEBRTC_LOG_WARN(
-                "endpoint idle publisher removal failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
+            WEBRTC_LOG_WARN("{} publisher removal failed session={} error={}", reason, session_id, stream_registry_error_to_string(result.error()));
 
             forget_session(session_id);
+
+            erase_rtp_cache(stream_id);
+
+            return;
         }
+
+        if (!registry_callback_registered_)
+        {
+            forget_session(session_id);
+
+            erase_rtp_cache(stream_id);
+        }
+
+        WEBRTC_LOG_WARN("{} publisher session removed stream={} session={}", reason, stream_id, session_id);
 
         return;
     }
@@ -1304,18 +1332,30 @@ void ice_udp_server::remove_idle_session(std::string_view session_id)
 
     if (subscriber != nullptr)
     {
+        const std::string stream_id = subscriber->stream_id();
+
         auto result = registry_->remove_subscriber_session(session_id);
 
         if (!result)
         {
-            WEBRTC_LOG_WARN(
-                "endpoint idle subscriber removal failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
+            WEBRTC_LOG_WARN("{} subscriber removal failed session={} error={}", reason, session_id, stream_registry_error_to_string(result.error()));
 
+            forget_session(session_id);
+
+            return;
+        }
+
+        if (!registry_callback_registered_)
+        {
             forget_session(session_id);
         }
 
+        WEBRTC_LOG_WARN("{} subscriber session removed stream={} session={}", reason, stream_id, session_id);
+
         return;
     }
+
+    WEBRTC_LOG_WARN("{} session not found in registry session={}", reason, session_id);
 
     forget_session(session_id);
 }
@@ -1593,16 +1633,18 @@ void ice_udp_server::on_ice_consent_check(boost::system::error_code ec)
         return;
     }
 
-    const uint64_t current_time = now_milliseconds();
+    const uint64_t current_time_milliseconds = now_milliseconds();
 
-    std::vector<std::string> expired_remotes = expire_ice_candidate_pairs(current_time);
+    std::vector<std::string> expired_session_ids = collect_expired_ice_consent_session_ids(current_time_milliseconds);
 
-    for (const auto& remote_address : expired_remotes)
+    for (const auto& session_id : expired_session_ids)
     {
-        WEBRTC_LOG_WARN("ice consent expired remote={}", remote_address);
+        WEBRTC_LOG_WARN("ice consent session expired session={} timeout_ms={}", session_id, k_ice_consent_timeout_milliseconds);
 
-        forget_peer_transport_state(remote_address);
+        remove_expired_session(session_id, "ice consent");
     }
+
+    cleanup_unselected_candidate_pairs(current_time_milliseconds);
 
     schedule_ice_consent_check();
 }
@@ -3611,9 +3653,8 @@ bool ice_udp_server::is_selected_endpoint(std::string_view remote_address) const
     return session_id_by_endpoint_address_.contains(std::string(remote_address));
 }
 
-std::vector<std::string> ice_udp_server::expire_ice_candidate_pairs(uint64_t current_time_milliseconds)
+std::vector<std::string> ice_udp_server::collect_expired_ice_consent_session_ids(uint64_t current_time_milliseconds)
 {
-    std::vector<std::string> expired_remote_addresses;
     std::vector<std::string> expired_session_ids;
 
     std::lock_guard lock(endpoint_mutex_);
@@ -3622,18 +3663,13 @@ std::vector<std::string> ice_udp_server::expire_ice_candidate_pairs(uint64_t cur
     {
         (void)key;
 
-        if (pair.last_binding_at_milliseconds == 0)
+        if (!pair.selected || pair.last_binding_at_milliseconds == 0)
         {
             continue;
         }
 
         const uint64_t age_milliseconds =
             current_time_milliseconds > pair.last_binding_at_milliseconds ? current_time_milliseconds - pair.last_binding_at_milliseconds : 0;
-
-        if (!pair.selected)
-        {
-            continue;
-        }
 
         if (age_milliseconds < k_ice_consent_timeout_milliseconds)
         {
@@ -3646,40 +3682,12 @@ std::vector<std::string> ice_udp_server::expire_ice_candidate_pairs(uint64_t cur
         }
     }
 
-    for (const auto& session_id : expired_session_ids)
-    {
-        const auto endpoint_iterator = endpoint_address_by_session_id_.find(session_id);
+    return expired_session_ids;
+}
 
-        if (endpoint_iterator != endpoint_address_by_session_id_.end())
-        {
-            const std::string remote_address = endpoint_iterator->second;
-
-            if (!contains_string(expired_remote_addresses, remote_address))
-            {
-                expired_remote_addresses.push_back(remote_address);
-            }
-
-            session_id_by_endpoint_address_.erase(remote_address);
-
-            endpoints_by_address_.erase(remote_address);
-
-            endpoint_address_by_session_id_.erase(endpoint_iterator);
-        }
-
-        erase_candidate_pairs_for_session_locked(session_id);
-
-        erase_payload_type_mappings_for_session_locked(session_id);
-
-        if (ssrc_mapper_ != nullptr)
-        {
-            ssrc_mapper_->forget_session(session_id);
-        }
-
-        if (rtcp_report_service_ != nullptr)
-        {
-            rtcp_report_service_->forget_session(session_id);
-        }
-    }
+void ice_udp_server::cleanup_unselected_candidate_pairs(uint64_t current_time_milliseconds)
+{
+    std::lock_guard lock(endpoint_mutex_);
 
     for (auto iterator = candidate_pairs_by_key_.begin(); iterator != candidate_pairs_by_key_.end();)
     {
@@ -3710,8 +3718,6 @@ std::vector<std::string> ice_udp_server::expire_ice_candidate_pairs(uint64_t cur
 
         iterator = candidate_pairs_by_key_.erase(iterator);
     }
-
-    return expired_remote_addresses;
 }
 
 void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
@@ -3726,35 +3732,31 @@ void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
     {
         std::lock_guard lock(endpoint_mutex_);
 
-        endpoints_by_address_.erase(std::string(remote_address));
-
         const auto session_iterator = session_id_by_endpoint_address_.find(std::string(remote_address));
 
         if (session_iterator != session_id_by_endpoint_address_.end())
         {
             session_id = session_iterator->second;
-
-            session_id_by_endpoint_address_.erase(session_iterator);
         }
+    }
 
-        if (!session_id.empty())
-        {
-            endpoint_address_by_session_id_.erase(session_id);
+    if (!session_id.empty())
+    {
+        WEBRTC_LOG_WARN("ice udp peer endpoint failed remote={} session={}", remote_address, session_id);
 
-            erase_payload_type_mappings_for_session_locked(session_id);
-        }
+        remove_expired_session(session_id, "peer endpoint");
+
+        return;
+    }
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        endpoints_by_address_.erase(std::string(remote_address));
+
+        endpoint_last_seen_milliseconds_by_address_.erase(std::string(remote_address));
 
         erase_candidate_pairs_for_endpoint_locked(remote_address);
-    }
-
-    if (!session_id.empty() && ssrc_mapper_ != nullptr)
-    {
-        ssrc_mapper_->forget_session(session_id);
-    }
-
-    if (!session_id.empty() && rtcp_report_service_ != nullptr)
-    {
-        rtcp_report_service_->forget_session(session_id);
     }
 
     forget_peer_transport_state(remote_address);

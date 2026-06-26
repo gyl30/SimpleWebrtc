@@ -235,10 +235,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                                           uint64_t remote_tie_breaker);
 
     [[nodiscard]]
-    bool is_selected_endpoint(std::string_view remote_address) const;
+    std::vector<std::string> collect_expired_ice_consent_session_ids(uint64_t current_time_milliseconds);
+
+    void cleanup_unselected_candidate_pairs(uint64_t current_time_milliseconds);
+
+    void remove_expired_session(std::string_view session_id, std::string_view reason);
 
     [[nodiscard]]
-    std::vector<std::string> expire_ice_candidate_pairs(uint64_t now_milliseconds);
+    bool is_selected_endpoint(std::string_view remote_address) const;
 
     void forget_peer_endpoint(std::string_view remote_address);
 
@@ -252,8 +256,6 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     std::vector<std::string> collect_idle_session_ids(uint64_t current_time_milliseconds);
-
-    void remove_idle_session(std::string_view session_id);
 
     void erase_candidate_pairs_for_session_locked(std::string_view session_id);
 
