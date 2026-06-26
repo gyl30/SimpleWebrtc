@@ -1,5 +1,7 @@
 #include "ice/ice_udp_server.h"
 
+#include <cctype>
+#include <cstddef>
 #include <cstdlib>
 #include <cstdint>
 #include <expected>
@@ -30,7 +32,29 @@ namespace webrtc
 {
 namespace
 {
+constexpr std::size_t k_max_ice_username_fragment_size = 256;
+constexpr std::size_t k_max_ice_username_size = k_max_ice_username_fragment_size * 2 + 1;
+
+struct ice_username_parts
+{
+    std::string_view recipient_ufrag;
+    std::string_view sender_ufrag;
+};
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+
+std::unexpected<std::string> make_field_error(std::string_view field, std::string_view message)
+{
+    std::string error;
+
+    error.reserve(field.size() + message.size() + 2);
+
+    error.append(field);
+    error.push_back(' ');
+    error.append(message);
+
+    return std::unexpected(std::move(error));
+}
 
 std::expected<std::string, std::string> get_required_env(const char* name)
 {
@@ -39,12 +63,90 @@ std::expected<std::string, std::string> get_required_env(const char* name)
     if (value == nullptr || value[0] == '\0')
     {
         std::string message(name);
+
         message.append(" is empty");
 
         return std::unexpected(std::move(message));
     }
 
     return std::string(value);
+}
+
+bool is_valid_ice_username_character(char value)
+{
+    const auto byte = static_cast<unsigned char>(value);
+
+    return std::isalnum(byte) != 0 || value == '+' || value == '/';
+}
+
+std::expected<void, std::string> validate_ice_username_fragment(std::string_view fragment, std::string_view field_name)
+{
+    if (fragment.empty())
+    {
+        return make_field_error(field_name, "is empty");
+    }
+
+    if (fragment.size() > k_max_ice_username_fragment_size)
+    {
+        return make_field_error(field_name, "is too large");
+    }
+
+    for (const char value : fragment)
+    {
+        if (!is_valid_ice_username_character(value))
+        {
+            return make_field_error(field_name, "contains invalid characters");
+        }
+    }
+
+    return {};
+}
+
+std::expected<ice_username_parts, std::string> parse_ice_username(std::string_view username)
+{
+    if (username.empty())
+    {
+        return make_error("ice username is empty");
+    }
+
+    if (username.size() > k_max_ice_username_size)
+    {
+        return make_error("ice username is too large");
+    }
+
+    const std::size_t separator = username.find(':');
+
+    if (separator == std::string_view::npos)
+    {
+        return make_error("ice username separator is missing");
+    }
+
+    if (username.find(':', separator + 1) != std::string_view::npos)
+    {
+        return make_error("ice username contains multiple separators");
+    }
+
+    ice_username_parts parts;
+
+    parts.recipient_ufrag = username.substr(0, separator);
+
+    parts.sender_ufrag = username.substr(separator + 1);
+
+    auto recipient_result = validate_ice_username_fragment(parts.recipient_ufrag, "ice username recipient ufrag");
+
+    if (!recipient_result)
+    {
+        return std::unexpected(recipient_result.error());
+    }
+
+    auto sender_result = validate_ice_username_fragment(parts.sender_ufrag, "ice username sender ufrag");
+
+    if (!sender_result)
+    {
+        return std::unexpected(sender_result.error());
+    }
+
+    return parts;
 }
 
 std::string endpoint_to_string(const boost::asio::ip::udp::endpoint& endpoint)
@@ -78,9 +180,13 @@ void forget_transport_peer_if_supported(const std::shared_ptr<transport_type>& t
 dtls_peer_identity make_publisher_dtls_identity(const std::shared_ptr<publisher_session>& session)
 {
     dtls_peer_identity identity;
+
     identity.role = dtls_peer_role::publisher;
+
     identity.session_id = session->session_id();
+
     identity.stream_id = session->stream_id();
+
     identity.local_ice_ufrag = session->local_ice().ufrag;
 
     return identity;
@@ -89,9 +195,13 @@ dtls_peer_identity make_publisher_dtls_identity(const std::shared_ptr<publisher_
 dtls_peer_identity make_subscriber_dtls_identity(const std::shared_ptr<subscriber_session>& session)
 {
     dtls_peer_identity identity;
+
     identity.role = dtls_peer_role::subscriber;
+
     identity.session_id = session->session_id();
+
     identity.stream_id = session->stream_id();
+
     identity.local_ice_ufrag = session->local_ice().ufrag;
 
     return identity;
@@ -282,7 +392,9 @@ void ice_udp_server::stop()
         std::lock_guard lock(endpoint_mutex_);
 
         endpoints_by_address_.clear();
+
         endpoint_address_by_session_id_.clear();
+
         session_id_by_endpoint_address_.clear();
     }
 
@@ -351,7 +463,9 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
     }
 
     dtls_context_config config;
+
     config.certificate_file = *certificate_file;
+
     config.private_key_file = *private_key_file;
 
     auto context = make_dtls_context(config);
@@ -366,6 +480,7 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
     srtp_transport_ = std::make_shared<srtp_transport>(dtls_transport_);
 
     rtp_packet_cache_config cache_config;
+
     cache_config.max_packets = 4096;
 
     rtp_packet_cache_ = std::make_shared<rtp_packet_cache>(cache_config);
@@ -501,9 +616,30 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         return;
     }
 
+    auto username_parts = parse_ice_username(*message->username);
+
+    if (!username_parts)
+    {
+        WEBRTC_LOG_WARN(
+            "ice stun binding request invalid username username={} remote={} error={}", *message->username, remote_address, username_parts.error());
+
+        return;
+    }
+
     auto publisher = find_publisher_for_username(*message->username);
 
     auto subscriber = find_subscriber_for_username(*message->username);
+
+    if (publisher != nullptr && subscriber != nullptr)
+    {
+        WEBRTC_LOG_ERROR("ice stun binding request ambiguous session username={} recipient_ufrag={} sender_ufrag={} remote={}",
+                         *message->username,
+                         username_parts->recipient_ufrag,
+                         username_parts->sender_ufrag,
+                         remote_address);
+
+        return;
+    }
 
     std::string integrity_key;
 
@@ -517,7 +653,11 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
     }
     else
     {
-        WEBRTC_LOG_WARN("ice stun binding request session not found username={} remote={}", *message->username, remote_address);
+        WEBRTC_LOG_WARN("ice stun binding request session not found username={} recipient_ufrag={} sender_ufrag={} remote={}",
+                        *message->username,
+                        username_parts->recipient_ufrag,
+                        username_parts->sender_ufrag,
+                        remote_address);
 
         return;
     }
@@ -599,11 +739,17 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
     }
 
     stun_binding_success_response_options options;
+
     options.mapped_address.ip = remote_ip;
+
     options.mapped_address.port = remote_endpoint.port();
+
     options.mapped_address.is_ipv6 = remote_endpoint.address().is_v6();
+
     options.message_integrity_key = integrity_key;
+
     options.include_message_integrity = true;
+
     options.include_fingerprint = true;
 
     auto response = write_stun_binding_success_response(*message, options);
@@ -616,7 +762,12 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         return;
     }
 
-    WEBRTC_LOG_INFO("ice stun binding success username={} remote={} response_size={}", *message->username, remote_address, response->size());
+    WEBRTC_LOG_INFO("ice stun binding success username={} recipient_ufrag={} sender_ufrag={} remote={} response_size={}",
+                    *message->username,
+                    username_parts->recipient_ufrag,
+                    username_parts->sender_ufrag,
+                    remote_address,
+                    response->size());
 
     send_response(std::move(*response), remote_endpoint);
 }
@@ -1143,38 +1294,88 @@ std::optional<ice_udp_server::udp::endpoint> ice_udp_server::find_remote_endpoin
 
 std::shared_ptr<publisher_session> ice_udp_server::find_publisher_for_username(std::string_view username) const
 {
-    const std::string local_ufrag = extract_local_ufrag(username);
-
-    if (local_ufrag.empty() || registry_ == nullptr)
+    if (registry_ == nullptr)
     {
         return nullptr;
     }
 
-    return registry_->find_publisher_by_local_ice_ufrag(local_ufrag);
+    auto username_parts = parse_ice_username(username);
+
+    if (!username_parts)
+    {
+        return nullptr;
+    }
+
+    auto session = registry_->find_publisher_by_local_ice_ufrag(username_parts->recipient_ufrag);
+
+    if (session == nullptr)
+    {
+        return nullptr;
+    }
+
+    const std::string& expected_remote_ufrag = session->remote_offer_summary().ice_ufrag;
+
+    if (expected_remote_ufrag != username_parts->sender_ufrag)
+    {
+        WEBRTC_LOG_WARN("ice stun publisher remote ufrag mismatch stream={} session={} expected={} actual={}",
+                        session->stream_id(),
+                        session->session_id(),
+                        expected_remote_ufrag,
+                        username_parts->sender_ufrag);
+
+        return nullptr;
+    }
+
+    return session;
 }
 
 std::shared_ptr<subscriber_session> ice_udp_server::find_subscriber_for_username(std::string_view username) const
 {
-    const std::string local_ufrag = extract_local_ufrag(username);
-
-    if (local_ufrag.empty() || registry_ == nullptr)
+    if (registry_ == nullptr)
     {
         return nullptr;
     }
 
-    return registry_->find_subscriber_by_local_ice_ufrag(local_ufrag);
+    auto username_parts = parse_ice_username(username);
+
+    if (!username_parts)
+    {
+        return nullptr;
+    }
+
+    auto session = registry_->find_subscriber_by_local_ice_ufrag(username_parts->recipient_ufrag);
+
+    if (session == nullptr)
+    {
+        return nullptr;
+    }
+
+    const std::string& expected_remote_ufrag = session->remote_offer_summary().ice_ufrag;
+
+    if (expected_remote_ufrag != username_parts->sender_ufrag)
+    {
+        WEBRTC_LOG_WARN("ice stun subscriber remote ufrag mismatch stream={} session={} expected={} actual={}",
+                        session->stream_id(),
+                        session->session_id(),
+                        expected_remote_ufrag,
+                        username_parts->sender_ufrag);
+
+        return nullptr;
+    }
+
+    return session;
 }
 
 std::string ice_udp_server::extract_local_ufrag(std::string_view username)
 {
-    const std::size_t separator = username.find(':');
+    auto username_parts = parse_ice_username(username);
 
-    if (separator == std::string_view::npos)
+    if (!username_parts)
     {
-        return std::string(username);
+        return {};
     }
 
-    return std::string(username.substr(0, separator));
+    return std::string(username_parts->recipient_ufrag);
 }
 
 std::string ice_udp_server::endpoint_ip(const udp::endpoint& endpoint) { return get_endpoint_ip(endpoint); }
