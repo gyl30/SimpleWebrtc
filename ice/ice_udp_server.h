@@ -61,6 +61,17 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     uint16_t local_port() const;
 
+    [[nodiscard]]
+    rtcp_report_service_runtime_snapshot rtcp_report_runtime_snapshot() const
+    {
+        if (rtcp_report_service_ == nullptr)
+        {
+            return {};
+        }
+
+        return rtcp_report_service_->runtime_snapshot();
+    }
+
    private:
     using udp = boost::asio::ip::udp;
 

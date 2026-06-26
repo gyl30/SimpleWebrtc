@@ -6,13 +6,14 @@
 #include <utility>
 
 #include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
 #include <boost/version.hpp>
 #include <openssl/opensslv.h>
-#include <spdlog/version.h>
 
 #include "ice/ice_udp_server.h"
 #include "log/log.h"
 #include "media/media_router.h"
+#include "media/rtcp_report_service.h"
 #include "net/detect_ssl_session.h"
 #include "net/http.h"
 #include "net/socket.h"
@@ -35,8 +36,7 @@ struct version
     std::string version;
 };
 
-REFLECT_STRUCT(version,
-               (name)(version));    // NOLINT
+REFLECT_STRUCT(version, (name)(version));    // NOLINT
 
 static std::string get_env_or_default(const char* name, const std::string& default_value)
 {
@@ -78,13 +78,13 @@ static uint16_t get_env_uint16_or_default(const char* name, uint16_t default_val
     return static_cast<uint16_t>(parsed);
 }
 
-static bool load_server_certificate(boost::asio::ssl::context& context, const std::string& certificate_file, const std::string& private_key_file)
+static bool load_server_certificate(boost::asio::ssl::context& ctx, const std::string& cert_file, const std::string& key_file)
 {
     boost::system::error_code ec;
 
-    context.set_options(boost::asio::ssl::context::default_workarounds | boost::asio::ssl::context::no_sslv2 | boost::asio::ssl::context::no_sslv3 |
-                            boost::asio::ssl::context::single_dh_use,
-                        ec);
+    ctx.set_options(boost::asio::ssl::context::default_workarounds | boost::asio::ssl::context::no_sslv2 | boost::asio::ssl::context::no_sslv3 |
+                        boost::asio::ssl::context::single_dh_use,
+                    ec);
 
     if (ec)
     {
@@ -93,20 +93,20 @@ static bool load_server_certificate(boost::asio::ssl::context& context, const st
         return false;
     }
 
-    context.use_certificate_chain_file(certificate_file, ec);
+    ec = ctx.use_certificate_chain_file(cert_file, ec);
 
     if (ec)
     {
-        WEBRTC_LOG_ERROR("load certificate file {} failed: {}", certificate_file, ec.message());
+        WEBRTC_LOG_ERROR("load certificate file {} failed: {}", cert_file, ec.message());
 
         return false;
     }
 
-    context.use_private_key_file(private_key_file, boost::asio::ssl::context::pem, ec);
+    ec = ctx.use_private_key_file(key_file, boost::asio::ssl::context::pem, ec);
 
     if (ec)
     {
-        WEBRTC_LOG_ERROR("load private key file {} failed: {}", private_key_file, ec.message());
+        WEBRTC_LOG_ERROR("load private key file {} failed: {}", key_file, ec.message());
 
         return false;
     }
@@ -114,40 +114,40 @@ static bool load_server_certificate(boost::asio::ssl::context& context, const st
     return true;
 }
 
-static void on_tcp(boost::asio::ip::tcp::socket socket, boost::asio::ssl::context& ssl_context, std::shared_ptr<webrtc::router> http_router)
+static void on_tcp(boost::asio::ip::tcp::socket socket, boost::asio::ssl::context& ssl_ctx, std::shared_ptr<webrtc::router> http_router)
 {
-    const std::string local_address = webrtc::get_socket_local_address(socket);
+    auto local_addr = webrtc::get_socket_local_address(socket);
 
-    const std::string remote_address = webrtc::get_socket_remote_address(socket);
+    auto remote_addr = webrtc::get_socket_remote_address(socket);
 
     const std::string id = webrtc::random_string(8);
 
-    WEBRTC_LOG_INFO("tcp accept {} <-> {} id {}", local_address, remote_address, id);
+    WEBRTC_LOG_INFO("tcp accept {} <-> {} id {}", local_addr, remote_addr, id);
 
     webrtc::http_handler http;
 
-    http.http = [http_router](webrtc::http_request_t& request) -> webrtc::http_response_ptr { return http_router->handle(request); };
+    http.http = [http_router](webrtc::http_request_t& req) -> webrtc::http_response_ptr { return http_router->handle(req); };
 
-    std::make_shared<webrtc::detect_ssl_session>(id, std::move(http), std::move(socket), ssl_context)->run();
+    std::make_shared<webrtc::detect_ssl_session>(id, std::move(http), std::move(socket), ssl_ctx)->run();
 }
 
 int main(int argc, char* argv[])
 {
     (void)argc;
 
-    const std::string app_path = webrtc::file_abs_path(argv[0]);
+    std::string app_path = webrtc::file_abs_path(argv[0]);
 
-    const std::string app_dir = webrtc::file_dir(app_path);
+    std::string app_dir = webrtc::file_dir(app_path);
 
-    const std::string app_name = webrtc::file_name(app_path);
+    std::string app_name = webrtc::file_name(app_path);
 
-    const std::string log_dir = get_log_dir(app_dir);
+    std::string log_dir = get_log_dir(app_dir);
 
-    const std::string log_name = get_log_fileaname(app_name);
+    std::string log_name = get_log_fileaname(app_name);
 
-    const std::string absolute_log_filename = log_dir + "/" + log_name;
+    std::string abs_log_filename = log_dir + "/" + log_name;
 
-    webrtc::init_log(absolute_log_filename);
+    webrtc::init_log(abs_log_filename);
 
     DEFER(webrtc::shutdown_log());
 
@@ -157,20 +157,20 @@ int main(int argc, char* argv[])
 
     WEBRTC_LOG_INFO("spdlog     version {}.{}.{}", SPDLOG_VER_MAJOR, SPDLOG_VER_MINOR, SPDLOG_VER_PATCH);
 
-    boost::asio::ssl::context ssl_context{boost::asio::ssl::context::tls_server};
+    boost::asio::ssl::context ssl_ctx_{boost::asio::ssl::context::tls_server};
 
-    const std::string certificate_file = get_env_or_default("WEBRTC_CERT_FILE", "webrtc.pem");
+    const std::string cert_file = get_env_or_default("WEBRTC_CERT_FILE", "webrtc.pem");
 
-    const std::string private_key_file = get_env_or_default("WEBRTC_KEY_FILE", "webrtc.key");
+    const std::string key_file = get_env_or_default("WEBRTC_KEY_FILE", "webrtc.key");
 
-    if (!load_server_certificate(ssl_context, certificate_file, private_key_file))
+    if (!load_server_certificate(ssl_ctx_, cert_file, key_file))
     {
         WEBRTC_LOG_ERROR("load https certificate failed");
 
         return 1;
     }
 
-    auto answer_factory_config = webrtc::make_webrtc_answer_factory_config_from_certificate(certificate_file);
+    auto answer_factory_config = webrtc::make_webrtc_answer_factory_config_from_certificate(cert_file);
 
     if (!answer_factory_config)
     {
@@ -221,27 +221,36 @@ int main(int argc, char* argv[])
 
     auto http_router = std::make_shared<webrtc::router>(registry, answer_factory, media_router);
 
-    WEBRTC_LOG_INFO("shared media router initialized ptr={}", static_cast<const void*>(media_router.get()));
+    http_router->set_rtcp_report_runtime_snapshot_provider(
+        [weak_ice_server = std::weak_ptr<webrtc::ice_udp_server>(ice_server)]() -> webrtc::rtcp_report_service_runtime_snapshot
+        {
+            auto server = weak_ice_server.lock();
 
-    version value;
+            if (server == nullptr)
+            {
+                return {};
+            }
 
-    static const std::string version_text = R"({"name": "SimpleWebrtc", "version": "0.1"})";
+            return server->rtcp_report_runtime_snapshot();
+        });
 
-    webrtc::deserialize_struct(value, version_text);
+    version v;
 
-    WEBRTC_LOG_INFO("Webrtc     version {} {}", value.name, value.version);
+    static const std::string version_str = R"({"name": "SimpleWebrtc", "version": "0.1"})";
+
+    webrtc::deserialize_struct(v, version_str);
+
+    WEBRTC_LOG_INFO("Webrtc     version {} {}", v.name, v.version);
 
     webrtc::tcp_handler tcp;
 
     tcp.create_socket = [&io_context]() { return boost::asio::ip::tcp::socket(io_context); };
 
-    tcp.accept_socket = [&ssl_context, http_router](boost::asio::ip::tcp::socket socket) { on_tcp(std::move(socket), ssl_context, http_router); };
+    tcp.accept_socket = [&ssl_ctx_, http_router](boost::asio::ip::tcp::socket socket) { on_tcp(std::move(socket), ssl_ctx_, http_router); };
 
     std::make_shared<webrtc::tcp_server>(8811, "webrtc", io_context, std::move(tcp))->run();
 
     io_context.run();
-
-    ice_server->stop();
 
     return 0;
 }
