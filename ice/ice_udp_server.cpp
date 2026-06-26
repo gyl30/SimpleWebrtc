@@ -3734,7 +3734,59 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
                          sequence_number);
     }
 
-    WEBRTC_LOG_INFO(
+    const bool has_hard_error = failed_count != 0 || ignored_count != 0 || nack_sequences.truncated;
+
+    const bool has_soft_event = miss_count != 0 || nack_sequences.duplicate_count != 0;
+
+    if (has_hard_error)
+    {
+        WEBRTC_LOG_WARN(
+            "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} nack_items={} raw_requested={} requested={} max={} "
+            "duplicate={} truncated={} hit={} miss={} sent={} ignored={} failed={}",
+            event.source.stream_id,
+            event.source.remote_endpoint,
+            feedback_media_ssrc,
+            cache_media_ssrc,
+            event.nack_items.size(),
+            nack_sequences.raw_sequence_count,
+            sequence_numbers.size(),
+            k_max_nack_retransmit_sequences,
+            nack_sequences.duplicate_count,
+            nack_sequences.truncated ? 1 : 0,
+            hit_count,
+            miss_count,
+            sent_count,
+            ignored_count,
+            failed_count);
+
+        return;
+    }
+
+    if (has_soft_event)
+    {
+        WEBRTC_LOG_INFO(
+            "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} nack_items={} raw_requested={} requested={} max={} "
+            "duplicate={} truncated={} hit={} miss={} sent={} ignored={} failed={}",
+            event.source.stream_id,
+            event.source.remote_endpoint,
+            feedback_media_ssrc,
+            cache_media_ssrc,
+            event.nack_items.size(),
+            nack_sequences.raw_sequence_count,
+            sequence_numbers.size(),
+            k_max_nack_retransmit_sequences,
+            nack_sequences.duplicate_count,
+            nack_sequences.truncated ? 1 : 0,
+            hit_count,
+            miss_count,
+            sent_count,
+            ignored_count,
+            failed_count);
+
+        return;
+    }
+
+    WEBRTC_LOG_DEBUG(
         "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} nack_items={} raw_requested={} requested={} max={} "
         "duplicate={} truncated={} hit={} miss={} sent={} ignored={} failed={}",
         event.source.stream_id,
