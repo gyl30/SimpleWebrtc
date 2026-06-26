@@ -1649,8 +1649,6 @@ void ice_udp_server::on_receive(boost::system::error_code ec, std::size_t bytes_
 
     std::span<const uint8_t> packet(receive_buffer_.data(), bytes_transferred);
 
-    touch_endpoint_activity(remote_endpoint_);
-
     if (is_stun_packet(packet))
     {
         handle_stun_packet(packet, remote_endpoint_);
@@ -2192,6 +2190,11 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         }
     }
 
+    if (selected || is_selected_endpoint(remote_address))
+    {
+        touch_endpoint_activity(remote_endpoint);
+    }
+
     const std::string remote_ip = endpoint_ip(remote_endpoint);
 
     if (remote_ip.empty())
@@ -2254,6 +2257,8 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
         return;
     }
 
+    touch_endpoint_activity(remote_endpoint);
+
     if (dtls_transport_ == nullptr)
     {
         WEBRTC_LOG_WARN("dtls transport is null remote={} size={}", remote_address, data.size());
@@ -2294,6 +2299,8 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
         return;
     }
+
+    touch_endpoint_activity(remote_endpoint);
 
     if (srtp_transport_ == nullptr)
     {
