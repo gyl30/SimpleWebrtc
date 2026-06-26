@@ -1104,16 +1104,14 @@ void ice_udp_server::forget_session(std::string_view session_id)
         }
     }
 
-    if (endpoint_removed)
-    {
-        forget_peer_transport_state(remote_address);
-
-        WEBRTC_LOG_INFO("ice udp session transport state removed session={} remote={}", session_id, remote_address);
-    }
-
     if (rtcp_report_service_ != nullptr)
     {
         rtcp_report_service_->forget_session(session_id);
+    }
+
+    if (endpoint_removed)
+    {
+        forget_peer_transport_state(remote_address);
     }
 
     WEBRTC_LOG_INFO(
@@ -3565,27 +3563,45 @@ void ice_udp_server::forget_peer_transport_state(std::string_view remote_address
         return;
     }
 
-    forget_transport_peer_if_supported(dtls_transport_, remote_address);
+    bool dtls_forgot = false;
+    bool srtp_forgot = false;
+    bool router_forgot = false;
+    bool rtcp_forgot = false;
+
+    if (dtls_transport_ != nullptr)
+    {
+        dtls_transport_->forget_peer(remote_address);
+
+        dtls_forgot = true;
+    }
 
     if (srtp_transport_ != nullptr)
     {
         srtp_transport_->forget_peer(remote_address);
+
+        srtp_forgot = true;
     }
 
     if (media_router_ != nullptr)
     {
         media_router_->forget_peer(remote_address);
-    }
 
-    if (track_resolver_ != nullptr)
-    {
-        track_resolver_->forget_peer(remote_address);
+        router_forgot = true;
     }
 
     if (rtcp_report_service_ != nullptr)
     {
         rtcp_report_service_->forget_peer(remote_address);
+
+        rtcp_forgot = true;
     }
+
+    WEBRTC_LOG_INFO("ice udp peer transport state forgotten remote={} dtls={} srtp={} router={} rtcp={}",
+                    remote_address,
+                    dtls_forgot ? 1 : 0,
+                    srtp_forgot ? 1 : 0,
+                    router_forgot ? 1 : 0,
+                    rtcp_forgot ? 1 : 0);
 }
 
 void ice_udp_server::erase_candidate_pairs_for_session_locked(std::string_view session_id)
