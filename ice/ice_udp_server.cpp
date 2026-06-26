@@ -29,6 +29,7 @@
 #include "rtp/rtcp_feedback.h"
 #include "rtp/rtp_packet.h"
 #include "session/session_state.h"
+#include "util/timestamp.h"
 
 namespace webrtc
 {
@@ -59,6 +60,21 @@ std::unexpected<std::string> make_field_error(std::string_view field, std::strin
     error.append(message);
 
     return std::unexpected(std::move(error));
+}
+
+uint64_t now_milliseconds() { return static_cast<uint64_t>(timestamp::now().milliseconds()); }
+
+std::string make_candidate_pair_key(std::string_view session_id, std::string_view remote_address)
+{
+    std::string key;
+
+    key.reserve(session_id.size() + remote_address.size() + 1);
+
+    key.append(session_id);
+    key.push_back('\n');
+    key.append(remote_address);
+
+    return key;
 }
 
 std::expected<std::string, std::string> get_required_env(const char* name)
@@ -152,6 +168,31 @@ std::expected<ice_username_parts, std::string> parse_ice_username(std::string_vi
     }
 
     return parts;
+}
+
+std::expected<void, std::string> validate_ice_connectivity_check(const stun_message& message)
+{
+    if (!message.priority.has_value())
+    {
+        return make_error("ice connectivity check missing priority");
+    }
+
+    if (*message.priority == 0)
+    {
+        return make_error("ice connectivity check priority is zero");
+    }
+
+    if (!message.ice_controlling.has_value())
+    {
+        return make_error("ice-lite connectivity check missing ice-controlling");
+    }
+
+    if (message.ice_controlled.has_value())
+    {
+        return make_error("ice-lite connectivity check contains ice-controlled");
+    }
+
+    return {};
 }
 
 std::string endpoint_to_string(const boost::asio::ip::udp::endpoint& endpoint)
@@ -389,6 +430,8 @@ void ice_udp_server::stop()
         registry_callback_registered_ = false;
     }
 
+    dtls_timeout_timer_.cancel();
+
     boost::system::error_code socket_ec;
 
     socket_ec = socket_.close(socket_ec);
@@ -402,8 +445,12 @@ void ice_udp_server::stop()
         std::lock_guard lock(endpoint_mutex_);
 
         endpoints_by_address_.clear();
+
         endpoint_address_by_session_id_.clear();
+
         session_id_by_endpoint_address_.clear();
+
+        candidate_pairs_by_key_.clear();
     }
 
     if (rtp_packet_cache_ != nullptr)
@@ -424,29 +471,34 @@ void ice_udp_server::forget_session(std::string_view session_id)
     {
         std::lock_guard lock(endpoint_mutex_);
 
+        erase_candidate_pairs_for_session_locked(session_id);
+
         const auto iterator = endpoint_address_by_session_id_.find(std::string(session_id));
 
-        if (iterator == endpoint_address_by_session_id_.end())
+        if (iterator != endpoint_address_by_session_id_.end())
         {
-            WEBRTC_LOG_DEBUG("ice udp session endpoint not found session={}", session_id);
+            remote_address = iterator->second;
 
-            return;
+            endpoint_address_by_session_id_.erase(iterator);
+
+            session_id_by_endpoint_address_.erase(remote_address);
+
+            endpoints_by_address_.erase(remote_address);
         }
-
-        remote_address = iterator->second;
-
-        endpoint_address_by_session_id_.erase(iterator);
-
-        session_id_by_endpoint_address_.erase(remote_address);
-
-        endpoints_by_address_.erase(remote_address);
     }
 
-    forget_peer_transport_state(remote_address);
+    if (!remote_address.empty())
+    {
+        forget_peer_transport_state(remote_address);
+
+        WEBRTC_LOG_INFO("ice udp session transport state removed session={} remote={}", session_id, remote_address);
+    }
+    else
+    {
+        WEBRTC_LOG_DEBUG("ice udp session selected endpoint not found session={}", session_id);
+    }
 
     schedule_dtls_timeout();
-
-    WEBRTC_LOG_INFO("ice udp session transport state removed session={} remote={}", session_id, remote_address);
 }
 
 uint16_t ice_udp_server::local_port() const { return bind_port_; }
@@ -713,6 +765,16 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         return;
     }
 
+    auto connectivity_check_result = validate_ice_connectivity_check(*message);
+
+    if (!connectivity_check_result)
+    {
+        WEBRTC_LOG_WARN(
+            "ice connectivity check rejected username={} remote={} error={}", *message->username, remote_address, connectivity_check_result.error());
+
+        return;
+    }
+
     auto username_parts = parse_ice_username(*message->username);
 
     if (!username_parts)
@@ -739,14 +801,24 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
     }
 
     std::string integrity_key;
+    std::string session_id;
+    std::string stream_id;
 
     if (publisher != nullptr)
     {
         integrity_key = publisher->local_ice().pwd;
+
+        session_id = publisher->session_id();
+
+        stream_id = publisher->stream_id();
     }
     else if (subscriber != nullptr)
     {
         integrity_key = subscriber->local_ice().pwd;
+
+        session_id = subscriber->session_id();
+
+        stream_id = subscriber->stream_id();
     }
     else
     {
@@ -796,34 +868,78 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         }
     }
 
-    remember_remote_endpoint(remote_endpoint);
+    const uint32_t remote_priority = *message->priority;
 
-    if (publisher != nullptr)
+    const uint64_t remote_tie_breaker = *message->ice_controlling;
+
+    remember_candidate_pair(session_id, stream_id, remote_address, remote_priority, remote_tie_breaker, message->use_candidate);
+
+    bool selected = false;
+    bool selection_changed = false;
+
+    if (message->use_candidate)
     {
-        publisher->set_state(session_state::ice_connected);
+        auto selection_result = select_candidate_pair(session_id, stream_id, remote_endpoint, remote_priority, remote_tie_breaker);
 
-        remember_session_endpoint(remote_endpoint, publisher->session_id());
-
-        if (dtls_transport_ != nullptr)
+        if (!selection_result)
         {
-            dtls_transport_->remember_peer(remote_address, make_publisher_dtls_identity(publisher));
+            WEBRTC_LOG_WARN("ice candidate pair selection failed stream={} session={} remote={} error={}",
+                            stream_id,
+                            session_id,
+                            remote_address,
+                            selection_result.error());
+
+            return;
         }
 
-        media_router_->remember_publisher(remote_address, publisher->stream_id(), publisher->session_id());
-    }
+        selected = true;
 
-    if (subscriber != nullptr)
-    {
-        subscriber->set_state(session_state::ice_connected);
+        selection_changed = selection_result->changed;
 
-        remember_session_endpoint(remote_endpoint, subscriber->session_id());
-
-        if (dtls_transport_ != nullptr)
+        if (!selection_result->previous_remote_address.empty())
         {
-            dtls_transport_->remember_peer(remote_address, make_subscriber_dtls_identity(subscriber));
+            forget_peer_transport_state(selection_result->previous_remote_address);
+
+            WEBRTC_LOG_INFO("ice selected candidate pair replaced stream={} session={} old_remote={} new_remote={}",
+                            stream_id,
+                            session_id,
+                            selection_result->previous_remote_address,
+                            remote_address);
         }
 
-        media_router_->remember_subscriber(remote_address, subscriber->stream_id(), subscriber->session_id());
+        if (selection_changed)
+        {
+            if (publisher != nullptr)
+            {
+                publisher->set_state(session_state::ice_connected);
+
+                if (dtls_transport_ != nullptr)
+                {
+                    dtls_transport_->remember_peer(remote_address, make_publisher_dtls_identity(publisher));
+                }
+
+                media_router_->remember_publisher(remote_address, publisher->stream_id(), publisher->session_id());
+            }
+
+            if (subscriber != nullptr)
+            {
+                subscriber->set_state(session_state::ice_connected);
+
+                if (dtls_transport_ != nullptr)
+                {
+                    dtls_transport_->remember_peer(remote_address, make_subscriber_dtls_identity(subscriber));
+                }
+
+                media_router_->remember_subscriber(remote_address, subscriber->stream_id(), subscriber->session_id());
+            }
+
+            WEBRTC_LOG_INFO("ice candidate pair selected stream={} session={} remote={} priority={} tie_breaker={}",
+                            stream_id,
+                            session_id,
+                            remote_address,
+                            remote_priority,
+                            remote_tie_breaker);
+        }
     }
 
     const std::string remote_ip = endpoint_ip(remote_endpoint);
@@ -846,6 +962,7 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
     options.message_integrity_key = integrity_key;
 
     options.include_message_integrity = true;
+
     options.include_fingerprint = true;
 
     auto response = write_stun_binding_success_response(*message, options);
@@ -858,12 +975,20 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         return;
     }
 
-    WEBRTC_LOG_INFO("ice stun binding success username={} recipient_ufrag={} sender_ufrag={} remote={} response_size={}",
-                    *message->username,
-                    username_parts->recipient_ufrag,
-                    username_parts->sender_ufrag,
-                    remote_address,
-                    response->size());
+    WEBRTC_LOG_INFO(
+        "ice stun binding success username={} recipient_ufrag={} sender_ufrag={} stream={} session={} remote={} nominated={} selected={} "
+        "selection_changed={} priority={} response_size={}",
+        *message->username,
+        username_parts->recipient_ufrag,
+        username_parts->sender_ufrag,
+        stream_id,
+        session_id,
+        remote_address,
+        message->use_candidate ? 1 : 0,
+        selected ? 1 : 0,
+        selection_changed ? 1 : 0,
+        remote_priority,
+        response->size());
 
     send_response(std::move(*response), remote_endpoint);
 }
@@ -871,6 +996,13 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
 void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
+
+    if (!is_selected_endpoint(remote_address))
+    {
+        WEBRTC_LOG_WARN("dtls packet ignored from unselected ice endpoint remote={} size={}", remote_address, data.size());
+
+        return;
+    }
 
     if (dtls_transport_ == nullptr)
     {
@@ -905,6 +1037,13 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
 void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
+
+    if (!is_selected_endpoint(remote_address))
+    {
+        WEBRTC_LOG_WARN("srtp packet ignored from unselected ice endpoint remote={} size={}", remote_address, data.size());
+
+        return;
+    }
 
     if (srtp_transport_ == nullptr)
     {
@@ -1256,76 +1395,160 @@ void ice_udp_server::send_response(std::vector<uint8_t> response, const udp::end
                           });
 }
 
-void ice_udp_server::remember_remote_endpoint(const udp::endpoint& remote_endpoint)
+void ice_udp_server::remember_candidate_pair(std::string_view session_id,
+                                             std::string_view stream_id,
+                                             std::string_view remote_address,
+                                             uint32_t remote_priority,
+                                             uint64_t remote_tie_breaker,
+                                             bool nominated)
 {
+    if (session_id.empty() || stream_id.empty() || remote_address.empty())
+    {
+        return;
+    }
+
+    const std::string key = make_candidate_pair_key(session_id, remote_address);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    auto& pair = candidate_pairs_by_key_[key];
+
+    pair.session_id = std::string(session_id);
+
+    pair.stream_id = std::string(stream_id);
+
+    pair.remote_address = std::string(remote_address);
+
+    pair.remote_priority = remote_priority;
+
+    pair.remote_tie_breaker = remote_tie_breaker;
+
+    pair.last_binding_at_milliseconds = now_milliseconds();
+
+    pair.nominated = pair.nominated || nominated;
+}
+
+std::expected<ice_udp_server::ice_candidate_pair_selection_result, std::string> ice_udp_server::select_candidate_pair(
+    std::string_view session_id,
+    std::string_view stream_id,
+    const udp::endpoint& remote_endpoint,
+    uint32_t remote_priority,
+    uint64_t remote_tie_breaker)
+{
+    if (session_id.empty())
+    {
+        return make_error("ice candidate pair session id is empty");
+    }
+
+    if (stream_id.empty())
+    {
+        return make_error("ice candidate pair stream id is empty");
+    }
+
     const std::string remote_address = endpoint_to_string(remote_endpoint);
 
     if (remote_address.empty() || remote_address == "<unknown>")
     {
-        return;
+        return make_error("ice candidate pair remote address is invalid");
+    }
+
+    ice_candidate_pair_selection_result result;
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto endpoint_owner = session_id_by_endpoint_address_.find(remote_address);
+
+    if (endpoint_owner != session_id_by_endpoint_address_.end() && endpoint_owner->second != session_id)
+    {
+        return make_error("ice endpoint is already selected by another session");
+    }
+
+    const auto current_selection = endpoint_address_by_session_id_.find(std::string(session_id));
+
+    if (current_selection != endpoint_address_by_session_id_.end())
+    {
+        if (current_selection->second == remote_address)
+        {
+            endpoints_by_address_[remote_address] = remote_endpoint;
+
+            const std::string key = make_candidate_pair_key(session_id, remote_address);
+
+            auto& pair = candidate_pairs_by_key_[key];
+
+            pair.session_id = std::string(session_id);
+
+            pair.stream_id = std::string(stream_id);
+
+            pair.remote_address = remote_address;
+
+            pair.remote_priority = remote_priority;
+
+            pair.remote_tie_breaker = remote_tie_breaker;
+
+            pair.last_binding_at_milliseconds = now_milliseconds();
+
+            pair.nominated = true;
+            pair.selected = true;
+
+            return result;
+        }
+
+        result.previous_remote_address = current_selection->second;
+
+        session_id_by_endpoint_address_.erase(result.previous_remote_address);
+
+        endpoints_by_address_.erase(result.previous_remote_address);
+
+        const std::string previous_key = make_candidate_pair_key(session_id, result.previous_remote_address);
+
+        const auto previous_pair = candidate_pairs_by_key_.find(previous_key);
+
+        if (previous_pair != candidate_pairs_by_key_.end())
+        {
+            previous_pair->second.selected = false;
+        }
+    }
+
+    endpoint_address_by_session_id_[std::string(session_id)] = remote_address;
+
+    session_id_by_endpoint_address_[remote_address] = std::string(session_id);
+
+    endpoints_by_address_[remote_address] = remote_endpoint;
+
+    const std::string key = make_candidate_pair_key(session_id, remote_address);
+
+    auto& pair = candidate_pairs_by_key_[key];
+
+    pair.session_id = std::string(session_id);
+
+    pair.stream_id = std::string(stream_id);
+
+    pair.remote_address = remote_address;
+
+    pair.remote_priority = remote_priority;
+
+    pair.remote_tie_breaker = remote_tie_breaker;
+
+    pair.last_binding_at_milliseconds = now_milliseconds();
+
+    pair.nominated = true;
+    pair.selected = true;
+
+    result.changed = true;
+
+    return result;
+}
+
+bool ice_udp_server::is_selected_endpoint(std::string_view remote_address) const
+{
+    if (remote_address.empty())
+    {
+        return false;
     }
 
     std::lock_guard lock(endpoint_mutex_);
 
-    endpoints_by_address_[remote_address] = remote_endpoint;
-}
-
-void ice_udp_server::remember_session_endpoint(const udp::endpoint& remote_endpoint, std::string_view session_id)
-{
-    if (session_id.empty())
-    {
-        return;
-    }
-
-    const std::string remote_address = endpoint_to_string(remote_endpoint);
-
-    if (remote_address.empty() || remote_address == "<unknown>")
-    {
-        return;
-    }
-
-    std::vector<std::string> transport_peers_to_forget;
-
-    {
-        std::lock_guard lock(endpoint_mutex_);
-
-        const auto existing_session = session_id_by_endpoint_address_.find(remote_address);
-
-        if (existing_session != session_id_by_endpoint_address_.end() && existing_session->second != session_id)
-        {
-            endpoint_address_by_session_id_.erase(existing_session->second);
-
-            session_id_by_endpoint_address_.erase(existing_session);
-
-            transport_peers_to_forget.push_back(remote_address);
-        }
-
-        const auto existing_endpoint = endpoint_address_by_session_id_.find(std::string(session_id));
-
-        if (existing_endpoint != endpoint_address_by_session_id_.end() && existing_endpoint->second != remote_address)
-        {
-            const std::string old_remote_address = existing_endpoint->second;
-
-            session_id_by_endpoint_address_.erase(old_remote_address);
-
-            endpoints_by_address_.erase(old_remote_address);
-
-            transport_peers_to_forget.push_back(old_remote_address);
-        }
-
-        endpoints_by_address_[remote_address] = remote_endpoint;
-
-        endpoint_address_by_session_id_[std::string(session_id)] = remote_address;
-
-        session_id_by_endpoint_address_[remote_address] = std::string(session_id);
-    }
-
-    for (const auto& peer_remote_address : transport_peers_to_forget)
-    {
-        forget_peer_transport_state(peer_remote_address);
-    }
-
-    WEBRTC_LOG_DEBUG("ice udp remember session endpoint session={} remote={}", session_id, remote_address);
+    return session_id_by_endpoint_address_.contains(std::string(remote_address));
 }
 
 void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
@@ -1355,6 +1578,8 @@ void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
         {
             endpoint_address_by_session_id_.erase(session_id);
         }
+
+        erase_candidate_pairs_for_endpoint_locked(remote_address);
     }
 
     forget_peer_transport_state(remote_address);
@@ -1377,6 +1602,36 @@ void ice_udp_server::forget_peer_transport_state(std::string_view remote_address
     if (media_router_ != nullptr)
     {
         media_router_->forget_peer(remote_address);
+    }
+}
+
+void ice_udp_server::erase_candidate_pairs_for_session_locked(std::string_view session_id)
+{
+    for (auto iterator = candidate_pairs_by_key_.begin(); iterator != candidate_pairs_by_key_.end();)
+    {
+        if (iterator->second.session_id == session_id)
+        {
+            iterator = candidate_pairs_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
+void ice_udp_server::erase_candidate_pairs_for_endpoint_locked(std::string_view remote_address)
+{
+    for (auto iterator = candidate_pairs_by_key_.begin(); iterator != candidate_pairs_by_key_.end();)
+    {
+        if (iterator->second.remote_address == remote_address)
+        {
+            iterator = candidate_pairs_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
     }
 }
 

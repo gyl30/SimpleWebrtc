@@ -25,7 +25,7 @@ struct webrtc_answer_factory_config
 
     sdp::dtls_connection_role local_setup = sdp::dtls_connection_role::passive;
 
-    bool ice_lite = false;
+    bool ice_lite = true;
     bool enable_trickle = true;
 
     bool include_host_candidate = false;
@@ -44,7 +44,9 @@ struct webrtc_answer_factory_config
 struct generated_sdp_answer
 {
     std::string sdp;
+
     ice_credentials local_ice;
+
     sdp::fingerprint_info local_fingerprint;
 
     uint64_t sdp_session_id = 0;
@@ -55,7 +57,8 @@ using webrtc_answer_factory_config_result = std::expected<webrtc_answer_factory_
 
 using generated_sdp_answer_result = std::expected<generated_sdp_answer, std::string>;
 
-[[nodiscard]] webrtc_answer_factory_config_result make_webrtc_answer_factory_config_from_certificate(std::string_view certificate_file);
+[[nodiscard]]
+webrtc_answer_factory_config_result make_webrtc_answer_factory_config_from_certificate(std::string_view certificate_file);
 
 class webrtc_answer_factory
 {
@@ -63,31 +66,41 @@ class webrtc_answer_factory
     explicit webrtc_answer_factory(webrtc_answer_factory_config config);
 
     webrtc_answer_factory(const webrtc_answer_factory&) = delete;
+
     webrtc_answer_factory& operator=(const webrtc_answer_factory&) = delete;
 
     webrtc_answer_factory(webrtc_answer_factory&&) = delete;
+
     webrtc_answer_factory& operator=(webrtc_answer_factory&&) = delete;
 
     ~webrtc_answer_factory() = default;
 
-    [[nodiscard]] generated_sdp_answer_result build_whip_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer);
+   public:
+    [[nodiscard]]
+    generated_sdp_answer_result build_whip_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer);
 
-    [[nodiscard]] generated_sdp_answer_result build_whep_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer);
+    [[nodiscard]]
+    generated_sdp_answer_result build_whep_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer);
 
    private:
-    [[nodiscard]] std::expected<void, std::string> validate_config() const;
+    [[nodiscard]]
+    std::expected<void, std::string> validate_config() const;
 
-    [[nodiscard]] sdp::sdp_answer_options make_answer_options(std::string_view stream_id,
-                                                              const ice_credentials& local_ice,
-                                                              uint64_t session_id,
-                                                              uint64_t session_version) const;
+    [[nodiscard]]
+    sdp::sdp_answer_options make_answer_options(std::string_view stream_id,
+                                                const ice_credentials& local_ice,
+                                                uint64_t session_id,
+                                                uint64_t session_version) const;
 
-    [[nodiscard]] generated_sdp_answer_result build_answer(bool is_whip, std::string_view stream_id, const sdp::webrtc_offer_summary& offer);
+    [[nodiscard]]
+    generated_sdp_answer_result build_answer(bool is_whip, std::string_view stream_id, const sdp::webrtc_offer_summary& offer);
 
-    [[nodiscard]] static uint64_t make_initial_session_id();
+    [[nodiscard]]
+    static uint64_t make_initial_session_id();
 
    private:
     webrtc_answer_factory_config config_;
+
     std::atomic<uint64_t> next_session_id_;
 };
 }    // namespace webrtc
