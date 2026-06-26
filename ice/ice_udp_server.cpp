@@ -1121,6 +1121,7 @@ void append_unique_keyframe_media_ssrc(std::vector<uint32_t>& ssrcs, uint32_t ss
 
     ssrcs.push_back(ssrc);
 }
+bool is_video_media_kind(std::string_view kind) { return kind == "video"; }
 bool is_publisher_rtp_fanout_to_subscriber(const srtp_packet_process_result& packet,
                                            const media_route_result& route,
                                            const media_peer_info& target_peer)
@@ -2041,24 +2042,21 @@ std::vector<uint32_t> ice_udp_server::collect_keyframe_request_media_ssrcs(std::
         return media_ssrcs;
     }
 
-    if (ssrc_mapper_ != nullptr)
+    if (ssrc_mapper_ == nullptr)
     {
-        const std::vector<media_ssrc_mapping> mappings = ssrc_mapper_->find_by_stream_id(stream_id);
-
-        for (const auto& mapping : mappings)
-        {
-            append_unique_keyframe_media_ssrc(media_ssrcs, mapping.publisher_ssrc);
-        }
+        return media_ssrcs;
     }
 
-    if (media_router_ != nullptr)
-    {
-        const std::optional<media_stream_stats> stats = media_router_->get_stream_stats(stream_id);
+    const std::vector<media_ssrc_mapping> mappings = ssrc_mapper_->find_by_stream_id(stream_id);
 
-        if (stats.has_value())
+    for (const auto& mapping : mappings)
+    {
+        if (!is_video_media_kind(mapping.kind))
         {
-            append_unique_keyframe_media_ssrc(media_ssrcs, stats->last_rtp_ssrc);
+            continue;
         }
+
+        append_unique_keyframe_media_ssrc(media_ssrcs, mapping.publisher_ssrc);
     }
 
     return media_ssrcs;
@@ -3863,9 +3861,23 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
             return original_packet;
         }
 
+        if (feedback_event->has_keyframe_request && !is_video_media_kind(mapping->kind))
+        {
+            WEBRTC_LOG_WARN(
+                "rtcp keyframe request skipped non video media stream={} subscriber_session={} publisher_session={} subscriber_ssrc={} "
+                "publisher_ssrc={} kind={}",
+                mapping->stream_id,
+                mapping->subscriber_session_id,
+                mapping->publisher_session_id,
+                mapping->subscriber_ssrc,
+                mapping->publisher_ssrc,
+                mapping->kind);
+
+            return std::nullopt;
+        }
+
         auto rewrite_result = rewrite_rtcp_feedback_media_ssrc(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()),
                                                                mapping->publisher_ssrc);
-
         if (!rewrite_result)
         {
             WEBRTC_LOG_WARN(
