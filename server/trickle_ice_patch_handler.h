@@ -316,6 +316,50 @@ session_ice_credentials remote_ice_credentials_from_session(const session_type& 
 
         return credentials;
     }
+    else if constexpr (requires { session.remote_offer_summary(); })
+    {
+        const auto& remote_offer_summary = session.remote_offer_summary();
+
+        if constexpr (requires {
+                          std::string(remote_offer_summary.ice_ufrag);
+                          std::string(remote_offer_summary.ice_pwd);
+                      })
+        {
+            credentials.ice_ufrag = string_like_to_string(remote_offer_summary.ice_ufrag);
+
+            credentials.ice_pwd = string_like_to_string(remote_offer_summary.ice_pwd);
+
+            credentials.available = true;
+
+            return credentials;
+        }
+        else if constexpr (requires {
+                               std::string(remote_offer_summary.ufrag);
+                               std::string(remote_offer_summary.pwd);
+                           })
+        {
+            credentials.ice_ufrag = string_like_to_string(remote_offer_summary.ufrag);
+
+            credentials.ice_pwd = string_like_to_string(remote_offer_summary.pwd);
+
+            credentials.available = true;
+
+            return credentials;
+        }
+        else if constexpr (requires {
+                               std::string(remote_offer_summary.username_fragment);
+                               std::string(remote_offer_summary.password);
+                           })
+        {
+            credentials.ice_ufrag = string_like_to_string(remote_offer_summary.username_fragment);
+
+            credentials.ice_pwd = string_like_to_string(remote_offer_summary.password);
+
+            credentials.available = true;
+
+            return credentials;
+        }
+    }
     else if constexpr (requires { session.remote_ice_credentials(); })
     {
         const auto& remote_credentials = session.remote_ice_credentials();
