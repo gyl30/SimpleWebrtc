@@ -1,8 +1,12 @@
 #include "signaling/sdp/sdp_offer_validator.h"
 
+#include <cctype>
+#include <cstddef>
 #include <expected>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace webrtc::sdp
 {
@@ -13,15 +17,114 @@ std::unexpected<std::string> make_error(std::string_view message) { return std::
 std::unexpected<std::string> make_media_error(std::string_view prefix, const media_summary& media, std::string_view suffix)
 {
     std::string message;
+
     message.reserve(prefix.size() + media.mid.size() + suffix.size() + 16);
 
     message.append(prefix);
     message.append(" media mid ");
     message.append(media.mid);
-    message.append(" ");
+    message.push_back(' ');
     message.append(suffix);
 
     return std::unexpected(std::move(message));
+}
+
+std::string to_lower_ascii(std::string_view value)
+{
+    std::string result;
+
+    result.reserve(value.size());
+
+    for (const char character : value)
+    {
+        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
+    }
+
+    return result;
+}
+
+bool is_hex_digit(char character)
+{
+    const auto value = static_cast<unsigned char>(character);
+
+    return std::isxdigit(value) != 0;
+}
+
+std::expected<std::size_t, std::string> fingerprint_digest_size(std::string_view algorithm)
+{
+    const std::string normalized_algorithm = to_lower_ascii(algorithm);
+
+    if (normalized_algorithm == "sha-256")
+    {
+        return 32;
+    }
+
+    if (normalized_algorithm == "sha-384")
+    {
+        return 48;
+    }
+
+    if (normalized_algorithm == "sha-512")
+    {
+        return 64;
+    }
+
+    std::string message = "offer fingerprint algorithm is unsupported: ";
+
+    message.append(algorithm);
+
+    return std::unexpected(std::move(message));
+}
+
+offer_validation_result validate_fingerprint(const fingerprint_info& fingerprint)
+{
+    if (fingerprint.algorithm.empty())
+    {
+        return make_error("offer fingerprint algorithm is empty");
+    }
+
+    if (fingerprint.value.empty())
+    {
+        return make_error("offer fingerprint value is empty");
+    }
+
+    auto digest_size = fingerprint_digest_size(fingerprint.algorithm);
+
+    if (!digest_size)
+    {
+        return std::unexpected(digest_size.error());
+    }
+
+    const std::size_t expected_value_size = (*digest_size * 3) - 1;
+
+    if (fingerprint.value.size() != expected_value_size)
+    {
+        std::string message = "offer fingerprint value length does not match algorithm ";
+
+        message.append(fingerprint.algorithm);
+
+        return std::unexpected(std::move(message));
+    }
+
+    for (std::size_t byte_index = 0; byte_index < *digest_size; ++byte_index)
+    {
+        const std::size_t character_index = byte_index * 3;
+
+        if (!is_hex_digit(fingerprint.value[character_index]) || !is_hex_digit(fingerprint.value[character_index + 1]))
+        {
+            return make_error("offer fingerprint value contains invalid hexadecimal byte");
+        }
+
+        if (byte_index + 1 < *digest_size)
+        {
+            if (fingerprint.value[character_index + 2] != ':')
+            {
+                return make_error("offer fingerprint value must use colon separators");
+            }
+        }
+    }
+
+    return {};
 }
 
 bool contains_string(const std::vector<std::string>& values, std::string_view value)
@@ -39,21 +142,23 @@ bool contains_string(const std::vector<std::string>& values, std::string_view va
 
 offer_validation_result validate_unique_media_mids(const webrtc_offer_summary& offer)
 {
-    for (std::size_t i = 0; i < offer.media.size(); ++i)
+    for (std::size_t first_index = 0; first_index < offer.media.size(); ++first_index)
     {
-        const auto& media = offer.media[i];
+        const auto& media = offer.media[first_index];
 
         if (media.mid.empty())
         {
             return make_error("media mid is empty");
         }
 
-        for (std::size_t j = i + 1; j < offer.media.size(); ++j)
+        for (std::size_t second_index = first_index + 1; second_index < offer.media.size(); ++second_index)
         {
-            if (media.mid == offer.media[j].mid)
+            if (media.mid == offer.media[second_index].mid)
             {
                 std::string message = "duplicate media mid: ";
+
                 message.append(media.mid);
+
                 return std::unexpected(std::move(message));
             }
         }
@@ -64,21 +169,23 @@ offer_validation_result validate_unique_media_mids(const webrtc_offer_summary& o
 
 offer_validation_result validate_unique_bundle_mids(const webrtc_offer_summary& offer)
 {
-    for (std::size_t i = 0; i < offer.bundle_mids.size(); ++i)
+    for (std::size_t first_index = 0; first_index < offer.bundle_mids.size(); ++first_index)
     {
-        const auto& mid = offer.bundle_mids[i];
+        const auto& mid = offer.bundle_mids[first_index];
 
         if (mid.empty())
         {
             return make_error("bundle mid is empty");
         }
 
-        for (std::size_t j = i + 1; j < offer.bundle_mids.size(); ++j)
+        for (std::size_t second_index = first_index + 1; second_index < offer.bundle_mids.size(); ++second_index)
         {
-            if (mid == offer.bundle_mids[j])
+            if (mid == offer.bundle_mids[second_index])
             {
                 std::string message = "duplicate bundle mid: ";
+
                 message.append(mid);
+
                 return std::unexpected(std::move(message));
             }
         }
@@ -112,14 +219,11 @@ offer_validation_result validate_common_offer(const webrtc_offer_summary& offer)
         return make_error("offer ice-pwd is empty");
     }
 
-    if (offer.fingerprint.algorithm.empty())
-    {
-        return make_error("offer fingerprint algorithm is empty");
-    }
+    auto fingerprint_result = validate_fingerprint(offer.fingerprint);
 
-    if (offer.fingerprint.value.empty())
+    if (!fingerprint_result)
     {
-        return make_error("offer fingerprint value is empty");
+        return std::unexpected(fingerprint_result.error());
     }
 
     if (offer.setup != dtls_connection_role::actpass)
@@ -138,12 +242,14 @@ offer_validation_result validate_common_offer(const webrtc_offer_summary& offer)
     }
 
     auto unique_media_result = validate_unique_media_mids(offer);
+
     if (!unique_media_result)
     {
         return std::unexpected(unique_media_result.error());
     }
 
     auto unique_bundle_result = validate_unique_bundle_mids(offer);
+
     if (!unique_bundle_result)
     {
         return std::unexpected(unique_bundle_result.error());
@@ -191,6 +297,7 @@ offer_validation_result validate_common_offer(const webrtc_offer_summary& offer)
 offer_validation_result validate_whip_offer(const webrtc_offer_summary& offer)
 {
     auto common_result = validate_common_offer(offer);
+
     if (!common_result)
     {
         return std::unexpected(common_result.error());
@@ -229,6 +336,7 @@ offer_validation_result validate_whip_offer(const webrtc_offer_summary& offer)
 offer_validation_result validate_whep_offer(const webrtc_offer_summary& offer)
 {
     auto common_result = validate_common_offer(offer);
+
     if (!common_result)
     {
         return std::unexpected(common_result.error());
