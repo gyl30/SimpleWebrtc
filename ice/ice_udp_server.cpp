@@ -1058,7 +1058,7 @@ void ice_udp_server::stop()
 
     last_empty_rtcp_report_log_milliseconds_ = 0;
 
-    reset_rtcp_report_send_counters();
+    reset_rtcp_report_runtime_counters();
 
     if (rtp_packet_cache_ != nullptr)
     {
@@ -1556,8 +1556,20 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
         rtcp_report_send_success_total_.fetch_add(1, std::memory_order_relaxed);
     }
 }
-void ice_udp_server::reset_rtcp_report_send_counters()
+void ice_udp_server::reset_rtcp_report_runtime_counters()
 {
+    rtcp_report_inbound_rtcp_observe_attempts_total_.store(0, std::memory_order_relaxed);
+
+    rtcp_report_inbound_rtcp_observe_failed_total_.store(0, std::memory_order_relaxed);
+
+    rtcp_report_inbound_sender_report_sources_total_.store(0, std::memory_order_relaxed);
+
+    rtcp_report_remember_source_attempts_total_.store(0, std::memory_order_relaxed);
+
+    rtcp_report_remember_source_success_total_.store(0, std::memory_order_relaxed);
+
+    rtcp_report_remember_source_failed_total_.store(0, std::memory_order_relaxed);
+
     rtcp_report_send_attempts_total_.store(0, std::memory_order_relaxed);
 
     rtcp_report_send_success_total_.store(0, std::memory_order_relaxed);
@@ -1568,7 +1580,6 @@ void ice_udp_server::reset_rtcp_report_send_counters()
 
     rtcp_report_protect_ignored_total_.store(0, std::memory_order_relaxed);
 }
-
 void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
@@ -2220,6 +2231,8 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
         return;
     }
 
+    rtcp_report_inbound_rtcp_observe_attempts_total_.fetch_add(1, std::memory_order_relaxed);
+
     auto observation =
         rtcp_report_service_->observe_received_rtcp_with_summary(peer.stream_id,
                                                                  peer.session_id,
@@ -2229,6 +2242,8 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
 
     if (!observation)
     {
+        rtcp_report_inbound_rtcp_observe_failed_total_.fetch_add(1, std::memory_order_relaxed);
+
         WEBRTC_LOG_DEBUG("rtcp stats sender report observe skipped stream={} session={} remote={} error={}",
                          peer.stream_id,
                          peer.session_id,
@@ -2242,6 +2257,8 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
     {
         return;
     }
+
+    rtcp_report_inbound_sender_report_sources_total_.fetch_add(static_cast<uint64_t>(observation->sender_report_count), std::memory_order_relaxed);
 
     for (uint32_t sender_report_ssrc : observation->sender_report_ssrcs)
     {
@@ -2267,10 +2284,14 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
         source.sender_report_enabled = false;
         source.receiver_report_enabled = true;
 
+        rtcp_report_remember_source_attempts_total_.fetch_add(1, std::memory_order_relaxed);
+
         auto remember_result = rtcp_report_service_->remember_source(source);
 
         if (!remember_result)
         {
+            rtcp_report_remember_source_failed_total_.fetch_add(1, std::memory_order_relaxed);
+
             WEBRTC_LOG_DEBUG("rtcp stats sender report remember source failed stream={} session={} remote={} ssrc={} error={}",
                              peer.stream_id,
                              peer.session_id,
@@ -2280,6 +2301,8 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
 
             continue;
         }
+
+        rtcp_report_remember_source_success_total_.fetch_add(1, std::memory_order_relaxed);
 
         WEBRTC_LOG_DEBUG("rtcp stats sender report observed stream={} session={} remote={} sender_ssrc={} local_ssrc={}",
                          peer.stream_id,

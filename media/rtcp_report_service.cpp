@@ -907,7 +907,7 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
 {
     std::string result;
 
-    result.reserve(512);
+    result.reserve(640);
 
     result.append("configured_sources=");
     result.append(std::to_string(snapshot.configured_sources));
@@ -926,6 +926,24 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
 
     result.append(" max_packets_per_generation=");
     result.append(std::to_string(snapshot.max_packets_per_generation));
+
+    result.append(" inbound_observe_attempts=");
+    result.append(std::to_string(snapshot.inbound_rtcp_observe_attempts));
+
+    result.append(" inbound_observe_failed=");
+    result.append(std::to_string(snapshot.inbound_rtcp_observe_failed));
+
+    result.append(" inbound_sender_report_sources=");
+    result.append(std::to_string(snapshot.inbound_sender_report_sources));
+
+    result.append(" remember_source_attempts=");
+    result.append(std::to_string(snapshot.remember_source_attempts));
+
+    result.append(" remember_source_success=");
+    result.append(std::to_string(snapshot.remember_source_success));
+
+    result.append(" remember_source_failed=");
+    result.append(std::to_string(snapshot.remember_source_failed));
 
     result.append(" send_attempts=");
     result.append(std::to_string(snapshot.send_attempts));
@@ -980,12 +998,11 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
 
     return result;
 }
-
 std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_service_runtime_snapshot& snapshot)
 {
     std::string output;
 
-    output.reserve(1024);
+    output.reserve(1408);
 
     bool first = true;
 
@@ -1002,6 +1019,18 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
     append_json_uint64(output, "report_jitter_milliseconds", snapshot.report_jitter_milliseconds, first);
 
     append_json_size(output, "max_packets_per_generation", snapshot.max_packets_per_generation, first);
+
+    append_json_uint64(output, "inbound_rtcp_observe_attempts", snapshot.inbound_rtcp_observe_attempts, first);
+
+    append_json_uint64(output, "inbound_rtcp_observe_failed", snapshot.inbound_rtcp_observe_failed, first);
+
+    append_json_uint64(output, "inbound_sender_report_sources", snapshot.inbound_sender_report_sources, first);
+
+    append_json_uint64(output, "remember_source_attempts", snapshot.remember_source_attempts, first);
+
+    append_json_uint64(output, "remember_source_success", snapshot.remember_source_success, first);
+
+    append_json_uint64(output, "remember_source_failed", snapshot.remember_source_failed, first);
 
     append_json_uint64(output, "send_attempts", snapshot.send_attempts, first);
 
@@ -1045,7 +1074,7 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
 {
     std::string output;
 
-    output.reserve(12288);
+    output.reserve(16384);
 
     append_metric_header(output, "simplewebrtc_rtcp_report_service_configured_sources", "configured active rtcp report sources", "gauge");
 
@@ -1077,6 +1106,42 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
 
     append_metric_value(
         output, "simplewebrtc_rtcp_report_service_max_packets_per_generation", static_cast<uint64_t>(snapshot.max_packets_per_generation));
+
+    append_metric_header(output,
+                         "simplewebrtc_rtcp_report_service_inbound_rtcp_observe_attempts_total",
+                         "total inbound rtcp packets inspected for sender report observations",
+                         "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_inbound_rtcp_observe_attempts_total", snapshot.inbound_rtcp_observe_attempts);
+
+    append_metric_header(output,
+                         "simplewebrtc_rtcp_report_service_inbound_rtcp_observe_failed_total",
+                         "total inbound rtcp sender report observation failures",
+                         "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_inbound_rtcp_observe_failed_total", snapshot.inbound_rtcp_observe_failed);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_inbound_sender_report_sources_total", "total inbound sender report source observations", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_inbound_sender_report_sources_total", snapshot.inbound_sender_report_sources);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_remember_source_attempts_total", "total rtcp report source remember attempts", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_remember_source_attempts_total", snapshot.remember_source_attempts);
+
+    append_metric_header(output,
+                         "simplewebrtc_rtcp_report_service_remember_source_success_total",
+                         "total successful rtcp report source remember operations",
+                         "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_remember_source_success_total", snapshot.remember_source_success);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_remember_source_failed_total", "total failed rtcp report source remember operations", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_remember_source_failed_total", snapshot.remember_source_failed);
 
     append_metric_header(
         output, "simplewebrtc_rtcp_report_service_send_attempts_total", "total rtcp active report packets selected for outbound send", "counter");
@@ -1173,5 +1238,4 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
 
     return output;
 }
-
 }    // namespace webrtc

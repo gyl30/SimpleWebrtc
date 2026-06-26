@@ -72,6 +72,18 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
             snapshot = rtcp_report_service_->runtime_snapshot();
         }
 
+        snapshot.inbound_rtcp_observe_attempts = rtcp_report_inbound_rtcp_observe_attempts_total_.load(std::memory_order_relaxed);
+
+        snapshot.inbound_rtcp_observe_failed = rtcp_report_inbound_rtcp_observe_failed_total_.load(std::memory_order_relaxed);
+
+        snapshot.inbound_sender_report_sources = rtcp_report_inbound_sender_report_sources_total_.load(std::memory_order_relaxed);
+
+        snapshot.remember_source_attempts = rtcp_report_remember_source_attempts_total_.load(std::memory_order_relaxed);
+
+        snapshot.remember_source_success = rtcp_report_remember_source_success_total_.load(std::memory_order_relaxed);
+
+        snapshot.remember_source_failed = rtcp_report_remember_source_failed_total_.load(std::memory_order_relaxed);
+
         snapshot.send_attempts = rtcp_report_send_attempts_total_.load(std::memory_order_relaxed);
 
         snapshot.send_success = rtcp_report_send_success_total_.load(std::memory_order_relaxed);
@@ -142,7 +154,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void send_rtcp_reports(uint64_t now_milliseconds);
 
-    void reset_rtcp_report_send_counters();
+    void reset_rtcp_report_runtime_counters();
 
     void handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
 
@@ -305,6 +317,18 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     bool registry_callback_registered_ = false;
 
     uint64_t last_empty_rtcp_report_log_milliseconds_ = 0;
+
+    std::atomic<uint64_t> rtcp_report_inbound_rtcp_observe_attempts_total_{0};
+
+    std::atomic<uint64_t> rtcp_report_inbound_rtcp_observe_failed_total_{0};
+
+    std::atomic<uint64_t> rtcp_report_inbound_sender_report_sources_total_{0};
+
+    std::atomic<uint64_t> rtcp_report_remember_source_attempts_total_{0};
+
+    std::atomic<uint64_t> rtcp_report_remember_source_success_total_{0};
+
+    std::atomic<uint64_t> rtcp_report_remember_source_failed_total_{0};
 
     std::atomic<uint64_t> rtcp_report_send_attempts_total_{0};
 

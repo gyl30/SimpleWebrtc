@@ -83,6 +83,14 @@ struct rtcp_report_service_runtime_snapshot
     uint64_t report_jitter_milliseconds = 0;
     std::size_t max_packets_per_generation = 0;
 
+    uint64_t inbound_rtcp_observe_attempts = 0;
+    uint64_t inbound_rtcp_observe_failed = 0;
+    uint64_t inbound_sender_report_sources = 0;
+
+    uint64_t remember_source_attempts = 0;
+    uint64_t remember_source_success = 0;
+    uint64_t remember_source_failed = 0;
+
     uint64_t send_attempts = 0;
     uint64_t send_success = 0;
     uint64_t endpoint_not_found = 0;
@@ -104,7 +112,6 @@ struct rtcp_report_service_runtime_snapshot
     std::size_t last_generation_due_sources = 0;
     std::size_t last_generation_throttled_sources = 0;
 };
-
 using rtcp_report_service_result = std::expected<void, std::string>;
 
 using rtcp_report_service_packet_result = std::expected<rtcp_report_service_packet, std::string>;
