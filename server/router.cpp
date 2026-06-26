@@ -2,9 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
-#include <memory>
 #include <string>
-#include <string_view>
 #include <utility>
 
 #include <boost/algorithm/string/predicate.hpp>
@@ -14,6 +12,7 @@
 #include "media/media_router.h"
 #include "media/media_router_stats_json.h"
 #include "media/media_router_stats_prometheus.h"
+#include "media/rtcp_report_service.h"
 #include "net/http.h"
 #include "signaling/webrtc_answer_factory.h"
 
@@ -69,16 +68,74 @@ bool match_single_value_path(std::string_view path, std::string_view prefix, std
 std::string json_error_body(std::string_view message)
 {
     std::string body;
+
     body.reserve(message.size() + 16);
+
     body.append(R"({"error":")");
     body.append(message);
     body.append(R"("})");
+
     return body;
 }
 
 std::string beast_string_view_to_string(boost::beast::string_view value) { return std::string(value.data(), value.size()); }
 
 std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return std::string_view(value.data(), value.size()); }
+
+void trim_trailing_space(std::string& value)
+{
+    while (!value.empty())
+    {
+        const auto current = static_cast<unsigned char>(value.back());
+
+        if (std::isspace(current) == 0)
+        {
+            return;
+        }
+
+        value.pop_back();
+    }
+}
+
+std::string append_rtcp_report_service_json(std::string media_json, const rtcp_report_service_runtime_snapshot& rtcp_snapshot)
+{
+    trim_trailing_space(media_json);
+
+    if (media_json.empty())
+    {
+        media_json = "{}";
+    }
+
+    if (media_json.back() != '}')
+    {
+        return media_json;
+    }
+
+    media_json.pop_back();
+
+    if (media_json.size() > 1)
+    {
+        media_json.push_back(',');
+    }
+
+    media_json.append(R"("rtcp_report_service":)");
+
+    media_json.append(rtcp_report_service_runtime_snapshot_to_json(rtcp_snapshot));
+
+    media_json.push_back('}');
+
+    return media_json;
+}
+
+void append_rtcp_report_service_prometheus(std::string& output, const rtcp_report_service_runtime_snapshot& rtcp_snapshot)
+{
+    if (!output.empty() && output.back() != '\n')
+    {
+        output.push_back('\n');
+    }
+
+    output.append(rtcp_report_service_runtime_snapshot_to_prometheus(rtcp_snapshot));
+}
 }    // namespace
 
 router::router(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
@@ -159,6 +216,11 @@ http_response_ptr router::handle(http_request_t& request)
 
 void router::set_media_router(std::shared_ptr<media_router> media_router) { media_router_ = std::move(media_router); }
 
+void router::set_rtcp_report_runtime_snapshot_provider(rtcp_report_runtime_snapshot_provider provider)
+{
+    rtcp_report_runtime_snapshot_provider_ = std::move(provider);
+}
+
 http_response_ptr router::handle_options(http_request_t& request)
 {
     auto response = text_response(request, 204, "");
@@ -193,7 +255,12 @@ http_response_ptr router::handle_media_stats(http_request_t& request)
 
     const media_router_stats_snapshot snapshot = media_router_->get_stats_snapshot();
 
-    const std::string body = media_router_stats_snapshot_to_json(snapshot);
+    std::string body = media_router_stats_snapshot_to_json(snapshot);
+
+    if (rtcp_report_runtime_snapshot_provider_)
+    {
+        body = append_rtcp_report_service_json(std::move(body), rtcp_report_runtime_snapshot_provider_());
+    }
 
     return json_response(request, 200, body);
 }
@@ -212,7 +279,12 @@ http_response_ptr router::handle_prometheus_metrics(http_request_t& request)
 
     const media_router_stats_snapshot snapshot = media_router_->get_stats_snapshot();
 
-    const std::string body = media_router_stats_snapshot_to_prometheus(snapshot);
+    std::string body = media_router_stats_snapshot_to_prometheus(snapshot);
+
+    if (rtcp_report_runtime_snapshot_provider_)
+    {
+        append_rtcp_report_service_prometheus(body, rtcp_report_runtime_snapshot_provider_());
+    }
 
     return prometheus_response(request, 200, body);
 }
@@ -330,6 +402,7 @@ http_response_ptr router::not_implemented(http_request_t& request, std::string_v
 http_response_ptr router::json_response(http_request_t& request, int code, std::string_view body)
 {
     std::string content(body);
+
     content.push_back('\n');
 
     auto response = create_response(request, code, content);
