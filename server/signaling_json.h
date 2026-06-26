@@ -48,6 +48,24 @@ struct stream_detail_response
     uint64_t session_count = 0;
     std::vector<session_lifecycle_entry_response> sessions;
 };
+struct stream_summary_response
+{
+    std::string stream_id;
+    uint64_t publisher_count = 0;
+    uint64_t subscriber_count = 0;
+    uint64_t session_count = 0;
+    std::string publisher_session_id;
+    std::string publisher_state;
+};
+
+struct stream_list_response
+{
+    uint64_t stream_count = 0;
+    uint64_t publisher_count = 0;
+    uint64_t subscriber_count = 0;
+    uint64_t session_count = 0;
+    std::vector<stream_summary_response> streams;
+};
 
 REFLECT_STRUCT(webrtc::error_response, (error));                                                    // NOLINT
 REFLECT_STRUCT(webrtc::session_created_response, (type)(stream_id)(session_id)(state)(message));    // NOLINT
@@ -55,6 +73,9 @@ REFLECT_STRUCT(webrtc::session_lifecycle_entry_response,
                (type)(stream_id)(session_id)(state)(created_at_milliseconds)(updated_at_milliseconds));                     // NOLINT
 REFLECT_STRUCT(webrtc::session_lifecycle_response, (publisher_count)(subscriber_count)(session_count)(sessions));           // NOLINT
 REFLECT_STRUCT(webrtc::stream_detail_response, (stream_id)(publisher_count)(subscriber_count)(session_count)(sessions));    // NOLINT
+REFLECT_STRUCT(webrtc::stream_summary_response,
+               (stream_id)(publisher_count)(subscriber_count)(session_count)(publisher_session_id)(publisher_state));       // NOLINT
+REFLECT_STRUCT(webrtc::stream_list_response, (stream_count)(publisher_count)(subscriber_count)(session_count)(streams));    // NOLINT
 
 inline std::string make_error_response_body(std::string_view message)
 {
@@ -147,6 +168,84 @@ inline std::string make_stream_detail_response_body(std::string_view stream_id, 
     }
 
     response.session_count = to_json_count(response.sessions.size());
+
+    return serialize_struct(response);
+}
+inline stream_summary_response* find_stream_summary_response(std::vector<stream_summary_response>& streams, std::string_view stream_id)
+{
+    for (auto& stream : streams)
+    {
+        if (std::string_view(stream.stream_id) == stream_id)
+        {
+            return &stream;
+        }
+    }
+
+    return nullptr;
+}
+
+inline stream_summary_response& get_or_create_stream_summary_response(std::vector<stream_summary_response>& streams, std::string_view stream_id)
+{
+    stream_summary_response* existing =
+        find_stream_summary_response(
+            streams,
+            stream_id);
+
+    if (existing != nullptr)
+    {
+        return *existing;
+    }
+
+    stream_summary_response response;
+
+    response.stream_id =
+        std::string(
+            stream_id);
+
+    streams.push_back(
+        std::move(response));
+
+    return streams.back();
+}
+
+inline std::string make_stream_list_response_body(const std::vector<stream_session_lifecycle_snapshot>& snapshots)
+{
+    stream_list_response response;
+
+    response.streams.reserve(
+        snapshots.size());
+
+    for (const auto& snapshot : snapshots)
+    {
+        stream_summary_response& stream =
+            get_or_create_stream_summary_response(
+                response.streams,
+                snapshot.stream_id);
+
+        stream.session_count += 1;
+        response.session_count += 1;
+
+        if (snapshot.kind == stream_session_kind::publisher)
+        {
+            stream.publisher_count += 1;
+            response.publisher_count += 1;
+
+            if (stream.publisher_session_id.empty())
+            {
+                stream.publisher_session_id = snapshot.session_id;
+                stream.publisher_state = std::string(session_state_to_string(snapshot.state));
+            }
+        }
+        else if (snapshot.kind == stream_session_kind::subscriber)
+        {
+            stream.subscriber_count += 1;
+            response.subscriber_count += 1;
+        }
+    }
+
+    response.stream_count =
+        to_json_count(
+            response.streams.size());
 
     return serialize_struct(response);
 }

@@ -49,6 +49,8 @@ inline constexpr std::string_view k_sessions_prefix = "/api/sessions/";
 
 inline constexpr std::string_view k_streams_prefix = "/api/streams/";
 
+inline constexpr std::string_view k_streams_path = "/api/streams";
+
 inline constexpr std::string_view k_media_stats_path = "/api/stats/media";
 
 inline constexpr std::string_view k_prometheus_metrics_path = "/metrics";
@@ -283,6 +285,11 @@ http_response_ptr router::handle(http_request_t& request)
         return handle_session(request, api_session_id);
     }
 
+    if (path == k_streams_path)
+    {
+        return handle_streams(request);
+    }
+
     std::string_view api_stream_id;
 
     if (match_single_value_path(path, k_streams_prefix, api_stream_id))
@@ -448,6 +455,25 @@ http_response_ptr router::handle_session(http_request_t& request, std::string_vi
     }
 
     return json_response(request, 500, json_error_body("unsupported session kind"));
+}
+
+http_response_ptr router::handle_streams(http_request_t& request)
+{
+    if (request.req.method() != http::verb::get)
+    {
+        return method_not_allowed(request);
+    }
+
+    if (registry_ == nullptr)
+    {
+        return json_response(request, 503, json_error_body("session registry unavailable"));
+    }
+
+    const std::vector<stream_session_lifecycle_snapshot> snapshots = registry_->session_lifecycle_snapshots();
+
+    const std::string body = make_stream_list_response_body(snapshots);
+
+    return json_response(request, 200, body);
 }
 
 http_response_ptr router::handle_stream(http_request_t& request, std::string_view stream_id)

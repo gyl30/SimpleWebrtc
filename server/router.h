@@ -54,6 +54,9 @@ class router
     http_response_ptr handle_stream(http_request_t& request, std::string_view stream_id);
 
     [[nodiscard]]
+    http_response_ptr handle_streams(http_request_t& request);
+
+    [[nodiscard]]
     http_response_ptr handle_media_stats(http_request_t& request);
 
     [[nodiscard]]
