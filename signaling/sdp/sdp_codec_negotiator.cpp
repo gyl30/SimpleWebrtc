@@ -202,6 +202,94 @@ bool is_supported_codec(const media_summary& media, const codec_info& codec)
 
     return false;
 }
+bool media_can_send(const media_summary& media)
+{
+    return media.direction == media_direction::send_only || media.direction == media_direction::send_recv;
+}
+
+bool codec_encoding_parameters_are_compatible(std::string_view publisher_encoding_parameters, std::string_view subscriber_encoding_parameters)
+{
+    if (publisher_encoding_parameters.empty() || subscriber_encoding_parameters.empty())
+    {
+        return true;
+    }
+
+    return publisher_encoding_parameters == subscriber_encoding_parameters;
+}
+
+bool h264_codecs_are_compatible(const codec_info& publisher_codec, const codec_info& subscriber_codec)
+{
+    const auto publisher_packetization_mode = find_fmtp_parameter(publisher_codec.fmtp, "packetization-mode");
+
+    const auto subscriber_packetization_mode = find_fmtp_parameter(subscriber_codec.fmtp, "packetization-mode");
+
+    if (publisher_packetization_mode != subscriber_packetization_mode)
+    {
+        return false;
+    }
+
+    const auto publisher_profile_level_id = find_fmtp_parameter(publisher_codec.fmtp, "profile-level-id");
+
+    const auto subscriber_profile_level_id = find_fmtp_parameter(subscriber_codec.fmtp, "profile-level-id");
+
+    if (publisher_profile_level_id.has_value() && subscriber_profile_level_id.has_value() &&
+        !equals_ignore_case(*publisher_profile_level_id, *subscriber_profile_level_id))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool codecs_are_compatible(const codec_info& publisher_codec, const codec_info& subscriber_codec)
+{
+    if (!equals_ignore_case(publisher_codec.name, subscriber_codec.name))
+    {
+        return false;
+    }
+
+    if (publisher_codec.clock_rate != subscriber_codec.clock_rate)
+    {
+        return false;
+    }
+
+    if (!codec_encoding_parameters_are_compatible(publisher_codec.encoding_parameters, subscriber_codec.encoding_parameters))
+    {
+        return false;
+    }
+
+    if (is_h264_codec(publisher_codec))
+    {
+        return h264_codecs_are_compatible(publisher_codec, subscriber_codec);
+    }
+
+    return true;
+}
+
+bool has_compatible_publisher_codec(const media_summary& publisher_media, const codec_info& subscriber_codec)
+{
+    for (const auto& publisher_codec : publisher_media.codecs)
+    {
+        if (!payload_type_exists(publisher_media.payload_types, publisher_codec.payload_type))
+        {
+            continue;
+        }
+
+        if (!is_supported_codec(publisher_media, publisher_codec))
+        {
+            continue;
+        }
+
+        if (!codecs_are_compatible(publisher_codec, subscriber_codec))
+        {
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
+}
 
 std::expected<void, std::string> validate_offer_media(const media_summary& media)
 {
@@ -257,6 +345,61 @@ codec_negotiation_result negotiate_codecs(const media_summary& offer_media)
     if (selected_codecs.empty())
     {
         return make_media_error(offer_media, "has no supported codecs");
+    }
+
+    return selected_codecs;
+}
+codec_negotiation_result negotiate_codecs(const media_summary& subscriber_media, const media_summary& publisher_media)
+{
+    auto subscriber_validation_result = validate_offer_media(subscriber_media);
+
+    if (!subscriber_validation_result)
+    {
+        return std::unexpected(subscriber_validation_result.error());
+    }
+
+    auto publisher_validation_result = validate_offer_media(publisher_media);
+
+    if (!publisher_validation_result)
+    {
+        return std::unexpected(publisher_validation_result.error());
+    }
+
+    if (subscriber_media.kind != publisher_media.kind)
+    {
+        return make_media_error(subscriber_media, "publisher media kind does not match");
+    }
+
+    if (!media_can_send(publisher_media))
+    {
+        return make_media_error(subscriber_media, "publisher media is not send-capable");
+    }
+
+    std::vector<codec_info> selected_codecs;
+
+    for (const auto& subscriber_codec : subscriber_media.codecs)
+    {
+        if (!payload_type_exists(subscriber_media.payload_types, subscriber_codec.payload_type))
+        {
+            continue;
+        }
+
+        if (!is_supported_codec(subscriber_media, subscriber_codec))
+        {
+            continue;
+        }
+
+        if (!has_compatible_publisher_codec(publisher_media, subscriber_codec))
+        {
+            continue;
+        }
+
+        selected_codecs.push_back(subscriber_codec);
+    }
+
+    if (selected_codecs.empty())
+    {
+        return make_media_error(subscriber_media, "has no publisher-compatible codecs");
     }
 
     return selected_codecs;

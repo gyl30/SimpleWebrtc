@@ -470,6 +470,47 @@ media_direction_result make_answer_direction(answer_endpoint_role role, const me
 
     return make_error("unsupported answer endpoint role");
 }
+bool media_can_send(const media_summary& media)
+{
+    return media.direction == media_direction::send_only || media.direction == media_direction::send_recv;
+}
+
+const media_summary* find_matching_publisher_media(const media_summary& subscriber_media, const webrtc_offer_summary& publisher_offer)
+{
+    for (const auto& publisher_media : publisher_offer.media)
+    {
+        if (publisher_media.mid == subscriber_media.mid && publisher_media.kind == subscriber_media.kind && media_can_send(publisher_media))
+        {
+            return &publisher_media;
+        }
+    }
+
+    const media_summary* selected_media = nullptr;
+
+    for (const auto& publisher_media : publisher_offer.media)
+    {
+        if (publisher_media.kind != subscriber_media.kind)
+        {
+            continue;
+        }
+
+        if (!media_can_send(publisher_media))
+        {
+            continue;
+        }
+
+        if (selected_media != nullptr)
+        {
+            return nullptr;
+        }
+
+        selected_media = &publisher_media;
+    }
+
+    return selected_media;
+}
+
+bool is_answer_media_rejected(const media_description& media) { return media.media_name.port.value == 0; }
 
 void push_attribute(std::vector<sdp_attribute>& attributes, std::string_view key, std::string_view value)
 {
@@ -647,24 +688,94 @@ void append_ice_candidate_attributes(media_description& answer_media, const sdp_
         push_property_attribute(answer_media.attributes, "end-of-candidates");
     }
 }
+std::expected<media_description, std::string> make_rejected_answer_media(const sdp_answer_options& options, const media_summary& media)
+{
+    auto inactive_text = format_direction(media_direction::inactive);
+
+    if (!inactive_text)
+    {
+        return std::unexpected(inactive_text.error());
+    }
+
+    media_description answer_media;
+
+    answer_media.media_name.media = media.kind;
+    answer_media.media_name.port.value = 0;
+    answer_media.media_name.protocols.push_back("UDP");
+    answer_media.media_name.protocols.push_back("TLS");
+    answer_media.media_name.protocols.push_back("RTP");
+    answer_media.media_name.protocols.push_back("SAVPF");
+
+    for (uint16_t payload_type : media.payload_types)
+    {
+        answer_media.media_name.formats.push_back(std::to_string(payload_type));
+    }
+
+    if (answer_media.media_name.formats.empty())
+    {
+        answer_media.media_name.formats.push_back("0");
+    }
+
+    answer_media.connection = make_connection(options);
+
+    push_attribute(answer_media.attributes, k_attribute_mid, media.mid);
+
+    push_property_attribute(answer_media.attributes, *inactive_text);
+
+    if (media.rtcp_mux)
+    {
+        push_property_attribute(answer_media.attributes, k_attribute_rtcp_mux);
+    }
+
+    return answer_media;
+}
 
 std::expected<media_description, std::string> make_answer_media(answer_endpoint_role role,
                                                                 const sdp_answer_options& options,
-                                                                const media_summary& media)
+                                                                const media_summary& media,
+                                                                const webrtc_offer_summary* whep_publisher_offer)
 {
-    auto codecs = negotiate_codecs(media);
-    if (!codecs)
+    std::vector<codec_info> codecs;
+
+    if (role == answer_endpoint_role::whep && whep_publisher_offer != nullptr)
     {
-        return std::unexpected(codecs.error());
+        const media_summary* publisher_media = find_matching_publisher_media(media, *whep_publisher_offer);
+
+        if (publisher_media == nullptr)
+        {
+            return make_rejected_answer_media(options, media);
+        }
+
+        auto codec_result = negotiate_codecs(media, *publisher_media);
+
+        if (!codec_result)
+        {
+            return make_rejected_answer_media(options, media);
+        }
+
+        codecs = std::move(*codec_result);
+    }
+    else
+    {
+        auto codec_result = negotiate_codecs(media);
+
+        if (!codec_result)
+        {
+            return std::unexpected(codec_result.error());
+        }
+
+        codecs = std::move(*codec_result);
     }
 
     auto answer_direction = make_answer_direction(role, media);
+
     if (!answer_direction)
     {
         return std::unexpected(answer_direction.error());
     }
 
     auto answer_direction_text = format_direction(*answer_direction);
+
     if (!answer_direction_text)
     {
         return std::unexpected(answer_direction_text.error());
@@ -679,7 +790,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
     answer_media.media_name.protocols.push_back("RTP");
     answer_media.media_name.protocols.push_back("SAVPF");
 
-    for (const auto& codec : *codecs)
+    for (const auto& codec : codecs)
     {
         answer_media.media_name.formats.push_back(std::to_string(codec.payload_type));
     }
@@ -692,7 +803,8 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 
     push_property_attribute(answer_media.attributes, k_attribute_rtcp_mux);
 
-    append_codec_attributes(answer_media, *codecs);
+    append_codec_attributes(answer_media, codecs);
+
     append_ice_candidate_attributes(answer_media, options);
 
     if (*answer_direction == media_direction::send_only || *answer_direction == media_direction::send_recv)
@@ -706,24 +818,40 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 validation_result append_answer_media_descriptions(session_description& answer,
                                                    answer_endpoint_role role,
                                                    const sdp_answer_options& options,
-                                                   const webrtc_offer_summary& offer)
+                                                   const webrtc_offer_summary& offer,
+                                                   const webrtc_offer_summary* whep_publisher_offer)
 {
+    bool has_accepted_media = false;
+
     for (const auto& media : offer.media)
     {
-        auto answer_media = make_answer_media(role, options, media);
+        auto answer_media = make_answer_media(role, options, media, whep_publisher_offer);
 
         if (!answer_media)
         {
             return std::unexpected(answer_media.error());
         }
 
+        if (!is_answer_media_rejected(*answer_media))
+        {
+            has_accepted_media = true;
+        }
+
         answer.media_descriptions.push_back(std::move(*answer_media));
+    }
+
+    if (role == answer_endpoint_role::whep && whep_publisher_offer != nullptr && !has_accepted_media)
+    {
+        return make_error("whep answer has no compatible publisher media");
     }
 
     return {};
 }
 
-sdp_answer_result build_answer(answer_endpoint_role role, const webrtc_offer_summary& offer, const sdp_answer_options& options)
+sdp_answer_result build_answer(answer_endpoint_role role,
+                               const webrtc_offer_summary& offer,
+                               const sdp_answer_options& options,
+                               const webrtc_offer_summary* whep_publisher_offer)
 {
     auto options_result = validate_options(options);
     if (!options_result)
@@ -778,8 +906,7 @@ sdp_answer_result build_answer(answer_endpoint_role role, const webrtc_offer_sum
 
     push_attribute(answer.attributes, "msid-semantic", "WMS " + options.local_stream_id);
 
-    auto media_result = append_answer_media_descriptions(answer, role, options, offer);
-
+    auto media_result = append_answer_media_descriptions(answer, role, options, offer, whep_publisher_offer);
     if (!media_result)
     {
         return std::unexpected(media_result.error());
@@ -788,9 +915,12 @@ sdp_answer_result build_answer(answer_endpoint_role role, const webrtc_offer_sum
     return answer;
 }
 
-sdp_answer_text_result build_answer_sdp(answer_endpoint_role role, const webrtc_offer_summary& offer, const sdp_answer_options& options)
+sdp_answer_text_result build_answer_sdp(answer_endpoint_role role,
+                                        const webrtc_offer_summary& offer,
+                                        const sdp_answer_options& options,
+                                        const webrtc_offer_summary* whep_publisher_offer)
 {
-    auto answer = build_answer(role, offer, options);
+    auto answer = build_answer(role, offer, options, whep_publisher_offer);
     if (!answer)
     {
         return std::unexpected(answer.error());
@@ -808,21 +938,36 @@ sdp_answer_text_result build_answer_sdp(answer_endpoint_role role, const webrtc_
 
 sdp_answer_result build_whip_answer(const webrtc_offer_summary& offer, const sdp_answer_options& options)
 {
-    return build_answer(answer_endpoint_role::whip, offer, options);
+    return build_answer(answer_endpoint_role::whip, offer, options, nullptr);
 }
 
 sdp_answer_result build_whep_answer(const webrtc_offer_summary& offer, const sdp_answer_options& options)
 {
-    return build_answer(answer_endpoint_role::whep, offer, options);
+    return build_answer(answer_endpoint_role::whep, offer, options, nullptr);
+}
+
+sdp_answer_result build_whep_answer(const webrtc_offer_summary& subscriber_offer,
+                                    const webrtc_offer_summary& publisher_offer,
+                                    const sdp_answer_options& options)
+{
+    return build_answer(answer_endpoint_role::whep, subscriber_offer, options, &publisher_offer);
 }
 
 sdp_answer_text_result build_whip_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options)
 {
-    return build_answer_sdp(answer_endpoint_role::whip, offer, options);
+    return build_answer_sdp(answer_endpoint_role::whip, offer, options, nullptr);
 }
 
 sdp_answer_text_result build_whep_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options)
 {
-    return build_answer_sdp(answer_endpoint_role::whep, offer, options);
+    return build_answer_sdp(answer_endpoint_role::whep, offer, options, nullptr);
 }
+
+sdp_answer_text_result build_whep_answer_sdp(const webrtc_offer_summary& subscriber_offer,
+                                             const webrtc_offer_summary& publisher_offer,
+                                             const sdp_answer_options& options)
+{
+    return build_answer_sdp(answer_endpoint_role::whep, subscriber_offer, options, &publisher_offer);
+}
+
 }    // namespace webrtc::sdp

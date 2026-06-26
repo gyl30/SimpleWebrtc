@@ -90,17 +90,30 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         return json_error_response(request, 500, "answer factory is not configured");
     }
 
-    auto answer = answer_factory_->build_whep_answer(stream_id, *offer_summary);
+    auto publisher = registry_->find_publisher_by_stream_id(stream_id);
+
+    if (publisher == nullptr)
+    {
+        WEBRTC_LOG_WARN("WHEP create subscriber failed stream={} publisher not found", stream_id);
+
+        return json_error_response(request, 404, "publisher not found");
+    }
+
+    auto answer = answer_factory_->build_whep_answer(stream_id, *offer_summary, publisher->remote_offer_summary());
 
     if (!answer)
     {
         WEBRTC_LOG_WARN("WHEP build SDP answer failed stream={} error={}", stream_id, answer.error());
 
-        return json_error_response(request, 400, make_prefixed_error("cannot build sdp answer: ", answer.error()));
+        std::string error_message;
+        error_message.reserve(answer.error().size() + 32);
+        error_message.append("failed to build sdp answer: ");
+        error_message.append(answer.error());
+
+        return json_error_response(request, 400, error_message);
     }
 
     auto session_result = registry_->create_subscriber_session(std::string(stream_id), offer, std::move(*offer_summary));
-
     if (!session_result)
     {
         const auto error = session_result.error();

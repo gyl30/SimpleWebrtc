@@ -86,6 +86,11 @@ class webrtc_answer_factory
     [[nodiscard]]
     generated_sdp_answer_result build_whep_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer);
 
+    [[nodiscard]]
+    generated_sdp_answer_result build_whep_answer(std::string_view stream_id,
+                                                  const sdp::webrtc_offer_summary& subscriber_offer,
+                                                  const sdp::webrtc_offer_summary& publisher_offer);
+
    private:
     [[nodiscard]]
     std::expected<void, std::string> validate_config() const;
@@ -97,8 +102,10 @@ class webrtc_answer_factory
                                                 uint64_t session_version) const;
 
     [[nodiscard]]
-    generated_sdp_answer_result build_answer(bool is_whip, std::string_view stream_id, const sdp::webrtc_offer_summary& offer);
-
+    generated_sdp_answer_result build_answer(bool is_whip,
+                                             std::string_view stream_id,
+                                             const sdp::webrtc_offer_summary& offer,
+                                             const sdp::webrtc_offer_summary* whep_publisher_offer);
     [[nodiscard]]
     static uint64_t make_initial_session_id();
 

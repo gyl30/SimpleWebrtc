@@ -257,17 +257,22 @@ webrtc_answer_factory::webrtc_answer_factory(webrtc_answer_factory_config config
     : config_(std::move(config)), next_session_id_(make_initial_session_id())
 {
 }
-
 generated_sdp_answer_result webrtc_answer_factory::build_whip_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer)
 {
-    return build_answer(true, stream_id, offer);
+    return build_answer(true, stream_id, offer, nullptr);
 }
 
 generated_sdp_answer_result webrtc_answer_factory::build_whep_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer)
 {
-    return build_answer(false, stream_id, offer);
+    return build_answer(false, stream_id, offer, nullptr);
 }
 
+generated_sdp_answer_result webrtc_answer_factory::build_whep_answer(std::string_view stream_id,
+                                                                     const sdp::webrtc_offer_summary& subscriber_offer,
+                                                                     const sdp::webrtc_offer_summary& publisher_offer)
+{
+    return build_answer(false, stream_id, subscriber_offer, &publisher_offer);
+}
 validation_result webrtc_answer_factory::validate_config() const
 {
     auto fingerprint_algorithm_result = validate_token(config_.local_fingerprint.algorithm, "local fingerprint algorithm");
@@ -383,7 +388,10 @@ sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_v
     return options;
 }
 
-generated_sdp_answer_result webrtc_answer_factory::build_answer(bool is_whip, std::string_view stream_id, const sdp::webrtc_offer_summary& offer)
+generated_sdp_answer_result webrtc_answer_factory::build_answer(bool is_whip,
+                                                                std::string_view stream_id,
+                                                                const sdp::webrtc_offer_summary& offer,
+                                                                const sdp::webrtc_offer_summary* whep_publisher_offer)
 {
     auto config_result = validate_config();
 
@@ -405,8 +413,9 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer(bool is_whip, st
 
     auto options = make_answer_options(stream_id, *local_ice, session_id, session_version);
 
-    sdp::sdp_answer_text_result answer_sdp = is_whip ? sdp::build_whip_answer_sdp(offer, options) : sdp::build_whep_answer_sdp(offer, options);
-
+    sdp::sdp_answer_text_result answer_sdp = is_whip                           ? sdp::build_whip_answer_sdp(offer, options)
+                                             : whep_publisher_offer != nullptr ? sdp::build_whep_answer_sdp(offer, *whep_publisher_offer, options)
+                                                                               : sdp::build_whep_answer_sdp(offer, options);
     if (!answer_sdp)
     {
         return std::unexpected(answer_sdp.error());

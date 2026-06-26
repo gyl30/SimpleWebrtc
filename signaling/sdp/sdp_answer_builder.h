@@ -65,9 +65,19 @@ using sdp_answer_text_result = std::expected<std::string, std::string>;
 
 [[nodiscard]] sdp_answer_result build_whep_answer(const webrtc_offer_summary& offer, const sdp_answer_options& options);
 
+[[nodiscard]]
+sdp_answer_result build_whep_answer(const webrtc_offer_summary& subscriber_offer,
+                                    const webrtc_offer_summary& publisher_offer,
+                                    const sdp_answer_options& options);
+
 [[nodiscard]] sdp_answer_text_result build_whip_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options);
 
 [[nodiscard]] sdp_answer_text_result build_whep_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options);
+
+[[nodiscard]]
+sdp_answer_text_result build_whep_answer_sdp(const webrtc_offer_summary& subscriber_offer,
+                                             const webrtc_offer_summary& publisher_offer,
+                                             const sdp_answer_options& options);
 }    // namespace webrtc::sdp
 
 #endif
