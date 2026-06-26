@@ -201,6 +201,7 @@ set(WEBRTC_SOURCES
     dtls/dtls_srtp_keying_material.cpp
     dtls/dtls_transport.cpp
     rtp/rtp_packet.cpp
+    rtp/rtp_packet_rewriter.cpp
     rtp/rtcp_feedback.cpp
     rtp/rtcp_report.cpp
     rtp/rtcp_compound_packet.cpp
@@ -208,6 +209,7 @@ set(WEBRTC_SOURCES
     srtp/srtp_transport.cpp
     media/media_router.cpp
     media/media_track_resolver.cpp
+    media/media_payload_type_mapper.cpp
     media/rtcp_feedback_router.cpp
     media/rtp_packet_cache.cpp
     media/media_router_stats_json.cpp
