@@ -6,13 +6,27 @@
 #include <expected>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "ice/ice_candidate.h"
 
 namespace webrtc
 {
+struct trickle_ice_sdpfrag_parse_result
+{
+    std::vector<remote_ice_candidate> candidates;
+
+    std::string ice_ufrag;
+    std::string ice_pwd;
+
+    bool has_ice_ufrag = false;
+    bool has_ice_pwd = false;
+};
+
 using trickle_ice_sdpfrag_result = std::expected<std::vector<remote_ice_candidate>, std::string>;
+
+using trickle_ice_sdpfrag_parse_result_type = std::expected<trickle_ice_sdpfrag_parse_result, std::string>;
 
 namespace detail
 {
@@ -70,6 +84,40 @@ inline std::string make_sdpfrag_error(std::size_t line_number, std::string_view 
     error.append(message);
 
     return error;
+}
+
+inline std::expected<void, std::string> set_sdpfrag_attribute_once(
+    std::string& target, bool& has_value, std::string_view value, std::string_view attribute_name, std::size_t line_number)
+{
+    value = trim_ascii(value);
+
+    if (value.empty())
+    {
+        std::string message;
+
+        message.append(attribute_name);
+
+        message.append(" is empty");
+
+        return std::unexpected(make_sdpfrag_error(line_number, message));
+    }
+
+    if (has_value && target != value)
+    {
+        std::string message;
+
+        message.append(attribute_name);
+
+        message.append(" is duplicated with different value");
+
+        return std::unexpected(make_sdpfrag_error(line_number, message));
+    }
+
+    target = std::string(value);
+
+    has_value = true;
+
+    return {};
 }
 
 inline std::expected<remote_ice_candidate, std::string> make_candidate_from_sdpfrag_line(
@@ -130,14 +178,14 @@ inline std::expected<remote_ice_candidate, std::string> make_end_of_candidates_f
 }
 }    // namespace detail
 
-inline trickle_ice_sdpfrag_result parse_trickle_ice_sdpfrag(std::string_view body, uint64_t received_at_milliseconds)
+inline trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag_with_attributes(std::string_view body, uint64_t received_at_milliseconds)
 {
     if (body.empty())
     {
         return std::unexpected(std::string("empty trickle ice sdpfrag"));
     }
 
-    std::vector<remote_ice_candidate> candidates;
+    trickle_ice_sdpfrag_parse_result result;
 
     std::string current_mid;
     int current_mline_index = 0;
@@ -204,6 +252,30 @@ inline trickle_ice_sdpfrag_result parse_trickle_ice_sdpfrag(std::string_view bod
             continue;
         }
 
+        if (detail::starts_with(line, "a=ice-ufrag:"))
+        {
+            auto set_result = detail::set_sdpfrag_attribute_once(result.ice_ufrag, result.has_ice_ufrag, line.substr(12), "ice-ufrag", line_number);
+
+            if (!set_result)
+            {
+                return std::unexpected(set_result.error());
+            }
+
+            continue;
+        }
+
+        if (detail::starts_with(line, "a=ice-pwd:"))
+        {
+            auto set_result = detail::set_sdpfrag_attribute_once(result.ice_pwd, result.has_ice_pwd, line.substr(10), "ice-pwd", line_number);
+
+            if (!set_result)
+            {
+                return std::unexpected(set_result.error());
+            }
+
+            continue;
+        }
+
         if (detail::starts_with(line, "a=candidate:") || detail::starts_with(line, "candidate:"))
         {
             auto candidate = detail::make_candidate_from_sdpfrag_line(line, current_mid, current_mline_index, received_at_milliseconds, line_number);
@@ -213,7 +285,7 @@ inline trickle_ice_sdpfrag_result parse_trickle_ice_sdpfrag(std::string_view bod
                 return std::unexpected(candidate.error());
             }
 
-            candidates.push_back(std::move(*candidate));
+            result.candidates.push_back(std::move(*candidate));
 
             continue;
         }
@@ -228,18 +300,35 @@ inline trickle_ice_sdpfrag_result parse_trickle_ice_sdpfrag(std::string_view bod
                 return std::unexpected(candidate.error());
             }
 
-            candidates.push_back(std::move(*candidate));
+            result.candidates.push_back(std::move(*candidate));
 
             continue;
         }
     }
 
-    if (candidates.empty())
+    if (result.candidates.empty())
     {
         return std::unexpected(std::string("trickle ice sdpfrag has no candidates"));
     }
 
-    return candidates;
+    if (result.has_ice_ufrag != result.has_ice_pwd)
+    {
+        return std::unexpected(std::string("trickle ice sdpfrag must include both ice-ufrag and ice-pwd when either is present"));
+    }
+
+    return result;
+}
+
+inline trickle_ice_sdpfrag_result parse_trickle_ice_sdpfrag(std::string_view body, uint64_t received_at_milliseconds)
+{
+    auto result = parse_trickle_ice_sdpfrag_with_attributes(body, received_at_milliseconds);
+
+    if (!result)
+    {
+        return std::unexpected(result.error());
+    }
+
+    return std::move(result->candidates);
 }
 }    // namespace webrtc
 
