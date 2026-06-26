@@ -78,6 +78,11 @@ struct rtcp_report_service_runtime_snapshot
     std::size_t configured_sources = 0;
     std::size_t stats_sources = 0;
 
+    std::size_t max_report_blocks = 0;
+    uint64_t report_interval_milliseconds = 0;
+    uint64_t report_jitter_milliseconds = 0;
+    std::size_t max_packets_per_generation = 0;
+
     uint64_t generated_report_rounds = 0;
     uint64_t generated_packets = 0;
     uint64_t skipped_packets = 0;
@@ -93,7 +98,6 @@ struct rtcp_report_service_runtime_snapshot
     std::size_t last_generation_due_sources = 0;
     std::size_t last_generation_throttled_sources = 0;
 };
-
 using rtcp_report_service_result = std::expected<void, std::string>;
 
 using rtcp_report_service_packet_result = std::expected<rtcp_report_service_packet, std::string>;

@@ -533,6 +533,14 @@ rtcp_report_service_runtime_snapshot rtcp_report_service::runtime_snapshot() con
 
         snapshot.configured_sources = sources_by_key_.size();
 
+        snapshot.max_report_blocks = config_.max_report_blocks == 0 ? k_max_rtcp_report_blocks : config_.max_report_blocks;
+
+        snapshot.report_interval_milliseconds = config_.report_interval_milliseconds;
+
+        snapshot.report_jitter_milliseconds = config_.report_jitter_milliseconds;
+
+        snapshot.max_packets_per_generation = config_.max_packets_per_generation;
+
         snapshot.generated_report_rounds = generated_report_rounds_;
 
         snapshot.generated_packets = generated_packets_;
@@ -562,7 +570,6 @@ rtcp_report_service_runtime_snapshot rtcp_report_service::runtime_snapshot() con
 
     return snapshot;
 }
-
 rtcp_session_stats& rtcp_report_service::stats() { return stats_; }
 
 const rtcp_session_stats& rtcp_report_service::stats() const { return stats_; }
@@ -900,13 +907,25 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
 {
     std::string result;
 
-    result.reserve(256);
+    result.reserve(384);
 
     result.append("configured_sources=");
     result.append(std::to_string(snapshot.configured_sources));
 
     result.append(" stats_sources=");
     result.append(std::to_string(snapshot.stats_sources));
+
+    result.append(" max_report_blocks=");
+    result.append(std::to_string(snapshot.max_report_blocks));
+
+    result.append(" interval_ms=");
+    result.append(std::to_string(snapshot.report_interval_milliseconds));
+
+    result.append(" jitter_ms=");
+    result.append(std::to_string(snapshot.report_jitter_milliseconds));
+
+    result.append(" max_packets_per_generation=");
+    result.append(std::to_string(snapshot.max_packets_per_generation));
 
     result.append(" rounds=");
     result.append(std::to_string(snapshot.generated_report_rounds));
@@ -951,7 +970,7 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
 {
     std::string output;
 
-    output.reserve(512);
+    output.reserve(768);
 
     bool first = true;
 
@@ -960,6 +979,14 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
     append_json_size(output, "configured_sources", snapshot.configured_sources, first);
 
     append_json_size(output, "stats_sources", snapshot.stats_sources, first);
+
+    append_json_size(output, "max_report_blocks", snapshot.max_report_blocks, first);
+
+    append_json_uint64(output, "report_interval_milliseconds", snapshot.report_interval_milliseconds, first);
+
+    append_json_uint64(output, "report_jitter_milliseconds", snapshot.report_jitter_milliseconds, first);
+
+    append_json_size(output, "max_packets_per_generation", snapshot.max_packets_per_generation, first);
 
     append_json_uint64(output, "generated_report_rounds", snapshot.generated_report_rounds, first);
 
@@ -989,12 +1016,11 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
 
     return output;
 }
-
 std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report_service_runtime_snapshot& snapshot)
 {
     std::string output;
 
-    output.reserve(6144);
+    output.reserve(8192);
 
     append_metric_header(output, "simplewebrtc_rtcp_report_service_configured_sources", "configured active rtcp report sources", "gauge");
 
@@ -1003,6 +1029,29 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
     append_metric_header(output, "simplewebrtc_rtcp_report_service_stats_sources", "rtcp statistics source count", "gauge");
 
     append_metric_value(output, "simplewebrtc_rtcp_report_service_stats_sources", static_cast<uint64_t>(snapshot.stats_sources));
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_max_report_blocks", "effective maximum rtcp report blocks per report packet", "gauge");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_max_report_blocks", static_cast<uint64_t>(snapshot.max_report_blocks));
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_report_interval_milliseconds", "configured rtcp active report interval in milliseconds", "gauge");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_report_interval_milliseconds", snapshot.report_interval_milliseconds);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_report_jitter_milliseconds", "configured rtcp active report jitter in milliseconds", "gauge");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_report_jitter_milliseconds", snapshot.report_jitter_milliseconds);
+
+    append_metric_header(output,
+                         "simplewebrtc_rtcp_report_service_max_packets_per_generation",
+                         "configured maximum rtcp active report packets per generation round zero means unlimited",
+                         "gauge");
+
+    append_metric_value(
+        output, "simplewebrtc_rtcp_report_service_max_packets_per_generation", static_cast<uint64_t>(snapshot.max_packets_per_generation));
 
     append_metric_header(
         output, "simplewebrtc_rtcp_report_service_generated_report_rounds_total", "total rtcp active report generation rounds", "counter");
@@ -1072,4 +1121,5 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
 
     return output;
 }
+
 }    // namespace webrtc
