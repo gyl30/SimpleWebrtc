@@ -2441,11 +2441,13 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
 
     if (!is_selected_endpoint(remote_address))
     {
-        WEBRTC_LOG_WARN("dtls packet ignored from unselected ice endpoint remote={} size={}", remote_address, data.size());
+        WEBRTC_LOG_DEBUG(
+            "dtls packet ignored from unselected ice endpoint remote={} size={}",
+            remote_address,
+            data.size());
 
         return;
     }
-
     touch_endpoint_activity(remote_endpoint);
 
     if (dtls_transport_ == nullptr)
@@ -2603,14 +2605,15 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
 void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
-
     if (!is_selected_endpoint(remote_address))
     {
-        WEBRTC_LOG_WARN("srtp packet ignored from unselected ice endpoint remote={} size={}", remote_address, data.size());
+        WEBRTC_LOG_DEBUG(
+            "srtp packet ignored from unselected ice endpoint remote={} size={}",
+            remote_address,
+            data.size());
 
         return;
     }
-
     touch_endpoint_activity(remote_endpoint);
 
     if (srtp_transport_ == nullptr)
