@@ -1,6 +1,6 @@
 #include "ice/ice_udp_server.h"
-
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
@@ -387,7 +387,92 @@ std::string make_payload_type_mapping_key(std::string_view publisher_session_id,
 
     return key;
 }
+uint64_t get_env_uint64_or_default(const char* name, uint64_t default_value)
+{
+    const char* value = std::getenv(name);
 
+    if (value == nullptr || value[0] == '\0')
+    {
+        return default_value;
+    }
+
+    errno = 0;
+
+    char* end = nullptr;
+
+    const unsigned long long parsed = std::strtoull(value, &end, 10);
+
+    if (errno != 0 || end == value || *end != '\0')
+    {
+        WEBRTC_LOG_WARN("rtcp report service env value invalid name={} value={} default={}", name, value, default_value);
+
+        return default_value;
+    }
+
+    return static_cast<uint64_t>(parsed);
+}
+
+std::size_t get_env_size_or_default(const char* name, std::size_t default_value)
+{
+    const uint64_t parsed = get_env_uint64_or_default(name, static_cast<uint64_t>(default_value));
+
+    if (parsed > static_cast<uint64_t>(std::numeric_limits<std::size_t>::max()))
+    {
+        WEBRTC_LOG_WARN("rtcp report service env value too large name={} value={} default={}", name, parsed, default_value);
+
+        return default_value;
+    }
+
+    return static_cast<std::size_t>(parsed);
+}
+
+rtcp_report_service_config make_rtcp_report_service_config_from_env()
+{
+    rtcp_report_service_config config;
+
+    config.max_report_blocks = get_env_size_or_default("WEBRTC_RTCP_REPORT_MAX_REPORT_BLOCKS", config.max_report_blocks);
+
+    config.report_interval_milliseconds = get_env_uint64_or_default("WEBRTC_RTCP_REPORT_INTERVAL_MS", config.report_interval_milliseconds);
+
+    config.report_jitter_milliseconds = get_env_uint64_or_default("WEBRTC_RTCP_REPORT_JITTER_MS", config.report_jitter_milliseconds);
+
+    config.max_packets_per_generation = get_env_size_or_default("WEBRTC_RTCP_REPORT_MAX_PACKETS_PER_GENERATION", config.max_packets_per_generation);
+
+    if (config.max_report_blocks > 31)
+    {
+        WEBRTC_LOG_WARN("rtcp report service max report blocks clamped value={} clamped=31", config.max_report_blocks);
+
+        config.max_report_blocks = 31;
+    }
+
+    if (config.report_interval_milliseconds == 0)
+    {
+        WEBRTC_LOG_WARN("rtcp report service interval is zero use default=5000");
+
+        config.report_interval_milliseconds = 5000;
+    }
+
+    if (config.report_jitter_milliseconds > config.report_interval_milliseconds)
+    {
+        WEBRTC_LOG_WARN(
+            "rtcp report service jitter clamped jitter={} interval={}", config.report_jitter_milliseconds, config.report_interval_milliseconds);
+
+        config.report_jitter_milliseconds = config.report_interval_milliseconds;
+    }
+
+    WEBRTC_LOG_INFO("rtcp report service config max_report_blocks={} interval_ms={} jitter_ms={} max_packets_per_generation={}",
+                    config.max_report_blocks,
+                    config.report_interval_milliseconds,
+                    config.report_jitter_milliseconds,
+                    config.max_packets_per_generation);
+
+    return config;
+}
+
+std::shared_ptr<rtcp_report_service> make_rtcp_report_service_from_env()
+{
+    return std::make_shared<rtcp_report_service>(make_rtcp_report_service_config_from_env());
+}
 std::expected<std::string, std::string> get_required_env(const char* name)
 {
     const char* value = std::getenv(name);
@@ -777,7 +862,7 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       media_router_(std::move(media_router)),
       track_resolver_(std::make_shared<media_track_resolver>()),
       ssrc_mapper_(std::make_shared<media_ssrc_mapper>()),
-      rtcp_report_service_(std::make_shared<rtcp_report_service>())
+      rtcp_report_service_(make_rtcp_report_service_from_env())
 {
 }
 
@@ -810,7 +895,7 @@ ice_udp_server_result ice_udp_server::start()
 
     if (rtcp_report_service_ == nullptr)
     {
-        rtcp_report_service_ = std::make_shared<rtcp_report_service>();
+        rtcp_report_service_ = make_rtcp_report_service_from_env();
     }
 
     register_session_removed_callback();
@@ -937,7 +1022,7 @@ void ice_udp_server::stop()
 
     ssrc_mapper_ = std::make_shared<media_ssrc_mapper>();
 
-    rtcp_report_service_ = std::make_shared<rtcp_report_service>();
+    rtcp_report_service_ = make_rtcp_report_service_from_env();
 
     if (rtp_packet_cache_ != nullptr)
     {
