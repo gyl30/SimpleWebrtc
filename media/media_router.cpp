@@ -143,6 +143,30 @@ void finalize_snapshot(media_router_stats_snapshot& snapshot)
 
     snapshot.rtcp_avg_rtt_ms = snapshot.rtcp_rtt_sum_ms / snapshot.rtcp_rtt_sample_count;
 }
+bool same_track_stats_key(const media_track_stats& stats, const media_peer_info& peer, const media_track_resolution& track_resolution)
+{
+    return stats.session_id == peer.session_id && stats.mid == track_resolution.mid && stats.ssrc == track_resolution.ssrc;
+}
+
+uint32_t optional_uint16_to_uint32(const std::optional<uint16_t>& value)
+{
+    if (!value.has_value())
+    {
+        return 0;
+    }
+
+    return static_cast<uint32_t>(*value);
+}
+
+uint32_t optional_uint8_to_uint32(const std::optional<uint8_t>& value)
+{
+    if (!value.has_value())
+    {
+        return 0;
+    }
+
+    return static_cast<uint32_t>(*value);
+}
 }    // namespace
 
 void media_router::remember_publisher(std::string_view remote_endpoint, std::string_view stream_id, std::string_view session_id)
@@ -262,6 +286,41 @@ media_route_result media_router::handle_inbound_packet(std::string_view remote_e
                      srtp_packet_kind_to_string(packet.kind));
 
     return result;
+}
+void media_router::observe_inbound_track(const media_peer_info& peer,
+                                         const srtp_packet_process_result& packet,
+                                         const media_track_resolution& track_resolution)
+{
+    if (peer.role != media_peer_role::publisher)
+    {
+        return;
+    }
+
+    if (packet.kind != srtp_packet_kind::rtp)
+    {
+        return;
+    }
+
+    if (!track_resolution.resolved)
+    {
+        return;
+    }
+
+    if (track_resolution.stream_id.empty() || track_resolution.session_id.empty() || track_resolution.mid.empty() || track_resolution.kind.empty() ||
+        track_resolution.ssrc == 0)
+    {
+        return;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    media_stream_stats& stream_stats = stream_stats_by_stream_[peer.stream_id];
+
+    stream_stats.stream_id = peer.stream_id;
+
+    media_track_stats& track_stats = get_or_create_track_stats_locked(stream_stats, peer, track_resolution);
+
+    update_track_stats_locked(track_stats, packet, track_resolution);
 }
 
 std::optional<media_peer_info> media_router::get_peer(std::string_view remote_endpoint) const
@@ -476,6 +535,90 @@ void media_router::update_stream_member_counts_locked(std::string_view stream_id
     if (stats.active_publishers == 0 && stats.active_subscribers == 0 && stats.inbound_rtp_packets == 0 && stats.inbound_rtcp_packets == 0)
     {
         stream_stats_by_stream_.erase(std::string(stream_id));
+    }
+}
+media_track_stats& media_router::get_or_create_track_stats_locked(media_stream_stats& stream_stats,
+                                                                  const media_peer_info& peer,
+                                                                  const media_track_resolution& track_resolution)
+{
+    for (auto& track_stats : stream_stats.tracks)
+    {
+        if (same_track_stats_key(track_stats, peer, track_resolution))
+        {
+            return track_stats;
+        }
+    }
+
+    media_track_stats track_stats;
+
+    track_stats.stream_id = peer.stream_id;
+    track_stats.session_id = peer.session_id;
+    track_stats.remote_endpoint = peer.remote_endpoint;
+
+    track_stats.mid = track_resolution.mid;
+    track_stats.kind = track_resolution.kind;
+
+    if (track_resolution.rid.has_value())
+    {
+        track_stats.rid = *track_resolution.rid;
+    }
+
+    if (track_resolution.repaired_rid.has_value())
+    {
+        track_stats.repaired_rid = *track_resolution.repaired_rid;
+    }
+
+    track_stats.ssrc = track_resolution.ssrc;
+    track_stats.payload_type = static_cast<uint32_t>(track_resolution.payload_type);
+
+    stream_stats.tracks.push_back(std::move(track_stats));
+
+    return stream_stats.tracks.back();
+}
+
+void media_router::update_track_stats_locked(media_track_stats& track_stats,
+                                             const srtp_packet_process_result& packet,
+                                             const media_track_resolution& track_resolution)
+{
+    const uint64_t packet_size = static_cast<uint64_t>(packet.plain_packet.size());
+
+    if (track_stats.inbound_rtp_packets == 0)
+    {
+        track_stats.first_rtp_sequence_number = static_cast<uint32_t>(packet.sequence_number);
+    }
+
+    track_stats.inbound_rtp_packets += 1;
+    track_stats.inbound_rtp_bytes += packet_size;
+
+    track_stats.payload_type = static_cast<uint32_t>(packet.payload_type);
+
+    track_stats.last_rtp_sequence_number = static_cast<uint32_t>(packet.sequence_number);
+
+    track_stats.last_rtp_timestamp = packet.timestamp;
+
+    if (track_resolution.rid.has_value())
+    {
+        track_stats.rid = *track_resolution.rid;
+    }
+
+    if (track_resolution.repaired_rid.has_value())
+    {
+        track_stats.repaired_rid = *track_resolution.repaired_rid;
+    }
+
+    track_stats.has_transport_wide_sequence_number = track_resolution.transport_wide_sequence_number.has_value();
+
+    track_stats.last_transport_wide_sequence_number = optional_uint16_to_uint32(track_resolution.transport_wide_sequence_number);
+
+    track_stats.has_audio_level = track_resolution.audio_level.has_value();
+
+    track_stats.last_audio_level = optional_uint8_to_uint32(track_resolution.audio_level);
+
+    track_stats.has_voice_activity = track_resolution.voice_activity.has_value();
+
+    if (track_resolution.voice_activity.has_value())
+    {
+        track_stats.last_voice_activity = *track_resolution.voice_activity;
     }
 }
 

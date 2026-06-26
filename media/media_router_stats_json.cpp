@@ -88,6 +88,41 @@ namespace
 
     return json;
 }
+[[nodiscard]] media_track_stats_json make_media_track_stats_json(const media_track_stats& stats)
+{
+    media_track_stats_json json;
+
+    json.stream_id = stats.stream_id;
+    json.session_id = stats.session_id;
+    json.remote_endpoint = stats.remote_endpoint;
+
+    json.mid = stats.mid;
+    json.kind = stats.kind;
+
+    json.rid = stats.rid;
+    json.repaired_rid = stats.repaired_rid;
+
+    json.has_transport_wide_sequence_number = stats.has_transport_wide_sequence_number;
+    json.last_transport_wide_sequence_number = stats.last_transport_wide_sequence_number;
+
+    json.has_audio_level = stats.has_audio_level;
+    json.last_audio_level = stats.last_audio_level;
+
+    json.has_voice_activity = stats.has_voice_activity;
+    json.last_voice_activity = stats.last_voice_activity;
+
+    json.ssrc = stats.ssrc;
+    json.payload_type = stats.payload_type;
+
+    json.inbound_rtp_packets = stats.inbound_rtp_packets;
+    json.inbound_rtp_bytes = stats.inbound_rtp_bytes;
+
+    json.first_rtp_sequence_number = stats.first_rtp_sequence_number;
+    json.last_rtp_sequence_number = stats.last_rtp_sequence_number;
+    json.last_rtp_timestamp = stats.last_rtp_timestamp;
+
+    return json;
+}
 
 [[nodiscard]] media_stream_stats_json make_media_stream_stats_json(const media_stream_stats& stats)
 {
@@ -149,6 +184,15 @@ namespace
     json.last_rtcp_ssrc = stats.last_rtcp_ssrc;
     json.last_remb_bitrate_bps = stats.last_remb_bitrate_bps;
 
+    json.track_count = to_json_size(stats.tracks.size());
+
+    json.tracks.reserve(stats.tracks.size());
+
+    for (const auto& track : stats.tracks)
+    {
+        json.tracks.push_back(make_media_track_stats_json(track));
+    }
+
     return json;
 }
 
@@ -189,6 +233,10 @@ namespace
     json.rtp_out_of_order_packets = snapshot.rtp_out_of_order_packets;
     json.rtp_duplicate_packets = snapshot.rtp_duplicate_packets;
     json.rtp_sequence_wraps = snapshot.rtp_sequence_wraps;
+    for (const auto& stream : snapshot.streams)
+    {
+        json.track_count += to_json_size(stream.tracks.size());
+    }
 
     json.peers.reserve(snapshot.peers.size());
     for (const auto& peer : snapshot.peers)

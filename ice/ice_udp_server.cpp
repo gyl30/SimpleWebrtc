@@ -3136,9 +3136,13 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     {
         observe_inbound_rtp_stats(*peer, *result, track_resolution);
 
+        if (track_resolution.has_value() && track_resolution->resolved)
+        {
+            media_router_->observe_inbound_track(*peer, *result, *track_resolution);
+        }
+
         observe_inbound_rtcp_sender_reports(*peer, *result);
     }
-
     if (track_resolution.has_value() && track_resolution->resolved)
     {
         WEBRTC_LOG_DEBUG(

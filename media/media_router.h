@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "srtp/srtp_transport.h"
+#include "media/media_track_resolver.h"
 
 namespace webrtc
 {
@@ -36,6 +37,37 @@ struct media_peer_info
     std::string stream_id;
     std::string session_id;
     std::string remote_endpoint;
+};
+struct media_track_stats
+{
+    std::string stream_id;
+    std::string session_id;
+    std::string remote_endpoint;
+
+    std::string mid;
+    std::string kind;
+
+    std::string rid;
+    std::string repaired_rid;
+
+    bool has_transport_wide_sequence_number = false;
+    uint32_t last_transport_wide_sequence_number = 0;
+
+    bool has_audio_level = false;
+    uint32_t last_audio_level = 0;
+
+    bool has_voice_activity = false;
+    bool last_voice_activity = false;
+
+    uint32_t ssrc = 0;
+    uint32_t payload_type = 0;
+
+    uint64_t inbound_rtp_packets = 0;
+    uint64_t inbound_rtp_bytes = 0;
+
+    uint32_t first_rtp_sequence_number = 0;
+    uint32_t last_rtp_sequence_number = 0;
+    uint32_t last_rtp_timestamp = 0;
 };
 
 struct media_peer_stats
@@ -155,8 +187,9 @@ struct media_stream_stats
 
     uint32_t last_rtcp_ssrc = 0;
     uint64_t last_remb_bitrate_bps = 0;
-};
 
+    std::vector<media_track_stats> tracks;
+};
 struct media_router_stats_snapshot
 {
     std::size_t peer_count = 0;
@@ -233,6 +266,8 @@ class media_router
 
     [[nodiscard]] media_route_result handle_inbound_packet(std::string_view remote_endpoint, const srtp_packet_process_result& packet);
 
+    void observe_inbound_track(const media_peer_info& peer, const srtp_packet_process_result& packet, const media_track_resolution& track_resolution);
+
     [[nodiscard]] std::optional<media_peer_info> get_peer(std::string_view remote_endpoint) const;
 
     [[nodiscard]] std::optional<media_peer_stats> get_peer_stats(std::string_view remote_endpoint) const;
@@ -258,6 +293,15 @@ class media_router
                                      std::size_t target_count);
 
     void update_rtp_quality_stats_locked(media_peer_stats& peer_stats, media_stream_stats& stream_stats, const srtp_packet_process_result& packet);
+
+    [[nodiscard]]
+    media_track_stats& get_or_create_track_stats_locked(media_stream_stats& stream_stats,
+                                                        const media_peer_info& peer,
+                                                        const media_track_resolution& track_resolution);
+
+    void update_track_stats_locked(media_track_stats& track_stats,
+                                   const srtp_packet_process_result& packet,
+                                   const media_track_resolution& track_resolution);
 
     void update_rtcp_stats_locked(media_peer_stats& peer_stats, media_stream_stats& stream_stats, const srtp_packet_process_result& packet);
 
