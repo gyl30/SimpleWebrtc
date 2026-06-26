@@ -207,6 +207,7 @@ set(WEBRTC_SOURCES
     srtp/srtp_session.cpp
     srtp/srtp_transport.cpp
     media/media_router.cpp
+    media/media_track_resolver.cpp
     media/rtcp_feedback_router.cpp
     media/rtp_packet_cache.cpp
     media/media_router_stats_json.cpp

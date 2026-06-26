@@ -1,0 +1,528 @@
+#include "media/media_track_resolver.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include "log/log.h"
+#include "rtp/rtp_packet.h"
+#include "signaling/sdp/sdp_summary.h"
+
+namespace webrtc
+{
+namespace
+{
+constexpr std::string_view k_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
+
+std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+
+std::string make_peer_ssrc_key(std::string_view remote_endpoint, uint32_t ssrc)
+{
+    std::string key;
+
+    key.reserve(remote_endpoint.size() + 16);
+
+    key.append(remote_endpoint);
+    key.push_back('\n');
+    key.append(std::to_string(ssrc));
+
+    return key;
+}
+
+bool is_active_media(const sdp::media_summary& media)
+{
+    return media.direction != sdp::media_direction::inactive && media.direction != sdp::media_direction::unknown;
+}
+
+const sdp::media_summary* find_media_by_mid(const sdp::webrtc_offer_summary& offer, std::string_view mid)
+{
+    if (mid.empty())
+    {
+        return nullptr;
+    }
+
+    for (const auto& media : offer.media)
+    {
+        if (media.mid == mid)
+        {
+            return &media;
+        }
+    }
+
+    return nullptr;
+}
+
+const sdp::media_summary* find_single_active_media(const sdp::webrtc_offer_summary& offer)
+{
+    const sdp::media_summary* selected_media = nullptr;
+
+    for (const auto& media : offer.media)
+    {
+        if (!is_active_media(media))
+        {
+            continue;
+        }
+
+        if (selected_media != nullptr)
+        {
+            return nullptr;
+        }
+
+        selected_media = &media;
+    }
+
+    return selected_media;
+}
+
+bool contains_forbidden_mid_character(uint8_t value) { return value == 0 || value == '\r' || value == '\n'; }
+
+std::expected<std::string, std::string> parse_mid_payload(std::span<const uint8_t> payload)
+{
+    if (payload.empty())
+    {
+        return make_error("rtp mid extension is empty");
+    }
+
+    if (payload.size() > 255)
+    {
+        return make_error("rtp mid extension is too large");
+    }
+
+    std::string value;
+
+    value.reserve(payload.size());
+
+    for (uint8_t byte : payload)
+    {
+        if (contains_forbidden_mid_character(byte))
+        {
+            return make_error("rtp mid extension contains invalid characters");
+        }
+
+        value.push_back(static_cast<char>(byte));
+    }
+
+    return value;
+}
+
+std::optional<std::string> extract_mid_for_media(std::span<const uint8_t> packet, const rtp_packet_header& header, const sdp::media_summary& media)
+{
+    auto mid_extension_id = find_rtp_header_extension_id(media, k_mid_extension_uri);
+
+    if (!mid_extension_id.has_value())
+    {
+        return std::nullopt;
+    }
+
+    auto mid_payload = find_rtp_header_extension(packet, header, *mid_extension_id);
+
+    if (!mid_payload.has_value())
+    {
+        return std::nullopt;
+    }
+
+    auto parsed_mid = parse_mid_payload(*mid_payload);
+
+    if (!parsed_mid)
+    {
+        return std::nullopt;
+    }
+
+    return *parsed_mid;
+}
+
+struct media_extension_match
+{
+    const sdp::media_summary* media = nullptr;
+    rtp_header_extension_values values;
+};
+
+std::expected<media_extension_match, std::string> find_media_by_mid_extension(std::span<const uint8_t> packet,
+                                                                              const rtp_packet_header& header,
+                                                                              const sdp::webrtc_offer_summary& offer)
+{
+    for (const auto& media : offer.media)
+    {
+        auto mid = extract_mid_for_media(packet, header, media);
+
+        if (!mid.has_value())
+        {
+            continue;
+        }
+
+        if (*mid != media.mid)
+        {
+            continue;
+        }
+
+        auto values = parse_rtp_header_extension_values(packet, header, media);
+
+        if (!values)
+        {
+            return std::unexpected(values.error());
+        }
+
+        media_extension_match match;
+
+        match.media = &media;
+        match.values = std::move(*values);
+
+        return match;
+    }
+
+    return make_error("rtp mid extension does not match any media section");
+}
+
+rtp_header_extension_values parse_optional_extension_values(std::span<const uint8_t> packet,
+                                                            const rtp_packet_header& header,
+                                                            const sdp::media_summary& media)
+{
+    auto values = parse_rtp_header_extension_values(packet, header, media);
+
+    if (!values)
+    {
+        return {};
+    }
+
+    return std::move(*values);
+}
+
+void fill_resolution_from_header(media_track_resolution& resolution, const rtp_packet_header& header)
+{
+    resolution.ssrc = header.ssrc;
+
+    resolution.payload_type = header.payload_type;
+
+    resolution.sequence_number = header.sequence_number;
+
+    resolution.timestamp = header.timestamp;
+}
+
+void fill_resolution_from_media(media_track_resolution& resolution, const sdp::media_summary& media)
+{
+    resolution.mid = media.mid;
+
+    resolution.kind = media.kind;
+}
+
+void fill_resolution_from_values(media_track_resolution& resolution, const rtp_header_extension_values& values)
+{
+    resolution.rid = values.rid;
+
+    resolution.repaired_rid = values.repaired_rid;
+
+    resolution.transport_wide_sequence_number = values.transport_wide_sequence_number;
+
+    resolution.absolute_send_time = values.absolute_send_time;
+
+    resolution.audio_level = values.audio_level;
+
+    resolution.voice_activity = values.voice_activity;
+}
+}    // namespace
+
+media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::string_view remote_endpoint,
+                                                                        std::string_view stream_id,
+                                                                        std::string_view session_id,
+                                                                        const sdp::webrtc_offer_summary& offer,
+                                                                        std::span<const uint8_t> plain_packet)
+{
+    if (remote_endpoint.empty())
+    {
+        return make_error("media track remote endpoint is empty");
+    }
+
+    if (stream_id.empty())
+    {
+        return make_error("media track stream id is empty");
+    }
+
+    if (session_id.empty())
+    {
+        return make_error("media track session id is empty");
+    }
+
+    if (plain_packet.empty())
+    {
+        return make_error("media track rtp packet is empty");
+    }
+
+    if (offer.media.empty())
+    {
+        return make_error("media track offer has no media sections");
+    }
+
+    auto header = parse_rtp_packet_header(plain_packet);
+
+    if (!header)
+    {
+        std::string message = "media track rtp header parse failed: ";
+
+        message.append(header.error());
+
+        return std::unexpected(std::move(message));
+    }
+
+    media_track_resolution resolution;
+
+    resolution.remote_endpoint = std::string(remote_endpoint);
+
+    resolution.stream_id = std::string(stream_id);
+
+    resolution.session_id = std::string(session_id);
+
+    fill_resolution_from_header(resolution, *header);
+
+    {
+        std::lock_guard lock(mutex_);
+
+        auto binding = find_binding_locked(remote_endpoint, header->ssrc);
+
+        if (binding.has_value())
+        {
+            const sdp::media_summary* media = find_media_by_mid(offer, binding->mid);
+
+            if (media != nullptr)
+            {
+                const rtp_header_extension_values values = parse_optional_extension_values(plain_packet, *header, *media);
+
+                resolution.state = media_track_resolution_state::resolved_by_ssrc;
+
+                resolution.resolved = true;
+                resolution.newly_bound = false;
+
+                fill_resolution_from_media(resolution, *media);
+
+                fill_resolution_from_values(resolution, values);
+
+                media_track_binding updated_binding = *binding;
+
+                updated_binding.payload_type = header->payload_type;
+
+                updated_binding.packet_count += 1;
+
+                remember_binding_locked(updated_binding);
+
+                return resolution;
+            }
+
+            erase_binding_by_peer_ssrc_locked(remote_endpoint, header->ssrc);
+        }
+    }
+
+    if (header->extension)
+    {
+        auto match = find_media_by_mid_extension(plain_packet, *header, offer);
+
+        if (match)
+        {
+            media_track_binding binding;
+
+            binding.remote_endpoint = std::string(remote_endpoint);
+
+            binding.stream_id = std::string(stream_id);
+
+            binding.session_id = std::string(session_id);
+
+            binding.mid = match->media->mid;
+
+            binding.kind = match->media->kind;
+
+            binding.ssrc = header->ssrc;
+
+            binding.payload_type = header->payload_type;
+
+            binding.packet_count = 1;
+
+            {
+                std::lock_guard lock(mutex_);
+
+                remember_binding_locked(binding);
+            }
+
+            resolution.state = media_track_resolution_state::resolved_by_mid;
+
+            resolution.resolved = true;
+            resolution.newly_bound = true;
+
+            fill_resolution_from_media(resolution, *match->media);
+
+            fill_resolution_from_values(resolution, match->values);
+
+            WEBRTC_LOG_INFO("media track bound by mid remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={}",
+                            remote_endpoint,
+                            stream_id,
+                            session_id,
+                            resolution.mid,
+                            resolution.kind,
+                            resolution.ssrc,
+                            static_cast<unsigned int>(resolution.payload_type));
+
+            return resolution;
+        }
+    }
+
+    const sdp::media_summary* single_media = find_single_active_media(offer);
+
+    if (single_media != nullptr)
+    {
+        const rtp_header_extension_values values = parse_optional_extension_values(plain_packet, *header, *single_media);
+
+        media_track_binding binding;
+
+        binding.remote_endpoint = std::string(remote_endpoint);
+
+        binding.stream_id = std::string(stream_id);
+
+        binding.session_id = std::string(session_id);
+
+        binding.mid = single_media->mid;
+
+        binding.kind = single_media->kind;
+
+        binding.ssrc = header->ssrc;
+
+        binding.payload_type = header->payload_type;
+
+        binding.packet_count = 1;
+
+        {
+            std::lock_guard lock(mutex_);
+
+            remember_binding_locked(binding);
+        }
+
+        resolution.state = media_track_resolution_state::resolved_by_single_media;
+
+        resolution.resolved = true;
+        resolution.newly_bound = true;
+
+        fill_resolution_from_media(resolution, *single_media);
+
+        fill_resolution_from_values(resolution, values);
+
+        WEBRTC_LOG_INFO("media track bound by single media remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={}",
+                        remote_endpoint,
+                        stream_id,
+                        session_id,
+                        resolution.mid,
+                        resolution.kind,
+                        resolution.ssrc,
+                        static_cast<unsigned int>(resolution.payload_type));
+
+        return resolution;
+    }
+
+    resolution.error = "media track could not resolve rtp packet";
+
+    return resolution;
+}
+
+void media_track_resolver::forget_peer(std::string_view remote_endpoint)
+{
+    if (remote_endpoint.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (auto iterator = bindings_by_peer_ssrc_.begin(); iterator != bindings_by_peer_ssrc_.end();)
+    {
+        if (iterator->second.remote_endpoint == remote_endpoint)
+        {
+            iterator = bindings_by_peer_ssrc_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
+void media_track_resolver::forget_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (auto iterator = bindings_by_peer_ssrc_.begin(); iterator != bindings_by_peer_ssrc_.end();)
+    {
+        if (iterator->second.session_id == session_id)
+        {
+            iterator = bindings_by_peer_ssrc_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
+std::size_t media_track_resolver::binding_count() const
+{
+    std::lock_guard lock(mutex_);
+
+    return bindings_by_peer_ssrc_.size();
+}
+
+std::optional<media_track_resolver::media_track_binding> media_track_resolver::find_binding_locked(std::string_view remote_endpoint,
+                                                                                                   uint32_t ssrc) const
+{
+    const std::string key = make_peer_ssrc_key(remote_endpoint, ssrc);
+
+    const auto iterator = bindings_by_peer_ssrc_.find(key);
+
+    if (iterator == bindings_by_peer_ssrc_.end())
+    {
+        return std::nullopt;
+    }
+
+    return iterator->second;
+}
+
+void media_track_resolver::remember_binding_locked(const media_track_binding& binding)
+{
+    if (binding.remote_endpoint.empty() || binding.mid.empty() || binding.ssrc == 0)
+    {
+        return;
+    }
+
+    const std::string key = make_peer_ssrc_key(binding.remote_endpoint, binding.ssrc);
+
+    bindings_by_peer_ssrc_[key] = binding;
+}
+
+void media_track_resolver::erase_binding_by_peer_ssrc_locked(std::string_view remote_endpoint, uint32_t ssrc)
+{
+    bindings_by_peer_ssrc_.erase(make_peer_ssrc_key(remote_endpoint, ssrc));
+}
+
+std::string media_track_resolution_state_to_string(media_track_resolution_state state)
+{
+    switch (state)
+    {
+        case media_track_resolution_state::resolved_by_ssrc:
+            return "resolved_by_ssrc";
+
+        case media_track_resolution_state::resolved_by_mid:
+            return "resolved_by_mid";
+
+        case media_track_resolution_state::resolved_by_single_media:
+            return "resolved_by_single_media";
+
+        case media_track_resolution_state::unresolved:
+            return "unresolved";
+    }
+
+    return "unresolved";
+}
+}    // namespace webrtc
