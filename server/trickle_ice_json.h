@@ -1,10 +1,12 @@
 #ifndef SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_JSON_H
 #define SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_JSON_H
 
+#include <cstdint>
 #include <expected>
 #include <string>
 #include <string_view>
 
+#include "ice/ice_candidate.h"
 #include "util/reflect.h"
 
 namespace webrtc
@@ -16,7 +18,8 @@ struct trickle_ice_candidate_request
     int sdpMLineIndex = -1;
 };
 
-REFLECT_STRUCT(webrtc::trickle_ice_candidate_request, (candidate)(sdpMid)(sdpMLineIndex));    // NOLINT
+REFLECT_STRUCT(webrtc::trickle_ice_candidate_request,
+               (candidate)(sdpMid)(sdpMLineIndex));    // NOLINT
 
 inline std::expected<trickle_ice_candidate_request, std::string> parse_trickle_ice_candidate_request(std::string_view body)
 {
@@ -33,6 +36,12 @@ inline std::expected<trickle_ice_candidate_request, std::string> parse_trickle_i
     }
 
     return request;
+}
+
+inline remote_ice_candidate_result make_remote_ice_candidate_from_trickle_request(const trickle_ice_candidate_request& request,
+                                                                                  uint64_t received_at_milliseconds)
+{
+    return make_remote_ice_candidate(request.candidate, request.sdpMid, request.sdpMLineIndex, received_at_milliseconds);
 }
 }    // namespace webrtc
 

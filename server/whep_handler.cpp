@@ -26,7 +26,52 @@ namespace http = boost::beast::http;
 constexpr std::string_view kApplicationJson = "application/json";
 constexpr std::string_view kApplicationTrickleIceJson = "application/trickle-ice+json";
 
+inline constexpr std::string_view k_application_json = "application/json";
+
 std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return std::string_view(value.data(), value.size()); }
+
+bool is_application_json(http_request_t& request)
+{
+    const auto content_type_field = request.req[http::field::content_type];
+
+    const std::string_view content_type = beast_string_view_to_std_string_view(content_type_field);
+
+    if (content_type.empty())
+    {
+        return false;
+    }
+
+    if (boost::algorithm::iequals(content_type, k_application_json))
+    {
+        return true;
+    }
+
+    if (!boost::algorithm::istarts_with(content_type, k_application_json))
+    {
+        return false;
+    }
+
+    if (content_type.size() <= k_application_json.size())
+    {
+        return false;
+    }
+
+    return content_type[k_application_json.size()] == ';';
+}
+
+uint64_t now_milliseconds() { return static_cast<uint64_t>(timestamp::now().milliseconds()); }
+
+std::expected<remote_ice_candidate, std::string> make_remote_ice_candidate_from_http_body(std::string_view body)
+{
+    auto request = parse_trickle_ice_candidate_request(body);
+
+    if (!request)
+    {
+        return std::unexpected(request.error());
+    }
+
+    return make_remote_ice_candidate_from_trickle_request(*request, now_milliseconds());
+}
 
 bool content_type_matches(std::string_view content_type, std::string_view expected)
 {
@@ -48,21 +93,6 @@ bool content_type_matches(std::string_view content_type, std::string_view expect
     return content_type[expected.size()] == ';';
 }
 
-bool is_supported_trickle_ice_content_type(http_request_t& request)
-{
-    const auto content_type_field = request.req[http::field::content_type];
-
-    const std::string_view content_type = beast_string_view_to_std_string_view(content_type_field);
-
-    if (content_type.empty())
-    {
-        return false;
-    }
-
-    return content_type_matches(content_type, kApplicationJson) || content_type_matches(content_type, kApplicationTrickleIceJson);
-}
-
-uint64_t now_milliseconds() { return static_cast<uint64_t>(timestamp::now().milliseconds()); }
 }    // namespace
 
 whep_handler::whep_handler(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
@@ -188,6 +218,11 @@ http_response_ptr whep_handler::patch_session(http_request_t& request, std::stri
 {
     WEBRTC_LOG_INFO("WHEP patch session={} body_size={}", session_id, request.req.body().size());
 
+    if (!is_application_json(request))
+    {
+        return json_error_response(request, 415, "unsupported media type, expected application/json");
+    }
+
     auto session = registry_->find_subscriber_by_session_id(session_id);
 
     if (session == nullptr)
@@ -195,38 +230,57 @@ http_response_ptr whep_handler::patch_session(http_request_t& request, std::stri
         return json_error_response(request, 404, "subscriber session not found");
     }
 
-    if (!is_supported_trickle_ice_content_type(request))
-    {
-        return json_error_response(request, 415, "unsupported media type, expected application/trickle-ice+json or application/json");
-    }
-
-    auto trickle_request = parse_trickle_ice_candidate_request(request.req.body());
-
-    if (!trickle_request)
-    {
-        return json_error_response(request, 400, trickle_request.error());
-    }
-
-    auto candidate =
-        make_remote_ice_candidate(trickle_request->candidate, trickle_request->sdpMid, trickle_request->sdpMLineIndex, now_milliseconds());
+    auto candidate = make_remote_ice_candidate_from_http_body(request.req.body());
 
     if (!candidate)
     {
-        return json_error_response(request, 400, candidate.error());
+        WEBRTC_LOG_WARN("WHEP trickle ice candidate invalid session={} error={}", session_id, candidate.error());
+
+        std::string message;
+        message.reserve(candidate.error().size() + 32);
+
+        message.append("invalid trickle ice candidate: ");
+
+        message.append(candidate.error());
+
+        return json_error_response(request, 400, message);
     }
+
+    const bool end_of_candidates = candidate->end_of_candidates;
+
+    const std::size_t candidate_size = candidate->candidate.size();
+
+    const std::string sdp_mid = candidate->sdp_mid;
+
+    const int sdp_mline_index = candidate->sdp_mline_index;
 
     auto add_result = session->add_remote_ice_candidate(std::move(*candidate));
 
     if (!add_result)
     {
-        return json_error_response(request, 400, add_result.error());
+        WEBRTC_LOG_WARN(
+            "WHEP trickle ice candidate rejected stream={} session={} error={}", session->stream_id(), session->session_id(), add_result.error());
+
+        std::string message;
+        message.reserve(add_result.error().size() + 32);
+
+        message.append("trickle ice candidate rejected: ");
+
+        message.append(add_result.error());
+
+        return json_error_response(request, 400, message);
     }
 
-    WEBRTC_LOG_INFO("WHEP stored remote ice candidate stream={} session={} candidate_count={} ice_completed={}",
-                    session->stream_id(),
-                    session->session_id(),
-                    session->remote_ice_candidates().size(),
-                    session->remote_ice_completed());
+    WEBRTC_LOG_INFO(
+        "WHEP trickle ice candidate accepted stream={} session={} mid={} mline={} end={} candidate_size={} total_candidates={} completed={}",
+        session->stream_id(),
+        session->session_id(),
+        sdp_mid,
+        sdp_mline_index,
+        end_of_candidates ? 1 : 0,
+        candidate_size,
+        session->remote_ice_candidates().size(),
+        session->remote_ice_completed() ? 1 : 0);
 
     auto response = create_response(request, 204, "");
 
@@ -234,7 +288,6 @@ http_response_ptr whep_handler::patch_session(http_request_t& request, std::stri
 
     return response;
 }
-
 http_response_ptr whep_handler::delete_session(http_request_t& request, std::string_view session_id)
 {
     WEBRTC_LOG_INFO("WHEP delete session={}", session_id);
