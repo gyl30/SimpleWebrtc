@@ -99,8 +99,9 @@ static std::string format_time(uint64_t microseconds, bool mill, bool micro)
     }
     else if (mill)
     {
-        int const microseconds1 = static_cast<int>(microseconds % kMicroSecondsPerSecond);
-        int const milliseconds = micro_to_mill(microseconds1);
+        const int microseconds1 = static_cast<int>(microseconds % static_cast<uint64_t>(kMicroSecondsPerSecond));
+        const int milliseconds = microseconds1 / kMicroSecondsPerMilli;
+
         snprintf(buf,
                  sizeof(buf),
                  "%4d%02d%02d %02d:%02d:%02d.%03d",

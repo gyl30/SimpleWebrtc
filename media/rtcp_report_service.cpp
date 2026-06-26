@@ -310,7 +310,8 @@ rtcp_report_service_generation rtcp_report_service::generate_reports(uint64_t no
     {
         std::lock_guard lock(mutex_);
 
-        expire_stale_sources_locked(now_milliseconds);
+        const std::size_t expired_sources = expire_stale_sources_locked(now_milliseconds);
+        (void)expired_sources;
 
         pending_sources.reserve(sources_by_key_.size());
 
