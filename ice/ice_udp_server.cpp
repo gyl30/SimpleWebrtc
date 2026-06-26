@@ -1972,14 +1972,14 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
     {
         for (const auto& error : generation.errors)
         {
-            WEBRTC_LOG_DEBUG("rtcp active report generation error={}", error);
+            WEBRTC_LOG_WARN("rtcp active report generation error={}", error);
         }
     }
 
-    const rtcp_report_service_runtime_snapshot snapshot = rtcp_report_runtime_snapshot();
-
     if (generation.packets.empty())
     {
+        const rtcp_report_service_runtime_snapshot snapshot = rtcp_report_runtime_snapshot();
+
         if (should_log_empty_rtcp_generation(generation, current_time_milliseconds, last_empty_rtcp_report_log_milliseconds_))
         {
             last_empty_rtcp_report_log_milliseconds_ = current_time_milliseconds;
@@ -1994,9 +1994,10 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
     last_empty_rtcp_report_log_milliseconds_ = current_time_milliseconds;
 
-    WEBRTC_LOG_INFO("rtcp active report generation {} runtime={}",
-                    rtcp_report_service_generation_to_string(generation),
-                    rtcp_report_service_runtime_snapshot_to_string(snapshot));
+    std::size_t sent_count = 0;
+    std::size_t endpoint_not_found_count = 0;
+    std::size_t protect_failed_count = 0;
+    std::size_t protect_ignored_count = 0;
 
     for (const auto& report_packet : generation.packets)
     {
@@ -2006,6 +2007,8 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
         if (!remote_endpoint.has_value())
         {
+            endpoint_not_found_count += 1;
+
             rtcp_report_endpoint_not_found_total_.fetch_add(1, std::memory_order_relaxed);
 
             rtcp_report_service_->forget_source(
@@ -2027,6 +2030,8 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
         if (!protected_packet)
         {
+            protect_failed_count += 1;
+
             rtcp_report_protect_failed_total_.fetch_add(1, std::memory_order_relaxed);
 
             WEBRTC_LOG_WARN("rtcp active report protect failed stream={} session={} remote={} local_ssrc={} error={}",
@@ -2041,6 +2046,8 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
         if (protected_packet->state == srtp_packet_process_state::ignored)
         {
+            protect_ignored_count += 1;
+
             rtcp_report_protect_ignored_total_.fetch_add(1, std::memory_order_relaxed);
 
             WEBRTC_LOG_DEBUG("rtcp active report protect ignored stream={} session={} remote={} local_ssrc={} reason={}",
@@ -2063,9 +2070,52 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
         send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
 
+        sent_count += 1;
+
         rtcp_report_send_success_total_.fetch_add(1, std::memory_order_relaxed);
     }
+
+    const rtcp_report_service_runtime_snapshot snapshot = rtcp_report_runtime_snapshot();
+
+    const bool has_hard_error = generation.failed != 0 || !generation.errors.empty() || endpoint_not_found_count != 0 || protect_failed_count != 0;
+
+    const bool has_soft_event = generation.skipped != 0 || generation.throttled_sources != 0 || protect_ignored_count != 0;
+
+    if (has_hard_error)
+    {
+        WEBRTC_LOG_WARN("rtcp active report generation summary {} sent={} endpoint_not_found={} protect_failed={} protect_ignored={} runtime={}",
+                        rtcp_report_service_generation_to_string(generation),
+                        sent_count,
+                        endpoint_not_found_count,
+                        protect_failed_count,
+                        protect_ignored_count,
+                        rtcp_report_service_runtime_snapshot_to_string(snapshot));
+
+        return;
+    }
+
+    if (has_soft_event)
+    {
+        WEBRTC_LOG_INFO("rtcp active report generation summary {} sent={} endpoint_not_found={} protect_failed={} protect_ignored={} runtime={}",
+                        rtcp_report_service_generation_to_string(generation),
+                        sent_count,
+                        endpoint_not_found_count,
+                        protect_failed_count,
+                        protect_ignored_count,
+                        rtcp_report_service_runtime_snapshot_to_string(snapshot));
+
+        return;
+    }
+
+    WEBRTC_LOG_DEBUG("rtcp active report generation summary {} sent={} endpoint_not_found={} protect_failed={} protect_ignored={} runtime={}",
+                     rtcp_report_service_generation_to_string(generation),
+                     sent_count,
+                     endpoint_not_found_count,
+                     protect_failed_count,
+                     protect_ignored_count,
+                     rtcp_report_service_runtime_snapshot_to_string(snapshot));
 }
+
 void ice_udp_server::reset_rtcp_report_runtime_counters()
 {
     rtcp_report_inbound_rtcp_observe_attempts_total_.store(0, std::memory_order_relaxed);
