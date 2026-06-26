@@ -23,6 +23,7 @@
 #include "ice/stun_message.h"
 #include "log/log.h"
 #include "media/media_router.h"
+#include "media/media_track_resolver.h"
 #include "media/rtcp_feedback_router.h"
 #include "media/rtp_packet_cache.h"
 #include "net/socket.h"
@@ -342,7 +343,8 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       bind_host_(std::move(bind_host)),
       bind_port_(bind_port),
       registry_(std::move(registry)),
-      media_router_(std::move(media_router))
+      media_router_(std::move(media_router)),
+      track_resolver_(std::make_shared<media_track_resolver>())
 {
 }
 
@@ -361,6 +363,11 @@ ice_udp_server_result ice_udp_server::start()
     if (media_router_ == nullptr)
     {
         return make_error("ice udp server media router is null");
+    }
+
+    if (track_resolver_ == nullptr)
+    {
+        track_resolver_ = std::make_shared<media_track_resolver>();
     }
 
     register_session_removed_callback();
@@ -454,14 +461,7 @@ void ice_udp_server::stop()
 
     dtls_timeout_timer_.cancel();
 
-    boost::system::error_code consent_timer_ec;
-
     ice_consent_timer_.cancel();
-
-    if (consent_timer_ec)
-    {
-        WEBRTC_LOG_WARN("ice consent timer cancel failed: {}", consent_timer_ec.message());
-    }
 
     boost::system::error_code socket_ec;
 
@@ -483,6 +483,8 @@ void ice_udp_server::stop()
 
         candidate_pairs_by_key_.clear();
     }
+
+    track_resolver_ = std::make_shared<media_track_resolver>();
 
     if (rtp_packet_cache_ != nullptr)
     {
@@ -516,6 +518,11 @@ void ice_udp_server::forget_session(std::string_view session_id)
 
             endpoints_by_address_.erase(remote_address);
         }
+    }
+
+    if (track_resolver_ != nullptr)
+    {
+        track_resolver_->forget_session(session_id);
     }
 
     if (!remote_address.empty())
@@ -1162,6 +1169,15 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
                      result->ssrc,
                      static_cast<unsigned int>(result->payload_type));
 
+    std::optional<media_peer_info> peer = media_router_->get_peer(remote_address);
+
+    std::optional<media_track_resolution> track_resolution;
+
+    if (peer.has_value())
+    {
+        track_resolution = resolve_media_track(*peer, *result);
+    }
+
     const media_route_result route = media_router_->handle_inbound_packet(remote_address, *result);
 
     if (!route.known_peer)
@@ -1170,6 +1186,28 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
             "media route ignored unknown peer remote={} kind={} ssrc={}", remote_address, srtp_packet_kind_to_string(result->kind), result->ssrc);
 
         return;
+    }
+
+    if (track_resolution.has_value() && track_resolution->resolved)
+    {
+        WEBRTC_LOG_DEBUG(
+            "media track resolved remote={} action={} stream={} session={} state={} mid={} kind={} ssrc={} sequence={} payload_type={} "
+            "newly_bound={} has_twcc={} twcc={}",
+            remote_address,
+            media_route_action_to_string(route.action),
+            track_resolution->stream_id,
+            track_resolution->session_id,
+            media_track_resolution_state_to_string(track_resolution->state),
+            track_resolution->mid,
+            track_resolution->kind,
+            track_resolution->ssrc,
+            track_resolution->sequence_number,
+            static_cast<unsigned int>(track_resolution->payload_type),
+            track_resolution->newly_bound ? 1 : 0,
+            track_resolution->transport_wide_sequence_number.has_value() ? 1 : 0,
+            track_resolution->transport_wide_sequence_number.has_value()
+                ? static_cast<unsigned int>(*track_resolution->transport_wide_sequence_number)
+                : 0U);
     }
 
     WEBRTC_LOG_DEBUG("media route resolved remote={} action={} stream={} session={} targets={}",
@@ -1191,6 +1229,91 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     }
 
     forward_media_packet(*result, route);
+}
+
+std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const media_peer_info& peer, const srtp_packet_process_result& packet)
+{
+    if (packet.kind != srtp_packet_kind::rtp)
+    {
+        return std::nullopt;
+    }
+
+    if (packet.plain_packet.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (registry_ == nullptr || track_resolver_ == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    if (peer.role != media_peer_role::publisher)
+    {
+        return std::nullopt;
+    }
+
+    auto publisher = registry_->find_publisher_by_session_id(peer.session_id);
+
+    if (publisher == nullptr)
+    {
+        WEBRTC_LOG_WARN("media track resolve skipped publisher session not found remote={} stream={} session={}",
+                        peer.remote_endpoint,
+                        peer.stream_id,
+                        peer.session_id);
+
+        return std::nullopt;
+    }
+
+    auto resolution = track_resolver_->resolve_inbound_rtp(peer.remote_endpoint,
+                                                           peer.stream_id,
+                                                           peer.session_id,
+                                                           publisher->remote_offer_summary(),
+                                                           std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
+
+    if (!resolution)
+    {
+        WEBRTC_LOG_WARN("media track resolve failed remote={} stream={} session={} ssrc={} sequence={} error={}",
+                        peer.remote_endpoint,
+                        peer.stream_id,
+                        peer.session_id,
+                        packet.ssrc,
+                        packet.sequence_number,
+                        resolution.error());
+
+        return std::nullopt;
+    }
+
+    if (!resolution->resolved)
+    {
+        WEBRTC_LOG_DEBUG("media track unresolved remote={} stream={} session={} ssrc={} sequence={} error={}",
+                         peer.remote_endpoint,
+                         peer.stream_id,
+                         peer.session_id,
+                         packet.ssrc,
+                         packet.sequence_number,
+                         resolution->error);
+
+        return *resolution;
+    }
+
+    if (resolution->newly_bound)
+    {
+        WEBRTC_LOG_INFO(
+            "media track binding created remote={} stream={} session={} state={} mid={} kind={} ssrc={} payload_type={} rid={} repaired_rid={}",
+            peer.remote_endpoint,
+            peer.stream_id,
+            peer.session_id,
+            media_track_resolution_state_to_string(resolution->state),
+            resolution->mid,
+            resolution->kind,
+            resolution->ssrc,
+            static_cast<unsigned int>(resolution->payload_type),
+            resolution->rid.has_value() ? *resolution->rid : "",
+            resolution->repaired_rid.has_value() ? *resolution->repaired_rid : "");
+    }
+
+    return *resolution;
 }
 
 void ice_udp_server::cache_inbound_rtp_packet(const srtp_packet_process_result& packet, const media_route_result& route)
@@ -1775,6 +1898,11 @@ void ice_udp_server::forget_peer_transport_state(std::string_view remote_address
     if (media_router_ != nullptr)
     {
         media_router_->forget_peer(remote_address);
+    }
+
+    if (track_resolver_ != nullptr)
+    {
+        track_resolver_->forget_peer(remote_address);
     }
 }
 
