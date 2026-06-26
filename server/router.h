@@ -10,12 +10,14 @@
 #include "net/http.h"
 #include "server/whip_handler.h"
 #include "server/whep_handler.h"
+#include "media/keyframe_request.h"
 #include "session/stream_registry.h"
 #include "signaling/webrtc_answer_factory.h"
 
 namespace webrtc
 {
 using rtcp_report_runtime_snapshot_provider = std::function<rtcp_report_service_runtime_snapshot()>;
+using keyframe_request_handler = std::function<keyframe_request_expected(std::string_view stream_id)>;
 
 class router
 {
@@ -33,6 +35,8 @@ class router
     void set_media_router(std::shared_ptr<media_router> media_router);
 
     void set_rtcp_report_runtime_snapshot_provider(rtcp_report_runtime_snapshot_provider provider);
+
+    void set_keyframe_request_handler(keyframe_request_handler handler);
 
    private:
     [[nodiscard]]
@@ -55,6 +59,9 @@ class router
 
     [[nodiscard]]
     http_response_ptr handle_streams(http_request_t& request);
+
+    [[nodiscard]]
+    http_response_ptr handle_stream_keyframe(http_request_t& request, std::string_view stream_id);
 
     [[nodiscard]]
     http_response_ptr handle_media_stats(http_request_t& request);
@@ -119,6 +126,7 @@ class router
 
     std::shared_ptr<media_router> media_router_;
 
+    keyframe_request_handler keyframe_request_handler_;
     rtcp_report_runtime_snapshot_provider rtcp_report_runtime_snapshot_provider_;
 
     whip_handler whip_;

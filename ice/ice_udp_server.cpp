@@ -1107,6 +1107,20 @@ void append_unique_rtcp_bye_ssrc(std::vector<uint32_t>& ssrcs, uint32_t ssrc)
 
     ssrcs.push_back(ssrc);
 }
+void append_unique_keyframe_media_ssrc(std::vector<uint32_t>& ssrcs, uint32_t ssrc)
+{
+    if (ssrc == 0)
+    {
+        return;
+    }
+
+    if (std::find(ssrcs.begin(), ssrcs.end(), ssrc) != ssrcs.end())
+    {
+        return;
+    }
+
+    ssrcs.push_back(ssrc);
+}
 }    // namespace
 
 ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
@@ -1990,6 +2004,137 @@ void ice_udp_server::send_rtcp_bye_to_subscriber(std::string_view stream_id,
 
         offset = chunk_end;
     }
+}
+std::vector<uint32_t> ice_udp_server::collect_keyframe_request_media_ssrcs(std::string_view stream_id) const
+{
+    std::vector<uint32_t> media_ssrcs;
+
+    if (stream_id.empty())
+    {
+        return media_ssrcs;
+    }
+
+    if (ssrc_mapper_ != nullptr)
+    {
+        const std::vector<media_ssrc_mapping> mappings = ssrc_mapper_->find_by_stream_id(stream_id);
+
+        for (const auto& mapping : mappings)
+        {
+            append_unique_keyframe_media_ssrc(media_ssrcs, mapping.publisher_ssrc);
+        }
+    }
+
+    if (media_router_ != nullptr)
+    {
+        const std::optional<media_stream_stats> stats = media_router_->get_stream_stats(stream_id);
+
+        if (stats.has_value())
+        {
+            append_unique_keyframe_media_ssrc(media_ssrcs, stats->last_rtp_ssrc);
+        }
+    }
+
+    return media_ssrcs;
+}
+
+keyframe_request_expected ice_udp_server::request_keyframe(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return make_error("stream id is empty");
+    }
+
+    if (registry_ == nullptr)
+    {
+        return make_error("session registry unavailable");
+    }
+
+    if (srtp_transport_ == nullptr)
+    {
+        return make_error("srtp transport unavailable");
+    }
+
+    auto publisher = registry_->find_publisher_by_stream_id(stream_id);
+
+    if (publisher == nullptr)
+    {
+        return make_error("stream publisher not found");
+    }
+
+    keyframe_request_result result;
+
+    result.stream_id = publisher->stream_id();
+    result.publisher_session_id = publisher->session_id();
+
+    std::optional<std::string> remote_address = remote_address_for_session(result.publisher_session_id);
+
+    if (!remote_address.has_value() || remote_address->empty())
+    {
+        return make_error("publisher endpoint not found");
+    }
+
+    result.publisher_remote_address = *remote_address;
+
+    auto remote_endpoint = find_remote_endpoint(*remote_address);
+
+    if (!remote_endpoint.has_value())
+    {
+        return make_error("publisher endpoint not found");
+    }
+
+    const std::vector<uint32_t> media_ssrcs = collect_keyframe_request_media_ssrcs(stream_id);
+
+    if (media_ssrcs.empty())
+    {
+        return make_error("publisher media ssrc not found");
+    }
+
+    result.media_ssrc_count = static_cast<uint64_t>(media_ssrcs.size());
+
+    for (uint32_t media_ssrc : media_ssrcs)
+    {
+        rtcp_pli_write_options options;
+
+        options.sender_ssrc = 1;
+        options.media_ssrc = media_ssrc;
+
+        auto pli_packet = write_rtcp_pli_packet(options);
+
+        if (!pli_packet)
+        {
+            result.failed_count += 1;
+
+            continue;
+        }
+
+        auto protected_packet = srtp_transport_->protect_outbound_packet(
+            std::span<const uint8_t>(pli_packet->data(), pli_packet->size()), *remote_address, srtp_packet_kind::rtcp);
+
+        if (!protected_packet)
+        {
+            result.failed_count += 1;
+
+            continue;
+        }
+
+        if (protected_packet->state == srtp_packet_process_state::ignored)
+        {
+            result.failed_count += 1;
+
+            continue;
+        }
+
+        send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
+
+        result.sent_count += 1;
+    }
+
+    if (result.sent_count == 0)
+    {
+        return make_error("keyframe request send failed");
+    }
+
+    return result;
 }
 void ice_udp_server::register_session_removed_callback()
 {

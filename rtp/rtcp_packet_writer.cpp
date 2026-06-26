@@ -25,6 +25,10 @@ inline constexpr std::size_t k_rtcp_common_header_size = 4;
 inline constexpr uint8_t k_rtcp_packet_type_bye = 203;
 inline constexpr std::size_t k_rtcp_bye_reason_length_size = 1;
 
+inline constexpr uint8_t k_rtcp_packet_type_payload_specific_feedback = 206;
+
+inline constexpr uint8_t k_rtcp_feedback_format_pli = 1;
+
 constexpr uint8_t k_rtcp_sdes_item_type_end = 0;
 constexpr uint8_t k_rtcp_sdes_item_type_cname = 1;
 
@@ -321,6 +325,20 @@ std::size_t padding_to_32bit(std::size_t size)
 
     return 4 - remainder;
 }
+std::expected<void, std::string> validate_pli_options(const rtcp_pli_write_options& options)
+{
+    if (options.sender_ssrc == 0)
+    {
+        return make_error("rtcp pli sender ssrc is zero");
+    }
+
+    if (options.media_ssrc == 0)
+    {
+        return make_error("rtcp pli media ssrc is zero");
+    }
+
+    return {};
+}
 }    // namespace
 
 rtcp_packet_write_result write_rtcp_sender_report(const rtcp_report_write_options& options) { return write_rtcp_report_packet(options, true); }
@@ -408,6 +426,31 @@ rtcp_packet_write_result write_rtcp_bye_packet(const rtcp_bye_write_options& opt
             append_u8(packet, 0);
         }
     }
+
+    return packet;
+}
+rtcp_packet_write_result write_rtcp_pli_packet(const rtcp_pli_write_options& options)
+{
+    auto validation_result = validate_pli_options(options);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
+    constexpr std::size_t packet_size = k_rtcp_common_header_size + sizeof(uint32_t) + sizeof(uint32_t);
+
+    constexpr uint16_t length_words = 2;
+
+    std::vector<uint8_t> packet;
+
+    packet.reserve(packet_size);
+
+    append_rtcp_header(packet, k_rtcp_feedback_format_pli, k_rtcp_packet_type_payload_specific_feedback, length_words);
+
+    append_u32(packet, options.sender_ssrc);
+
+    append_u32(packet, options.media_ssrc);
 
     return packet;
 }

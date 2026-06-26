@@ -357,6 +357,17 @@ int main(int argc, char* argv[])
             return server->rtcp_report_runtime_snapshot();
         });
 
+    http_router->set_keyframe_request_handler(
+        [ice_server](std::string_view stream_id) -> webrtc::keyframe_request_expected
+        {
+            if (ice_server == nullptr)
+            {
+                return std::unexpected(std::string("ice udp server unavailable"));
+            }
+
+            return ice_server->request_keyframe(stream_id);
+        });
+
     version v;
 
     static const std::string version_str = R"({"name": "SimpleWebrtc", "version": "0.1"})";

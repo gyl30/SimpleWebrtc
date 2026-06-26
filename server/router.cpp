@@ -51,6 +51,8 @@ inline constexpr std::string_view k_streams_prefix = "/api/streams/";
 
 inline constexpr std::string_view k_streams_path = "/api/streams";
 
+inline constexpr std::string_view k_keyframe_action = "keyframe";
+
 inline constexpr std::string_view k_media_stats_path = "/api/stats/media";
 
 inline constexpr std::string_view k_prometheus_metrics_path = "/metrics";
@@ -233,6 +235,33 @@ void append_trickle_ice_metrics_prometheus(std::string& output, const trickle_ic
 
     output.append(trickle_ice_metrics_snapshot_to_prometheus(trickle_snapshot));
 }
+bool match_single_value_action_path(std::string_view path, std::string_view prefix, std::string_view action, std::string_view& value)
+{
+    if (!boost::algorithm::starts_with(path, prefix))
+    {
+        return false;
+    }
+
+    const std::string_view rest = path.substr(prefix.size());
+
+    const std::size_t separator = rest.find('/');
+
+    if (separator == std::string_view::npos)
+    {
+        return false;
+    }
+
+    value = rest.substr(0, separator);
+
+    if (value.empty())
+    {
+        return false;
+    }
+
+    const std::string_view current_action = rest.substr(separator + 1);
+
+    return current_action == action;
+}
 }    // namespace
 
 router::router(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
@@ -289,6 +318,12 @@ http_response_ptr router::handle(http_request_t& request)
     {
         return handle_streams(request);
     }
+    std::string_view api_keyframe_stream_id;
+
+    if (match_single_value_action_path(path, k_streams_prefix, k_keyframe_action, api_keyframe_stream_id))
+    {
+        return handle_stream_keyframe(request, api_keyframe_stream_id);
+    }
 
     std::string_view api_stream_id;
 
@@ -335,6 +370,8 @@ http_response_ptr router::handle(http_request_t& request)
 }
 
 void router::set_media_router(std::shared_ptr<media_router> media_router) { media_router_ = std::move(media_router); }
+
+void router::set_keyframe_request_handler(keyframe_request_handler handler) { keyframe_request_handler_ = std::move(handler); }
 
 void router::set_rtcp_report_runtime_snapshot_provider(rtcp_report_runtime_snapshot_provider provider)
 {
@@ -531,6 +568,50 @@ http_response_ptr router::handle_stream(http_request_t& request, std::string_vie
     }
 
     return method_not_allowed(request);
+}
+
+http_response_ptr router::handle_stream_keyframe(http_request_t& request, std::string_view stream_id)
+{
+    if (request.req.method() != http::verb::post)
+    {
+        return method_not_allowed(request);
+    }
+
+    if (!is_valid_resource_id(stream_id))
+    {
+        return bad_request(request, "invalid stream id");
+    }
+
+    if (!keyframe_request_handler_)
+    {
+        return json_response(request, 503, json_error_body("keyframe request handler unavailable"));
+    }
+
+    keyframe_request_expected result = keyframe_request_handler_(stream_id);
+
+    if (!result)
+    {
+        const std::string& error = result.error();
+
+        if (error == "stream publisher not found")
+        {
+            return json_response(request, 404, json_error_body(error));
+        }
+
+        if (error == "publisher endpoint not found" || error == "publisher media ssrc not found")
+        {
+            return json_response(request, 409, json_error_body(error));
+        }
+
+        if (error == "session registry unavailable" || error == "srtp transport unavailable")
+        {
+            return json_response(request, 503, json_error_body(error));
+        }
+
+        return json_response(request, 500, json_error_body(error));
+    }
+
+    return json_response(request, 200, make_keyframe_request_response_body(*result));
 }
 
 http_response_ptr router::handle_media_stats(http_request_t& request)

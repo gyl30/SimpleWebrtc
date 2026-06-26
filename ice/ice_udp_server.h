@@ -20,6 +20,7 @@
 #include "dtls/dtls_transport.h"
 #include "media/media_payload_type_mapper.h"
 #include "media/media_router.h"
+#include "media/keyframe_request.h"
 #include "media/media_ssrc_mapper.h"
 #include "media/media_track_resolver.h"
 #include "media/rtcp_feedback_router.h"
@@ -61,6 +62,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     uint16_t local_port() const;
+
+    [[nodiscard]]
+    keyframe_request_expected request_keyframe(std::string_view stream_id);
 
     [[nodiscard]]
     rtcp_report_service_runtime_snapshot rtcp_report_runtime_snapshot() const
@@ -303,6 +307,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     std::optional<std::string> remote_address_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::vector<uint32_t> collect_keyframe_request_media_ssrcs(std::string_view stream_id) const;
 
    private:
     boost::asio::io_context& io_context_;
