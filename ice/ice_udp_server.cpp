@@ -67,6 +67,10 @@ constexpr auto k_endpoint_idle_cleanup_interval = std::chrono::seconds(5);
 
 constexpr uint64_t k_default_endpoint_idle_timeout_milliseconds = 120000;
 
+constexpr std::size_t k_max_nack_retransmit_sequences = 128;
+
+constexpr std::size_t k_nack_sequences_per_item = 17;
+
 constexpr auto k_pending_session_cleanup_interval = std::chrono::seconds(5);
 
 constexpr uint64_t k_default_pending_session_timeout_milliseconds = 60000;
@@ -961,30 +965,71 @@ void log_rtcp_feedback_route_event(const rtcp_feedback_route_event& event)
         event.remb_bitrate_bps);
 }
 
-std::vector<uint16_t> expand_nack_sequences(const std::vector<rtcp_nack_item>& nack_items)
+struct nack_sequence_expansion
 {
     std::vector<uint16_t> sequence_numbers;
 
-    sequence_numbers.reserve(nack_items.size() * 17);
+    std::size_t raw_sequence_count = 0;
+
+    std::size_t duplicate_count = 0;
+
+    bool truncated = false;
+};
+
+bool contains_nack_sequence(const std::vector<uint16_t>& sequence_numbers, uint16_t sequence_number)
+{
+    return std::find(sequence_numbers.begin(), sequence_numbers.end(), sequence_number) != sequence_numbers.end();
+}
+
+void append_nack_sequence(nack_sequence_expansion& expansion, uint16_t sequence_number, std::size_t max_sequences)
+{
+    expansion.raw_sequence_count += 1;
+
+    if (contains_nack_sequence(expansion.sequence_numbers, sequence_number))
+    {
+        expansion.duplicate_count += 1;
+
+        return;
+    }
+
+    if (expansion.sequence_numbers.size() >= max_sequences)
+    {
+        expansion.truncated = true;
+
+        return;
+    }
+
+    expansion.sequence_numbers.push_back(sequence_number);
+}
+
+nack_sequence_expansion expand_nack_sequences(const std::vector<rtcp_nack_item>& nack_items, std::size_t max_sequences)
+{
+    nack_sequence_expansion expansion;
+
+    const std::size_t reserve_size = std::min(nack_items.size() * k_nack_sequences_per_item, max_sequences);
+
+    expansion.sequence_numbers.reserve(reserve_size);
 
     for (const auto& item : nack_items)
     {
-        sequence_numbers.push_back(item.packet_id);
+        append_nack_sequence(expansion, item.packet_id, max_sequences);
 
         for (uint16_t bit_index = 0; bit_index < 16; ++bit_index)
         {
-            const uint16_t mask = static_cast<uint16_t>(1U << bit_index);
+            const uint16_t mask = static_cast<uint16_t>(static_cast<uint32_t>(1U) << static_cast<uint32_t>(bit_index));
 
             if ((item.lost_packet_bitmask & mask) == 0)
             {
                 continue;
             }
 
-            sequence_numbers.push_back(static_cast<uint16_t>(item.packet_id + static_cast<uint16_t>(bit_index + 1)));
+            const uint16_t sequence_number = static_cast<uint16_t>(item.packet_id + static_cast<uint16_t>(bit_index + 1));
+
+            append_nack_sequence(expansion, sequence_number, max_sequences);
         }
     }
 
-    return sequence_numbers;
+    return expansion;
 }
 }    // namespace
 
@@ -3601,7 +3646,23 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         return;
     }
 
-    const std::vector<uint16_t> sequence_numbers = expand_nack_sequences(event.nack_items);
+    const nack_sequence_expansion nack_sequences = expand_nack_sequences(event.nack_items, k_max_nack_retransmit_sequences);
+
+    const std::vector<uint16_t>& sequence_numbers = nack_sequences.sequence_numbers;
+
+    if (nack_sequences.truncated || nack_sequences.duplicate_count != 0)
+    {
+        WEBRTC_LOG_DEBUG(
+            "rtp nack sequence expansion stream={} subscriber={} nack_items={} raw_requested={} requested={} max={} duplicate={} truncated={}",
+            event.source.stream_id,
+            event.source.remote_endpoint,
+            event.nack_items.size(),
+            nack_sequences.raw_sequence_count,
+            sequence_numbers.size(),
+            k_max_nack_retransmit_sequences,
+            nack_sequences.duplicate_count,
+            nack_sequences.truncated ? 1 : 0);
+    }
 
     std::size_t hit_count = 0;
     std::size_t miss_count = 0;
@@ -3674,12 +3735,18 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
     }
 
     WEBRTC_LOG_INFO(
-        "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} requested={} hit={} miss={} sent={} ignored={} failed={}",
+        "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} nack_items={} raw_requested={} requested={} max={} "
+        "duplicate={} truncated={} hit={} miss={} sent={} ignored={} failed={}",
         event.source.stream_id,
         event.source.remote_endpoint,
         feedback_media_ssrc,
         cache_media_ssrc,
+        event.nack_items.size(),
+        nack_sequences.raw_sequence_count,
         sequence_numbers.size(),
+        k_max_nack_retransmit_sequences,
+        nack_sequences.duplicate_count,
+        nack_sequences.truncated ? 1 : 0,
         hit_count,
         miss_count,
         sent_count,
