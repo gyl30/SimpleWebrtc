@@ -67,6 +67,10 @@ constexpr auto k_endpoint_idle_cleanup_interval = std::chrono::seconds(5);
 
 constexpr uint64_t k_default_endpoint_idle_timeout_milliseconds = 120000;
 
+constexpr auto k_pending_session_cleanup_interval = std::chrono::seconds(5);
+
+constexpr uint64_t k_default_pending_session_timeout_milliseconds = 60000;
+
 struct ice_username_parts
 {
     std::string_view recipient_ufrag;
@@ -500,6 +504,25 @@ uint64_t make_endpoint_idle_timeout_milliseconds_from_env()
 
     return timeout_milliseconds;
 }
+uint64_t make_pending_session_timeout_milliseconds_from_env()
+{
+    uint64_t timeout_milliseconds = get_env_uint64_or_default("WEBRTC_PENDING_SESSION_TIMEOUT_MS", k_default_pending_session_timeout_milliseconds);
+
+    if (timeout_milliseconds != 0 && timeout_milliseconds < 10000)
+    {
+        WEBRTC_LOG_WARN("pending session timeout too small timeout_ms={} min_ms=10000 clamped=10000", timeout_milliseconds);
+
+        timeout_milliseconds = 10000;
+    }
+
+    WEBRTC_LOG_INFO(
+        "pending session cleanup config timeout_ms={} interval_ms={}", timeout_milliseconds, k_pending_session_cleanup_interval.count() * 1000);
+
+    return timeout_milliseconds;
+}
+
+bool is_pending_connection_state(session_state state) { return state == session_state::sdp_received || state == session_state::sdp_answered; }
+
 uint64_t rtcp_empty_generation_log_interval_milliseconds()
 {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(k_rtcp_report_empty_generation_log_interval).count());
@@ -914,6 +937,7 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       ice_consent_timer_(io_context),
       rtcp_report_timer_(io_context),
       endpoint_idle_cleanup_timer_(io_context),
+      pending_session_cleanup_timer_(io_context),
       bind_host_(std::move(bind_host)),
       bind_port_(bind_port),
       registry_(std::move(registry)),
@@ -921,7 +945,8 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       track_resolver_(std::make_shared<media_track_resolver>()),
       ssrc_mapper_(std::make_shared<media_ssrc_mapper>()),
       rtcp_report_service_(make_rtcp_report_service_from_env()),
-      endpoint_idle_timeout_milliseconds_(make_endpoint_idle_timeout_milliseconds_from_env())
+      endpoint_idle_timeout_milliseconds_(make_endpoint_idle_timeout_milliseconds_from_env()),
+      pending_session_timeout_milliseconds_(make_pending_session_timeout_milliseconds_from_env())
 {
 }
 
@@ -1030,6 +1055,8 @@ ice_udp_server_result ice_udp_server::start()
     schedule_rtcp_report();
 
     schedule_endpoint_idle_cleanup();
+
+    schedule_pending_session_cleanup();
     return {};
 }
 
@@ -1056,6 +1083,8 @@ void ice_udp_server::stop()
     rtcp_report_timer_.cancel();
 
     endpoint_idle_cleanup_timer_.cancel();
+
+    pending_session_cleanup_timer_.cancel();
 
     boost::system::error_code socket_ec;
 
@@ -1276,6 +1305,140 @@ std::vector<std::string> ice_udp_server::collect_idle_session_ids(uint64_t curre
         expired_session_ids.push_back(session_iterator->second);
 
         ++iterator;
+    }
+
+    return expired_session_ids;
+}
+
+void ice_udp_server::schedule_pending_session_cleanup()
+{
+    if (!started_ || pending_session_timeout_milliseconds_ == 0)
+    {
+        return;
+    }
+
+    pending_session_cleanup_timer_.cancel();
+
+    pending_session_cleanup_timer_.expires_after(k_pending_session_cleanup_interval);
+
+    auto self = shared_from_this();
+
+    pending_session_cleanup_timer_.async_wait([this, self](boost::system::error_code ec) { on_pending_session_cleanup(ec); });
+}
+
+void ice_udp_server::on_pending_session_cleanup(boost::system::error_code ec)
+{
+    if (ec == boost::asio::error::operation_aborted)
+    {
+        return;
+    }
+
+    if (ec)
+    {
+        WEBRTC_LOG_WARN("pending session cleanup timer failed error={}", ec.message());
+
+        schedule_pending_session_cleanup();
+
+        return;
+    }
+
+    if (!started_)
+    {
+        return;
+    }
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    std::vector<std::string> expired_session_ids = collect_pending_session_ids(current_time_milliseconds);
+
+    for (const auto& session_id : expired_session_ids)
+    {
+        WEBRTC_LOG_WARN("pending session expired session={} timeout_ms={}", session_id, pending_session_timeout_milliseconds_);
+
+        remove_expired_session(session_id, "pending session");
+    }
+
+    schedule_pending_session_cleanup();
+}
+
+std::vector<std::string> ice_udp_server::collect_pending_session_ids(uint64_t current_time_milliseconds) const
+{
+    std::vector<std::string> expired_session_ids;
+    std::vector<std::string> expired_publisher_stream_ids;
+
+    if (pending_session_timeout_milliseconds_ == 0 || registry_ == nullptr)
+    {
+        return expired_session_ids;
+    }
+
+    const std::vector<stream_session_lifecycle_snapshot> snapshots = registry_->session_lifecycle_snapshots();
+
+    for (const auto& snapshot : snapshots)
+    {
+        if (snapshot.kind != stream_session_kind::publisher)
+        {
+            continue;
+        }
+
+        if (!is_pending_connection_state(snapshot.state))
+        {
+            continue;
+        }
+
+        const uint64_t reference_time_milliseconds =
+            snapshot.updated_at_milliseconds != 0 ? snapshot.updated_at_milliseconds : snapshot.created_at_milliseconds;
+
+        const uint64_t age_milliseconds =
+            current_time_milliseconds > reference_time_milliseconds ? current_time_milliseconds - reference_time_milliseconds : 0;
+
+        if (age_milliseconds < pending_session_timeout_milliseconds_)
+        {
+            continue;
+        }
+
+        if (!contains_string(expired_session_ids, snapshot.session_id))
+        {
+            expired_session_ids.push_back(snapshot.session_id);
+        }
+
+        if (!contains_string(expired_publisher_stream_ids, snapshot.stream_id))
+        {
+            expired_publisher_stream_ids.push_back(snapshot.stream_id);
+        }
+    }
+
+    for (const auto& snapshot : snapshots)
+    {
+        if (snapshot.kind != stream_session_kind::subscriber)
+        {
+            continue;
+        }
+
+        if (contains_string(expired_publisher_stream_ids, snapshot.stream_id))
+        {
+            continue;
+        }
+
+        if (!is_pending_connection_state(snapshot.state))
+        {
+            continue;
+        }
+
+        const uint64_t reference_time_milliseconds =
+            snapshot.updated_at_milliseconds != 0 ? snapshot.updated_at_milliseconds : snapshot.created_at_milliseconds;
+
+        const uint64_t age_milliseconds =
+            current_time_milliseconds > reference_time_milliseconds ? current_time_milliseconds - reference_time_milliseconds : 0;
+
+        if (age_milliseconds < pending_session_timeout_milliseconds_)
+        {
+            continue;
+        }
+
+        if (!contains_string(expired_session_ids, snapshot.session_id))
+        {
+            expired_session_ids.push_back(snapshot.session_id);
+        }
     }
 
     return expired_session_ids;

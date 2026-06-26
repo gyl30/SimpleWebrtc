@@ -13,9 +13,10 @@
 #include <unordered_set>
 #include <vector>
 
+#include "session/session_state.h"
+#include "signaling/sdp/sdp_summary.h"
 #include "session/publisher_session.h"
 #include "session/subscriber_session.h"
-#include "signaling/sdp/sdp_summary.h"
 
 namespace webrtc
 {
@@ -39,6 +40,16 @@ struct stream_removed_session
     stream_session_kind kind = stream_session_kind::publisher;
     std::string stream_id;
     std::string session_id;
+};
+
+struct stream_session_lifecycle_snapshot
+{
+    stream_session_kind kind = stream_session_kind::publisher;
+    std::string stream_id;
+    std::string session_id;
+    session_state state = session_state::created;
+    uint64_t created_at_milliseconds = 0;
+    uint64_t updated_at_milliseconds = 0;
 };
 
 [[nodiscard]] std::string_view stream_registry_error_to_string(stream_registry_error error);
@@ -89,6 +100,9 @@ class stream_registry
     [[nodiscard]] remove_session_result remove_subscriber_session(std::string_view session_id);
 
     void set_session_removed_callback(stream_session_removed_callback callback);
+
+    [[nodiscard]]
+    std::vector<stream_session_lifecycle_snapshot> session_lifecycle_snapshots() const;
 
     [[nodiscard]] std::size_t publisher_count() const;
     [[nodiscard]] std::size_t subscriber_count() const;

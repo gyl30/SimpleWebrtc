@@ -329,6 +329,68 @@ void stream_registry::set_session_removed_callback(stream_session_removed_callba
 
     session_removed_callback_ = std::move(callback);
 }
+std::vector<stream_session_lifecycle_snapshot> stream_registry::session_lifecycle_snapshots() const
+{
+    std::lock_guard lock(mutex_);
+
+    std::vector<stream_session_lifecycle_snapshot> snapshots;
+
+    snapshots.reserve(publishers_by_session_id_.size() + subscribers_by_session_id_.size());
+
+    for (const auto& [session_id, session] : publishers_by_session_id_)
+    {
+        (void)session_id;
+
+        if (session == nullptr)
+        {
+            continue;
+        }
+
+        stream_session_lifecycle_snapshot snapshot;
+
+        snapshot.kind = stream_session_kind::publisher;
+
+        snapshot.stream_id = session->stream_id();
+
+        snapshot.session_id = session->session_id();
+
+        snapshot.state = session->state();
+
+        snapshot.created_at_milliseconds = session->created_at_milliseconds();
+
+        snapshot.updated_at_milliseconds = session->updated_at_milliseconds();
+
+        snapshots.push_back(std::move(snapshot));
+    }
+
+    for (const auto& [session_id, session] : subscribers_by_session_id_)
+    {
+        (void)session_id;
+
+        if (session == nullptr)
+        {
+            continue;
+        }
+
+        stream_session_lifecycle_snapshot snapshot;
+
+        snapshot.kind = stream_session_kind::subscriber;
+
+        snapshot.stream_id = session->stream_id();
+
+        snapshot.session_id = session->session_id();
+
+        snapshot.state = session->state();
+
+        snapshot.created_at_milliseconds = session->created_at_milliseconds();
+
+        snapshot.updated_at_milliseconds = session->updated_at_milliseconds();
+
+        snapshots.push_back(std::move(snapshot));
+    }
+
+    return snapshots;
+}
 
 std::size_t stream_registry::publisher_count() const
 {
