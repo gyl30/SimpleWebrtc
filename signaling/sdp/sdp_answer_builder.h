@@ -10,6 +10,16 @@
 
 namespace webrtc::sdp
 {
+struct sdp_ice_candidate_options
+{
+    std::string foundation = "1";
+    uint32_t component = 1;
+    std::string transport = "udp";
+    uint32_t priority = 2130706431;
+    std::string address;
+    uint16_t port = 0;
+    std::string type = "host";
+};
 struct sdp_answer_options
 {
     std::string origin_username = "-";
@@ -32,6 +42,7 @@ struct sdp_answer_options
     bool enable_trickle = true;
 
     bool include_host_candidate = false;
+
     std::string local_candidate_foundation = "1";
     uint32_t local_candidate_component = 1;
     std::string local_candidate_transport = "udp";
@@ -39,8 +50,10 @@ struct sdp_answer_options
     std::string local_candidate_address;
     uint16_t local_candidate_port = 0;
     std::string local_candidate_type = "host";
-    bool end_of_candidates = true;
 
+    std::vector<sdp_ice_candidate_options> local_candidates;
+
+    bool end_of_candidates = true;
     std::string local_stream_id = "-";
 };
 

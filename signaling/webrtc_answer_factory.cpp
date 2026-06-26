@@ -132,6 +132,110 @@ validation_result validate_dtls_setup_role(sdp::dtls_connection_role setup)
 
     return make_error("unsupported local setup");
 }
+std::string make_candidate_field_name(std::string_view prefix, std::string_view field)
+{
+    std::string value;
+
+    value.reserve(prefix.size() + field.size() + 1);
+
+    value.append(prefix);
+    value.push_back(' ');
+    value.append(field);
+
+    return value;
+}
+
+sdp::sdp_ice_candidate_options make_legacy_ice_candidate_options(const webrtc_answer_factory_config& config)
+{
+    sdp::sdp_ice_candidate_options candidate;
+
+    candidate.foundation = config.ice_candidate_foundation;
+    candidate.component = config.ice_candidate_component;
+    candidate.transport = config.ice_candidate_transport;
+    candidate.priority = config.ice_candidate_priority;
+    candidate.address = config.ice_candidate_address;
+    candidate.port = config.ice_candidate_port;
+    candidate.type = config.ice_candidate_type;
+
+    return candidate;
+}
+
+validation_result validate_ice_candidate_config(const sdp::sdp_ice_candidate_options& candidate, std::string_view prefix)
+{
+    auto address_result = validate_token(candidate.address, make_candidate_field_name(prefix, "address"));
+
+    if (!address_result)
+    {
+        return std::unexpected(address_result.error());
+    }
+
+    if (candidate.port == 0)
+    {
+        return make_error(make_candidate_field_name(prefix, "port is zero"));
+    }
+
+    auto foundation_result = validate_token(candidate.foundation, make_candidate_field_name(prefix, "foundation"));
+
+    if (!foundation_result)
+    {
+        return std::unexpected(foundation_result.error());
+    }
+
+    if (candidate.component == 0)
+    {
+        return make_error(make_candidate_field_name(prefix, "component is zero"));
+    }
+
+    auto transport_result = validate_token(candidate.transport, make_candidate_field_name(prefix, "transport"));
+
+    if (!transport_result)
+    {
+        return std::unexpected(transport_result.error());
+    }
+
+    if (candidate.priority == 0)
+    {
+        return make_error(make_candidate_field_name(prefix, "priority is zero"));
+    }
+
+    auto type_result = validate_token(candidate.type, make_candidate_field_name(prefix, "type"));
+
+    if (!type_result)
+    {
+        return std::unexpected(type_result.error());
+    }
+
+    return {};
+}
+
+validation_result validate_ice_candidates_config(const webrtc_answer_factory_config& config)
+{
+    if (!config.include_host_candidate)
+    {
+        return {};
+    }
+
+    if (config.ice_candidates.empty())
+    {
+        return validate_ice_candidate_config(make_legacy_ice_candidate_options(config), "ice candidate");
+    }
+
+    for (std::size_t index = 0; index < config.ice_candidates.size(); ++index)
+    {
+        std::string prefix("ice candidate ");
+
+        prefix.append(std::to_string(index));
+
+        auto result = validate_ice_candidate_config(config.ice_candidates[index], prefix);
+
+        if (!result)
+        {
+            return std::unexpected(result.error());
+        }
+    }
+
+    return {};
+}
 }    // namespace
 
 webrtc_answer_factory_config_result make_webrtc_answer_factory_config_from_certificate(std::string_view certificate_file)
@@ -229,52 +333,12 @@ validation_result webrtc_answer_factory::validate_config() const
         return std::unexpected(setup_result.error());
     }
 
-    if (config_.include_host_candidate)
+    auto candidate_result = validate_ice_candidates_config(config_);
+
+    if (!candidate_result)
     {
-        auto candidate_address_result = validate_token(config_.ice_candidate_address, "ice candidate address");
-
-        if (!candidate_address_result)
-        {
-            return std::unexpected(candidate_address_result.error());
-        }
-
-        if (config_.ice_candidate_port == 0)
-        {
-            return make_error("ice candidate port is zero");
-        }
-
-        auto foundation_result = validate_token(config_.ice_candidate_foundation, "ice candidate foundation");
-
-        if (!foundation_result)
-        {
-            return std::unexpected(foundation_result.error());
-        }
-
-        if (config_.ice_candidate_component == 0)
-        {
-            return make_error("ice candidate component is zero");
-        }
-
-        auto transport_result = validate_token(config_.ice_candidate_transport, "ice candidate transport");
-
-        if (!transport_result)
-        {
-            return std::unexpected(transport_result.error());
-        }
-
-        if (config_.ice_candidate_priority == 0)
-        {
-            return make_error("ice candidate priority is zero");
-        }
-
-        auto type_result = validate_token(config_.ice_candidate_type, "ice candidate type");
-
-        if (!type_result)
-        {
-            return std::unexpected(type_result.error());
-        }
+        return std::unexpected(candidate_result.error());
     }
-
     return {};
 }
 
@@ -303,6 +367,7 @@ sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_v
     options.enable_trickle = config_.enable_trickle;
 
     options.include_host_candidate = config_.include_host_candidate;
+
     options.local_candidate_foundation = config_.ice_candidate_foundation;
     options.local_candidate_component = config_.ice_candidate_component;
     options.local_candidate_transport = config_.ice_candidate_transport;
@@ -310,6 +375,7 @@ sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_v
     options.local_candidate_address = config_.ice_candidate_address;
     options.local_candidate_port = config_.ice_candidate_port;
     options.local_candidate_type = config_.ice_candidate_type;
+    options.local_candidates = config_.ice_candidates;
     options.end_of_candidates = config_.end_of_candidates;
 
     options.local_stream_id = make_local_stream_id(config_.local_stream_id_prefix, stream_id);

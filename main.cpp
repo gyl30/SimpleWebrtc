@@ -77,14 +77,129 @@ static uint16_t get_env_uint16_or_default(const char* name, uint16_t default_val
 
     return static_cast<uint16_t>(parsed);
 }
+static std::string_view trim_ascii(std::string_view value)
+{
+    const std::size_t begin = value.find_first_not_of(" \t\r\n");
+
+    if (begin == std::string_view::npos)
+    {
+        return {};
+    }
+
+    const std::size_t end = value.find_last_not_of(" \t\r\n");
+
+    return value.substr(begin, end - begin + 1);
+}
+
+static bool contains_string(const std::vector<std::string>& values, std::string_view value)
+{
+    for (const auto& current : values)
+    {
+        if (current == value)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void append_unique_string(std::vector<std::string>& values, std::string_view value)
+{
+    value = trim_ascii(value);
+
+    if (value.empty())
+    {
+        return;
+    }
+
+    if (contains_string(values, value))
+    {
+        return;
+    }
+
+    values.emplace_back(value);
+}
+
+static std::vector<std::string> split_csv_unique(std::string_view value)
+{
+    std::vector<std::string> result;
+
+    std::size_t offset = 0;
+
+    while (offset <= value.size())
+    {
+        const std::size_t comma = value.find(',', offset);
+
+        if (comma == std::string_view::npos)
+        {
+            append_unique_string(result, value.substr(offset));
+
+            break;
+        }
+
+        append_unique_string(result, value.substr(offset, comma - offset));
+
+        offset = comma + 1;
+    }
+
+    return result;
+}
+
+static std::vector<std::string> make_ice_public_ip_list(const std::string& fallback_public_ip)
+{
+    const char* value = std::getenv("WEBRTC_ICE_PUBLIC_IPS");
+
+    if (value != nullptr && value[0] != '\0')
+    {
+        std::vector<std::string> addresses = split_csv_unique(value);
+
+        if (!addresses.empty())
+        {
+            return addresses;
+        }
+    }
+
+    std::vector<std::string> addresses;
+
+    append_unique_string(addresses, fallback_public_ip);
+
+    if (addresses.empty())
+    {
+        addresses.emplace_back("127.0.0.1");
+    }
+
+    return addresses;
+}
+
+static webrtc::sdp::sdp_ice_candidate_options make_ice_host_candidate(std::string address, uint16_t port, std::size_t index)
+{
+    webrtc::sdp::sdp_ice_candidate_options candidate;
+
+    candidate.foundation = std::to_string(index + 1);
+
+    candidate.component = 1;
+
+    candidate.transport = "udp";
+
+    candidate.priority = static_cast<uint32_t>(2130706431U - static_cast<uint32_t>(index));
+
+    candidate.address = std::move(address);
+
+    candidate.port = port;
+
+    candidate.type = "host";
+
+    return candidate;
+}
 
 static bool load_server_certificate(boost::asio::ssl::context& ctx, const std::string& cert_file, const std::string& key_file)
 {
     boost::system::error_code ec;
 
-    ctx.set_options(boost::asio::ssl::context::default_workarounds | boost::asio::ssl::context::no_sslv2 | boost::asio::ssl::context::no_sslv3 |
-                        boost::asio::ssl::context::single_dh_use,
-                    ec);
+    ec = ctx.set_options(boost::asio::ssl::context::default_workarounds | boost::asio::ssl::context::no_sslv2 | boost::asio::ssl::context::no_sslv3 |
+                             boost::asio::ssl::context::single_dh_use,
+                         ec);
 
     if (ec)
     {
@@ -184,6 +299,7 @@ int main(int argc, char* argv[])
     const uint16_t ice_port = get_env_uint16_or_default("WEBRTC_ICE_PORT", 8812);
 
     const std::string ice_public_ip = get_env_or_default("WEBRTC_ICE_PUBLIC_IP", "127.0.0.1");
+    const std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ip);
 
     boost::asio::io_context io_context;
 
@@ -202,11 +318,18 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    answer_factory_config->media_address = ice_public_ip;
+    answer_factory_config->media_address = ice_public_ips.front();
 
-    answer_factory_config->ice_candidate_address = ice_public_ip;
+    answer_factory_config->ice_candidate_address = ice_public_ips.front();
 
     answer_factory_config->ice_candidate_port = ice_server->local_port();
+
+    answer_factory_config->ice_candidates.clear();
+
+    for (std::size_t index = 0; index < ice_public_ips.size(); ++index)
+    {
+        answer_factory_config->ice_candidates.push_back(make_ice_host_candidate(ice_public_ips[index], ice_server->local_port(), index));
+    }
 
     answer_factory_config->include_host_candidate = true;
 

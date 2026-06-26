@@ -29,6 +29,7 @@ struct webrtc_answer_factory_config
     bool enable_trickle = true;
 
     bool include_host_candidate = false;
+
     std::string ice_candidate_address = "127.0.0.1";
     uint16_t ice_candidate_port = 0;
     std::string ice_candidate_foundation = "1";
@@ -36,6 +37,9 @@ struct webrtc_answer_factory_config
     std::string ice_candidate_transport = "udp";
     uint32_t ice_candidate_priority = 2130706431;
     std::string ice_candidate_type = "host";
+
+    std::vector<sdp::sdp_ice_candidate_options> ice_candidates;
+
     bool end_of_candidates = true;
 
     std::string local_stream_id_prefix = "webrtc";

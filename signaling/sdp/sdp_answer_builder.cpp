@@ -71,6 +71,82 @@ validation_result validate_token(std::string_view value, std::string_view name)
     return {};
 }
 
+std::string make_candidate_field_name(std::string_view prefix, std::string_view field)
+{
+    std::string value;
+
+    value.reserve(prefix.size() + field.size() + 1);
+
+    value.append(prefix);
+    value.push_back(' ');
+    value.append(field);
+
+    return value;
+}
+
+sdp_ice_candidate_options make_legacy_candidate_options(const sdp_answer_options& options)
+{
+    sdp_ice_candidate_options candidate;
+
+    candidate.foundation = options.local_candidate_foundation;
+    candidate.component = options.local_candidate_component;
+    candidate.transport = options.local_candidate_transport;
+    candidate.priority = options.local_candidate_priority;
+    candidate.address = options.local_candidate_address;
+    candidate.port = options.local_candidate_port;
+    candidate.type = options.local_candidate_type;
+
+    return candidate;
+}
+
+validation_result validate_candidate_options(const sdp_ice_candidate_options& candidate, std::string_view prefix)
+{
+    auto foundation_result = validate_token(candidate.foundation, make_candidate_field_name(prefix, "foundation"));
+
+    if (!foundation_result)
+    {
+        return std::unexpected(foundation_result.error());
+    }
+
+    if (candidate.component == 0)
+    {
+        return make_error(make_candidate_field_name(prefix, "component is zero"));
+    }
+
+    auto transport_result = validate_token(candidate.transport, make_candidate_field_name(prefix, "transport"));
+
+    if (!transport_result)
+    {
+        return std::unexpected(transport_result.error());
+    }
+
+    if (candidate.priority == 0)
+    {
+        return make_error(make_candidate_field_name(prefix, "priority is zero"));
+    }
+
+    auto address_result = validate_token(candidate.address, make_candidate_field_name(prefix, "address"));
+
+    if (!address_result)
+    {
+        return std::unexpected(address_result.error());
+    }
+
+    if (candidate.port == 0)
+    {
+        return make_error(make_candidate_field_name(prefix, "port is zero"));
+    }
+
+    auto type_result = validate_token(candidate.type, make_candidate_field_name(prefix, "type"));
+
+    if (!type_result)
+    {
+        return std::unexpected(type_result.error());
+    }
+
+    return {};
+}
+
 validation_result validate_candidate_options(const sdp_answer_options& options)
 {
     if (!options.include_host_candidate)
@@ -78,47 +154,23 @@ validation_result validate_candidate_options(const sdp_answer_options& options)
         return {};
     }
 
-    auto foundation_result = validate_token(options.local_candidate_foundation, "local candidate foundation");
-
-    if (!foundation_result)
+    if (options.local_candidates.empty())
     {
-        return std::unexpected(foundation_result.error());
+        return validate_candidate_options(make_legacy_candidate_options(options), "local candidate");
     }
 
-    if (options.local_candidate_component == 0)
+    for (std::size_t index = 0; index < options.local_candidates.size(); ++index)
     {
-        return make_error("local candidate component is zero");
-    }
+        std::string prefix("local candidate ");
 
-    auto transport_result = validate_token(options.local_candidate_transport, "local candidate transport");
+        prefix.append(std::to_string(index));
 
-    if (!transport_result)
-    {
-        return std::unexpected(transport_result.error());
-    }
+        auto result = validate_candidate_options(options.local_candidates[index], prefix);
 
-    if (options.local_candidate_priority == 0)
-    {
-        return make_error("local candidate priority is zero");
-    }
-
-    auto address_result = validate_token(options.local_candidate_address, "local candidate address");
-
-    if (!address_result)
-    {
-        return std::unexpected(address_result.error());
-    }
-
-    if (options.local_candidate_port == 0)
-    {
-        return make_error("local candidate port is zero");
-    }
-
-    auto type_result = validate_token(options.local_candidate_type, "local candidate type");
-
-    if (!type_result)
-    {
-        return std::unexpected(type_result.error());
+        if (!result)
+        {
+            return std::unexpected(result.error());
+        }
     }
 
     return {};
@@ -532,26 +584,25 @@ std::string make_msid_value(const sdp_answer_options& options, const media_summa
     return value;
 }
 
-std::string make_candidate_value(const sdp_answer_options& options)
+std::string make_candidate_value(const sdp_ice_candidate_options& candidate)
 {
     std::string value;
 
-    value.reserve(options.local_candidate_foundation.size() + options.local_candidate_transport.size() + options.local_candidate_address.size() +
-                  options.local_candidate_type.size() + 64);
+    value.reserve(candidate.foundation.size() + candidate.transport.size() + candidate.address.size() + candidate.type.size() + 64);
 
-    value.append(options.local_candidate_foundation);
+    value.append(candidate.foundation);
     value.push_back(' ');
-    value.append(std::to_string(options.local_candidate_component));
+    value.append(std::to_string(candidate.component));
     value.push_back(' ');
-    value.append(options.local_candidate_transport);
+    value.append(candidate.transport);
     value.push_back(' ');
-    value.append(std::to_string(options.local_candidate_priority));
+    value.append(std::to_string(candidate.priority));
     value.push_back(' ');
-    value.append(options.local_candidate_address);
+    value.append(candidate.address);
     value.push_back(' ');
-    value.append(std::to_string(options.local_candidate_port));
+    value.append(std::to_string(candidate.port));
     value.append(" typ ");
-    value.append(options.local_candidate_type);
+    value.append(candidate.type);
 
     return value;
 }
@@ -578,7 +629,17 @@ void append_ice_candidate_attributes(media_description& answer_media, const sdp_
 {
     if (options.include_host_candidate)
     {
-        push_attribute(answer_media.attributes, "candidate", make_candidate_value(options));
+        if (options.local_candidates.empty())
+        {
+            push_attribute(answer_media.attributes, "candidate", make_candidate_value(make_legacy_candidate_options(options)));
+        }
+        else
+        {
+            for (const auto& candidate : options.local_candidates)
+            {
+                push_attribute(answer_media.attributes, "candidate", make_candidate_value(candidate));
+            }
+        }
     }
 
     if (options.end_of_candidates)
