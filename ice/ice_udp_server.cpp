@@ -24,6 +24,7 @@
 #include "log/log.h"
 #include "media/media_payload_type_mapper.h"
 #include "media/media_router.h"
+#include "media/media_ssrc_mapper.h"
 #include "media/media_track_resolver.h"
 #include "media/rtcp_feedback_router.h"
 #include "media/rtp_packet_cache.h"
@@ -88,6 +89,106 @@ bool contains_string(const std::vector<std::string>& values, std::string_view va
     }
 
     return false;
+}
+
+uint16_t read_network_u16(std::span<const uint8_t> data, std::size_t offset)
+{
+    return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
+}
+
+uint32_t read_network_u32(std::span<const uint8_t> data, std::size_t offset)
+{
+    return (static_cast<uint32_t>(data[offset]) << 24U) | (static_cast<uint32_t>(data[offset + 1]) << 16U) |
+           (static_cast<uint32_t>(data[offset + 2]) << 8U) | static_cast<uint32_t>(data[offset + 3]);
+}
+
+void write_network_u32(std::vector<uint8_t>& packet, std::size_t offset, uint32_t value)
+{
+    packet[offset] = static_cast<uint8_t>((value >> 24U) & 0xffU);
+
+    packet[offset + 1] = static_cast<uint8_t>((value >> 16U) & 0xffU);
+
+    packet[offset + 2] = static_cast<uint8_t>((value >> 8U) & 0xffU);
+
+    packet[offset + 3] = static_cast<uint8_t>(value & 0xffU);
+}
+
+bool is_rtcp_feedback_packet_type(uint8_t packet_type) { return packet_type == 205 || packet_type == 206; }
+
+std::expected<std::vector<uint8_t>, std::string> rewrite_rtcp_feedback_media_ssrc(std::span<const uint8_t> packet, uint32_t target_media_ssrc)
+{
+    if (packet.empty())
+    {
+        return make_error("rtcp feedback rewrite packet is empty");
+    }
+
+    if (target_media_ssrc == 0)
+    {
+        return make_error("rtcp feedback rewrite target media ssrc is zero");
+    }
+
+    if (packet.size() < 4)
+    {
+        return make_error("rtcp feedback rewrite packet is too small");
+    }
+
+    std::vector<uint8_t> rewritten;
+
+    rewritten.assign(packet.begin(), packet.end());
+
+    std::size_t offset = 0;
+    bool changed = false;
+
+    while (offset + 4 <= rewritten.size())
+    {
+        const std::span<const uint8_t> view(rewritten.data(), rewritten.size());
+
+        const uint8_t version = static_cast<uint8_t>(view[offset] >> 6U);
+
+        if (version != 2)
+        {
+            return make_error("rtcp feedback rewrite version is invalid");
+        }
+
+        const uint8_t packet_type = view[offset + 1];
+
+        const uint16_t length = read_network_u16(view, offset + 2);
+
+        const std::size_t packet_size = (static_cast<std::size_t>(length) + 1) * 4;
+
+        if (packet_size == 0 || offset + packet_size > rewritten.size())
+        {
+            return make_error("rtcp feedback rewrite packet is truncated");
+        }
+
+        if (is_rtcp_feedback_packet_type(packet_type))
+        {
+            if (packet_size < 12)
+            {
+                return make_error("rtcp feedback rewrite feedback packet is too small");
+            }
+
+            const uint32_t current_media_ssrc = read_network_u32(view, offset + 8);
+
+            if (current_media_ssrc != target_media_ssrc)
+            {
+                write_network_u32(rewritten, offset + 8, target_media_ssrc);
+
+                changed = true;
+            }
+        }
+
+        offset += packet_size;
+    }
+
+    if (offset != rewritten.size())
+    {
+        return make_error("rtcp feedback rewrite compound packet has trailing bytes");
+    }
+
+    (void)changed;
+
+    return rewritten;
 }
 
 std::string make_candidate_pair_key(std::string_view session_id, std::string_view remote_address)
@@ -470,7 +571,8 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       bind_port_(bind_port),
       registry_(std::move(registry)),
       media_router_(std::move(media_router)),
-      track_resolver_(std::make_shared<media_track_resolver>())
+      track_resolver_(std::make_shared<media_track_resolver>()),
+      ssrc_mapper_(std::make_shared<media_ssrc_mapper>())
 {
 }
 
@@ -494,6 +596,11 @@ ice_udp_server_result ice_udp_server::start()
     if (track_resolver_ == nullptr)
     {
         track_resolver_ = std::make_shared<media_track_resolver>();
+    }
+
+    if (ssrc_mapper_ == nullptr)
+    {
+        ssrc_mapper_ = std::make_shared<media_ssrc_mapper>();
     }
 
     register_session_removed_callback();
@@ -614,6 +721,8 @@ void ice_udp_server::stop()
 
     track_resolver_ = std::make_shared<media_track_resolver>();
 
+    ssrc_mapper_ = std::make_shared<media_ssrc_mapper>();
+
     if (rtp_packet_cache_ != nullptr)
     {
         rtp_packet_cache_->clear();
@@ -653,6 +762,11 @@ void ice_udp_server::forget_session(std::string_view session_id)
     if (track_resolver_ != nullptr)
     {
         track_resolver_->forget_session(session_id);
+    }
+
+    if (ssrc_mapper_ != nullptr)
+    {
+        ssrc_mapper_->forget_session(session_id);
     }
 
     if (!remote_address.empty())
@@ -1358,7 +1472,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
         handle_rtcp_feedback_event(*feedback_event);
     }
 
-    forward_media_packet(*result, route, track_resolution);
+    forward_media_packet(*result, route, track_resolution, feedback_event);
 }
 
 std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const media_peer_info& peer, const srtp_packet_process_result& packet)
@@ -1449,22 +1563,12 @@ std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const 
 std::optional<media_payload_type_mapping_table> ice_udp_server::get_or_create_payload_type_mapping_table(const media_route_result& route,
                                                                                                          const media_peer_info& target_peer)
 {
-    if (registry_ == nullptr)
-    {
-        return std::nullopt;
-    }
-
     if (route.source.role != media_peer_role::publisher)
     {
         return std::nullopt;
     }
 
     if (target_peer.role != media_peer_role::subscriber)
-    {
-        return std::nullopt;
-    }
-
-    if (route.source.session_id.empty() || target_peer.session_id.empty())
     {
         return std::nullopt;
     }
@@ -1481,7 +1585,23 @@ std::optional<media_payload_type_mapping_table> ice_udp_server::get_or_create_pa
         return std::nullopt;
     }
 
-    const std::string cache_key = make_payload_type_mapping_key(route.source.session_id, target_peer.session_id);
+    return get_or_create_payload_type_mapping_table_for_sessions(route.source.stream_id, route.source.session_id, target_peer.session_id);
+}
+
+std::optional<media_payload_type_mapping_table> ice_udp_server::get_or_create_payload_type_mapping_table_for_sessions(
+    std::string_view stream_id, std::string_view publisher_session_id, std::string_view subscriber_session_id)
+{
+    if (registry_ == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    if (stream_id.empty() || publisher_session_id.empty() || subscriber_session_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    const std::string cache_key = make_payload_type_mapping_key(publisher_session_id, subscriber_session_id);
 
     {
         std::lock_guard lock(endpoint_mutex_);
@@ -1494,33 +1614,32 @@ std::optional<media_payload_type_mapping_table> ice_udp_server::get_or_create_pa
         }
     }
 
-    auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
+    auto publisher = registry_->find_publisher_by_session_id(publisher_session_id);
 
     if (publisher == nullptr)
     {
-        WEBRTC_LOG_WARN("payload type mapping publisher session not found stream={} session={}", route.source.stream_id, route.source.session_id);
+        WEBRTC_LOG_WARN("payload type mapping publisher session not found stream={} session={}", stream_id, publisher_session_id);
 
         return std::nullopt;
     }
 
-    auto subscriber = registry_->find_subscriber_by_session_id(target_peer.session_id);
+    auto subscriber = registry_->find_subscriber_by_session_id(subscriber_session_id);
 
     if (subscriber == nullptr)
     {
-        WEBRTC_LOG_WARN("payload type mapping subscriber session not found stream={} session={}", target_peer.stream_id, target_peer.session_id);
+        WEBRTC_LOG_WARN("payload type mapping subscriber session not found stream={} session={}", stream_id, subscriber_session_id);
 
         return std::nullopt;
     }
 
-    auto table_result =
-        build_media_payload_type_mapping_table(route.source.stream_id, publisher->remote_offer_summary(), subscriber->remote_offer_summary());
+    auto table_result = build_media_payload_type_mapping_table(stream_id, publisher->remote_offer_summary(), subscriber->remote_offer_summary());
 
     if (!table_result)
     {
         WEBRTC_LOG_WARN("payload type mapping build failed stream={} publisher_session={} subscriber_session={} error={}",
-                        route.source.stream_id,
-                        route.source.session_id,
-                        target_peer.session_id,
+                        stream_id,
+                        publisher_session_id,
+                        subscriber_session_id,
                         table_result.error());
 
         return std::nullopt;
@@ -1528,11 +1647,11 @@ std::optional<media_payload_type_mapping_table> ice_udp_server::get_or_create_pa
 
     media_payload_type_mapping_cache_entry entry;
 
-    entry.publisher_session_id = route.source.session_id;
+    entry.publisher_session_id = std::string(publisher_session_id);
 
-    entry.subscriber_session_id = target_peer.session_id;
+    entry.subscriber_session_id = std::string(subscriber_session_id);
 
-    entry.stream_id = route.source.stream_id;
+    entry.stream_id = std::string(stream_id);
 
     entry.table = std::move(*table_result);
 
@@ -1600,33 +1719,137 @@ std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapp
     return std::nullopt;
 }
 
+std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(const media_route_result& route,
+                                                                             const media_peer_info& target_peer,
+                                                                             const std::optional<media_track_resolution>& track_resolution,
+                                                                             const std::optional<media_payload_type_mapping>& payload_type_mapping)
+{
+    if (ssrc_mapper_ == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    if (!track_resolution.has_value() || !track_resolution->resolved)
+    {
+        return std::nullopt;
+    }
+
+    if (route.source.role != media_peer_role::publisher)
+    {
+        return std::nullopt;
+    }
+
+    if (target_peer.role != media_peer_role::subscriber)
+    {
+        return std::nullopt;
+    }
+
+    if (track_resolution->ssrc == 0 || track_resolution->mid.empty())
+    {
+        return std::nullopt;
+    }
+
+    const std::string subscriber_mid = payload_type_mapping.has_value() ? payload_type_mapping->subscriber_mid : track_resolution->mid;
+
+    auto mapping_result = ssrc_mapper_->get_or_create_mapping(route.source.stream_id,
+                                                              route.source.session_id,
+                                                              target_peer.session_id,
+                                                              track_resolution->mid,
+                                                              subscriber_mid,
+                                                              track_resolution->kind,
+                                                              track_resolution->ssrc,
+                                                              now_milliseconds());
+
+    if (!mapping_result)
+    {
+        WEBRTC_LOG_WARN("media ssrc mapping failed stream={} publisher_session={} subscriber_session={} mid={} ssrc={} error={}",
+                        route.source.stream_id,
+                        route.source.session_id,
+                        target_peer.session_id,
+                        track_resolution->mid,
+                        track_resolution->ssrc,
+                        mapping_result.error());
+
+        return std::nullopt;
+    }
+
+    if (mapping_result->packet_count == 1)
+    {
+        WEBRTC_LOG_INFO("media ssrc mapping created {}", media_ssrc_mapping_to_string(*mapping_result));
+    }
+
+    return *mapping_result;
+}
+
 std::vector<uint8_t> ice_udp_server::make_forward_plain_packet(const srtp_packet_process_result& packet,
                                                                const media_route_result& route,
                                                                const std::optional<media_track_resolution>& track_resolution,
+                                                               const std::optional<rtcp_feedback_route_event>& feedback_event,
                                                                const media_peer_info& target_peer)
 {
     std::vector<uint8_t> original_packet;
 
     original_packet.assign(packet.plain_packet.begin(), packet.plain_packet.end());
 
-    if (packet.kind != srtp_packet_kind::rtp)
-    {
-        return original_packet;
-    }
-
     if (packet.plain_packet.empty())
     {
         return original_packet;
     }
 
-    auto mapping = find_payload_type_mapping(route, target_peer, track_resolution);
+    if (packet.kind == srtp_packet_kind::rtcp)
+    {
+        if (route.source.role != media_peer_role::subscriber || target_peer.role != media_peer_role::publisher || !feedback_event.has_value() ||
+            feedback_event->media_ssrc == 0 || ssrc_mapper_ == nullptr)
+        {
+            return original_packet;
+        }
 
-    if (!mapping.has_value())
+        auto mapping = ssrc_mapper_->find_by_subscriber_ssrc(route.source.session_id, feedback_event->media_ssrc);
+
+        if (!mapping.has_value())
+        {
+            WEBRTC_LOG_DEBUG("rtcp feedback reverse ssrc mapping not found subscriber_session={} media_ssrc={}",
+                             route.source.session_id,
+                             feedback_event->media_ssrc);
+
+            return original_packet;
+        }
+
+        auto rewrite_result = rewrite_rtcp_feedback_media_ssrc(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()),
+                                                               mapping->publisher_ssrc);
+
+        if (!rewrite_result)
+        {
+            WEBRTC_LOG_WARN(
+                "rtcp feedback reverse ssrc rewrite failed subscriber_session={} publisher_session={} subscriber_ssrc={} publisher_ssrc={} error={}",
+                mapping->subscriber_session_id,
+                mapping->publisher_session_id,
+                mapping->subscriber_ssrc,
+                mapping->publisher_ssrc,
+                rewrite_result.error());
+
+            return original_packet;
+        }
+
+        WEBRTC_LOG_DEBUG("rtcp feedback reverse ssrc rewrite applied subscriber_session={} publisher_session={} subscriber_ssrc={} publisher_ssrc={}",
+                         mapping->subscriber_session_id,
+                         mapping->publisher_session_id,
+                         mapping->subscriber_ssrc,
+                         mapping->publisher_ssrc);
+
+        return std::move(*rewrite_result);
+    }
+
+    if (packet.kind != srtp_packet_kind::rtp)
     {
         return original_packet;
     }
 
-    if (!media_payload_type_mapping_requires_packet_rewrite(*mapping))
+    auto payload_type_mapping = find_payload_type_mapping(route, target_peer, track_resolution);
+
+    auto ssrc_mapping = get_or_create_ssrc_mapping(route, target_peer, track_resolution, payload_type_mapping);
+
+    if (!payload_type_mapping.has_value() && !ssrc_mapping.has_value())
     {
         return original_packet;
     }
@@ -1635,24 +1858,31 @@ std::vector<uint8_t> ice_udp_server::make_forward_plain_packet(const srtp_packet
 
     bool rewrite_required = false;
 
-    if (mapping->payload_type_rewrite_required)
+    if (payload_type_mapping.has_value() && payload_type_mapping->payload_type_rewrite_required)
     {
-        if (mapping->subscriber_payload_type > 127)
+        if (payload_type_mapping->subscriber_payload_type > 127)
         {
             WEBRTC_LOG_WARN("rtp payload type rewrite skipped invalid target payload type stream={} subscriber_session={} payload_type={}",
-                            mapping->stream_id,
+                            payload_type_mapping->stream_id,
                             target_peer.session_id,
-                            mapping->subscriber_payload_type);
+                            payload_type_mapping->subscriber_payload_type);
 
             return original_packet;
         }
 
-        options.payload_type = static_cast<uint8_t>(mapping->subscriber_payload_type);
+        options.payload_type = static_cast<uint8_t>(payload_type_mapping->subscriber_payload_type);
 
         rewrite_required = true;
     }
 
-    if (mapping->mid_rewrite_required && registry_ != nullptr)
+    if (ssrc_mapping.has_value() && media_ssrc_mapping_requires_rewrite(*ssrc_mapping))
+    {
+        options.ssrc = ssrc_mapping->subscriber_ssrc;
+
+        rewrite_required = true;
+    }
+
+    if (payload_type_mapping.has_value() && payload_type_mapping->mid_rewrite_required && registry_ != nullptr)
     {
         auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
 
@@ -1667,7 +1897,7 @@ std::vector<uint8_t> ice_udp_server::make_forward_plain_packet(const srtp_packet
         }
         else
         {
-            auto mid_rewrite = make_mid_header_extension_rewrite(*mapping,
+            auto mid_rewrite = make_mid_header_extension_rewrite(*payload_type_mapping,
                                                                  publisher->remote_offer_summary(),
                                                                  subscriber->remote_offer_summary(),
                                                                  std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
@@ -1676,11 +1906,11 @@ std::vector<uint8_t> ice_udp_server::make_forward_plain_packet(const srtp_packet
             {
                 WEBRTC_LOG_WARN(
                     "rtp mid rewrite skipped stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} error={}",
-                    mapping->stream_id,
+                    payload_type_mapping->stream_id,
                     route.source.session_id,
                     target_peer.session_id,
-                    mapping->publisher_mid,
-                    mapping->subscriber_mid,
+                    payload_type_mapping->publisher_mid,
+                    payload_type_mapping->subscriber_mid,
                     mid_rewrite.error());
             }
             else if (mid_rewrite->has_value())
@@ -1701,11 +1931,10 @@ std::vector<uint8_t> ice_udp_server::make_forward_plain_packet(const srtp_packet
 
     if (!rewrite_result)
     {
-        WEBRTC_LOG_WARN("rtp packet rewrite failed stream={} publisher_session={} subscriber_session={} mapping={} error={}",
-                        mapping->stream_id,
+        WEBRTC_LOG_WARN("rtp packet rewrite failed stream={} publisher_session={} subscriber_session={} error={}",
+                        route.source.stream_id,
                         route.source.session_id,
                         target_peer.session_id,
-                        media_payload_type_mapping_to_string(*mapping),
                         rewrite_result.error());
 
         return original_packet;
@@ -1714,16 +1943,103 @@ std::vector<uint8_t> ice_udp_server::make_forward_plain_packet(const srtp_packet
     if (rewrite_result->changed)
     {
         WEBRTC_LOG_DEBUG(
-            "rtp packet rewrite applied stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} publisher_pt={} "
-            "subscriber_pt={} plain_size={}",
-            mapping->stream_id,
+            "rtp packet rewrite applied stream={} publisher_session={} subscriber_session={} publisher_ssrc={} subscriber_ssrc={} plain_size={}",
+            route.source.stream_id,
             route.source.session_id,
             target_peer.session_id,
-            mapping->publisher_mid,
-            mapping->subscriber_mid,
-            mapping->publisher_payload_type,
-            mapping->subscriber_payload_type,
+            ssrc_mapping.has_value() ? ssrc_mapping->publisher_ssrc : packet.ssrc,
+            ssrc_mapping.has_value() ? ssrc_mapping->subscriber_ssrc : packet.ssrc,
             rewrite_result->packet.size());
+    }
+
+    return std::move(rewrite_result->packet);
+}
+
+std::vector<uint8_t> ice_udp_server::make_retransmit_plain_packet(const rtcp_feedback_route_event& event,
+                                                                  const rtp_packet_cache_entry& cached_packet,
+                                                                  const std::optional<media_ssrc_mapping>& ssrc_mapping)
+{
+    std::vector<uint8_t> original_packet;
+
+    original_packet.assign(cached_packet.plain_packet.begin(), cached_packet.plain_packet.end());
+
+    if (!ssrc_mapping.has_value())
+    {
+        return original_packet;
+    }
+
+    rtp_packet_rewrite_options options;
+
+    bool rewrite_required = false;
+
+    if (media_ssrc_mapping_requires_rewrite(*ssrc_mapping))
+    {
+        options.ssrc = ssrc_mapping->subscriber_ssrc;
+
+        rewrite_required = true;
+    }
+
+    auto table = get_or_create_payload_type_mapping_table_for_sessions(
+        ssrc_mapping->stream_id, ssrc_mapping->publisher_session_id, ssrc_mapping->subscriber_session_id);
+
+    std::optional<media_payload_type_mapping> payload_type_mapping;
+
+    if (table.has_value())
+    {
+        payload_type_mapping = find_media_payload_type_mapping(*table, ssrc_mapping->publisher_mid, cached_packet.payload_type);
+    }
+
+    if (payload_type_mapping.has_value() && payload_type_mapping->payload_type_rewrite_required)
+    {
+        if (payload_type_mapping->subscriber_payload_type <= 127)
+        {
+            options.payload_type = static_cast<uint8_t>(payload_type_mapping->subscriber_payload_type);
+
+            rewrite_required = true;
+        }
+    }
+
+    if (payload_type_mapping.has_value() && payload_type_mapping->mid_rewrite_required && registry_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(ssrc_mapping->publisher_session_id);
+
+        auto subscriber = registry_->find_subscriber_by_session_id(ssrc_mapping->subscriber_session_id);
+
+        if (publisher != nullptr && subscriber != nullptr)
+        {
+            auto mid_rewrite =
+                make_mid_header_extension_rewrite(*payload_type_mapping,
+                                                  publisher->remote_offer_summary(),
+                                                  subscriber->remote_offer_summary(),
+                                                  std::span<const uint8_t>(cached_packet.plain_packet.data(), cached_packet.plain_packet.size()));
+
+            if (mid_rewrite && mid_rewrite->has_value())
+            {
+                options.header_extensions.push_back(std::move(**mid_rewrite));
+
+                rewrite_required = true;
+            }
+        }
+    }
+
+    if (!rewrite_required)
+    {
+        return original_packet;
+    }
+
+    auto rewrite_result = rewrite_rtp_packet(std::span<const uint8_t>(cached_packet.plain_packet.data(), cached_packet.plain_packet.size()), options);
+
+    if (!rewrite_result)
+    {
+        WEBRTC_LOG_WARN("rtp nack retransmit rewrite failed stream={} subscriber={} publisher_ssrc={} subscriber_ssrc={} sequence={} error={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        ssrc_mapping->publisher_ssrc,
+                        ssrc_mapping->subscriber_ssrc,
+                        cached_packet.sequence_number,
+                        rewrite_result.error());
+
+        return original_packet;
     }
 
     return std::move(rewrite_result->packet);
@@ -1804,13 +2120,27 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         return;
     }
 
-    const uint32_t media_ssrc = event.media_ssrc != 0 ? event.media_ssrc : event.ssrc;
+    const uint32_t feedback_media_ssrc = event.media_ssrc != 0 ? event.media_ssrc : event.ssrc;
 
-    if (media_ssrc == 0)
+    if (feedback_media_ssrc == 0)
     {
         WEBRTC_LOG_WARN("rtp nack retransmit skipped empty media ssrc stream={} subscriber={}", event.source.stream_id, event.source.remote_endpoint);
 
         return;
+    }
+
+    std::optional<media_ssrc_mapping> ssrc_mapping;
+
+    uint32_t cache_media_ssrc = feedback_media_ssrc;
+
+    if (ssrc_mapper_ != nullptr)
+    {
+        ssrc_mapping = ssrc_mapper_->find_by_subscriber_ssrc(event.source.session_id, feedback_media_ssrc);
+
+        if (ssrc_mapping.has_value())
+        {
+            cache_media_ssrc = ssrc_mapping->publisher_ssrc;
+        }
     }
 
     auto target_endpoint = find_remote_endpoint(event.source.remote_endpoint);
@@ -1833,7 +2163,7 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
 
     for (uint16_t sequence_number : sequence_numbers)
     {
-        auto cached = rtp_packet_cache_->find(event.source.stream_id, media_ssrc, sequence_number);
+        auto cached = rtp_packet_cache_->find(event.source.stream_id, cache_media_ssrc, sequence_number);
 
         if (!cached)
         {
@@ -1844,17 +2174,22 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
 
         hit_count += 1;
 
-        auto protected_packet = srtp_transport_->protect_outbound_packet(
-            std::span<const uint8_t>(cached->plain_packet.data(), cached->plain_packet.size()), event.source.remote_endpoint, srtp_packet_kind::rtp);
+        std::vector<uint8_t> retransmit_plain_packet = make_retransmit_plain_packet(event, *cached, ssrc_mapping);
+
+        auto protected_packet =
+            srtp_transport_->protect_outbound_packet(std::span<const uint8_t>(retransmit_plain_packet.data(), retransmit_plain_packet.size()),
+                                                     event.source.remote_endpoint,
+                                                     srtp_packet_kind::rtp);
 
         if (!protected_packet)
         {
             failed_count += 1;
 
-            WEBRTC_LOG_WARN("rtp nack retransmit protect failed stream={} subscriber={} ssrc={} sequence={} error={}",
+            WEBRTC_LOG_WARN("rtp nack retransmit protect failed stream={} subscriber={} feedback_ssrc={} cache_ssrc={} sequence={} error={}",
                             event.source.stream_id,
                             event.source.remote_endpoint,
-                            media_ssrc,
+                            feedback_media_ssrc,
+                            cache_media_ssrc,
                             sequence_number,
                             protected_packet.error());
 
@@ -1865,10 +2200,11 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         {
             ignored_count += 1;
 
-            WEBRTC_LOG_DEBUG("rtp nack retransmit ignored stream={} subscriber={} ssrc={} sequence={} reason={}",
+            WEBRTC_LOG_DEBUG("rtp nack retransmit ignored stream={} subscriber={} feedback_ssrc={} cache_ssrc={} sequence={} reason={}",
                              event.source.stream_id,
                              event.source.remote_endpoint,
-                             media_ssrc,
+                             feedback_media_ssrc,
+                             cache_media_ssrc,
                              sequence_number,
                              protected_packet->reason);
 
@@ -1879,40 +2215,47 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
 
         sent_count += 1;
 
-        WEBRTC_LOG_DEBUG("rtp nack retransmit send stream={} subscriber={} ssrc={} sequence={}",
+        WEBRTC_LOG_DEBUG("rtp nack retransmit send stream={} subscriber={} feedback_ssrc={} cache_ssrc={} sequence={}",
                          event.source.stream_id,
                          event.source.remote_endpoint,
-                         media_ssrc,
+                         feedback_media_ssrc,
+                         cache_media_ssrc,
                          sequence_number);
     }
 
-    WEBRTC_LOG_INFO("rtp nack retransmit summary stream={} subscriber={} media_ssrc={} requested={} hit={} miss={} sent={} ignored={} failed={}",
-                    event.source.stream_id,
-                    event.source.remote_endpoint,
-                    media_ssrc,
-                    sequence_numbers.size(),
-                    hit_count,
-                    miss_count,
-                    sent_count,
-                    ignored_count,
-                    failed_count);
+    WEBRTC_LOG_INFO(
+        "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} requested={} hit={} miss={} sent={} ignored={} failed={}",
+        event.source.stream_id,
+        event.source.remote_endpoint,
+        feedback_media_ssrc,
+        cache_media_ssrc,
+        sequence_numbers.size(),
+        hit_count,
+        miss_count,
+        sent_count,
+        ignored_count,
+        failed_count);
 }
 
 void ice_udp_server::erase_rtp_cache(std::string_view stream_id)
 {
-    if (rtp_packet_cache_ == nullptr || stream_id.empty())
+    if (rtp_packet_cache_ != nullptr && !stream_id.empty())
     {
-        return;
+        rtp_packet_cache_->erase_stream(stream_id);
+
+        WEBRTC_LOG_INFO("rtp cache stream erased stream={} remaining={}", stream_id, rtp_packet_cache_->size());
     }
 
-    rtp_packet_cache_->erase_stream(stream_id);
-
-    WEBRTC_LOG_INFO("rtp cache stream erased stream={} remaining={}", stream_id, rtp_packet_cache_->size());
+    if (ssrc_mapper_ != nullptr && !stream_id.empty())
+    {
+        ssrc_mapper_->forget_stream(stream_id);
+    }
 }
 
 void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet,
                                           const media_route_result& route,
-                                          const std::optional<media_track_resolution>& track_resolution)
+                                          const std::optional<media_track_resolution>& track_resolution,
+                                          const std::optional<rtcp_feedback_route_event>& feedback_event)
 {
     if (packet.plain_packet.empty())
     {
@@ -1964,7 +2307,7 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
             continue;
         }
 
-        std::vector<uint8_t> outbound_plain_packet = make_forward_plain_packet(packet, route, track_resolution, *target_peer);
+        std::vector<uint8_t> outbound_plain_packet = make_forward_plain_packet(packet, route, track_resolution, feedback_event, *target_peer);
 
         if (outbound_plain_packet.empty())
         {
@@ -2255,6 +2598,11 @@ std::vector<std::string> ice_udp_server::expire_ice_candidate_pairs(uint64_t cur
         erase_candidate_pairs_for_session_locked(session_id);
 
         erase_payload_type_mappings_for_session_locked(session_id);
+
+        if (ssrc_mapper_ != nullptr)
+        {
+            ssrc_mapper_->forget_session(session_id);
+        }
     }
 
     for (auto iterator = candidate_pairs_by_key_.begin(); iterator != candidate_pairs_by_key_.end();)
@@ -2321,6 +2669,11 @@ void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
         }
 
         erase_candidate_pairs_for_endpoint_locked(remote_address);
+    }
+
+    if (!session_id.empty() && ssrc_mapper_ != nullptr)
+    {
+        ssrc_mapper_->forget_session(session_id);
     }
 
     forget_peer_transport_state(remote_address);

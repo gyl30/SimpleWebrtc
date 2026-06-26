@@ -19,6 +19,7 @@
 #include "dtls/dtls_transport.h"
 #include "media/media_payload_type_mapper.h"
 #include "media/media_router.h"
+#include "media/media_ssrc_mapper.h"
 #include "media/media_track_resolver.h"
 #include "media/rtcp_feedback_router.h"
 #include "media/rtp_packet_cache.h"
@@ -124,15 +125,32 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                                              const media_peer_info& target_peer);
 
     [[nodiscard]]
+    std::optional<media_payload_type_mapping_table> get_or_create_payload_type_mapping_table_for_sessions(std::string_view stream_id,
+                                                                                                          std::string_view publisher_session_id,
+                                                                                                          std::string_view subscriber_session_id);
+
+    [[nodiscard]]
     std::optional<media_payload_type_mapping> find_payload_type_mapping(const media_route_result& route,
                                                                         const media_peer_info& target_peer,
                                                                         const std::optional<media_track_resolution>& track_resolution);
 
     [[nodiscard]]
+    std::optional<media_ssrc_mapping> get_or_create_ssrc_mapping(const media_route_result& route,
+                                                                 const media_peer_info& target_peer,
+                                                                 const std::optional<media_track_resolution>& track_resolution,
+                                                                 const std::optional<media_payload_type_mapping>& payload_type_mapping);
+
+    [[nodiscard]]
     std::vector<uint8_t> make_forward_plain_packet(const srtp_packet_process_result& packet,
                                                    const media_route_result& route,
                                                    const std::optional<media_track_resolution>& track_resolution,
+                                                   const std::optional<rtcp_feedback_route_event>& feedback_event,
                                                    const media_peer_info& target_peer);
+
+    [[nodiscard]]
+    std::vector<uint8_t> make_retransmit_plain_packet(const rtcp_feedback_route_event& event,
+                                                      const rtp_packet_cache_entry& cached_packet,
+                                                      const std::optional<media_ssrc_mapping>& ssrc_mapping);
 
     void cache_inbound_rtp_packet(const srtp_packet_process_result& packet, const media_route_result& route);
 
@@ -144,7 +162,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void forward_media_packet(const srtp_packet_process_result& packet,
                               const media_route_result& route,
-                              const std::optional<media_track_resolution>& track_resolution);
+                              const std::optional<media_track_resolution>& track_resolution,
+                              const std::optional<rtcp_feedback_route_event>& feedback_event);
 
     void send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint);
 
@@ -215,6 +234,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::shared_ptr<media_router> media_router_;
 
     std::shared_ptr<media_track_resolver> track_resolver_;
+
+    std::shared_ptr<media_ssrc_mapper> ssrc_mapper_;
 
     std::shared_ptr<rtp_packet_cache> rtp_packet_cache_;
 
