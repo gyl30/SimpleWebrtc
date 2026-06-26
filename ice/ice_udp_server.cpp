@@ -22,6 +22,7 @@
 #include "dtls/dtls_packet.h"
 #include "ice/stun_message.h"
 #include "log/log.h"
+#include "media/media_payload_type_mapper.h"
 #include "media/media_router.h"
 #include "media/media_track_resolver.h"
 #include "media/rtcp_feedback_router.h"
@@ -29,6 +30,7 @@
 #include "net/socket.h"
 #include "rtp/rtcp_feedback.h"
 #include "rtp/rtp_packet.h"
+#include "rtp/rtp_packet_rewriter.h"
 #include "session/session_state.h"
 #include "util/timestamp.h"
 
@@ -48,11 +50,15 @@ constexpr uint64_t k_ice_consent_timeout_milliseconds = 30000;
 
 constexpr uint64_t k_unselected_candidate_pair_retention_milliseconds = 120000;
 
+constexpr std::string_view k_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
+
 struct ice_username_parts
 {
     std::string_view recipient_ufrag;
     std::string_view sender_ufrag;
 };
+
+using optional_mid_rewrite_result = std::expected<std::optional<rtp_header_extension_rewrite>, std::string>;
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
@@ -93,6 +99,19 @@ std::string make_candidate_pair_key(std::string_view session_id, std::string_vie
     key.append(session_id);
     key.push_back('\n');
     key.append(remote_address);
+
+    return key;
+}
+
+std::string make_payload_type_mapping_key(std::string_view publisher_session_id, std::string_view subscriber_session_id)
+{
+    std::string key;
+
+    key.reserve(publisher_session_id.size() + subscriber_session_id.size() + 1);
+
+    key.append(publisher_session_id);
+    key.push_back('\n');
+    key.append(subscriber_session_id);
 
     return key;
 }
@@ -275,6 +294,113 @@ dtls_peer_identity make_subscriber_dtls_identity(const std::shared_ptr<subscribe
     identity.remote_fingerprint = session->remote_offer_summary().fingerprint;
 
     return identity;
+}
+
+const sdp::media_summary* find_media_summary_by_mid(const sdp::webrtc_offer_summary& offer, std::string_view mid)
+{
+    if (mid.empty())
+    {
+        return nullptr;
+    }
+
+    for (const auto& media : offer.media)
+    {
+        if (media.mid == mid)
+        {
+            return &media;
+        }
+    }
+
+    return nullptr;
+}
+
+std::vector<uint8_t> string_to_bytes(std::string_view value)
+{
+    std::vector<uint8_t> result;
+
+    result.reserve(value.size());
+
+    for (char item : value)
+    {
+        result.push_back(static_cast<uint8_t>(item));
+    }
+
+    return result;
+}
+
+optional_mid_rewrite_result make_mid_header_extension_rewrite(const media_payload_type_mapping& mapping,
+                                                              const sdp::webrtc_offer_summary& publisher_offer,
+                                                              const sdp::webrtc_offer_summary& subscriber_offer,
+                                                              std::span<const uint8_t> plain_packet)
+{
+    if (!mapping.mid_rewrite_required)
+    {
+        return std::optional<rtp_header_extension_rewrite>{};
+    }
+
+    const sdp::media_summary* publisher_media = find_media_summary_by_mid(publisher_offer, mapping.publisher_mid);
+
+    if (publisher_media == nullptr)
+    {
+        return make_error("rtp mid rewrite publisher media not found");
+    }
+
+    const sdp::media_summary* subscriber_media = find_media_summary_by_mid(subscriber_offer, mapping.subscriber_mid);
+
+    if (subscriber_media == nullptr)
+    {
+        return make_error("rtp mid rewrite subscriber media not found");
+    }
+
+    auto publisher_mid_extension_id = find_rtp_header_extension_id(*publisher_media, k_mid_extension_uri);
+
+    if (!publisher_mid_extension_id.has_value())
+    {
+        return std::optional<rtp_header_extension_rewrite>{};
+    }
+
+    auto subscriber_mid_extension_id = find_rtp_header_extension_id(*subscriber_media, k_mid_extension_uri);
+
+    if (!subscriber_mid_extension_id.has_value())
+    {
+        return make_error("rtp mid rewrite subscriber mid extension is missing");
+    }
+
+    if (*publisher_mid_extension_id != *subscriber_mid_extension_id)
+    {
+        return make_error("rtp mid extension id rewrite is unsupported");
+    }
+
+    auto header = parse_rtp_packet_header(plain_packet);
+
+    if (!header)
+    {
+        std::string message = "rtp mid rewrite parse failed: ";
+
+        message.append(header.error());
+
+        return std::unexpected(std::move(message));
+    }
+
+    auto existing_payload = find_rtp_header_extension(plain_packet, *header, *publisher_mid_extension_id);
+
+    if (!existing_payload.has_value())
+    {
+        return std::optional<rtp_header_extension_rewrite>{};
+    }
+
+    if (existing_payload->size() != mapping.subscriber_mid.size())
+    {
+        return make_error("rtp mid extension payload size rewrite is unsupported");
+    }
+
+    rtp_header_extension_rewrite rewrite;
+
+    rewrite.id = *publisher_mid_extension_id;
+
+    rewrite.payload = string_to_bytes(mapping.subscriber_mid);
+
+    return std::optional<rtp_header_extension_rewrite>(std::move(rewrite));
 }
 
 void log_rtcp_feedback_route_event(const rtcp_feedback_route_event& event)
@@ -482,6 +608,8 @@ void ice_udp_server::stop()
         session_id_by_endpoint_address_.clear();
 
         candidate_pairs_by_key_.clear();
+
+        payload_type_mappings_by_key_.clear();
     }
 
     track_resolver_ = std::make_shared<media_track_resolver>();
@@ -505,6 +633,8 @@ void ice_udp_server::forget_session(std::string_view session_id)
         std::lock_guard lock(endpoint_mutex_);
 
         erase_candidate_pairs_for_session_locked(session_id);
+
+        erase_payload_type_mappings_for_session_locked(session_id);
 
         const auto iterator = endpoint_address_by_session_id_.find(std::string(session_id));
 
@@ -1228,7 +1358,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
         handle_rtcp_feedback_event(*feedback_event);
     }
 
-    forward_media_packet(*result, route);
+    forward_media_packet(*result, route, track_resolution);
 }
 
 std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const media_peer_info& peer, const srtp_packet_process_result& packet)
@@ -1314,6 +1444,289 @@ std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const 
     }
 
     return *resolution;
+}
+
+std::optional<media_payload_type_mapping_table> ice_udp_server::get_or_create_payload_type_mapping_table(const media_route_result& route,
+                                                                                                         const media_peer_info& target_peer)
+{
+    if (registry_ == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    if (route.source.role != media_peer_role::publisher)
+    {
+        return std::nullopt;
+    }
+
+    if (target_peer.role != media_peer_role::subscriber)
+    {
+        return std::nullopt;
+    }
+
+    if (route.source.session_id.empty() || target_peer.session_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (route.source.stream_id != target_peer.stream_id)
+    {
+        WEBRTC_LOG_WARN(
+            "payload type mapping skipped stream mismatch publisher_stream={} subscriber_stream={} publisher_session={} subscriber_session={}",
+            route.source.stream_id,
+            target_peer.stream_id,
+            route.source.session_id,
+            target_peer.session_id);
+
+        return std::nullopt;
+    }
+
+    const std::string cache_key = make_payload_type_mapping_key(route.source.session_id, target_peer.session_id);
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        const auto iterator = payload_type_mappings_by_key_.find(cache_key);
+
+        if (iterator != payload_type_mappings_by_key_.end())
+        {
+            return iterator->second.table;
+        }
+    }
+
+    auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
+
+    if (publisher == nullptr)
+    {
+        WEBRTC_LOG_WARN("payload type mapping publisher session not found stream={} session={}", route.source.stream_id, route.source.session_id);
+
+        return std::nullopt;
+    }
+
+    auto subscriber = registry_->find_subscriber_by_session_id(target_peer.session_id);
+
+    if (subscriber == nullptr)
+    {
+        WEBRTC_LOG_WARN("payload type mapping subscriber session not found stream={} session={}", target_peer.stream_id, target_peer.session_id);
+
+        return std::nullopt;
+    }
+
+    auto table_result =
+        build_media_payload_type_mapping_table(route.source.stream_id, publisher->remote_offer_summary(), subscriber->remote_offer_summary());
+
+    if (!table_result)
+    {
+        WEBRTC_LOG_WARN("payload type mapping build failed stream={} publisher_session={} subscriber_session={} error={}",
+                        route.source.stream_id,
+                        route.source.session_id,
+                        target_peer.session_id,
+                        table_result.error());
+
+        return std::nullopt;
+    }
+
+    media_payload_type_mapping_cache_entry entry;
+
+    entry.publisher_session_id = route.source.session_id;
+
+    entry.subscriber_session_id = target_peer.session_id;
+
+    entry.stream_id = route.source.stream_id;
+
+    entry.table = std::move(*table_result);
+
+    WEBRTC_LOG_INFO("payload type mapping table created stream={} publisher_session={} subscriber_session={} mappings={}",
+                    entry.stream_id,
+                    entry.publisher_session_id,
+                    entry.subscriber_session_id,
+                    entry.table.mappings.size());
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        auto [iterator, inserted] = payload_type_mappings_by_key_.try_emplace(cache_key, std::move(entry));
+
+        (void)inserted;
+
+        return iterator->second.table;
+    }
+}
+
+std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapping(const media_route_result& route,
+                                                                                    const media_peer_info& target_peer,
+                                                                                    const std::optional<media_track_resolution>& track_resolution)
+{
+    if (!track_resolution.has_value() || !track_resolution->resolved)
+    {
+        return std::nullopt;
+    }
+
+    auto table = get_or_create_payload_type_mapping_table(route, target_peer);
+
+    if (!table.has_value())
+    {
+        return std::nullopt;
+    }
+
+    if (!track_resolution->mid.empty())
+    {
+        auto mapping = find_media_payload_type_mapping(*table, track_resolution->mid, track_resolution->payload_type);
+
+        if (mapping.has_value())
+        {
+            return mapping;
+        }
+    }
+
+    if (!track_resolution->kind.empty())
+    {
+        auto mapping = find_media_payload_type_mapping_by_kind(*table, track_resolution->kind, track_resolution->payload_type);
+
+        if (mapping.has_value())
+        {
+            return mapping;
+        }
+    }
+
+    WEBRTC_LOG_DEBUG("payload type mapping not found stream={} publisher_session={} subscriber_session={} mid={} kind={} payload_type={}",
+                     route.source.stream_id,
+                     route.source.session_id,
+                     target_peer.session_id,
+                     track_resolution->mid,
+                     track_resolution->kind,
+                     static_cast<unsigned int>(track_resolution->payload_type));
+
+    return std::nullopt;
+}
+
+std::vector<uint8_t> ice_udp_server::make_forward_plain_packet(const srtp_packet_process_result& packet,
+                                                               const media_route_result& route,
+                                                               const std::optional<media_track_resolution>& track_resolution,
+                                                               const media_peer_info& target_peer)
+{
+    std::vector<uint8_t> original_packet;
+
+    original_packet.assign(packet.plain_packet.begin(), packet.plain_packet.end());
+
+    if (packet.kind != srtp_packet_kind::rtp)
+    {
+        return original_packet;
+    }
+
+    if (packet.plain_packet.empty())
+    {
+        return original_packet;
+    }
+
+    auto mapping = find_payload_type_mapping(route, target_peer, track_resolution);
+
+    if (!mapping.has_value())
+    {
+        return original_packet;
+    }
+
+    if (!media_payload_type_mapping_requires_packet_rewrite(*mapping))
+    {
+        return original_packet;
+    }
+
+    rtp_packet_rewrite_options options;
+
+    bool rewrite_required = false;
+
+    if (mapping->payload_type_rewrite_required)
+    {
+        if (mapping->subscriber_payload_type > 127)
+        {
+            WEBRTC_LOG_WARN("rtp payload type rewrite skipped invalid target payload type stream={} subscriber_session={} payload_type={}",
+                            mapping->stream_id,
+                            target_peer.session_id,
+                            mapping->subscriber_payload_type);
+
+            return original_packet;
+        }
+
+        options.payload_type = static_cast<uint8_t>(mapping->subscriber_payload_type);
+
+        rewrite_required = true;
+    }
+
+    if (mapping->mid_rewrite_required && registry_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
+
+        auto subscriber = registry_->find_subscriber_by_session_id(target_peer.session_id);
+
+        if (publisher == nullptr || subscriber == nullptr)
+        {
+            WEBRTC_LOG_WARN("rtp mid rewrite skipped session not found stream={} publisher_session={} subscriber_session={}",
+                            route.source.stream_id,
+                            route.source.session_id,
+                            target_peer.session_id);
+        }
+        else
+        {
+            auto mid_rewrite = make_mid_header_extension_rewrite(*mapping,
+                                                                 publisher->remote_offer_summary(),
+                                                                 subscriber->remote_offer_summary(),
+                                                                 std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
+
+            if (!mid_rewrite)
+            {
+                WEBRTC_LOG_WARN(
+                    "rtp mid rewrite skipped stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} error={}",
+                    mapping->stream_id,
+                    route.source.session_id,
+                    target_peer.session_id,
+                    mapping->publisher_mid,
+                    mapping->subscriber_mid,
+                    mid_rewrite.error());
+            }
+            else if (mid_rewrite->has_value())
+            {
+                options.header_extensions.push_back(std::move(**mid_rewrite));
+
+                rewrite_required = true;
+            }
+        }
+    }
+
+    if (!rewrite_required)
+    {
+        return original_packet;
+    }
+
+    auto rewrite_result = rewrite_rtp_packet(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()), options);
+
+    if (!rewrite_result)
+    {
+        WEBRTC_LOG_WARN("rtp packet rewrite failed stream={} publisher_session={} subscriber_session={} mapping={} error={}",
+                        mapping->stream_id,
+                        route.source.session_id,
+                        target_peer.session_id,
+                        media_payload_type_mapping_to_string(*mapping),
+                        rewrite_result.error());
+
+        return original_packet;
+    }
+
+    if (rewrite_result->changed)
+    {
+        WEBRTC_LOG_DEBUG(
+            "rtp packet rewrite applied stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} publisher_pt={} "
+            "subscriber_pt={} plain_size={}",
+            mapping->stream_id,
+            route.source.session_id,
+            target_peer.session_id,
+            mapping->publisher_mid,
+            mapping->subscriber_mid,
+            mapping->publisher_payload_type,
+            mapping->subscriber_payload_type,
+            rewrite_result->packet.size());
+    }
+
+    return std::move(rewrite_result->packet);
 }
 
 void ice_udp_server::cache_inbound_rtp_packet(const srtp_packet_process_result& packet, const media_route_result& route)
@@ -1497,7 +1910,9 @@ void ice_udp_server::erase_rtp_cache(std::string_view stream_id)
     WEBRTC_LOG_INFO("rtp cache stream erased stream={} remaining={}", stream_id, rtp_packet_cache_->size());
 }
 
-void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet, const media_route_result& route)
+void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet,
+                                          const media_route_result& route,
+                                          const std::optional<media_track_resolution>& track_resolution)
 {
     if (packet.plain_packet.empty())
     {
@@ -1536,8 +1951,34 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
             continue;
         }
 
+        auto target_peer = media_router_->get_peer(target_address);
+
+        if (!target_peer.has_value())
+        {
+            WEBRTC_LOG_WARN("media forward target peer not found stream={} source={} target={} kind={}",
+                            route.source.stream_id,
+                            route.source.remote_endpoint,
+                            target_address,
+                            srtp_packet_kind_to_string(packet.kind));
+
+            continue;
+        }
+
+        std::vector<uint8_t> outbound_plain_packet = make_forward_plain_packet(packet, route, track_resolution, *target_peer);
+
+        if (outbound_plain_packet.empty())
+        {
+            WEBRTC_LOG_WARN("media forward skipped empty rewritten packet stream={} source={} target={} kind={}",
+                            route.source.stream_id,
+                            route.source.remote_endpoint,
+                            target_address,
+                            srtp_packet_kind_to_string(packet.kind));
+
+            continue;
+        }
+
         auto protected_packet = srtp_transport_->protect_outbound_packet(
-            std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()), target_address, packet.kind);
+            std::span<const uint8_t>(outbound_plain_packet.data(), outbound_plain_packet.size()), target_address, packet.kind);
 
         if (!protected_packet)
         {
@@ -1568,7 +2009,7 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
                          route.source.remote_endpoint,
                          target_address,
                          srtp_packet_kind_to_string(packet.kind),
-                         packet.plain_packet.size(),
+                         outbound_plain_packet.size(),
                          protected_packet->protected_packet.size());
 
         send_response(std::move(protected_packet->protected_packet), *target_endpoint);
@@ -1812,6 +2253,8 @@ std::vector<std::string> ice_udp_server::expire_ice_candidate_pairs(uint64_t cur
         }
 
         erase_candidate_pairs_for_session_locked(session_id);
+
+        erase_payload_type_mappings_for_session_locked(session_id);
     }
 
     for (auto iterator = candidate_pairs_by_key_.begin(); iterator != candidate_pairs_by_key_.end();)
@@ -1873,6 +2316,8 @@ void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
         if (!session_id.empty())
         {
             endpoint_address_by_session_id_.erase(session_id);
+
+            erase_payload_type_mappings_for_session_locked(session_id);
         }
 
         erase_candidate_pairs_for_endpoint_locked(remote_address);
@@ -1928,6 +2373,21 @@ void ice_udp_server::erase_candidate_pairs_for_endpoint_locked(std::string_view 
         if (iterator->second.remote_address == remote_address)
         {
             iterator = candidate_pairs_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
+void ice_udp_server::erase_payload_type_mappings_for_session_locked(std::string_view session_id)
+{
+    for (auto iterator = payload_type_mappings_by_key_.begin(); iterator != payload_type_mappings_by_key_.end();)
+    {
+        if (iterator->second.publisher_session_id == session_id || iterator->second.subscriber_session_id == session_id)
+        {
+            iterator = payload_type_mappings_by_key_.erase(iterator);
 
             continue;
         }
