@@ -347,6 +347,18 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
         return json_error_response(request, 415, "unsupported media type, expected application/json or application/trickle-ice-sdpfrag");
     }
 
+    if (trickle_ice_patch_body_too_large(request.req.body().size()))
+    {
+        global_trickle_ice_metrics().record_patch_failed();
+
+        WEBRTC_LOG_WARN("WHIP trickle ice patch body too large session={} body_size={} limit={}",
+                        session_id,
+                        request.req.body().size(),
+                        k_trickle_ice_max_patch_body_bytes);
+
+        return json_error_response(request, 413, "trickle ice patch body too large");
+    }
+
     auto session = registry_->find_publisher_by_session_id(session_id);
 
     if (session == nullptr)
@@ -375,6 +387,18 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
         message.append(candidates.error());
 
         return json_error_response(request, 400, message);
+    }
+
+    if (trickle_ice_candidate_batch_too_large(candidates->size()))
+    {
+        global_trickle_ice_metrics().record_patch_failed();
+
+        WEBRTC_LOG_WARN("WHIP trickle ice patch too many candidates session={} candidates={} limit={}",
+                        session_id,
+                        candidates->size(),
+                        k_trickle_ice_max_candidates_per_patch);
+
+        return json_error_response(request, 413, "too many trickle ice candidates in one patch");
     }
 
     const std::size_t received_count = candidates->size();

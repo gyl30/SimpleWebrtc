@@ -27,7 +27,7 @@ inline void set_trickle_ice_patch_headers(const http_response_ptr& response)
     response->set("Accept-Patch", std::string(k_trickle_ice_patch_accept_patch_value));
 }
 
-inline bool trickle_ice_patch_body_too_large(std::string_view body) { return body.size() > k_trickle_ice_max_patch_body_bytes; }
+inline bool trickle_ice_patch_body_too_large(std::size_t body_size) { return body_size > k_trickle_ice_max_patch_body_bytes; }
 
 inline bool trickle_ice_candidate_batch_too_large(std::size_t candidate_count) { return candidate_count > k_trickle_ice_max_candidates_per_patch; }
 }    // namespace webrtc
