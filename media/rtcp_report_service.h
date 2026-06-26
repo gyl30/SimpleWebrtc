@@ -54,9 +54,40 @@ struct rtcp_report_service_generation
     std::size_t failed = 0;
 };
 
+struct rtcp_report_service_rtcp_observation
+{
+    std::string stream_id;
+    std::string session_id;
+    std::string remote_endpoint;
+
+    std::vector<uint32_t> sender_report_ssrcs;
+
+    std::size_t sender_report_count = 0;
+};
+
+struct rtcp_report_service_runtime_snapshot
+{
+    std::size_t configured_sources = 0;
+    std::size_t stats_sources = 0;
+
+    uint64_t generated_report_rounds = 0;
+    uint64_t generated_packets = 0;
+    uint64_t skipped_packets = 0;
+    uint64_t failed_packets = 0;
+
+    uint64_t observed_sender_reports = 0;
+
+    uint64_t last_generation_time_milliseconds = 0;
+    std::size_t last_generation_packets = 0;
+    std::size_t last_generation_skipped = 0;
+    std::size_t last_generation_failed = 0;
+};
+
 using rtcp_report_service_result = std::expected<void, std::string>;
 
 using rtcp_report_service_packet_result = std::expected<rtcp_report_service_packet, std::string>;
+
+using rtcp_report_service_rtcp_observation_result = std::expected<rtcp_report_service_rtcp_observation, std::string>;
 
 class rtcp_report_service
 {
@@ -96,6 +127,13 @@ class rtcp_report_service
                                                      uint64_t arrival_time_milliseconds);
 
     [[nodiscard]]
+    rtcp_report_service_rtcp_observation_result observe_received_rtcp_with_summary(std::string_view stream_id,
+                                                                                   std::string_view session_id,
+                                                                                   std::string_view remote_endpoint,
+                                                                                   std::span<const uint8_t> plain_packet,
+                                                                                   uint64_t arrival_time_milliseconds);
+
+    [[nodiscard]]
     rtcp_report_service_generation generate_reports(uint64_t now_milliseconds);
 
     [[nodiscard]]
@@ -114,6 +152,9 @@ class rtcp_report_service
 
     [[nodiscard]]
     std::size_t stats_source_count() const;
+
+    [[nodiscard]]
+    rtcp_report_service_runtime_snapshot runtime_snapshot() const;
 
     [[nodiscard]]
     rtcp_session_stats& stats();
@@ -145,12 +186,26 @@ class rtcp_report_service
     [[nodiscard]]
     rtcp_report_generation_result_type generate_report_packet(const rtcp_report_source_config& source, uint64_t now_milliseconds);
 
+    void reset_runtime_counters_locked();
+
    private:
     rtcp_report_service_config config_;
 
     mutable std::mutex mutex_;
 
     std::unordered_map<std::string, rtcp_report_source_config> sources_by_key_;
+
+    uint64_t generated_report_rounds_ = 0;
+    uint64_t generated_packets_ = 0;
+    uint64_t skipped_packets_ = 0;
+    uint64_t failed_packets_ = 0;
+
+    uint64_t observed_sender_reports_ = 0;
+
+    uint64_t last_generation_time_milliseconds_ = 0;
+    std::size_t last_generation_packets_ = 0;
+    std::size_t last_generation_skipped_ = 0;
+    std::size_t last_generation_failed_ = 0;
 
     rtcp_session_stats stats_;
 };
@@ -160,6 +215,9 @@ std::string rtcp_report_source_config_to_string(const rtcp_report_source_config&
 
 [[nodiscard]]
 std::string rtcp_report_service_generation_to_string(const rtcp_report_service_generation& generation);
+
+[[nodiscard]]
+std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_service_runtime_snapshot& snapshot);
 }    // namespace webrtc
 
 #endif

@@ -91,7 +91,20 @@ rtcp_report_service_result rtcp_report_service::observe_sent_rtp(const rtcp_sent
 
 rtcp_report_service_result rtcp_report_service::observe_sender_report(const rtcp_received_sender_report& report)
 {
-    return stats_.observe_sender_report(report);
+    auto result = stats_.observe_sender_report(report);
+
+    if (!result)
+    {
+        return std::unexpected(result.error());
+    }
+
+    {
+        std::lock_guard lock(mutex_);
+
+        observed_sender_reports_ += 1;
+    }
+
+    return {};
 }
 
 rtcp_report_service_result rtcp_report_service::observe_received_rtcp(std::string_view stream_id,
@@ -99,6 +112,22 @@ rtcp_report_service_result rtcp_report_service::observe_received_rtcp(std::strin
                                                                       std::string_view remote_endpoint,
                                                                       std::span<const uint8_t> plain_packet,
                                                                       uint64_t arrival_time_milliseconds)
+{
+    auto observation = observe_received_rtcp_with_summary(stream_id, session_id, remote_endpoint, plain_packet, arrival_time_milliseconds);
+
+    if (!observation)
+    {
+        return std::unexpected(observation.error());
+    }
+
+    return {};
+}
+
+rtcp_report_service_rtcp_observation_result rtcp_report_service::observe_received_rtcp_with_summary(std::string_view stream_id,
+                                                                                                    std::string_view session_id,
+                                                                                                    std::string_view remote_endpoint,
+                                                                                                    std::span<const uint8_t> plain_packet,
+                                                                                                    uint64_t arrival_time_milliseconds)
 {
     auto validation_result = validate_rtcp_observation(session_id, remote_endpoint, plain_packet);
 
@@ -117,6 +146,14 @@ rtcp_report_service_result rtcp_report_service::observe_received_rtcp(std::strin
 
         return std::unexpected(std::move(message));
     }
+
+    rtcp_report_service_rtcp_observation observation;
+
+    observation.stream_id = std::string(stream_id);
+
+    observation.session_id = std::string(session_id);
+
+    observation.remote_endpoint = std::string(remote_endpoint);
 
     for (const auto& block : compound->blocks)
     {
@@ -147,9 +184,13 @@ rtcp_report_service_result rtcp_report_service::observe_received_rtcp(std::strin
         {
             return std::unexpected(observe_result.error());
         }
+
+        observation.sender_report_ssrcs.push_back(block.report_sender_ssrc);
     }
 
-    return {};
+    observation.sender_report_count = observation.sender_report_ssrcs.size();
+
+    return observation;
 }
 
 rtcp_report_service_generation rtcp_report_service::generate_reports(uint64_t now_milliseconds)
@@ -194,6 +235,26 @@ rtcp_report_service_generation rtcp_report_service::generate_reports(uint64_t no
         }
 
         generation.packets.push_back(std::move(*packet));
+    }
+
+    {
+        std::lock_guard lock(mutex_);
+
+        generated_report_rounds_ += 1;
+
+        generated_packets_ += generation.packets.size();
+
+        skipped_packets_ += generation.skipped;
+
+        failed_packets_ += generation.failed;
+
+        last_generation_time_milliseconds_ = now_milliseconds;
+
+        last_generation_packets_ = generation.packets.size();
+
+        last_generation_skipped_ = generation.skipped;
+
+        last_generation_failed_ = generation.failed;
     }
 
     return generation;
@@ -310,6 +371,8 @@ void rtcp_report_service::clear()
         std::lock_guard lock(mutex_);
 
         sources_by_key_.clear();
+
+        reset_runtime_counters_locked();
     }
 
     stats_.clear();
@@ -323,6 +386,39 @@ std::size_t rtcp_report_service::source_count() const
 }
 
 std::size_t rtcp_report_service::stats_source_count() const { return stats_.source_count(); }
+
+rtcp_report_service_runtime_snapshot rtcp_report_service::runtime_snapshot() const
+{
+    rtcp_report_service_runtime_snapshot snapshot;
+
+    {
+        std::lock_guard lock(mutex_);
+
+        snapshot.configured_sources = sources_by_key_.size();
+
+        snapshot.generated_report_rounds = generated_report_rounds_;
+
+        snapshot.generated_packets = generated_packets_;
+
+        snapshot.skipped_packets = skipped_packets_;
+
+        snapshot.failed_packets = failed_packets_;
+
+        snapshot.observed_sender_reports = observed_sender_reports_;
+
+        snapshot.last_generation_time_milliseconds = last_generation_time_milliseconds_;
+
+        snapshot.last_generation_packets = last_generation_packets_;
+
+        snapshot.last_generation_skipped = last_generation_skipped_;
+
+        snapshot.last_generation_failed = last_generation_failed_;
+    }
+
+    snapshot.stats_sources = stats_.source_count();
+
+    return snapshot;
+}
 
 rtcp_session_stats& rtcp_report_service::stats() { return stats_; }
 
@@ -508,6 +604,21 @@ rtcp_report_generation_result_type rtcp_report_service::generate_report_packet(c
     return receiver_report;
 }
 
+void rtcp_report_service::reset_runtime_counters_locked()
+{
+    generated_report_rounds_ = 0;
+    generated_packets_ = 0;
+    skipped_packets_ = 0;
+    failed_packets_ = 0;
+
+    observed_sender_reports_ = 0;
+
+    last_generation_time_milliseconds_ = 0;
+    last_generation_packets_ = 0;
+    last_generation_skipped_ = 0;
+    last_generation_failed_ = 0;
+}
+
 std::string rtcp_report_source_config_to_string(const rtcp_report_source_config& source)
 {
     std::string result;
@@ -558,6 +669,48 @@ std::string rtcp_report_service_generation_to_string(const rtcp_report_service_g
 
     result.append(" errors=");
     result.append(std::to_string(generation.errors.size()));
+
+    return result;
+}
+
+std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_service_runtime_snapshot& snapshot)
+{
+    std::string result;
+
+    result.reserve(192);
+
+    result.append("configured_sources=");
+    result.append(std::to_string(snapshot.configured_sources));
+
+    result.append(" stats_sources=");
+    result.append(std::to_string(snapshot.stats_sources));
+
+    result.append(" rounds=");
+    result.append(std::to_string(snapshot.generated_report_rounds));
+
+    result.append(" packets=");
+    result.append(std::to_string(snapshot.generated_packets));
+
+    result.append(" skipped=");
+    result.append(std::to_string(snapshot.skipped_packets));
+
+    result.append(" failed=");
+    result.append(std::to_string(snapshot.failed_packets));
+
+    result.append(" observed_sender_reports=");
+    result.append(std::to_string(snapshot.observed_sender_reports));
+
+    result.append(" last_generation_time_ms=");
+    result.append(std::to_string(snapshot.last_generation_time_milliseconds));
+
+    result.append(" last_packets=");
+    result.append(std::to_string(snapshot.last_generation_packets));
+
+    result.append(" last_skipped=");
+    result.append(std::to_string(snapshot.last_generation_skipped));
+
+    result.append(" last_failed=");
+    result.append(std::to_string(snapshot.last_generation_failed));
 
     return result;
 }
