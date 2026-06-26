@@ -1122,6 +1122,35 @@ void append_unique_keyframe_media_ssrc(std::vector<uint32_t>& ssrcs, uint32_t ss
     ssrcs.push_back(ssrc);
 }
 bool is_video_media_kind(std::string_view kind) { return kind == "video"; }
+bool is_resolved_video_track(const std::optional<media_track_resolution>& track_resolution)
+{
+    if (!track_resolution.has_value())
+    {
+        return false;
+    }
+
+    if (!track_resolution->resolved)
+    {
+        return false;
+    }
+
+    return is_video_media_kind(track_resolution->kind);
+}
+
+bool rtcp_feedback_is_video_only_control(const rtcp_feedback_route_event& event)
+{
+    return event.has_generic_nack || event.has_keyframe_request || event.fir_count > 0;
+}
+
+uint32_t rtcp_feedback_media_ssrc_or_zero(const rtcp_feedback_route_event& event)
+{
+    if (event.media_ssrc != 0)
+    {
+        return event.media_ssrc;
+    }
+
+    return event.ssrc;
+}
 bool is_publisher_rtp_fanout_to_subscriber(const srtp_packet_process_result& packet,
                                            const media_route_result& route,
                                            const media_peer_info& target_peer)
@@ -3172,7 +3201,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
                      route.source.session_id,
                      route.target_endpoints.size());
 
-    cache_inbound_rtp_packet(*result, route);
+    cache_inbound_rtp_packet(*result, route, track_resolution);
 
     if (result->kind == srtp_packet_kind::rtcp && result->rtcp_has_bye)
     {
@@ -3848,34 +3877,65 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
     if (packet.kind == srtp_packet_kind::rtcp)
     {
-        if (route.source.role != media_peer_role::subscriber || target_peer.role != media_peer_role::publisher || !feedback_event.has_value() ||
-            feedback_event->media_ssrc == 0 || ssrc_mapper_ == nullptr)
+        if (route.source.role != media_peer_role::subscriber || target_peer.role != media_peer_role::publisher || !feedback_event.has_value())
         {
             return original_packet;
         }
 
-        auto mapping = ssrc_mapper_->find_by_subscriber_ssrc(route.source.session_id, feedback_event->media_ssrc);
+        if (!rtcp_feedback_is_video_only_control(*feedback_event))
+        {
+            return original_packet;
+        }
+
+        if (ssrc_mapper_ == nullptr)
+        {
+            WEBRTC_LOG_WARN("rtcp media feedback skipped ssrc mapper is null stream={} subscriber_session={} remote={}",
+                            route.source.stream_id,
+                            route.source.session_id,
+                            route.source.remote_endpoint);
+
+            return std::nullopt;
+        }
+
+        const uint32_t feedback_media_ssrc = rtcp_feedback_media_ssrc_or_zero(*feedback_event);
+
+        if (feedback_media_ssrc == 0)
+        {
+            WEBRTC_LOG_WARN("rtcp media feedback skipped empty media ssrc stream={} subscriber_session={} remote={} feedback={}",
+                            route.source.stream_id,
+                            route.source.session_id,
+                            route.source.remote_endpoint,
+                            feedback_event->feedback_name);
+
+            return std::nullopt;
+        }
+
+        auto mapping = ssrc_mapper_->find_by_subscriber_ssrc(route.source.session_id, feedback_media_ssrc);
 
         if (!mapping.has_value())
         {
-            WEBRTC_LOG_DEBUG("rtcp feedback reverse ssrc mapping not found subscriber_session={} media_ssrc={}",
-                             route.source.session_id,
-                             feedback_event->media_ssrc);
+            WEBRTC_LOG_WARN("rtcp media feedback skipped mapping not found stream={} subscriber_session={} remote={} media_ssrc={} feedback={}",
+                            route.source.stream_id,
+                            route.source.session_id,
+                            route.source.remote_endpoint,
+                            feedback_media_ssrc,
+                            feedback_event->feedback_name);
 
-            return original_packet;
+            return std::nullopt;
         }
 
-        if (feedback_event->has_keyframe_request && !is_video_media_kind(mapping->kind))
+        if (!is_video_media_kind(mapping->kind))
         {
             WEBRTC_LOG_WARN(
-                "rtcp keyframe request skipped non video media stream={} subscriber_session={} publisher_session={} subscriber_ssrc={} "
-                "publisher_ssrc={} kind={}",
+                "rtcp media feedback skipped non video media stream={} subscriber_session={} publisher_session={} subscriber_ssrc={} "
+                "publisher_ssrc={} kind={} feedback={}",
                 mapping->stream_id,
                 mapping->subscriber_session_id,
                 mapping->publisher_session_id,
                 mapping->subscriber_ssrc,
                 mapping->publisher_ssrc,
-                mapping->kind);
+                mapping->kind,
+                feedback_event->feedback_name);
 
             return std::nullopt;
         }
@@ -4206,7 +4266,9 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_retransmit_plain_packet
     return std::move(rewrite_result->packet);
 }
 
-void ice_udp_server::cache_inbound_rtp_packet(const srtp_packet_process_result& packet, const media_route_result& route)
+void ice_udp_server::cache_inbound_rtp_packet(const srtp_packet_process_result& packet,
+                                              const media_route_result& route,
+                                              const std::optional<media_track_resolution>& track_resolution)
 {
     if (packet.kind != srtp_packet_kind::rtp)
     {
@@ -4219,6 +4281,11 @@ void ice_udp_server::cache_inbound_rtp_packet(const srtp_packet_process_result& 
     }
 
     if (packet.plain_packet.empty())
+    {
+        return;
+    }
+
+    if (!is_resolved_video_track(track_resolution))
     {
         return;
     }
@@ -4322,20 +4389,41 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         return;
     }
 
-    std::optional<media_ssrc_mapping> ssrc_mapping;
-
-    uint32_t cache_media_ssrc = feedback_media_ssrc;
-
-    if (ssrc_mapper_ != nullptr)
+    if (ssrc_mapper_ == nullptr)
     {
-        ssrc_mapping = ssrc_mapper_->find_by_subscriber_ssrc(event.source.session_id, feedback_media_ssrc);
+        WEBRTC_LOG_WARN("rtp nack retransmit skipped ssrc mapper is null stream={} subscriber={} feedback_ssrc={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        feedback_media_ssrc);
 
-        if (ssrc_mapping.has_value())
-        {
-            cache_media_ssrc = ssrc_mapping->publisher_ssrc;
-        }
+        return;
     }
 
+    std::optional<media_ssrc_mapping> ssrc_mapping = ssrc_mapper_->find_by_subscriber_ssrc(event.source.session_id, feedback_media_ssrc);
+
+    if (!ssrc_mapping.has_value())
+    {
+        WEBRTC_LOG_WARN("rtp nack retransmit skipped mapping not found stream={} subscriber={} feedback_ssrc={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        feedback_media_ssrc);
+
+        return;
+    }
+
+    if (!is_video_media_kind(ssrc_mapping->kind))
+    {
+        WEBRTC_LOG_WARN("rtp nack retransmit skipped non video media stream={} subscriber={} feedback_ssrc={} publisher_ssrc={} kind={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        feedback_media_ssrc,
+                        ssrc_mapping->publisher_ssrc,
+                        ssrc_mapping->kind);
+
+        return;
+    }
+
+    const uint32_t cache_media_ssrc = ssrc_mapping->publisher_ssrc;
     auto target_endpoint = find_remote_endpoint(event.source.remote_endpoint);
 
     if (!target_endpoint)
