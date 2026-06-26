@@ -13,6 +13,7 @@
 
 #include "dtls/dtls_context.h"
 #include "dtls/dtls_srtp_keying_material.h"
+#include "signaling/sdp/sdp_summary.h"
 
 namespace webrtc
 {
@@ -30,6 +31,8 @@ struct dtls_peer_identity
     std::string session_id;
     std::string stream_id;
     std::string local_ice_ufrag;
+
+    sdp::fingerprint_info remote_fingerprint;
 };
 
 using dtls_transport_packet_list = std::vector<std::vector<uint8_t>>;
@@ -44,9 +47,11 @@ class dtls_transport
     ~dtls_transport();
 
     dtls_transport(const dtls_transport&) = delete;
+
     dtls_transport& operator=(const dtls_transport&) = delete;
 
     dtls_transport(dtls_transport&&) = delete;
+
     dtls_transport& operator=(dtls_transport&&) = delete;
 
    public:
@@ -56,7 +61,8 @@ class dtls_transport
 
     [[nodiscard]] dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint);
 
-    [[nodiscard]] std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint) const;
+    [[nodiscard]]
+    std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint) const;
 
     [[nodiscard]] bool is_handshake_done(std::string_view remote_endpoint) const;
 

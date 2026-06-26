@@ -7,6 +7,7 @@
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include <openssl/x509_vfy.h>
 
 namespace webrtc
 {
@@ -16,7 +17,7 @@ std::unexpected<std::string> make_error(std::string_view message) { return std::
 
 std::string make_openssl_error(std::string_view prefix)
 {
-    unsigned long error_code = ERR_get_error();
+    const unsigned long error_code = ERR_get_error();
 
     if (error_code == 0)
     {
@@ -24,9 +25,11 @@ std::string make_openssl_error(std::string_view prefix)
     }
 
     char buffer[256]{};
+
     ERR_error_string_n(error_code, buffer, sizeof(buffer));
 
     std::string message(prefix);
+
     message.append(": ");
     message.append(buffer);
 
@@ -52,6 +55,19 @@ std::expected<void, std::string> validate_config(const dtls_context_config& conf
 
     return {};
 }
+
+int accept_peer_certificate_for_fingerprint_verification(int preverify_ok, X509_STORE_CTX* store_context)
+{
+    (void)preverify_ok;
+    (void)store_context;
+
+    /*
+     * WebRTC peers normally use self-signed certificates.
+     * The certificate is authenticated later by comparing its
+     * digest with the fingerprint carried in the authenticated SDP.
+     */
+    return 1;
+}
 }    // namespace
 
 dtls_context::dtls_context(SSL_CTX* native_handle) : native_handle_(native_handle) {}
@@ -61,6 +77,7 @@ dtls_context::~dtls_context()
     if (native_handle_ != nullptr)
     {
         SSL_CTX_free(native_handle_);
+
         native_handle_ = nullptr;
     }
 }
@@ -88,7 +105,10 @@ dtls_context_result make_dtls_context(const dtls_context_config& config)
     std::shared_ptr<dtls_context> context = std::make_shared<dtls_context>(native_context);
 
     SSL_CTX_set_read_ahead(native_context, 1);
-    SSL_CTX_set_verify(native_context, SSL_VERIFY_NONE, nullptr);
+
+    SSL_CTX_set_verify(native_context, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, accept_peer_certificate_for_fingerprint_verification);
+
+    SSL_CTX_set_verify_depth(native_context, 4);
 
     if (SSL_CTX_set_min_proto_version(native_context, DTLS1_2_VERSION) != 1)
     {

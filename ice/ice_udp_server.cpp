@@ -33,6 +33,7 @@ namespace webrtc
 namespace
 {
 constexpr std::size_t k_max_ice_username_fragment_size = 256;
+
 constexpr std::size_t k_max_ice_username_size = k_max_ice_username_fragment_size * 2 + 1;
 
 struct ice_username_parts
@@ -189,6 +190,8 @@ dtls_peer_identity make_publisher_dtls_identity(const std::shared_ptr<publisher_
 
     identity.local_ice_ufrag = session->local_ice().ufrag;
 
+    identity.remote_fingerprint = session->remote_offer_summary().fingerprint;
+
     return identity;
 }
 
@@ -203,6 +206,8 @@ dtls_peer_identity make_subscriber_dtls_identity(const std::shared_ptr<subscribe
     identity.stream_id = session->stream_id();
 
     identity.local_ice_ufrag = session->local_ice().ufrag;
+
+    identity.remote_fingerprint = session->remote_offer_summary().fingerprint;
 
     return identity;
 }
