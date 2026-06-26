@@ -23,6 +23,8 @@ namespace
 {
 namespace http = boost::beast::http;
 
+constexpr std::string_view k_cors_private_network_header = "Access-Control-Allow-Private-Network";
+
 std::string make_prefixed_error(std::string_view prefix, std::string_view error)
 {
     std::string message;
@@ -248,8 +250,11 @@ void whip_handler::add_common_headers(const http_response_ptr& response)
 
     response->set(http::field::access_control_expose_headers, std::string(k_trickle_ice_expose_headers_value));
 
+    response->set(std::string(k_cors_private_network_header), "true");
+
     response->set(http::field::cache_control, "no-store");
 
     set_trickle_ice_patch_headers(response);
 }
+
 }    // namespace webrtc

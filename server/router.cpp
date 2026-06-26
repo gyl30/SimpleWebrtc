@@ -24,6 +24,14 @@ namespace
 {
 namespace http = boost::beast::http;
 
+constexpr std::string_view k_cors_allow_methods = "GET, POST, PATCH, DELETE, OPTIONS";
+
+constexpr std::string_view k_cors_allow_headers = "Content-Type, Authorization, If-Match, If-None-Match, Cache-Control, X-Requested-With";
+
+constexpr std::string_view k_cors_private_network_header = "Access-Control-Allow-Private-Network";
+
+constexpr std::string_view k_cors_max_age_seconds = "600";
+
 inline constexpr std::string_view k_application_sdp = "application/sdp";
 
 inline constexpr std::string_view k_whip_prefix = "/whip/";
@@ -281,11 +289,15 @@ http_response_ptr router::handle_options(http_request_t& request)
 {
     auto response = text_response(request, 204, "");
 
-    response->set(http::field::access_control_allow_methods, "GET, POST, PATCH, DELETE, OPTIONS");
+    response->set(http::field::access_control_allow_methods, std::string(k_cors_allow_methods));
 
-    response->set(http::field::access_control_allow_headers, "Content-Type, Authorization, If-Match");
+    response->set(http::field::access_control_allow_headers, std::string(k_cors_allow_headers));
 
     response->set(http::field::access_control_expose_headers, std::string(k_trickle_ice_expose_headers_value));
+
+    response->set(http::field::access_control_max_age, std::string(k_cors_max_age_seconds));
+
+    response->set(std::string(k_cors_private_network_header), "true");
 
     set_trickle_ice_patch_headers(response);
 
@@ -530,7 +542,16 @@ http_response_ptr router::prometheus_response(http_request_t& request, int code,
 
 void router::add_common_headers(const http_response_ptr& response)
 {
+    if (response == nullptr)
+    {
+        return;
+    }
+
     response->set(http::field::access_control_allow_origin, "*");
+
+    response->set(http::field::access_control_expose_headers, std::string(k_trickle_ice_expose_headers_value));
+
+    response->set(std::string(k_cors_private_network_header), "true");
 
     response->set(http::field::cache_control, "no-store");
 }
