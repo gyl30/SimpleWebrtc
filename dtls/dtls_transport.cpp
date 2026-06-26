@@ -458,6 +458,55 @@ struct dtls_transport::impl
                         peer.identity.remote_fingerprint.algorithm);
     }
 
+    dtls_transport_packet_result close_peer(std::string_view remote_endpoint)
+    {
+        dtls_transport_packet_list packets;
+
+        if (remote_endpoint.empty())
+        {
+            return packets;
+        }
+
+        std::lock_guard lock(mutex_);
+
+        auto* peer = find_peer_locked(remote_endpoint);
+
+        if (peer == nullptr)
+        {
+            return packets;
+        }
+
+        if (peer->ssl == nullptr)
+        {
+            return packets;
+        }
+
+        ERR_clear_error();
+
+        const int result = SSL_shutdown(peer->ssl.get());
+
+        auto drain_result = drain_ssl_write_bio(peer->ssl.get(), packets);
+
+        if (!drain_result)
+        {
+            return std::unexpected(drain_result.error());
+        }
+
+        if (result >= 0)
+        {
+            return packets;
+        }
+
+        const int ssl_error = SSL_get_error(peer->ssl.get(), result);
+
+        if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
+        {
+            return packets;
+        }
+
+        return std::unexpected(make_openssl_error(peer->ssl.get(), result, "dtls shutdown failed"));
+    }
+
     void forget_peer(std::string_view remote_endpoint)
     {
         if (remote_endpoint.empty())
@@ -1025,6 +1074,8 @@ void dtls_transport::remember_peer(std::string_view remote_endpoint, dtls_peer_i
 {
     impl_->remember_peer(remote_endpoint, std::move(identity));
 }
+
+dtls_transport_packet_result dtls_transport::close_peer(std::string_view remote_endpoint) { return impl_->close_peer(remote_endpoint); }
 
 void dtls_transport::forget_peer(std::string_view remote_endpoint) { impl_->forget_peer(remote_endpoint); }
 

@@ -74,6 +74,9 @@ class dtls_transport
    public:
     void remember_peer(std::string_view remote_endpoint, dtls_peer_identity identity);
 
+    [[nodiscard]]
+    dtls_transport_packet_result close_peer(std::string_view remote_endpoint);
+
     void forget_peer(std::string_view remote_endpoint);
 
     [[nodiscard]] dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint);

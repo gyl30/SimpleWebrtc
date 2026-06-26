@@ -310,6 +310,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     std::vector<uint32_t> collect_keyframe_request_media_ssrcs(std::string_view stream_id) const;
 
+    void send_dtls_close_notify(std::string_view remote_address);
+
    private:
     boost::asio::io_context& io_context_;
 

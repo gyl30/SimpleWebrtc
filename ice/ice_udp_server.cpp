@@ -1377,6 +1377,7 @@ void ice_udp_server::forget_session(std::string_view session_id)
 
     if (endpoint_removed)
     {
+        send_dtls_close_notify(remote_address);
         forget_peer_transport_state(remote_address);
     }
 
@@ -4847,8 +4848,46 @@ void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
 
         erase_candidate_pairs_for_endpoint_locked(remote_address);
     }
-
+    send_dtls_close_notify(remote_address);
     forget_peer_transport_state(remote_address);
+}
+void ice_udp_server::send_dtls_close_notify(std::string_view remote_address)
+{
+    if (remote_address.empty())
+    {
+        return;
+    }
+
+    if (dtls_transport_ == nullptr)
+    {
+        return;
+    }
+
+    auto remote_endpoint = find_remote_endpoint(remote_address);
+
+    if (!remote_endpoint.has_value())
+    {
+        return;
+    }
+
+    auto packets = dtls_transport_->close_peer(remote_address);
+
+    if (!packets)
+    {
+        WEBRTC_LOG_WARN("dtls close notify failed remote={} error={}", remote_address, packets.error());
+
+        return;
+    }
+
+    for (auto& packet : *packets)
+    {
+        if (packet.empty())
+        {
+            continue;
+        }
+
+        send_response(std::move(packet), *remote_endpoint);
+    }
 }
 
 void ice_udp_server::forget_peer_transport_state(std::string_view remote_address)
