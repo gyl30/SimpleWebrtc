@@ -95,6 +95,10 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void on_dtls_timeout(boost::system::error_code ec);
 
+    void schedule_ice_consent_check();
+
+    void on_ice_consent_check(boost::system::error_code ec);
+
     void handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
 
     void handle_dtls_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
@@ -130,6 +134,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     bool is_selected_endpoint(std::string_view remote_address) const;
 
+    [[nodiscard]]
+    std::vector<std::string> expire_ice_candidate_pairs(uint64_t now_milliseconds);
+
     void forget_peer_endpoint(std::string_view remote_address);
 
     void forget_peer_transport_state(std::string_view remote_address);
@@ -159,6 +166,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     udp::socket socket_;
 
     boost::asio::steady_timer dtls_timeout_timer_;
+
+    boost::asio::steady_timer ice_consent_timer_;
 
     std::string bind_host_;
 

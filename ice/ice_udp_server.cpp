@@ -41,6 +41,12 @@ constexpr std::size_t k_max_ice_username_size = k_max_ice_username_fragment_size
 
 constexpr auto k_minimum_dtls_timer_delay = std::chrono::milliseconds(1);
 
+constexpr auto k_ice_consent_check_interval = std::chrono::seconds(5);
+
+constexpr uint64_t k_ice_consent_timeout_milliseconds = 30000;
+
+constexpr uint64_t k_unselected_candidate_pair_retention_milliseconds = 120000;
+
 struct ice_username_parts
 {
     std::string_view recipient_ufrag;
@@ -63,6 +69,19 @@ std::unexpected<std::string> make_field_error(std::string_view field, std::strin
 }
 
 uint64_t now_milliseconds() { return static_cast<uint64_t>(timestamp::now().milliseconds()); }
+
+bool contains_string(const std::vector<std::string>& values, std::string_view value)
+{
+    for (const auto& current : values)
+    {
+        if (current == value)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 std::string make_candidate_pair_key(std::string_view session_id, std::string_view remote_address)
 {
@@ -319,6 +338,7 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
     : io_context_(io_context),
       socket_(io_context),
       dtls_timeout_timer_(io_context),
+      ice_consent_timer_(io_context),
       bind_host_(std::move(bind_host)),
       bind_port_(bind_port),
       registry_(std::move(registry)),
@@ -411,6 +431,8 @@ ice_udp_server_result ice_udp_server::start()
 
     do_receive();
 
+    schedule_ice_consent_check();
+
     return {};
 }
 
@@ -431,6 +453,15 @@ void ice_udp_server::stop()
     }
 
     dtls_timeout_timer_.cancel();
+
+    boost::system::error_code consent_timer_ec;
+
+    ice_consent_timer_.cancel();
+
+    if (consent_timer_ec)
+    {
+        WEBRTC_LOG_WARN("ice consent timer cancel failed: {}", consent_timer_ec.message());
+    }
 
     boost::system::error_code socket_ec;
 
@@ -733,6 +764,57 @@ void ice_udp_server::on_dtls_timeout(boost::system::error_code ec)
     }
 
     schedule_dtls_timeout();
+}
+
+void ice_udp_server::schedule_ice_consent_check()
+{
+    if (!started_)
+    {
+        return;
+    }
+
+    ice_consent_timer_.cancel();
+
+    ice_consent_timer_.expires_after(k_ice_consent_check_interval);
+
+    auto self = shared_from_this();
+
+    ice_consent_timer_.async_wait([this, self](boost::system::error_code ec) { on_ice_consent_check(ec); });
+}
+
+void ice_udp_server::on_ice_consent_check(boost::system::error_code ec)
+{
+    if (ec == boost::asio::error::operation_aborted)
+    {
+        return;
+    }
+
+    if (ec)
+    {
+        WEBRTC_LOG_WARN("ice consent timer failed: {}", ec.message());
+
+        schedule_ice_consent_check();
+
+        return;
+    }
+
+    if (!started_)
+    {
+        return;
+    }
+
+    const uint64_t current_time = now_milliseconds();
+
+    std::vector<std::string> expired_remotes = expire_ice_candidate_pairs(current_time);
+
+    for (const auto& remote_address : expired_remotes)
+    {
+        WEBRTC_LOG_WARN("ice consent expired remote={}", remote_address);
+
+        forget_peer_transport_state(remote_address);
+    }
+
+    schedule_ice_consent_check();
 }
 
 void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
@@ -1549,6 +1631,97 @@ bool ice_udp_server::is_selected_endpoint(std::string_view remote_address) const
     std::lock_guard lock(endpoint_mutex_);
 
     return session_id_by_endpoint_address_.contains(std::string(remote_address));
+}
+
+std::vector<std::string> ice_udp_server::expire_ice_candidate_pairs(uint64_t current_time_milliseconds)
+{
+    std::vector<std::string> expired_remote_addresses;
+    std::vector<std::string> expired_session_ids;
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    for (const auto& [key, pair] : candidate_pairs_by_key_)
+    {
+        (void)key;
+
+        if (pair.last_binding_at_milliseconds == 0)
+        {
+            continue;
+        }
+
+        const uint64_t age_milliseconds =
+            current_time_milliseconds > pair.last_binding_at_milliseconds ? current_time_milliseconds - pair.last_binding_at_milliseconds : 0;
+
+        if (!pair.selected)
+        {
+            continue;
+        }
+
+        if (age_milliseconds < k_ice_consent_timeout_milliseconds)
+        {
+            continue;
+        }
+
+        if (!contains_string(expired_session_ids, pair.session_id))
+        {
+            expired_session_ids.push_back(pair.session_id);
+        }
+    }
+
+    for (const auto& session_id : expired_session_ids)
+    {
+        const auto endpoint_iterator = endpoint_address_by_session_id_.find(session_id);
+
+        if (endpoint_iterator != endpoint_address_by_session_id_.end())
+        {
+            const std::string remote_address = endpoint_iterator->second;
+
+            if (!contains_string(expired_remote_addresses, remote_address))
+            {
+                expired_remote_addresses.push_back(remote_address);
+            }
+
+            session_id_by_endpoint_address_.erase(remote_address);
+
+            endpoints_by_address_.erase(remote_address);
+
+            endpoint_address_by_session_id_.erase(endpoint_iterator);
+        }
+
+        erase_candidate_pairs_for_session_locked(session_id);
+    }
+
+    for (auto iterator = candidate_pairs_by_key_.begin(); iterator != candidate_pairs_by_key_.end();)
+    {
+        const ice_candidate_pair& pair = iterator->second;
+
+        if (pair.selected || pair.last_binding_at_milliseconds == 0)
+        {
+            ++iterator;
+
+            continue;
+        }
+
+        const uint64_t age_milliseconds =
+            current_time_milliseconds > pair.last_binding_at_milliseconds ? current_time_milliseconds - pair.last_binding_at_milliseconds : 0;
+
+        if (age_milliseconds < k_unselected_candidate_pair_retention_milliseconds)
+        {
+            ++iterator;
+
+            continue;
+        }
+
+        WEBRTC_LOG_DEBUG("ice unselected candidate pair expired stream={} session={} remote={} age_ms={}",
+                         pair.stream_id,
+                         pair.session_id,
+                         pair.remote_address,
+                         age_milliseconds);
+
+        iterator = candidate_pairs_by_key_.erase(iterator);
+    }
+
+    return expired_remote_addresses;
 }
 
 void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
