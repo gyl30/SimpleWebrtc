@@ -89,6 +89,11 @@ inline session_lifecycle_entry_response make_session_lifecycle_entry_response(co
 
     return response;
 }
+inline std::string make_session_lifecycle_entry_response_body(const stream_session_lifecycle_snapshot& snapshot)
+{
+    auto response = make_session_lifecycle_entry_response(snapshot);
+    return webrtc::serialize_struct(response);
+}
 
 inline std::string make_session_lifecycle_response_body(const std::vector<stream_session_lifecycle_snapshot>& snapshots)
 {

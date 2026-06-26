@@ -48,6 +48,9 @@ class router
     http_response_ptr handle_sessions(http_request_t& request);
 
     [[nodiscard]]
+    http_response_ptr handle_session(http_request_t& request, std::string_view session_id);
+
+    [[nodiscard]]
     http_response_ptr handle_stream(http_request_t& request, std::string_view stream_id);
 
     [[nodiscard]]

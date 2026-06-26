@@ -45,6 +45,8 @@ inline constexpr std::string_view k_whep_session_prefix = "/whep/session/";
 
 inline constexpr std::string_view k_sessions_path = "/api/sessions";
 
+inline constexpr std::string_view k_sessions_prefix = "/api/sessions/";
+
 inline constexpr std::string_view k_streams_prefix = "/api/streams/";
 
 inline constexpr std::string_view k_media_stats_path = "/api/stats/media";
@@ -98,6 +100,25 @@ bool stream_has_publisher_snapshot(std::string_view stream_id, const std::vector
     return std::ranges::any_of(snapshots,
                                [stream_id](const stream_session_lifecycle_snapshot& snapshot)
                                { return snapshot.kind == stream_session_kind::publisher && std::string_view(snapshot.stream_id) == stream_id; });
+}
+
+std::optional<stream_session_lifecycle_snapshot> find_session_snapshot(std::string_view session_id,
+                                                                       const std::vector<stream_session_lifecycle_snapshot>& snapshots)
+{
+    if (session_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    for (const auto& snapshot : snapshots)
+    {
+        if (std::string_view(snapshot.session_id) == session_id)
+        {
+            return snapshot;
+        }
+    }
+
+    return std::nullopt;
 }
 
 std::string beast_string_view_to_string(boost::beast::string_view value) { return std::string(value.data(), value.size()); }
@@ -255,6 +276,13 @@ http_response_ptr router::handle(http_request_t& request)
         return handle_sessions(request);
     }
 
+    std::string_view api_session_id;
+
+    if (match_single_value_path(path, k_sessions_prefix, api_session_id))
+    {
+        return handle_session(request, api_session_id);
+    }
+
     std::string_view api_stream_id;
 
     if (match_single_value_path(path, k_streams_prefix, api_stream_id))
@@ -351,6 +379,75 @@ http_response_ptr router::handle_sessions(http_request_t& request)
     const std::string body = make_session_lifecycle_response_body(snapshots);
 
     return json_response(request, 200, body);
+}
+http_response_ptr router::handle_session(http_request_t& request, std::string_view session_id)
+{
+    if (!is_valid_resource_id(session_id))
+    {
+        return bad_request(request, "invalid session id");
+    }
+
+    if (registry_ == nullptr)
+    {
+        return json_response(request, 503, json_error_body("session registry unavailable"));
+    }
+
+    const auto method = request.req.method();
+
+    if (method != http::verb::get && method != http::verb::delete_)
+    {
+        return method_not_allowed(request);
+    }
+
+    const std::vector<stream_session_lifecycle_snapshot> snapshots = registry_->session_lifecycle_snapshots();
+
+    const std::optional<stream_session_lifecycle_snapshot> snapshot = find_session_snapshot(session_id, snapshots);
+
+    if (!snapshot.has_value())
+    {
+        return json_response(request, 404, json_error_body("session not found"));
+    }
+
+    if (method == http::verb::get)
+    {
+        return json_response(request, 200, make_session_lifecycle_entry_response_body(*snapshot));
+    }
+
+    if (snapshot->kind == stream_session_kind::publisher)
+    {
+        auto result = registry_->remove_publisher_session(snapshot->session_id);
+
+        if (!result)
+        {
+            if (result.error() == stream_registry_error::publisher_session_not_found)
+            {
+                return json_response(request, 404, json_error_body("session not found"));
+            }
+
+            return json_response(request, 500, json_error_body("delete publisher session failed"));
+        }
+
+        return text_response(request, 204, "");
+    }
+
+    if (snapshot->kind == stream_session_kind::subscriber)
+    {
+        auto result = registry_->remove_subscriber_session(snapshot->session_id);
+
+        if (!result)
+        {
+            if (result.error() == stream_registry_error::subscriber_session_not_found)
+            {
+                return json_response(request, 404, json_error_body("session not found"));
+            }
+
+            return json_response(request, 500, json_error_body("delete subscriber session failed"));
+        }
+
+        return text_response(request, 204, "");
+    }
+
+    return json_response(request, 500, json_error_body("unsupported session kind"));
 }
 
 http_response_ptr router::handle_stream(http_request_t& request, std::string_view stream_id)
