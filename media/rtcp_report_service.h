@@ -1,0 +1,150 @@
+#ifndef SIMPLE_WEBRTC_MEDIA_RTCP_REPORT_SERVICE_H
+#define SIMPLE_WEBRTC_MEDIA_RTCP_REPORT_SERVICE_H
+
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+#include "rtp/rtcp_report_generator.h"
+#include "rtp/rtcp_session_stats.h"
+
+namespace webrtc
+{
+struct rtcp_report_service_config
+{
+    std::size_t max_report_blocks = 31;
+};
+
+struct rtcp_report_source_config
+{
+    std::string stream_id;
+    std::string session_id;
+    std::string remote_endpoint;
+
+    uint32_t local_ssrc = 0;
+
+    std::string cname;
+
+    bool sender_report_enabled = false;
+    bool receiver_report_enabled = true;
+
+    std::size_t max_report_blocks = 0;
+};
+
+struct rtcp_report_service_packet
+{
+    rtcp_report_source_config source;
+
+    rtcp_report_generation_result report;
+};
+
+struct rtcp_report_service_generation
+{
+    std::vector<rtcp_report_service_packet> packets;
+
+    std::vector<std::string> errors;
+
+    std::size_t skipped = 0;
+    std::size_t failed = 0;
+};
+
+using rtcp_report_service_result = std::expected<void, std::string>;
+
+using rtcp_report_service_packet_result = std::expected<rtcp_report_service_packet, std::string>;
+
+class rtcp_report_service
+{
+   public:
+    rtcp_report_service();
+
+    explicit rtcp_report_service(rtcp_report_service_config config);
+
+    ~rtcp_report_service() = default;
+
+    rtcp_report_service(const rtcp_report_service&) = delete;
+
+    rtcp_report_service& operator=(const rtcp_report_service&) = delete;
+
+    rtcp_report_service(rtcp_report_service&&) = delete;
+
+    rtcp_report_service& operator=(rtcp_report_service&&) = delete;
+
+   public:
+    [[nodiscard]]
+    rtcp_report_service_result remember_source(const rtcp_report_source_config& source);
+
+    [[nodiscard]]
+    rtcp_report_service_result observe_received_rtp(const rtcp_received_rtp_packet& packet);
+
+    [[nodiscard]]
+    rtcp_report_service_result observe_sent_rtp(const rtcp_sent_rtp_packet& packet);
+
+    [[nodiscard]]
+    rtcp_report_service_result observe_sender_report(const rtcp_received_sender_report& report);
+
+    [[nodiscard]]
+    rtcp_report_service_generation generate_reports(uint64_t now_milliseconds);
+
+    [[nodiscard]]
+    rtcp_report_service_packet_result generate_report_for_source(const rtcp_report_source_config& source, uint64_t now_milliseconds);
+
+    void forget_session(std::string_view session_id);
+
+    void forget_peer(std::string_view remote_endpoint);
+
+    void clear();
+
+    [[nodiscard]]
+    std::size_t source_count() const;
+
+    [[nodiscard]]
+    std::size_t stats_source_count() const;
+
+    [[nodiscard]]
+    rtcp_session_stats& stats();
+
+    [[nodiscard]]
+    const rtcp_session_stats& stats() const;
+
+   private:
+    [[nodiscard]]
+    static std::string make_source_key(std::string_view session_id, std::string_view remote_endpoint, uint32_t local_ssrc);
+
+    [[nodiscard]]
+    static rtcp_report_service_result validate_config(const rtcp_report_service_config& config);
+
+    [[nodiscard]]
+    static rtcp_report_service_result validate_source(const rtcp_report_source_config& source);
+
+    [[nodiscard]]
+    rtcp_report_source_config normalize_source(const rtcp_report_source_config& source) const;
+
+    [[nodiscard]]
+    rtcp_report_generation_request make_generation_request(const rtcp_report_source_config& source, uint64_t now_milliseconds) const;
+
+    [[nodiscard]]
+    rtcp_report_generation_result_type generate_report_packet(const rtcp_report_source_config& source, uint64_t now_milliseconds);
+
+   private:
+    rtcp_report_service_config config_;
+
+    mutable std::mutex mutex_;
+
+    std::unordered_map<std::string, rtcp_report_source_config> sources_by_key_;
+
+    rtcp_session_stats stats_;
+};
+
+[[nodiscard]]
+std::string rtcp_report_source_config_to_string(const rtcp_report_source_config& source);
+
+[[nodiscard]]
+std::string rtcp_report_service_generation_to_string(const rtcp_report_service_generation& generation);
+}    // namespace webrtc
+
+#endif
