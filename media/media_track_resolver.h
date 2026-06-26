@@ -21,6 +21,7 @@ enum class media_track_resolution_state
     unresolved,
     resolved_by_ssrc,
     resolved_by_mid,
+    resolved_by_payload_type,
     resolved_by_single_media,
 };
 

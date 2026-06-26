@@ -218,6 +218,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                               const std::optional<media_track_resolution>& track_resolution,
                               const std::optional<rtcp_feedback_route_event>& feedback_event);
 
+    void maybe_request_keyframe_from_publisher(const srtp_packet_process_result& packet,
+                                               const media_route_result& route,
+                                               const std::optional<media_track_resolution>& track_resolution,
+                                               const media_peer_info& target_peer);
+
     void send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint);
 
     void remember_candidate_pair(std::string_view session_id,
@@ -337,6 +342,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, ice_candidate_pair> candidate_pairs_by_key_;
 
     std::unordered_map<std::string, media_payload_type_mapping_cache_entry> payload_type_mappings_by_key_;
+
+    std::unordered_map<std::string, uint64_t> keyframe_request_last_time_milliseconds_by_key_;
 
     bool started_ = false;
 

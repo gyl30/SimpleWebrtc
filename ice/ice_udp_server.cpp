@@ -71,6 +71,8 @@ constexpr auto k_pending_session_cleanup_interval = std::chrono::seconds(5);
 
 constexpr uint64_t k_default_pending_session_timeout_milliseconds = 60000;
 
+constexpr uint64_t k_keyframe_request_interval_milliseconds = 1000;
+
 struct ice_username_parts
 {
     std::string_view recipient_ufrag;
@@ -78,6 +80,66 @@ struct ice_username_parts
 };
 
 using optional_mid_rewrite_result = std::expected<std::optional<rtp_header_extension_rewrite>, std::string>;
+
+void append_pli_u16(std::vector<uint8_t>& packet, uint16_t value)
+{
+    packet.push_back(static_cast<uint8_t>(value >> 8U));
+
+    packet.push_back(static_cast<uint8_t>(value & 0xffU));
+}
+
+void append_pli_u32(std::vector<uint8_t>& packet, uint32_t value)
+{
+    packet.push_back(static_cast<uint8_t>(value >> 24U));
+
+    packet.push_back(static_cast<uint8_t>((value >> 16U) & 0xffU));
+
+    packet.push_back(static_cast<uint8_t>((value >> 8U) & 0xffU));
+
+    packet.push_back(static_cast<uint8_t>(value & 0xffU));
+}
+
+std::vector<uint8_t> make_rtcp_picture_loss_indication_packet(uint32_t sender_ssrc, uint32_t media_ssrc)
+{
+    std::vector<uint8_t> packet;
+
+    packet.reserve(12);
+
+    packet.push_back(0x81U);
+
+    packet.push_back(206U);
+
+    append_pli_u16(packet, 2);
+
+    append_pli_u32(packet, sender_ssrc);
+
+    append_pli_u32(packet, media_ssrc);
+
+    return packet;
+}
+
+std::string make_keyframe_request_key(const media_route_result& route, const media_peer_info& target_peer, uint32_t media_ssrc)
+{
+    std::string key;
+
+    key.reserve(route.source.stream_id.size() + route.source.session_id.size() + target_peer.session_id.size() + 48);
+
+    key.append(route.source.stream_id);
+
+    key.push_back('|');
+
+    key.append(route.source.session_id);
+
+    key.push_back('|');
+
+    key.append(target_peer.session_id);
+
+    key.push_back('|');
+
+    key.append(std::to_string(media_ssrc));
+
+    return key;
+}
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
@@ -2289,6 +2351,128 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
     schedule_dtls_timeout();
 }
 
+void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_process_result& packet,
+                                                           const media_route_result& route,
+                                                           const std::optional<media_track_resolution>& track_resolution,
+                                                           const media_peer_info& target_peer)
+{
+    if (packet.kind != srtp_packet_kind::rtp)
+    {
+        return;
+    }
+
+    if (route.action != media_route_action::fanout_to_subscribers)
+    {
+        return;
+    }
+
+    if (route.source.role != media_peer_role::publisher)
+    {
+        return;
+    }
+
+    if (target_peer.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (!track_resolution.has_value() || !track_resolution->resolved || track_resolution->kind != "video")
+    {
+        return;
+    }
+
+    if (packet.ssrc == 0)
+    {
+        return;
+    }
+
+    if (srtp_transport_ == nullptr)
+    {
+        return;
+    }
+
+    auto publisher_endpoint = find_remote_endpoint(route.source.remote_endpoint);
+
+    if (!publisher_endpoint.has_value())
+    {
+        WEBRTC_LOG_WARN("keyframe request skipped publisher endpoint not found stream={} publisher={} subscriber={} ssrc={}",
+                        route.source.stream_id,
+                        route.source.remote_endpoint,
+                        target_peer.remote_endpoint,
+                        packet.ssrc);
+
+        return;
+    }
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    const std::string key = make_keyframe_request_key(route, target_peer, packet.ssrc);
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        const auto iterator = keyframe_request_last_time_milliseconds_by_key_.find(key);
+
+        if (iterator != keyframe_request_last_time_milliseconds_by_key_.end())
+        {
+            const uint64_t elapsed_milliseconds = current_time_milliseconds > iterator->second ? current_time_milliseconds - iterator->second : 0;
+
+            if (elapsed_milliseconds < k_keyframe_request_interval_milliseconds)
+            {
+                return;
+            }
+
+            iterator->second = current_time_milliseconds;
+        }
+        else
+        {
+            keyframe_request_last_time_milliseconds_by_key_.emplace(key, current_time_milliseconds);
+        }
+    }
+
+    const uint32_t sender_ssrc = make_rtcp_report_local_ssrc(route.source, packet.ssrc);
+
+    std::vector<uint8_t> plain_packet = make_rtcp_picture_loss_indication_packet(sender_ssrc, packet.ssrc);
+
+    auto protected_packet = srtp_transport_->protect_outbound_packet(
+        std::span<const uint8_t>(plain_packet.data(), plain_packet.size()), route.source.remote_endpoint, srtp_packet_kind::rtcp);
+
+    if (!protected_packet)
+    {
+        WEBRTC_LOG_WARN("keyframe request protect failed stream={} publisher={} subscriber={} media_ssrc={} error={}",
+                        route.source.stream_id,
+                        route.source.remote_endpoint,
+                        target_peer.remote_endpoint,
+                        packet.ssrc,
+                        protected_packet.error());
+
+        return;
+    }
+
+    if (protected_packet->state == srtp_packet_process_state::ignored)
+    {
+        WEBRTC_LOG_DEBUG("keyframe request ignored stream={} publisher={} subscriber={} media_ssrc={} reason={}",
+                         route.source.stream_id,
+                         route.source.remote_endpoint,
+                         target_peer.remote_endpoint,
+                         packet.ssrc,
+                         protected_packet->reason);
+
+        return;
+    }
+
+    WEBRTC_LOG_INFO(
+        "keyframe request sent stream={} publisher={} publisher_session={} subscriber={} subscriber_session={} sender_ssrc={} media_ssrc={}",
+        route.source.stream_id,
+        route.source.remote_endpoint,
+        route.source.session_id,
+        target_peer.remote_endpoint,
+        target_peer.session_id,
+        sender_ssrc,
+        packet.ssrc);
+
+    send_response(std::move(protected_packet->protected_packet), *publisher_endpoint);
+}
 void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
@@ -3527,7 +3711,33 @@ void ice_udp_server::erase_rtp_cache(std::string_view stream_id)
         rtcp_report_service_->forget_stream(stream_id);
     }
 
-    WEBRTC_LOG_INFO("rtp cache stream cleanup stream={} cache_erased={} remaining={}", stream_id, cache_erased ? 1 : 0, remaining_packets);
+    std::size_t erased_keyframe_request_states = 0;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        const std::string prefix = std::string(stream_id) + "|";
+
+        for (auto iterator = keyframe_request_last_time_milliseconds_by_key_.begin();
+             iterator != keyframe_request_last_time_milliseconds_by_key_.end();)
+        {
+            if (iterator->first.starts_with(prefix))
+            {
+                iterator = keyframe_request_last_time_milliseconds_by_key_.erase(iterator);
+
+                erased_keyframe_request_states += 1;
+            }
+            else
+            {
+                ++iterator;
+            }
+        }
+    }
+    WEBRTC_LOG_INFO("rtp cache stream cleanup stream={} cache_erased={} remaining={} keyframe_request_states_erased={}",
+                    stream_id,
+                    cache_erased ? 1 : 0,
+                    remaining_packets,
+                    erased_keyframe_request_states);
 }
 
 void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet,
@@ -3628,8 +3838,9 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
         if (packet.kind == srtp_packet_kind::rtp)
         {
             observe_outbound_rtp_stats(*target_peer, std::span<const uint8_t>(outbound_plain_packet.data(), outbound_plain_packet.size()));
-        }
 
+            maybe_request_keyframe_from_publisher(packet, route, track_resolution, *target_peer);
+        }
         WEBRTC_LOG_DEBUG("media forward send stream={} source={} target={} kind={} plain_size={} protected_size={}",
                          route.source.stream_id,
                          route.source.remote_endpoint,
