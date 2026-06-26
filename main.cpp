@@ -344,6 +344,8 @@ int main(int argc, char* argv[])
 
     auto http_router = std::make_shared<webrtc::router>(registry, answer_factory, media_router);
 
+    http_router->set_admin_token(get_env_or_default("WEBRTC_ADMIN_TOKEN", ""));
+
     http_router->set_rtcp_report_runtime_snapshot_provider(
         [weak_ice_server = std::weak_ptr<webrtc::ice_udp_server>(ice_server)]() -> webrtc::rtcp_report_service_runtime_snapshot
         {

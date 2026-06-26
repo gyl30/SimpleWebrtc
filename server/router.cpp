@@ -53,6 +53,14 @@ inline constexpr std::string_view k_streams_path = "/api/streams";
 
 inline constexpr std::string_view k_keyframe_action = "keyframe";
 
+inline constexpr std::string_view k_api_prefix = "/api/";
+
+inline constexpr std::string_view k_health_path = "/api/health";
+
+inline constexpr std::string_view k_version_path = "/api/version";
+
+inline constexpr std::string_view k_bearer_prefix = "Bearer ";
+
 inline constexpr std::string_view k_media_stats_path = "/api/stats/media";
 
 inline constexpr std::string_view k_prometheus_metrics_path = "/metrics";
@@ -97,6 +105,45 @@ std::string json_error_body(std::string_view message)
     body.append(R"("})");
 
     return body;
+}
+bool constant_time_equals(std::string_view left, std::string_view right)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+
+    unsigned char difference = 0;
+
+    for (std::size_t index = 0; index < left.size(); ++index)
+    {
+        difference = static_cast<unsigned char>(
+            difference | static_cast<unsigned char>(static_cast<unsigned char>(left[index]) ^ static_cast<unsigned char>(right[index])));
+    }
+
+    return difference == 0;
+}
+
+std::optional<std::string_view> bearer_token_from_authorization(std::string_view authorization)
+{
+    if (authorization.size() <= k_bearer_prefix.size())
+    {
+        return std::nullopt;
+    }
+
+    if (authorization.substr(0, k_bearer_prefix.size()) != k_bearer_prefix)
+    {
+        return std::nullopt;
+    }
+
+    std::string_view token = authorization.substr(k_bearer_prefix.size());
+
+    if (token.empty())
+    {
+        return std::nullopt;
+    }
+
+    return token;
 }
 
 bool stream_has_publisher_snapshot(std::string_view stream_id, const std::vector<stream_session_lifecycle_snapshot>& snapshots)
@@ -293,12 +340,17 @@ http_response_ptr router::handle(http_request_t& request)
         return handle_options(request);
     }
 
-    if (method == http::verb::get && path == "/api/health")
+    if (admin_auth_required(path) && !is_admin_authorized(request))
+    {
+        return admin_unauthorized(request);
+    }
+
+    if (method == http::verb::get && path == k_health_path)
     {
         return handle_health(request);
     }
 
-    if (method == http::verb::get && path == "/api/version")
+    if (method == http::verb::get && path == k_version_path)
     {
         return handle_version(request);
     }
@@ -378,6 +430,63 @@ void router::set_rtcp_report_runtime_snapshot_provider(rtcp_report_runtime_snaps
     rtcp_report_runtime_snapshot_provider_ = std::move(provider);
 
     WEBRTC_LOG_INFO("rtcp report runtime snapshot provider {}", rtcp_report_runtime_snapshot_provider_ ? "mounted" : "cleared");
+}
+
+void router::set_admin_token(std::string token) { admin_token_ = std::move(token); }
+
+bool router::admin_auth_required(std::string_view path) const
+{
+    if (admin_token_.empty())
+    {
+        return false;
+    }
+
+    if (!path.starts_with(k_api_prefix))
+    {
+        return false;
+    }
+
+    if (path == k_health_path)
+    {
+        return false;
+    }
+
+    if (path == k_version_path)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool router::is_admin_authorized(const http_request_t& request) const
+{
+    if (admin_token_.empty())
+    {
+        return true;
+    }
+
+    const auto authorization_value = request.req[http::field::authorization];
+
+    const std::string_view authorization(authorization_value.data(), authorization_value.size());
+
+    const std::optional<std::string_view> token = bearer_token_from_authorization(authorization);
+
+    if (!token.has_value())
+    {
+        return false;
+    }
+
+    return constant_time_equals(*token, admin_token_);
+}
+
+http_response_ptr router::admin_unauthorized(http_request_t& request)
+{
+    auto response = json_response(request, 401, json_error_body("unauthorized"));
+
+    response->set(http::field::www_authenticate, "Bearer realm=\"simplewebrtc\"");
+
+    return response;
 }
 
 http_response_ptr router::handle_options(http_request_t& request)

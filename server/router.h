@@ -38,6 +38,8 @@ class router
 
     void set_keyframe_request_handler(keyframe_request_handler handler);
 
+    void set_admin_token(std::string token);
+
    private:
     [[nodiscard]]
     http_response_ptr handle_options(http_request_t& request);
@@ -120,12 +122,23 @@ class router
     static bool is_valid_resource_id(std::string_view value);
 
    private:
+    [[nodiscard]]
+    bool admin_auth_required(std::string_view path) const;
+
+    [[nodiscard]]
+    bool is_admin_authorized(const http_request_t& request) const;
+
+    [[nodiscard]]
+    http_response_ptr admin_unauthorized(http_request_t& request);
+
+   private:
     std::shared_ptr<stream_registry> registry_;
 
     std::shared_ptr<webrtc_answer_factory> answer_factory_;
 
     std::shared_ptr<media_router> media_router_;
 
+    std::string admin_token_;
     keyframe_request_handler keyframe_request_handler_;
     rtcp_report_runtime_snapshot_provider rtcp_report_runtime_snapshot_provider_;
 
