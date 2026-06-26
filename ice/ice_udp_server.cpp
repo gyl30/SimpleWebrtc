@@ -1079,17 +1079,18 @@ void ice_udp_server::forget_session(std::string_view session_id)
     }
 
     std::string remote_address;
+    bool endpoint_removed = false;
 
     {
         std::lock_guard lock(endpoint_mutex_);
 
-        erase_candidate_pairs_for_session_locked(session_id);
-
-        erase_payload_type_mappings_for_session_locked(session_id);
-
         const auto iterator = endpoint_address_by_session_id_.find(std::string(session_id));
 
-        if (iterator != endpoint_address_by_session_id_.end())
+        if (iterator == endpoint_address_by_session_id_.end())
+        {
+            WEBRTC_LOG_DEBUG("ice udp session endpoint not found session={}", session_id);
+        }
+        else
         {
             remote_address = iterator->second;
 
@@ -1098,17 +1099,16 @@ void ice_udp_server::forget_session(std::string_view session_id)
             session_id_by_endpoint_address_.erase(remote_address);
 
             endpoints_by_address_.erase(remote_address);
+
+            endpoint_removed = true;
         }
     }
 
-    if (track_resolver_ != nullptr)
+    if (endpoint_removed)
     {
-        track_resolver_->forget_session(session_id);
-    }
+        forget_peer_transport_state(remote_address);
 
-    if (ssrc_mapper_ != nullptr)
-    {
-        ssrc_mapper_->forget_session(session_id);
+        WEBRTC_LOG_INFO("ice udp session transport state removed session={} remote={}", session_id, remote_address);
     }
 
     if (rtcp_report_service_ != nullptr)
@@ -1116,18 +1116,8 @@ void ice_udp_server::forget_session(std::string_view session_id)
         rtcp_report_service_->forget_session(session_id);
     }
 
-    if (!remote_address.empty())
-    {
-        forget_peer_transport_state(remote_address);
-
-        WEBRTC_LOG_INFO("ice udp session transport state removed session={} remote={}", session_id, remote_address);
-    }
-    else
-    {
-        WEBRTC_LOG_DEBUG("ice udp session selected endpoint not found session={}", session_id);
-    }
-
-    schedule_dtls_timeout();
+    WEBRTC_LOG_INFO(
+        "ice udp session cleanup completed session={} endpoint_removed={} remote={}", session_id, endpoint_removed ? 1 : 0, remote_address);
 }
 
 uint16_t ice_udp_server::local_port() const { return bind_port_; }
@@ -3101,27 +3091,29 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
 
 void ice_udp_server::erase_rtp_cache(std::string_view stream_id)
 {
-    if (rtp_packet_cache_ != nullptr && !stream_id.empty())
+    if (stream_id.empty())
+    {
+        return;
+    }
+
+    bool cache_erased = false;
+    std::size_t remaining_packets = 0;
+
+    if (rtp_packet_cache_ != nullptr)
     {
         rtp_packet_cache_->erase_stream(stream_id);
 
-        WEBRTC_LOG_INFO("rtp cache stream erased stream={} remaining={}", stream_id, rtp_packet_cache_->size());
+        remaining_packets = rtp_packet_cache_->size();
+
+        cache_erased = true;
     }
 
-    if (ssrc_mapper_ != nullptr && !stream_id.empty())
-    {
-        ssrc_mapper_->forget_stream(stream_id);
-    }
-
-    if (rtcp_report_service_ != nullptr && !stream_id.empty())
+    if (rtcp_report_service_ != nullptr)
     {
         rtcp_report_service_->forget_stream(stream_id);
-
-        WEBRTC_LOG_INFO("rtcp report service stream erased stream={} sources={} stats_sources={}",
-                        stream_id,
-                        rtcp_report_service_->source_count(),
-                        rtcp_report_service_->stats_source_count());
     }
+
+    WEBRTC_LOG_INFO("rtp cache stream cleanup stream={} cache_erased={} remaining={}", stream_id, cache_erased ? 1 : 0, remaining_packets);
 }
 
 void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet,
