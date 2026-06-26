@@ -103,12 +103,13 @@ bool rtcp_report_runtime_snapshot_has_data(const rtcp_report_service_runtime_sna
            snapshot.inbound_rtcp_observe_failed != 0 || snapshot.inbound_sender_report_sources != 0 || snapshot.remember_source_attempts != 0 ||
            snapshot.remember_source_success != 0 || snapshot.remember_source_failed != 0 || snapshot.send_attempts != 0 ||
            snapshot.send_success != 0 || snapshot.endpoint_not_found != 0 || snapshot.protect_failed != 0 || snapshot.protect_ignored != 0 ||
+           snapshot.forgot_sources != 0 || snapshot.forgot_sessions != 0 || snapshot.forgot_streams != 0 || snapshot.forgot_peers != 0 ||
+           snapshot.stale_sources_expired != 0 || snapshot.last_cleanup_time_milliseconds != 0 || snapshot.last_cleanup_expired_sources != 0 ||
            snapshot.generated_report_rounds != 0 || snapshot.generated_packets != 0 || snapshot.skipped_packets != 0 ||
            snapshot.failed_packets != 0 || snapshot.throttled_sources != 0 || snapshot.observed_sender_reports != 0 ||
            snapshot.last_generation_time_milliseconds != 0 || snapshot.last_generation_packets != 0 || snapshot.last_generation_skipped != 0 ||
            snapshot.last_generation_failed != 0 || snapshot.last_generation_due_sources != 0 || snapshot.last_generation_throttled_sources != 0;
 }
-
 std::string append_rtcp_report_service_json(std::string media_json, const rtcp_report_service_runtime_snapshot& rtcp_snapshot)
 {
     trim_trailing_space(media_json);

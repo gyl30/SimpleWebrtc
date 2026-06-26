@@ -24,6 +24,57 @@ struct rtcp_report_service_config
     uint64_t report_jitter_milliseconds = 1000;
 
     std::size_t max_packets_per_generation = 32;
+
+    uint64_t stale_source_timeout_milliseconds = 60000;
+};
+struct rtcp_report_service_runtime_snapshot
+{
+    std::size_t configured_sources = 0;
+    std::size_t stats_sources = 0;
+
+    std::size_t max_report_blocks = 0;
+    uint64_t report_interval_milliseconds = 0;
+    uint64_t report_jitter_milliseconds = 0;
+    std::size_t max_packets_per_generation = 0;
+    uint64_t stale_source_timeout_milliseconds = 0;
+
+    uint64_t inbound_rtcp_observe_attempts = 0;
+    uint64_t inbound_rtcp_observe_failed = 0;
+    uint64_t inbound_sender_report_sources = 0;
+
+    uint64_t remember_source_attempts = 0;
+    uint64_t remember_source_success = 0;
+    uint64_t remember_source_failed = 0;
+
+    uint64_t send_attempts = 0;
+    uint64_t send_success = 0;
+    uint64_t endpoint_not_found = 0;
+    uint64_t protect_failed = 0;
+    uint64_t protect_ignored = 0;
+
+    uint64_t forgot_sources = 0;
+    uint64_t forgot_sessions = 0;
+    uint64_t forgot_streams = 0;
+    uint64_t forgot_peers = 0;
+    uint64_t stale_sources_expired = 0;
+
+    uint64_t last_cleanup_time_milliseconds = 0;
+    std::size_t last_cleanup_expired_sources = 0;
+
+    uint64_t generated_report_rounds = 0;
+    uint64_t generated_packets = 0;
+    uint64_t skipped_packets = 0;
+    uint64_t failed_packets = 0;
+    uint64_t throttled_sources = 0;
+
+    uint64_t observed_sender_reports = 0;
+
+    uint64_t last_generation_time_milliseconds = 0;
+    std::size_t last_generation_packets = 0;
+    std::size_t last_generation_skipped = 0;
+    std::size_t last_generation_failed = 0;
+    std::size_t last_generation_due_sources = 0;
+    std::size_t last_generation_throttled_sources = 0;
 };
 
 struct rtcp_report_source_config
@@ -73,45 +124,6 @@ struct rtcp_report_service_rtcp_observation
     std::size_t sender_report_count = 0;
 };
 
-struct rtcp_report_service_runtime_snapshot
-{
-    std::size_t configured_sources = 0;
-    std::size_t stats_sources = 0;
-
-    std::size_t max_report_blocks = 0;
-    uint64_t report_interval_milliseconds = 0;
-    uint64_t report_jitter_milliseconds = 0;
-    std::size_t max_packets_per_generation = 0;
-
-    uint64_t inbound_rtcp_observe_attempts = 0;
-    uint64_t inbound_rtcp_observe_failed = 0;
-    uint64_t inbound_sender_report_sources = 0;
-
-    uint64_t remember_source_attempts = 0;
-    uint64_t remember_source_success = 0;
-    uint64_t remember_source_failed = 0;
-
-    uint64_t send_attempts = 0;
-    uint64_t send_success = 0;
-    uint64_t endpoint_not_found = 0;
-    uint64_t protect_failed = 0;
-    uint64_t protect_ignored = 0;
-
-    uint64_t generated_report_rounds = 0;
-    uint64_t generated_packets = 0;
-    uint64_t skipped_packets = 0;
-    uint64_t failed_packets = 0;
-    uint64_t throttled_sources = 0;
-
-    uint64_t observed_sender_reports = 0;
-
-    uint64_t last_generation_time_milliseconds = 0;
-    std::size_t last_generation_packets = 0;
-    std::size_t last_generation_skipped = 0;
-    std::size_t last_generation_failed = 0;
-    std::size_t last_generation_due_sources = 0;
-    std::size_t last_generation_throttled_sources = 0;
-};
 using rtcp_report_service_result = std::expected<void, std::string>;
 
 using rtcp_report_service_packet_result = std::expected<rtcp_report_service_packet, std::string>;
@@ -138,6 +150,11 @@ class rtcp_report_service
    public:
     [[nodiscard]]
     rtcp_report_service_result remember_source(const rtcp_report_source_config& source);
+
+    [[nodiscard]]
+    rtcp_report_service_result remember_source(const rtcp_report_source_config& source, uint64_t now_milliseconds);
+
+    void forget_source(std::string_view session_id, std::string_view remote_endpoint, uint32_t local_ssrc);
 
     [[nodiscard]]
     rtcp_report_service_result observe_received_rtp(const rtcp_received_rtp_packet& packet);
@@ -197,6 +214,7 @@ class rtcp_report_service
         rtcp_report_source_config source;
 
         uint64_t next_due_milliseconds = 0;
+        uint64_t last_active_milliseconds = 0;
     };
 
    private:
@@ -222,6 +240,8 @@ class rtcp_report_service
 
     [[nodiscard]]
     static uint64_t add_milliseconds_saturated(uint64_t timestamp_milliseconds, uint64_t delay_milliseconds);
+    [[nodiscard]]
+    std::size_t expire_stale_sources_locked(uint64_t now_milliseconds);
 
     [[nodiscard]]
     rtcp_report_source_config normalize_source(const rtcp_report_source_config& source) const;
@@ -247,8 +267,16 @@ class rtcp_report_service
     uint64_t failed_packets_ = 0;
     uint64_t throttled_sources_ = 0;
 
-    uint64_t observed_sender_reports_ = 0;
+    uint64_t forgot_sources_ = 0;
+    uint64_t forgot_sessions_ = 0;
+    uint64_t forgot_streams_ = 0;
+    uint64_t forgot_peers_ = 0;
+    uint64_t stale_sources_expired_ = 0;
 
+    uint64_t last_cleanup_time_milliseconds_ = 0;
+    std::size_t last_cleanup_expired_sources_ = 0;
+
+    uint64_t observed_sender_reports_ = 0;
     uint64_t last_generation_time_milliseconds_ = 0;
     std::size_t last_generation_packets_ = 0;
     std::size_t last_generation_skipped_ = 0;

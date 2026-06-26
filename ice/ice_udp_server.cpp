@@ -440,6 +440,9 @@ rtcp_report_service_config make_rtcp_report_service_config_from_env()
 
     config.max_packets_per_generation = get_env_size_or_default("WEBRTC_RTCP_REPORT_MAX_PACKETS_PER_GENERATION", config.max_packets_per_generation);
 
+    config.stale_source_timeout_milliseconds =
+        get_env_uint64_or_default("WEBRTC_RTCP_REPORT_STALE_SOURCE_TIMEOUT_MS", config.stale_source_timeout_milliseconds);
+
     if (config.max_report_blocks > 31)
     {
         WEBRTC_LOG_WARN("rtcp report service max report blocks clamped value={} clamped=31", config.max_report_blocks);
@@ -462,11 +465,13 @@ rtcp_report_service_config make_rtcp_report_service_config_from_env()
         config.report_jitter_milliseconds = config.report_interval_milliseconds;
     }
 
-    WEBRTC_LOG_INFO("rtcp report service config max_report_blocks={} interval_ms={} jitter_ms={} max_packets_per_generation={}",
-                    config.max_report_blocks,
-                    config.report_interval_milliseconds,
-                    config.report_jitter_milliseconds,
-                    config.max_packets_per_generation);
+    WEBRTC_LOG_INFO(
+        "rtcp report service config max_report_blocks={} interval_ms={} jitter_ms={} max_packets_per_generation={} stale_source_timeout_ms={}",
+        config.max_report_blocks,
+        config.report_interval_milliseconds,
+        config.report_jitter_milliseconds,
+        config.max_packets_per_generation,
+        config.stale_source_timeout_milliseconds);
 
     return config;
 }
@@ -1501,7 +1506,10 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
         {
             rtcp_report_endpoint_not_found_total_.fetch_add(1, std::memory_order_relaxed);
 
-            WEBRTC_LOG_WARN("rtcp active report endpoint not found stream={} session={} remote={} local_ssrc={}",
+            rtcp_report_service_->forget_source(
+                report_packet.source.session_id, report_packet.source.remote_endpoint, report_packet.source.local_ssrc);
+
+            WEBRTC_LOG_WARN("rtcp active report endpoint not found stream={} session={} remote={} local_ssrc={} source_forgot=1",
                             report_packet.source.stream_id,
                             report_packet.source.session_id,
                             report_packet.source.remote_endpoint,
@@ -2231,6 +2239,8 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
         return;
     }
 
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
     rtcp_report_inbound_rtcp_observe_attempts_total_.fetch_add(1, std::memory_order_relaxed);
 
     auto observation =
@@ -2238,7 +2248,7 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
                                                                  peer.session_id,
                                                                  peer.remote_endpoint,
                                                                  std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()),
-                                                                 now_milliseconds());
+                                                                 current_time_milliseconds);
 
     if (!observation)
     {
@@ -2286,7 +2296,7 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
 
         rtcp_report_remember_source_attempts_total_.fetch_add(1, std::memory_order_relaxed);
 
-        auto remember_result = rtcp_report_service_->remember_source(source);
+        auto remember_result = rtcp_report_service_->remember_source(source, current_time_milliseconds);
 
         if (!remember_result)
         {
@@ -2312,7 +2322,6 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
                          local_ssrc);
     }
 }
-
 void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_peer, std::span<const uint8_t> outbound_plain_packet)
 {
     if (rtcp_report_service_ == nullptr)

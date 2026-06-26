@@ -157,7 +157,9 @@ rtcp_report_service::rtcp_report_service(rtcp_report_service_config config) : co
     }
 }
 
-rtcp_report_service_result rtcp_report_service::remember_source(const rtcp_report_source_config& source)
+rtcp_report_service_result rtcp_report_service::remember_source(const rtcp_report_source_config& source) { return remember_source(source, 0); }
+
+rtcp_report_service_result rtcp_report_service::remember_source(const rtcp_report_source_config& source, uint64_t now_milliseconds)
 {
     auto validation_result = validate_source(source);
 
@@ -179,11 +181,15 @@ rtcp_report_service_result rtcp_report_service::remember_source(const rtcp_repor
     if (inserted)
     {
         iterator->second.next_due_milliseconds = 0;
+        iterator->second.last_active_milliseconds = now_milliseconds;
+    }
+    else if (now_milliseconds != 0)
+    {
+        iterator->second.last_active_milliseconds = now_milliseconds;
     }
 
     return {};
 }
-
 rtcp_report_service_result rtcp_report_service::observe_received_rtp(const rtcp_received_rtp_packet& packet)
 {
     return stats_.observe_received_rtp(packet);
@@ -304,12 +310,19 @@ rtcp_report_service_generation rtcp_report_service::generate_reports(uint64_t no
     {
         std::lock_guard lock(mutex_);
 
+        expire_stale_sources_locked(now_milliseconds);
+
         pending_sources.reserve(sources_by_key_.size());
 
         const uint64_t next_generation_round = generated_report_rounds_ + 1;
 
         for (auto& [key, record] : sources_by_key_)
         {
+            if (record.last_active_milliseconds == 0)
+            {
+                record.last_active_milliseconds = now_milliseconds;
+            }
+
             if (record.next_due_milliseconds == 0)
             {
                 record.next_due_milliseconds = add_milliseconds_saturated(now_milliseconds, make_initial_delay_milliseconds(key, config_));
@@ -396,7 +409,6 @@ rtcp_report_service_generation rtcp_report_service::generate_reports(uint64_t no
 
     return generation;
 }
-
 rtcp_report_service_packet_result rtcp_report_service::generate_report_for_source(const rtcp_report_source_config& source, uint64_t now_milliseconds)
 {
     auto validation_result = validate_source(source);
@@ -423,6 +435,24 @@ rtcp_report_service_packet_result rtcp_report_service::generate_report_for_sourc
 
     return packet;
 }
+void rtcp_report_service::forget_source(std::string_view session_id, std::string_view remote_endpoint, uint32_t local_ssrc)
+{
+    if (session_id.empty() || remote_endpoint.empty() || local_ssrc == 0)
+    {
+        return;
+    }
+
+    const std::string key = make_source_key(session_id, remote_endpoint, local_ssrc);
+
+    std::lock_guard lock(mutex_);
+
+    const std::size_t erased = sources_by_key_.erase(key);
+
+    if (erased != 0)
+    {
+        forgot_sources_ += erased;
+    }
+}
 
 void rtcp_report_service::forget_session(std::string_view session_id)
 {
@@ -430,6 +460,8 @@ void rtcp_report_service::forget_session(std::string_view session_id)
     {
         return;
     }
+
+    std::size_t erased_sources = 0;
 
     {
         std::lock_guard lock(mutex_);
@@ -440,22 +472,28 @@ void rtcp_report_service::forget_session(std::string_view session_id)
             {
                 iterator = sources_by_key_.erase(iterator);
 
+                erased_sources += 1;
+
                 continue;
             }
 
             ++iterator;
         }
+
+        forgot_sessions_ += 1;
+        forgot_sources_ += erased_sources;
     }
 
     stats_.forget_session(session_id);
 }
-
 void rtcp_report_service::forget_stream(std::string_view stream_id)
 {
     if (stream_id.empty())
     {
         return;
     }
+
+    std::size_t erased_sources = 0;
 
     {
         std::lock_guard lock(mutex_);
@@ -466,22 +504,28 @@ void rtcp_report_service::forget_stream(std::string_view stream_id)
             {
                 iterator = sources_by_key_.erase(iterator);
 
+                erased_sources += 1;
+
                 continue;
             }
 
             ++iterator;
         }
+
+        forgot_streams_ += 1;
+        forgot_sources_ += erased_sources;
     }
 
     stats_.forget_stream(stream_id);
 }
-
 void rtcp_report_service::forget_peer(std::string_view remote_endpoint)
 {
     if (remote_endpoint.empty())
     {
         return;
     }
+
+    std::size_t erased_sources = 0;
 
     {
         std::lock_guard lock(mutex_);
@@ -492,16 +536,20 @@ void rtcp_report_service::forget_peer(std::string_view remote_endpoint)
             {
                 iterator = sources_by_key_.erase(iterator);
 
+                erased_sources += 1;
+
                 continue;
             }
 
             ++iterator;
         }
+
+        forgot_peers_ += 1;
+        forgot_sources_ += erased_sources;
     }
 
     stats_.forget_peer(remote_endpoint);
 }
-
 void rtcp_report_service::clear()
 {
     {
@@ -540,6 +588,22 @@ rtcp_report_service_runtime_snapshot rtcp_report_service::runtime_snapshot() con
         snapshot.report_jitter_milliseconds = config_.report_jitter_milliseconds;
 
         snapshot.max_packets_per_generation = config_.max_packets_per_generation;
+
+        snapshot.stale_source_timeout_milliseconds = config_.stale_source_timeout_milliseconds;
+
+        snapshot.forgot_sources = forgot_sources_;
+
+        snapshot.forgot_sessions = forgot_sessions_;
+
+        snapshot.forgot_streams = forgot_streams_;
+
+        snapshot.forgot_peers = forgot_peers_;
+
+        snapshot.stale_sources_expired = stale_sources_expired_;
+
+        snapshot.last_cleanup_time_milliseconds = last_cleanup_time_milliseconds_;
+
+        snapshot.last_cleanup_expired_sources = last_cleanup_expired_sources_;
 
         snapshot.generated_report_rounds = generated_report_rounds_;
 
@@ -740,6 +804,64 @@ uint64_t rtcp_report_service::add_milliseconds_saturated(uint64_t timestamp_mill
     return timestamp_milliseconds + delay_milliseconds;
 }
 
+std::size_t rtcp_report_service::expire_stale_sources_locked(uint64_t now_milliseconds)
+{
+    last_cleanup_time_milliseconds_ = now_milliseconds;
+
+    last_cleanup_expired_sources_ = 0;
+
+    if (config_.stale_source_timeout_milliseconds == 0)
+    {
+        return 0;
+    }
+
+    std::size_t expired_sources = 0;
+
+    for (auto iterator = sources_by_key_.begin(); iterator != sources_by_key_.end();)
+    {
+        if (iterator->second.last_active_milliseconds == 0)
+        {
+            iterator->second.last_active_milliseconds = now_milliseconds;
+
+            ++iterator;
+
+            continue;
+        }
+
+        if (now_milliseconds < iterator->second.last_active_milliseconds)
+        {
+            iterator->second.last_active_milliseconds = now_milliseconds;
+
+            ++iterator;
+
+            continue;
+        }
+
+        const uint64_t idle_milliseconds = now_milliseconds - iterator->second.last_active_milliseconds;
+
+        if (idle_milliseconds < config_.stale_source_timeout_milliseconds)
+        {
+            ++iterator;
+
+            continue;
+        }
+
+        iterator = sources_by_key_.erase(iterator);
+
+        expired_sources += 1;
+    }
+
+    if (expired_sources != 0)
+    {
+        stale_sources_expired_ += expired_sources;
+
+        forgot_sources_ += expired_sources;
+    }
+
+    last_cleanup_expired_sources_ = expired_sources;
+
+    return expired_sources;
+}
 rtcp_report_source_config rtcp_report_service::normalize_source(const rtcp_report_source_config& source) const
 {
     rtcp_report_source_config normalized_source = source;
@@ -833,6 +955,15 @@ void rtcp_report_service::reset_runtime_counters_locked()
     failed_packets_ = 0;
     throttled_sources_ = 0;
 
+    forgot_sources_ = 0;
+    forgot_sessions_ = 0;
+    forgot_streams_ = 0;
+    forgot_peers_ = 0;
+    stale_sources_expired_ = 0;
+
+    last_cleanup_time_milliseconds_ = 0;
+    last_cleanup_expired_sources_ = 0;
+
     observed_sender_reports_ = 0;
 
     last_generation_time_milliseconds_ = 0;
@@ -907,7 +1038,7 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
 {
     std::string result;
 
-    result.reserve(640);
+    result.reserve(768);
 
     result.append("configured_sources=");
     result.append(std::to_string(snapshot.configured_sources));
@@ -926,6 +1057,9 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
 
     result.append(" max_packets_per_generation=");
     result.append(std::to_string(snapshot.max_packets_per_generation));
+
+    result.append(" stale_source_timeout_ms=");
+    result.append(std::to_string(snapshot.stale_source_timeout_milliseconds));
 
     result.append(" inbound_observe_attempts=");
     result.append(std::to_string(snapshot.inbound_rtcp_observe_attempts));
@@ -959,6 +1093,27 @@ std::string rtcp_report_service_runtime_snapshot_to_string(const rtcp_report_ser
 
     result.append(" protect_ignored=");
     result.append(std::to_string(snapshot.protect_ignored));
+
+    result.append(" forgot_sources=");
+    result.append(std::to_string(snapshot.forgot_sources));
+
+    result.append(" forgot_sessions=");
+    result.append(std::to_string(snapshot.forgot_sessions));
+
+    result.append(" forgot_streams=");
+    result.append(std::to_string(snapshot.forgot_streams));
+
+    result.append(" forgot_peers=");
+    result.append(std::to_string(snapshot.forgot_peers));
+
+    result.append(" stale_sources_expired=");
+    result.append(std::to_string(snapshot.stale_sources_expired));
+
+    result.append(" last_cleanup_time_ms=");
+    result.append(std::to_string(snapshot.last_cleanup_time_milliseconds));
+
+    result.append(" last_cleanup_expired_sources=");
+    result.append(std::to_string(snapshot.last_cleanup_expired_sources));
 
     result.append(" rounds=");
     result.append(std::to_string(snapshot.generated_report_rounds));
@@ -1002,7 +1157,7 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
 {
     std::string output;
 
-    output.reserve(1408);
+    output.reserve(1792);
 
     bool first = true;
 
@@ -1019,6 +1174,8 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
     append_json_uint64(output, "report_jitter_milliseconds", snapshot.report_jitter_milliseconds, first);
 
     append_json_size(output, "max_packets_per_generation", snapshot.max_packets_per_generation, first);
+
+    append_json_uint64(output, "stale_source_timeout_milliseconds", snapshot.stale_source_timeout_milliseconds, first);
 
     append_json_uint64(output, "inbound_rtcp_observe_attempts", snapshot.inbound_rtcp_observe_attempts, first);
 
@@ -1041,6 +1198,20 @@ std::string rtcp_report_service_runtime_snapshot_to_json(const rtcp_report_servi
     append_json_uint64(output, "protect_failed", snapshot.protect_failed, first);
 
     append_json_uint64(output, "protect_ignored", snapshot.protect_ignored, first);
+
+    append_json_uint64(output, "forgot_sources", snapshot.forgot_sources, first);
+
+    append_json_uint64(output, "forgot_sessions", snapshot.forgot_sessions, first);
+
+    append_json_uint64(output, "forgot_streams", snapshot.forgot_streams, first);
+
+    append_json_uint64(output, "forgot_peers", snapshot.forgot_peers, first);
+
+    append_json_uint64(output, "stale_sources_expired", snapshot.stale_sources_expired, first);
+
+    append_json_uint64(output, "last_cleanup_time_milliseconds", snapshot.last_cleanup_time_milliseconds, first);
+
+    append_json_size(output, "last_cleanup_expired_sources", snapshot.last_cleanup_expired_sources, first);
 
     append_json_uint64(output, "generated_report_rounds", snapshot.generated_report_rounds, first);
 
@@ -1108,6 +1279,13 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
         output, "simplewebrtc_rtcp_report_service_max_packets_per_generation", static_cast<uint64_t>(snapshot.max_packets_per_generation));
 
     append_metric_header(output,
+                         "simplewebrtc_rtcp_report_service_stale_source_timeout_milliseconds",
+                         "configured rtcp report source stale timeout in milliseconds zero means disabled",
+                         "gauge");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_stale_source_timeout_milliseconds", snapshot.stale_source_timeout_milliseconds);
+
+    append_metric_header(output,
                          "simplewebrtc_rtcp_report_service_inbound_rtcp_observe_attempts_total",
                          "total inbound rtcp packets inspected for sender report observations",
                          "counter");
@@ -1169,6 +1347,41 @@ std::string rtcp_report_service_runtime_snapshot_to_prometheus(const rtcp_report
         output, "simplewebrtc_rtcp_report_service_protect_ignored_total", "total rtcp active report packets ignored by srtp protection", "counter");
 
     append_metric_value(output, "simplewebrtc_rtcp_report_service_protect_ignored_total", snapshot.protect_ignored);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_forgot_sources_total", "total rtcp report sources removed from service", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_forgot_sources_total", snapshot.forgot_sources);
+
+    append_metric_header(output, "simplewebrtc_rtcp_report_service_forgot_sessions_total", "total rtcp report session cleanup operations", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_forgot_sessions_total", snapshot.forgot_sessions);
+
+    append_metric_header(output, "simplewebrtc_rtcp_report_service_forgot_streams_total", "total rtcp report stream cleanup operations", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_forgot_streams_total", snapshot.forgot_streams);
+
+    append_metric_header(output, "simplewebrtc_rtcp_report_service_forgot_peers_total", "total rtcp report peer cleanup operations", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_forgot_peers_total", snapshot.forgot_peers);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_stale_sources_expired_total", "total rtcp report sources expired by stale cleanup", "counter");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_stale_sources_expired_total", snapshot.stale_sources_expired);
+
+    append_metric_header(output,
+                         "simplewebrtc_rtcp_report_service_last_cleanup_time_milliseconds",
+                         "last rtcp report source cleanup timestamp in milliseconds",
+                         "gauge");
+
+    append_metric_value(output, "simplewebrtc_rtcp_report_service_last_cleanup_time_milliseconds", snapshot.last_cleanup_time_milliseconds);
+
+    append_metric_header(
+        output, "simplewebrtc_rtcp_report_service_last_cleanup_expired_sources", "rtcp report sources expired in the last cleanup round", "gauge");
+
+    append_metric_value(
+        output, "simplewebrtc_rtcp_report_service_last_cleanup_expired_sources", static_cast<uint64_t>(snapshot.last_cleanup_expired_sources));
 
     append_metric_header(
         output, "simplewebrtc_rtcp_report_service_generated_report_rounds_total", "total rtcp active report generation rounds", "counter");
