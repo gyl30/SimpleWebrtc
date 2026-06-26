@@ -11,6 +11,7 @@
 #include "log/log.h"
 #include "net/http.h"
 #include "media/media_router.h"
+#include "server/signaling_json.h"
 #include "server/trickle_ice_http.h"
 #include "media/rtcp_report_service.h"
 #include "server/trickle_ice_metrics.h"
@@ -41,6 +42,8 @@ inline constexpr std::string_view k_whep_prefix = "/whep/";
 inline constexpr std::string_view k_whip_session_prefix = "/whip/session/";
 
 inline constexpr std::string_view k_whep_session_prefix = "/whep/session/";
+
+inline constexpr std::string_view k_sessions_path = "/api/sessions";
 
 inline constexpr std::string_view k_media_stats_path = "/api/stats/media";
 
@@ -238,6 +241,10 @@ http_response_ptr router::handle(http_request_t& request)
     {
         return handle_version(request);
     }
+    if (path == k_sessions_path)
+    {
+        return handle_sessions(request);
+    }
 
     if (path == k_media_stats_path)
     {
@@ -311,6 +318,24 @@ http_response_ptr router::handle_version(http_request_t& request)
     return json_response(request, 200, R"({"name":"SimpleWebrtc","version":"0.1"})");
 }
 
+http_response_ptr router::handle_sessions(http_request_t& request)
+{
+    if (request.req.method() != http::verb::get)
+    {
+        return method_not_allowed(request);
+    }
+
+    if (registry_ == nullptr)
+    {
+        return json_response(request, 503, json_error_body("session registry unavailable"));
+    }
+
+    const std::vector<stream_session_lifecycle_snapshot> snapshots = registry_->session_lifecycle_snapshots();
+
+    const std::string body = make_session_lifecycle_response_body(snapshots);
+
+    return json_response(request, 200, body);
+}
 http_response_ptr router::handle_media_stats(http_request_t& request)
 {
     if (request.req.method() != http::verb::get)
