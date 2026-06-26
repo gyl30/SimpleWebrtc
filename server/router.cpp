@@ -13,6 +13,7 @@
 #include "media/media_router.h"
 #include "server/trickle_ice_http.h"
 #include "media/rtcp_report_service.h"
+#include "server/trickle_ice_metrics.h"
 #include "media/media_router_stats_json.h"
 #include "signaling/webrtc_answer_factory.h"
 #include "media/media_router_stats_prometheus.h"
@@ -149,6 +150,45 @@ void append_rtcp_report_service_prometheus(std::string& output, const rtcp_repor
     }
 
     output.append(rtcp_report_service_runtime_snapshot_to_prometheus(rtcp_snapshot));
+}
+std::string append_trickle_ice_metrics_json(std::string media_json, const trickle_ice_metrics_snapshot& trickle_snapshot)
+{
+    trim_trailing_space(media_json);
+
+    if (media_json.empty())
+    {
+        media_json = "{}";
+    }
+
+    if (media_json.back() != '}')
+    {
+        return media_json;
+    }
+
+    media_json.pop_back();
+
+    if (media_json.size() > 1)
+    {
+        media_json.push_back(',');
+    }
+
+    media_json.append(R"("trickle_ice":)");
+
+    media_json.append(trickle_ice_metrics_snapshot_to_json(trickle_snapshot));
+
+    media_json.push_back('}');
+
+    return media_json;
+}
+
+void append_trickle_ice_metrics_prometheus(std::string& output, const trickle_ice_metrics_snapshot& trickle_snapshot)
+{
+    if (!output.empty() && output.back() != '\n')
+    {
+        output.push_back('\n');
+    }
+
+    output.append(trickle_ice_metrics_snapshot_to_prometheus(trickle_snapshot));
 }
 }    // namespace
 
@@ -289,7 +329,7 @@ http_response_ptr router::handle_media_stats(http_request_t& request)
     {
         WEBRTC_LOG_DEBUG("http media stats rtcp report provider mounted=0 has_data=0");
     }
-
+    body = append_trickle_ice_metrics_json(std::move(body), global_trickle_ice_metrics().snapshot());
     return json_response(request, 200, body);
 }
 
@@ -323,7 +363,7 @@ http_response_ptr router::handle_prometheus_metrics(http_request_t& request)
     {
         WEBRTC_LOG_INFO("http prometheus metrics rtcp report provider mounted=0 has_data=0");
     }
-
+    append_trickle_ice_metrics_prometheus(body, global_trickle_ice_metrics().snapshot());
     return prometheus_response(request, 200, body);
 }
 
