@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <optional>
 #include <span>
 #include <string>
@@ -23,11 +24,43 @@ constexpr uint16_t k_two_byte_extension_profile_value = 0x1000;
 
 constexpr uint8_t k_one_byte_extension_reserved_id = 15;
 
+constexpr std::string_view k_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
+
+constexpr std::string_view k_rid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id";
+
+constexpr std::string_view k_repaired_rid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id";
+
+constexpr std::string_view k_transport_wide_cc_extension_uri = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
+
+constexpr std::string_view k_transport_wide_cc_extension_uri_02 = "http://www.webrtc.org/experiments/rtp-hdrext/transport-wide-cc-02";
+
+constexpr std::string_view k_absolute_send_time_extension_uri = "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
+
+constexpr std::string_view k_audio_level_extension_uri = "urn:ietf:params:rtp-hdrext:ssrc-audio-level";
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+
+std::unexpected<std::string> make_field_error(std::string_view field_name, std::string_view message)
+{
+    std::string error;
+
+    error.reserve(field_name.size() + message.size() + 1);
+
+    error.append(field_name);
+    error.push_back(' ');
+    error.append(message);
+
+    return std::unexpected(std::move(error));
+}
 
 uint16_t read_u16(std::span<const uint8_t> data, std::size_t offset)
 {
     return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
+}
+
+uint32_t read_u24(std::span<const uint8_t> data, std::size_t offset)
+{
+    return (static_cast<uint32_t>(data[offset]) << 16U) | (static_cast<uint32_t>(data[offset + 1]) << 8U) | static_cast<uint32_t>(data[offset + 2]);
 }
 
 uint32_t read_u32(std::span<const uint8_t> data, std::size_t offset)
@@ -45,6 +78,8 @@ bool has_rtp_version(std::span<const uint8_t> data)
 
     return (data[0] >> 6U) == 2U;
 }
+
+bool contains_forbidden_text_extension_character(uint8_t value) { return value == 0 || value == '\r' || value == '\n'; }
 
 rtp_header_extension_format make_extension_format(uint16_t profile)
 {
@@ -242,6 +277,99 @@ std::expected<void, std::string> parse_rtp_padding(std::span<const uint8_t> pack
 
     return {};
 }
+
+std::optional<uint8_t> find_rtp_header_extension_id_any(const sdp::media_summary& media, std::initializer_list<std::string_view> uris)
+{
+    for (std::string_view uri : uris)
+    {
+        auto id = find_rtp_header_extension_id(media, uri);
+
+        if (id.has_value())
+        {
+            return id;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<std::span<const uint8_t>> find_configured_rtp_header_extension_payload(std::span<const uint8_t> packet,
+                                                                                     const rtp_packet_header& header,
+                                                                                     const sdp::media_summary& media,
+                                                                                     std::initializer_list<std::string_view> uris)
+{
+    auto extension_id = find_rtp_header_extension_id_any(media, uris);
+
+    if (!extension_id.has_value())
+    {
+        return std::nullopt;
+    }
+
+    return find_rtp_header_extension(packet, header, *extension_id);
+}
+
+std::expected<std::string, std::string> parse_text_header_extension(std::span<const uint8_t> payload, std::string_view field_name)
+{
+    if (payload.empty())
+    {
+        return make_field_error(field_name, "extension is empty");
+    }
+
+    if (payload.size() > 255)
+    {
+        return make_field_error(field_name, "extension is too large");
+    }
+
+    std::string value;
+
+    value.reserve(payload.size());
+
+    for (uint8_t byte : payload)
+    {
+        if (contains_forbidden_text_extension_character(byte))
+        {
+            return make_field_error(field_name, "extension contains invalid characters");
+        }
+
+        value.push_back(static_cast<char>(byte));
+    }
+
+    return value;
+}
+
+std::expected<uint16_t, std::string> parse_transport_wide_sequence_number(std::span<const uint8_t> payload)
+{
+    if (payload.size() != 2)
+    {
+        return make_error("rtp transport-wide-cc extension size is invalid");
+    }
+
+    return read_u16(payload, 0);
+}
+
+std::expected<uint32_t, std::string> parse_absolute_send_time(std::span<const uint8_t> payload)
+{
+    if (payload.size() != 3)
+    {
+        return make_error("rtp abs-send-time extension size is invalid");
+    }
+
+    return read_u24(payload, 0);
+}
+
+std::expected<void, std::string> parse_audio_level(std::span<const uint8_t> payload, rtp_header_extension_values& values)
+{
+    if (payload.size() != 1)
+    {
+        return make_error("rtp audio-level extension size is invalid");
+    }
+
+    values.voice_activity = (payload[0] & 0x80U) != 0;
+
+    values.audio_level = static_cast<uint8_t>(payload[0] & 0x7FU);
+
+    return {};
+}
 }    // namespace
 
 bool is_rtp_or_rtcp_packet(std::span<const uint8_t> data)
@@ -429,12 +557,142 @@ std::optional<std::span<const uint8_t>> find_rtp_header_extension(std::span<cons
     return std::nullopt;
 }
 
+std::optional<uint8_t> find_rtp_header_extension_id(const sdp::media_summary& media, std::string_view uri)
+{
+    if (uri.empty())
+    {
+        return std::nullopt;
+    }
+
+    for (const auto& extension : media.header_extensions)
+    {
+        if (extension.id == 0)
+        {
+            continue;
+        }
+
+        if (extension.uri == uri)
+        {
+            return extension.id;
+        }
+    }
+
+    return std::nullopt;
+}
+
+rtp_header_extension_values_result parse_rtp_header_extension_values(std::span<const uint8_t> packet,
+                                                                     const rtp_packet_header& header,
+                                                                     const sdp::media_summary& media)
+{
+    rtp_header_extension_values values;
+
+    auto mid_payload = find_configured_rtp_header_extension_payload(packet, header, media, {k_mid_extension_uri});
+
+    if (mid_payload.has_value())
+    {
+        auto parsed_mid = parse_text_header_extension(*mid_payload, "rtp mid");
+
+        if (!parsed_mid)
+        {
+            return std::unexpected(parsed_mid.error());
+        }
+
+        values.mid = std::move(*parsed_mid);
+    }
+
+    auto rid_payload = find_configured_rtp_header_extension_payload(packet, header, media, {k_rid_extension_uri});
+
+    if (rid_payload.has_value())
+    {
+        auto parsed_rid = parse_text_header_extension(*rid_payload, "rtp rid");
+
+        if (!parsed_rid)
+        {
+            return std::unexpected(parsed_rid.error());
+        }
+
+        values.rid = std::move(*parsed_rid);
+    }
+
+    auto repaired_rid_payload = find_configured_rtp_header_extension_payload(packet, header, media, {k_repaired_rid_extension_uri});
+
+    if (repaired_rid_payload.has_value())
+    {
+        auto parsed_repaired_rid = parse_text_header_extension(*repaired_rid_payload, "rtp repaired-rid");
+
+        if (!parsed_repaired_rid)
+        {
+            return std::unexpected(parsed_repaired_rid.error());
+        }
+
+        values.repaired_rid = std::move(*parsed_repaired_rid);
+    }
+
+    auto transport_wide_cc_payload = find_configured_rtp_header_extension_payload(
+        packet, header, media, {k_transport_wide_cc_extension_uri, k_transport_wide_cc_extension_uri_02});
+
+    if (transport_wide_cc_payload.has_value())
+    {
+        auto sequence_number = parse_transport_wide_sequence_number(*transport_wide_cc_payload);
+
+        if (!sequence_number)
+        {
+            return std::unexpected(sequence_number.error());
+        }
+
+        values.transport_wide_sequence_number = *sequence_number;
+    }
+
+    auto absolute_send_time_payload = find_configured_rtp_header_extension_payload(packet, header, media, {k_absolute_send_time_extension_uri});
+
+    if (absolute_send_time_payload.has_value())
+    {
+        auto absolute_send_time = parse_absolute_send_time(*absolute_send_time_payload);
+
+        if (!absolute_send_time)
+        {
+            return std::unexpected(absolute_send_time.error());
+        }
+
+        values.absolute_send_time = *absolute_send_time;
+    }
+
+    auto audio_level_payload = find_configured_rtp_header_extension_payload(packet, header, media, {k_audio_level_extension_uri});
+
+    if (audio_level_payload.has_value())
+    {
+        auto audio_level_result = parse_audio_level(*audio_level_payload, values);
+
+        if (!audio_level_result)
+        {
+            return std::unexpected(audio_level_result.error());
+        }
+    }
+
+    return values;
+}
+
 bool is_one_byte_rtp_header_extension_profile(uint16_t profile) { return profile == k_one_byte_extension_profile; }
 
 bool is_two_byte_rtp_header_extension_profile(uint16_t profile)
 {
     return (profile & k_two_byte_extension_profile_mask) == k_two_byte_extension_profile_value;
 }
+
+bool is_mid_rtp_header_extension_uri(std::string_view uri) { return uri == k_mid_extension_uri; }
+
+bool is_rid_rtp_header_extension_uri(std::string_view uri) { return uri == k_rid_extension_uri; }
+
+bool is_repaired_rid_rtp_header_extension_uri(std::string_view uri) { return uri == k_repaired_rid_extension_uri; }
+
+bool is_transport_wide_cc_rtp_header_extension_uri(std::string_view uri)
+{
+    return uri == k_transport_wide_cc_extension_uri || uri == k_transport_wide_cc_extension_uri_02;
+}
+
+bool is_absolute_send_time_rtp_header_extension_uri(std::string_view uri) { return uri == k_absolute_send_time_extension_uri; }
+
+bool is_audio_level_rtp_header_extension_uri(std::string_view uri) { return uri == k_audio_level_extension_uri; }
 
 std::string rtp_header_extension_format_to_string(rtp_header_extension_format format)
 {
