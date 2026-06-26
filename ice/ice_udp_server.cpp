@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -27,6 +28,7 @@
 #include "media/media_ssrc_mapper.h"
 #include "media/media_track_resolver.h"
 #include "media/rtcp_feedback_router.h"
+#include "media/rtcp_report_service.h"
 #include "media/rtp_packet_cache.h"
 #include "net/socket.h"
 #include "rtp/rtcp_feedback.h"
@@ -47,16 +49,29 @@ constexpr auto k_minimum_dtls_timer_delay = std::chrono::milliseconds(1);
 
 constexpr auto k_ice_consent_check_interval = std::chrono::seconds(5);
 
+constexpr auto k_rtcp_report_interval = std::chrono::seconds(5);
+
 constexpr uint64_t k_ice_consent_timeout_milliseconds = 30000;
 
 constexpr uint64_t k_unselected_candidate_pair_retention_milliseconds = 120000;
 
 constexpr std::string_view k_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
 
+constexpr uint64_t k_fnv_offset_basis = 1469598103934665603ULL;
+
+constexpr uint64_t k_fnv_prime = 1099511628211ULL;
+
 struct ice_username_parts
 {
     std::string_view recipient_ufrag;
     std::string_view sender_ufrag;
+};
+
+struct rtcp_sender_report_observation
+{
+    uint32_t ssrc = 0;
+    uint32_t ntp_msw = 0;
+    uint32_t ntp_lsw = 0;
 };
 
 using optional_mid_rewrite_result = std::expected<std::optional<rtp_header_extension_rewrite>, std::string>;
@@ -114,6 +129,169 @@ void write_network_u32(std::vector<uint8_t>& packet, std::size_t offset, uint32_
 }
 
 bool is_rtcp_feedback_packet_type(uint8_t packet_type) { return packet_type == 205 || packet_type == 206; }
+
+void hash_byte(uint64_t& hash, uint8_t value)
+{
+    hash ^= static_cast<uint64_t>(value);
+
+    hash *= k_fnv_prime;
+}
+
+void hash_string(uint64_t& hash, std::string_view value)
+{
+    for (char item : value)
+    {
+        hash_byte(hash, static_cast<uint8_t>(item));
+    }
+
+    hash_byte(hash, 0xffU);
+}
+
+void hash_u32(uint64_t& hash, uint32_t value)
+{
+    hash_byte(hash, static_cast<uint8_t>((value >> 24U) & 0xffU));
+
+    hash_byte(hash, static_cast<uint8_t>((value >> 16U) & 0xffU));
+
+    hash_byte(hash, static_cast<uint8_t>((value >> 8U) & 0xffU));
+
+    hash_byte(hash, static_cast<uint8_t>(value & 0xffU));
+}
+
+uint32_t fold_hash_to_u32(uint64_t value)
+{
+    const uint32_t high = static_cast<uint32_t>(value >> 32U);
+
+    const uint32_t low = static_cast<uint32_t>(value & 0xffffffffULL);
+
+    uint32_t result = high ^ low;
+
+    if (result == 0)
+    {
+        result = 1;
+    }
+
+    return result;
+}
+
+uint32_t make_rtcp_report_local_ssrc(const media_peer_info& peer, uint32_t remote_ssrc)
+{
+    uint64_t hash = k_fnv_offset_basis;
+
+    hash_string(hash, "simplewebrtc-rtcp-report");
+
+    hash_string(hash, peer.stream_id);
+
+    hash_string(hash, peer.session_id);
+
+    hash_string(hash, peer.remote_endpoint);
+
+    hash_string(hash, media_peer_role_to_string(peer.role));
+
+    hash_u32(hash, remote_ssrc);
+
+    uint32_t value = fold_hash_to_u32(hash);
+
+    if (value == remote_ssrc)
+    {
+        value += 1;
+
+        if (value == 0)
+        {
+            value = 1;
+        }
+    }
+
+    return value;
+}
+
+bool is_valid_cname_character(char value) { return value != '\0' && value != '\r' && value != '\n'; }
+
+std::string make_rtcp_cname(std::string_view session_id, uint32_t local_ssrc)
+{
+    std::string cname;
+
+    cname.reserve(session_id.size() + 32);
+
+    cname.append("simplewebrtc-");
+
+    for (char value : session_id)
+    {
+        if (is_valid_cname_character(value))
+        {
+            cname.push_back(value);
+        }
+        else
+        {
+            cname.push_back('_');
+        }
+    }
+
+    cname.push_back('-');
+
+    cname.append(std::to_string(local_ssrc));
+
+    return cname;
+}
+
+std::expected<std::size_t, std::string> compute_rtp_payload_size(std::span<const uint8_t> packet)
+{
+    if (packet.size() < 12)
+    {
+        return make_error("rtp payload size packet is too small");
+    }
+
+    const uint8_t version = static_cast<uint8_t>(packet[0] >> 6U);
+
+    if (version != 2)
+    {
+        return make_error("rtp payload size version is invalid");
+    }
+
+    const bool has_padding = (packet[0] & 0x20U) != 0;
+
+    const bool has_extension = (packet[0] & 0x10U) != 0;
+
+    const uint8_t csrc_count = static_cast<uint8_t>(packet[0] & 0x0fU);
+
+    std::size_t offset = 12 + static_cast<std::size_t>(csrc_count) * 4;
+
+    if (offset > packet.size())
+    {
+        return make_error("rtp payload size csrc is truncated");
+    }
+
+    if (has_extension)
+    {
+        if (offset + 4 > packet.size())
+        {
+            return make_error("rtp payload size extension header is truncated");
+        }
+
+        const uint16_t extension_length_words = read_network_u16(packet, offset + 2);
+
+        offset += 4 + static_cast<std::size_t>(extension_length_words) * 4;
+
+        if (offset > packet.size())
+        {
+            return make_error("rtp payload size extension payload is truncated");
+        }
+    }
+
+    std::size_t padding_size = 0;
+
+    if (has_padding)
+    {
+        padding_size = packet.back();
+
+        if (padding_size == 0 || padding_size > packet.size() - offset)
+        {
+            return make_error("rtp payload size padding is invalid");
+        }
+    }
+
+    return packet.size() - offset - padding_size;
+}
 
 std::expected<std::vector<uint8_t>, std::string> rewrite_rtcp_feedback_media_ssrc(std::span<const uint8_t> packet, uint32_t target_media_ssrc)
 {
@@ -189,6 +367,74 @@ std::expected<std::vector<uint8_t>, std::string> rewrite_rtcp_feedback_media_ssr
     (void)changed;
 
     return rewritten;
+}
+
+std::expected<std::vector<rtcp_sender_report_observation>, std::string> parse_rtcp_sender_reports(std::span<const uint8_t> packet)
+{
+    std::vector<rtcp_sender_report_observation> reports;
+
+    if (packet.empty())
+    {
+        return reports;
+    }
+
+    if (packet.size() < 4)
+    {
+        return make_error("rtcp sender report packet is too small");
+    }
+
+    std::size_t offset = 0;
+
+    while (offset + 4 <= packet.size())
+    {
+        const uint8_t version = static_cast<uint8_t>(packet[offset] >> 6U);
+
+        if (version != 2)
+        {
+            return make_error("rtcp sender report version is invalid");
+        }
+
+        const uint8_t packet_type = packet[offset + 1];
+
+        const uint16_t length = read_network_u16(packet, offset + 2);
+
+        const std::size_t packet_size = (static_cast<std::size_t>(length) + 1) * 4;
+
+        if (packet_size == 0 || offset + packet_size > packet.size())
+        {
+            return make_error("rtcp sender report packet is truncated");
+        }
+
+        if (packet_type == 200)
+        {
+            if (packet_size < 28)
+            {
+                return make_error("rtcp sender report packet body is too small");
+            }
+
+            rtcp_sender_report_observation report;
+
+            report.ssrc = read_network_u32(packet, offset + 4);
+
+            report.ntp_msw = read_network_u32(packet, offset + 8);
+
+            report.ntp_lsw = read_network_u32(packet, offset + 12);
+
+            if (report.ssrc != 0)
+            {
+                reports.push_back(report);
+            }
+        }
+
+        offset += packet_size;
+    }
+
+    if (offset != packet.size())
+    {
+        return make_error("rtcp sender report compound packet has trailing bytes");
+    }
+
+    return reports;
 }
 
 std::string make_candidate_pair_key(std::string_view session_id, std::string_view remote_address)
@@ -415,6 +661,38 @@ const sdp::media_summary* find_media_summary_by_mid(const sdp::webrtc_offer_summ
     return nullptr;
 }
 
+std::optional<uint32_t> find_codec_clock_rate(const sdp::webrtc_offer_summary& offer, std::string_view mid, uint16_t payload_type)
+{
+    if (!mid.empty())
+    {
+        const sdp::media_summary* media = find_media_summary_by_mid(offer, mid);
+
+        if (media != nullptr)
+        {
+            for (const auto& codec : media->codecs)
+            {
+                if (codec.payload_type == payload_type)
+                {
+                    return codec.clock_rate;
+                }
+            }
+        }
+    }
+
+    for (const auto& media : offer.media)
+    {
+        for (const auto& codec : media.codecs)
+        {
+            if (codec.payload_type == payload_type)
+            {
+                return codec.clock_rate;
+            }
+        }
+    }
+
+    return std::nullopt;
+}
+
 std::vector<uint8_t> string_to_bytes(std::string_view value)
 {
     std::vector<uint8_t> result;
@@ -567,12 +845,14 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       socket_(io_context),
       dtls_timeout_timer_(io_context),
       ice_consent_timer_(io_context),
+      rtcp_report_timer_(io_context),
       bind_host_(std::move(bind_host)),
       bind_port_(bind_port),
       registry_(std::move(registry)),
       media_router_(std::move(media_router)),
       track_resolver_(std::make_shared<media_track_resolver>()),
-      ssrc_mapper_(std::make_shared<media_ssrc_mapper>())
+      ssrc_mapper_(std::make_shared<media_ssrc_mapper>()),
+      rtcp_report_service_(std::make_shared<rtcp_report_service>())
 {
 }
 
@@ -601,6 +881,11 @@ ice_udp_server_result ice_udp_server::start()
     if (ssrc_mapper_ == nullptr)
     {
         ssrc_mapper_ = std::make_shared<media_ssrc_mapper>();
+    }
+
+    if (rtcp_report_service_ == nullptr)
+    {
+        rtcp_report_service_ = std::make_shared<rtcp_report_service>();
     }
 
     register_session_removed_callback();
@@ -673,6 +958,8 @@ ice_udp_server_result ice_udp_server::start()
 
     schedule_ice_consent_check();
 
+    schedule_rtcp_report();
+
     return {};
 }
 
@@ -695,6 +982,8 @@ void ice_udp_server::stop()
     dtls_timeout_timer_.cancel();
 
     ice_consent_timer_.cancel();
+
+    rtcp_report_timer_.cancel();
 
     boost::system::error_code socket_ec;
 
@@ -722,6 +1011,8 @@ void ice_udp_server::stop()
     track_resolver_ = std::make_shared<media_track_resolver>();
 
     ssrc_mapper_ = std::make_shared<media_ssrc_mapper>();
+
+    rtcp_report_service_ = std::make_shared<rtcp_report_service>();
 
     if (rtp_packet_cache_ != nullptr)
     {
@@ -767,6 +1058,11 @@ void ice_udp_server::forget_session(std::string_view session_id)
     if (ssrc_mapper_ != nullptr)
     {
         ssrc_mapper_->forget_session(session_id);
+    }
+
+    if (rtcp_report_service_ != nullptr)
+    {
+        rtcp_report_service_->forget_session(session_id);
     }
 
     if (!remote_address.empty())
@@ -1068,6 +1364,129 @@ void ice_udp_server::on_ice_consent_check(boost::system::error_code ec)
     schedule_ice_consent_check();
 }
 
+void ice_udp_server::schedule_rtcp_report()
+{
+    if (!started_)
+    {
+        return;
+    }
+
+    rtcp_report_timer_.cancel();
+
+    rtcp_report_timer_.expires_after(k_rtcp_report_interval);
+
+    auto self = shared_from_this();
+
+    rtcp_report_timer_.async_wait([this, self](boost::system::error_code ec) { on_rtcp_report_timer(ec); });
+}
+
+void ice_udp_server::on_rtcp_report_timer(boost::system::error_code ec)
+{
+    if (ec == boost::asio::error::operation_aborted)
+    {
+        return;
+    }
+
+    if (ec)
+    {
+        WEBRTC_LOG_WARN("rtcp report timer failed: {}", ec.message());
+
+        schedule_rtcp_report();
+
+        return;
+    }
+
+    if (!started_)
+    {
+        return;
+    }
+
+    send_rtcp_reports(now_milliseconds());
+
+    schedule_rtcp_report();
+}
+
+void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
+{
+    if (rtcp_report_service_ == nullptr || srtp_transport_ == nullptr)
+    {
+        return;
+    }
+
+    rtcp_report_service_generation generation = rtcp_report_service_->generate_reports(current_time_milliseconds);
+
+    if (!generation.errors.empty())
+    {
+        for (const auto& error : generation.errors)
+        {
+            WEBRTC_LOG_DEBUG("rtcp active report generation error={}", error);
+        }
+    }
+
+    if (generation.packets.empty())
+    {
+        WEBRTC_LOG_DEBUG("rtcp active report generation {}", rtcp_report_service_generation_to_string(generation));
+
+        return;
+    }
+
+    WEBRTC_LOG_INFO("rtcp active report generation {}", rtcp_report_service_generation_to_string(generation));
+
+    for (const auto& report_packet : generation.packets)
+    {
+        auto remote_endpoint = find_remote_endpoint(report_packet.source.remote_endpoint);
+
+        if (!remote_endpoint.has_value())
+        {
+            WEBRTC_LOG_WARN("rtcp active report endpoint not found stream={} session={} remote={} local_ssrc={}",
+                            report_packet.source.stream_id,
+                            report_packet.source.session_id,
+                            report_packet.source.remote_endpoint,
+                            report_packet.source.local_ssrc);
+
+            continue;
+        }
+
+        auto protected_packet =
+            srtp_transport_->protect_outbound_packet(std::span<const uint8_t>(report_packet.report.packet.data(), report_packet.report.packet.size()),
+                                                     report_packet.source.remote_endpoint,
+                                                     srtp_packet_kind::rtcp);
+
+        if (!protected_packet)
+        {
+            WEBRTC_LOG_WARN("rtcp active report protect failed stream={} session={} remote={} local_ssrc={} error={}",
+                            report_packet.source.stream_id,
+                            report_packet.source.session_id,
+                            report_packet.source.remote_endpoint,
+                            report_packet.source.local_ssrc,
+                            protected_packet.error());
+
+            continue;
+        }
+
+        if (protected_packet->state == srtp_packet_process_state::ignored)
+        {
+            WEBRTC_LOG_DEBUG("rtcp active report protect ignored stream={} session={} remote={} local_ssrc={} reason={}",
+                             report_packet.source.stream_id,
+                             report_packet.source.session_id,
+                             report_packet.source.remote_endpoint,
+                             report_packet.source.local_ssrc,
+                             protected_packet->reason);
+
+            continue;
+        }
+
+        WEBRTC_LOG_DEBUG("rtcp active report send stream={} session={} remote={} local_ssrc={} report={} protected_size={}",
+                         report_packet.source.stream_id,
+                         report_packet.source.session_id,
+                         report_packet.source.remote_endpoint,
+                         report_packet.source.local_ssrc,
+                         rtcp_report_generation_result_to_string(report_packet.report),
+                         protected_packet->protected_packet.size());
+
+        send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
+    }
+}
 void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
@@ -1432,6 +1851,13 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
         return;
     }
 
+    if (peer.has_value())
+    {
+        observe_inbound_rtp_stats(*peer, *result, track_resolution);
+
+        observe_inbound_rtcp_sender_reports(*peer, *result);
+    }
+
     if (track_resolution.has_value() && track_resolution->resolved)
     {
         WEBRTC_LOG_DEBUG(
@@ -1558,6 +1984,334 @@ std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const 
     }
 
     return *resolution;
+}
+
+void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
+                                               const srtp_packet_process_result& packet,
+                                               const std::optional<media_track_resolution>& track_resolution)
+{
+    if (rtcp_report_service_ == nullptr || registry_ == nullptr)
+    {
+        return;
+    }
+
+    if (peer.role != media_peer_role::publisher)
+    {
+        return;
+    }
+
+    if (packet.kind != srtp_packet_kind::rtp || packet.plain_packet.empty())
+    {
+        return;
+    }
+
+    auto header = parse_rtp_packet_header(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
+
+    if (!header)
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats inbound rtp parse skipped remote={} error={}", peer.remote_endpoint, header.error());
+
+        return;
+    }
+
+    auto publisher = registry_->find_publisher_by_session_id(peer.session_id);
+
+    if (publisher == nullptr)
+    {
+        return;
+    }
+
+    std::string mid;
+
+    if (track_resolution.has_value() && track_resolution->resolved)
+    {
+        mid = track_resolution->mid;
+    }
+
+    auto clock_rate = find_codec_clock_rate(publisher->remote_offer_summary(), mid, header->payload_type);
+
+    if (!clock_rate.has_value() || *clock_rate == 0)
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats inbound rtp clock rate not found stream={} session={} remote={} ssrc={} payload_type={} mid={}",
+                         peer.stream_id,
+                         peer.session_id,
+                         peer.remote_endpoint,
+                         header->ssrc,
+                         static_cast<unsigned int>(header->payload_type),
+                         mid);
+
+        return;
+    }
+
+    auto payload_size = compute_rtp_payload_size(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
+
+    if (!payload_size)
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats inbound rtp payload size skipped stream={} session={} remote={} ssrc={} error={}",
+                         peer.stream_id,
+                         peer.session_id,
+                         peer.remote_endpoint,
+                         header->ssrc,
+                         payload_size.error());
+
+        return;
+    }
+
+    rtcp_received_rtp_packet observed_packet;
+
+    observed_packet.stream_id = peer.stream_id;
+
+    observed_packet.session_id = peer.session_id;
+
+    observed_packet.remote_endpoint = peer.remote_endpoint;
+
+    observed_packet.ssrc = header->ssrc;
+
+    observed_packet.sequence_number = header->sequence_number;
+
+    observed_packet.rtp_timestamp = header->timestamp;
+
+    observed_packet.clock_rate = *clock_rate;
+
+    observed_packet.payload_size = *payload_size;
+
+    observed_packet.arrival_time_milliseconds = now_milliseconds();
+
+    auto observe_result = rtcp_report_service_->observe_received_rtp(observed_packet);
+
+    if (!observe_result)
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats inbound rtp observe failed stream={} session={} remote={} ssrc={} error={}",
+                         peer.stream_id,
+                         peer.session_id,
+                         peer.remote_endpoint,
+                         header->ssrc,
+                         observe_result.error());
+
+        return;
+    }
+
+    const uint32_t local_ssrc = make_rtcp_report_local_ssrc(peer, header->ssrc);
+
+    rtcp_report_source_config source;
+
+    source.stream_id = peer.stream_id;
+
+    source.session_id = peer.session_id;
+
+    source.remote_endpoint = peer.remote_endpoint;
+
+    source.local_ssrc = local_ssrc;
+
+    source.cname = make_rtcp_cname(peer.session_id, local_ssrc);
+
+    source.sender_report_enabled = false;
+    source.receiver_report_enabled = true;
+
+    auto remember_result = rtcp_report_service_->remember_source(source);
+
+    if (!remember_result)
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats inbound rtp remember source failed stream={} session={} remote={} ssrc={} error={}",
+                         peer.stream_id,
+                         peer.session_id,
+                         peer.remote_endpoint,
+                         header->ssrc,
+                         remember_result.error());
+    }
+}
+
+void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& peer, const srtp_packet_process_result& packet)
+{
+    if (rtcp_report_service_ == nullptr)
+    {
+        return;
+    }
+
+    if (peer.role != media_peer_role::publisher)
+    {
+        return;
+    }
+
+    if (packet.kind != srtp_packet_kind::rtcp || packet.plain_packet.empty())
+    {
+        return;
+    }
+
+    auto reports = parse_rtcp_sender_reports(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
+
+    if (!reports)
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats sender report parse skipped stream={} session={} remote={} error={}",
+                         peer.stream_id,
+                         peer.session_id,
+                         peer.remote_endpoint,
+                         reports.error());
+
+        return;
+    }
+
+    const uint64_t current_time = now_milliseconds();
+
+    for (const auto& report : *reports)
+    {
+        rtcp_received_sender_report observed_report;
+
+        observed_report.stream_id = peer.stream_id;
+
+        observed_report.session_id = peer.session_id;
+
+        observed_report.remote_endpoint = peer.remote_endpoint;
+
+        observed_report.ssrc = report.ssrc;
+
+        observed_report.ntp_msw = report.ntp_msw;
+
+        observed_report.ntp_lsw = report.ntp_lsw;
+
+        observed_report.arrival_time_milliseconds = current_time;
+
+        auto observe_result = rtcp_report_service_->observe_sender_report(observed_report);
+
+        if (!observe_result)
+        {
+            WEBRTC_LOG_DEBUG("rtcp stats sender report observe failed stream={} session={} remote={} ssrc={} error={}",
+                             peer.stream_id,
+                             peer.session_id,
+                             peer.remote_endpoint,
+                             report.ssrc,
+                             observe_result.error());
+
+            continue;
+        }
+
+        const uint32_t local_ssrc = make_rtcp_report_local_ssrc(peer, report.ssrc);
+
+        rtcp_report_source_config source;
+
+        source.stream_id = peer.stream_id;
+
+        source.session_id = peer.session_id;
+
+        source.remote_endpoint = peer.remote_endpoint;
+
+        source.local_ssrc = local_ssrc;
+
+        source.cname = make_rtcp_cname(peer.session_id, local_ssrc);
+
+        source.sender_report_enabled = false;
+        source.receiver_report_enabled = true;
+
+        auto remember_result = rtcp_report_service_->remember_source(source);
+
+        if (!remember_result)
+        {
+            WEBRTC_LOG_DEBUG("rtcp stats sender report remember source failed stream={} session={} remote={} ssrc={} error={}",
+                             peer.stream_id,
+                             peer.session_id,
+                             peer.remote_endpoint,
+                             report.ssrc,
+                             remember_result.error());
+        }
+    }
+}
+
+void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_peer, std::span<const uint8_t> outbound_plain_packet)
+{
+    if (rtcp_report_service_ == nullptr)
+    {
+        return;
+    }
+
+    if (target_peer.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (outbound_plain_packet.empty())
+    {
+        return;
+    }
+
+    auto header = parse_rtp_packet_header(outbound_plain_packet);
+
+    if (!header)
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats outbound rtp parse skipped remote={} error={}", target_peer.remote_endpoint, header.error());
+
+        return;
+    }
+
+    auto payload_size = compute_rtp_payload_size(outbound_plain_packet);
+
+    if (!payload_size)
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats outbound rtp payload size skipped stream={} session={} remote={} ssrc={} error={}",
+                         target_peer.stream_id,
+                         target_peer.session_id,
+                         target_peer.remote_endpoint,
+                         header->ssrc,
+                         payload_size.error());
+
+        return;
+    }
+
+    rtcp_sent_rtp_packet observed_packet;
+
+    observed_packet.stream_id = target_peer.stream_id;
+
+    observed_packet.session_id = target_peer.session_id;
+
+    observed_packet.remote_endpoint = target_peer.remote_endpoint;
+
+    observed_packet.ssrc = header->ssrc;
+
+    observed_packet.rtp_timestamp = header->timestamp;
+
+    observed_packet.payload_size = *payload_size;
+
+    observed_packet.send_time_milliseconds = now_milliseconds();
+
+    auto observe_result = rtcp_report_service_->observe_sent_rtp(observed_packet);
+
+    if (!observe_result)
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats outbound rtp observe failed stream={} session={} remote={} ssrc={} error={}",
+                         target_peer.stream_id,
+                         target_peer.session_id,
+                         target_peer.remote_endpoint,
+                         header->ssrc,
+                         observe_result.error());
+
+        return;
+    }
+
+    rtcp_report_source_config source;
+
+    source.stream_id = target_peer.stream_id;
+
+    source.session_id = target_peer.session_id;
+
+    source.remote_endpoint = target_peer.remote_endpoint;
+
+    source.local_ssrc = header->ssrc;
+
+    source.cname = make_rtcp_cname(target_peer.session_id, header->ssrc);
+
+    source.sender_report_enabled = true;
+    source.receiver_report_enabled = true;
+
+    auto remember_result = rtcp_report_service_->remember_source(source);
+
+    if (!remember_result)
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats outbound rtp remember source failed stream={} session={} remote={} ssrc={} error={}",
+                         target_peer.stream_id,
+                         target_peer.session_id,
+                         target_peer.remote_endpoint,
+                         header->ssrc,
+                         remember_result.error());
+    }
 }
 
 std::optional<media_payload_type_mapping_table> ice_udp_server::get_or_create_payload_type_mapping_table(const media_route_result& route,
@@ -2211,6 +2965,8 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
             continue;
         }
 
+        observe_outbound_rtp_stats(event.source, std::span<const uint8_t>(retransmit_plain_packet.data(), retransmit_plain_packet.size()));
+
         send_response(std::move(protected_packet->protected_packet), *target_endpoint);
 
         sent_count += 1;
@@ -2345,6 +3101,11 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
                              protected_packet->reason);
 
             continue;
+        }
+
+        if (packet.kind == srtp_packet_kind::rtp)
+        {
+            observe_outbound_rtp_stats(*target_peer, std::span<const uint8_t>(outbound_plain_packet.data(), outbound_plain_packet.size()));
         }
 
         WEBRTC_LOG_DEBUG("media forward send stream={} source={} target={} kind={} plain_size={} protected_size={}",
@@ -2603,6 +3364,11 @@ std::vector<std::string> ice_udp_server::expire_ice_candidate_pairs(uint64_t cur
         {
             ssrc_mapper_->forget_session(session_id);
         }
+
+        if (rtcp_report_service_ != nullptr)
+        {
+            rtcp_report_service_->forget_session(session_id);
+        }
     }
 
     for (auto iterator = candidate_pairs_by_key_.begin(); iterator != candidate_pairs_by_key_.end();)
@@ -2676,6 +3442,11 @@ void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
         ssrc_mapper_->forget_session(session_id);
     }
 
+    if (!session_id.empty() && rtcp_report_service_ != nullptr)
+    {
+        rtcp_report_service_->forget_session(session_id);
+    }
+
     forget_peer_transport_state(remote_address);
 }
 
@@ -2701,6 +3472,11 @@ void ice_udp_server::forget_peer_transport_state(std::string_view remote_address
     if (track_resolver_ != nullptr)
     {
         track_resolver_->forget_peer(remote_address);
+    }
+
+    if (rtcp_report_service_ != nullptr)
+    {
+        rtcp_report_service_->forget_peer(remote_address);
     }
 }
 

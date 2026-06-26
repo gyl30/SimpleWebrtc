@@ -22,6 +22,7 @@
 #include "media/media_ssrc_mapper.h"
 #include "media/media_track_resolver.h"
 #include "media/rtcp_feedback_router.h"
+#include "media/rtcp_report_service.h"
 #include "media/rtp_packet_cache.h"
 #include "session/stream_registry.h"
 #include "srtp/srtp_transport.h"
@@ -111,6 +112,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void on_ice_consent_check(boost::system::error_code ec);
 
+    void schedule_rtcp_report();
+
+    void on_rtcp_report_timer(boost::system::error_code ec);
+
+    void send_rtcp_reports(uint64_t now_milliseconds);
+
     void handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
 
     void handle_dtls_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
@@ -119,6 +126,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     std::optional<media_track_resolution> resolve_media_track(const media_peer_info& peer, const srtp_packet_process_result& packet);
+
+    void observe_inbound_rtp_stats(const media_peer_info& peer,
+                                   const srtp_packet_process_result& packet,
+                                   const std::optional<media_track_resolution>& track_resolution);
+
+    void observe_inbound_rtcp_sender_reports(const media_peer_info& peer, const srtp_packet_process_result& packet);
+
+    void observe_outbound_rtp_stats(const media_peer_info& target_peer, std::span<const uint8_t> outbound_plain_packet);
 
     [[nodiscard]]
     std::optional<media_payload_type_mapping_table> get_or_create_payload_type_mapping_table(const media_route_result& route,
@@ -221,6 +236,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     boost::asio::steady_timer ice_consent_timer_;
 
+    boost::asio::steady_timer rtcp_report_timer_;
+
     std::string bind_host_;
 
     uint16_t bind_port_ = 0;
@@ -236,6 +253,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::shared_ptr<media_track_resolver> track_resolver_;
 
     std::shared_ptr<media_ssrc_mapper> ssrc_mapper_;
+
+    std::shared_ptr<rtcp_report_service> rtcp_report_service_;
 
     std::shared_ptr<rtp_packet_cache> rtp_packet_cache_;
 
