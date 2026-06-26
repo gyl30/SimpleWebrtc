@@ -63,6 +63,10 @@ constexpr uint64_t k_fnv_offset_basis = 1469598103934665603ULL;
 
 constexpr uint64_t k_fnv_prime = 1099511628211ULL;
 
+constexpr auto k_endpoint_idle_cleanup_interval = std::chrono::seconds(5);
+
+constexpr uint64_t k_default_endpoint_idle_timeout_milliseconds = 120000;
+
 struct ice_username_parts
 {
     std::string_view recipient_ufrag;
@@ -480,6 +484,22 @@ std::shared_ptr<rtcp_report_service> make_rtcp_report_service_from_env()
 {
     return std::make_shared<rtcp_report_service>(make_rtcp_report_service_config_from_env());
 }
+uint64_t make_endpoint_idle_timeout_milliseconds_from_env()
+{
+    uint64_t timeout_milliseconds = get_env_uint64_or_default("WEBRTC_ENDPOINT_IDLE_TIMEOUT_MS", k_default_endpoint_idle_timeout_milliseconds);
+
+    if (timeout_milliseconds != 0 && timeout_milliseconds < 10000)
+    {
+        WEBRTC_LOG_WARN("endpoint idle timeout too small timeout_ms={} min_ms=10000 clamped=10000", timeout_milliseconds);
+
+        timeout_milliseconds = 10000;
+    }
+
+    WEBRTC_LOG_INFO(
+        "endpoint idle cleanup config timeout_ms={} interval_ms={}", timeout_milliseconds, k_endpoint_idle_cleanup_interval.count() * 1000);
+
+    return timeout_milliseconds;
+}
 uint64_t rtcp_empty_generation_log_interval_milliseconds()
 {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(k_rtcp_report_empty_generation_log_interval).count());
@@ -893,13 +913,15 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       dtls_timeout_timer_(io_context),
       ice_consent_timer_(io_context),
       rtcp_report_timer_(io_context),
+      endpoint_idle_cleanup_timer_(io_context),
       bind_host_(std::move(bind_host)),
       bind_port_(bind_port),
       registry_(std::move(registry)),
       media_router_(std::move(media_router)),
       track_resolver_(std::make_shared<media_track_resolver>()),
       ssrc_mapper_(std::make_shared<media_ssrc_mapper>()),
-      rtcp_report_service_(make_rtcp_report_service_from_env())
+      rtcp_report_service_(make_rtcp_report_service_from_env()),
+      endpoint_idle_timeout_milliseconds_(make_endpoint_idle_timeout_milliseconds_from_env())
 {
 }
 
@@ -1007,6 +1029,7 @@ ice_udp_server_result ice_udp_server::start()
 
     schedule_rtcp_report();
 
+    schedule_endpoint_idle_cleanup();
     return {};
 }
 
@@ -1032,6 +1055,8 @@ void ice_udp_server::stop()
 
     rtcp_report_timer_.cancel();
 
+    endpoint_idle_cleanup_timer_.cancel();
+
     boost::system::error_code socket_ec;
 
     socket_ec = socket_.close(socket_ec);
@@ -1053,6 +1078,8 @@ void ice_udp_server::stop()
         candidate_pairs_by_key_.clear();
 
         payload_type_mappings_by_key_.clear();
+
+        endpoint_last_seen_milliseconds_by_address_.clear();
     }
 
     track_resolver_ = std::make_shared<media_track_resolver>();
@@ -1100,6 +1127,8 @@ void ice_udp_server::forget_session(std::string_view session_id)
 
             endpoints_by_address_.erase(remote_address);
 
+            endpoint_last_seen_milliseconds_by_address_.erase(remote_address);
+
             endpoint_removed = true;
         }
     }
@@ -1116,6 +1145,179 @@ void ice_udp_server::forget_session(std::string_view session_id)
 
     WEBRTC_LOG_INFO(
         "ice udp session cleanup completed session={} endpoint_removed={} remote={}", session_id, endpoint_removed ? 1 : 0, remote_address);
+}
+void ice_udp_server::touch_endpoint_activity(const boost::asio::ip::udp::endpoint& remote_endpoint)
+{
+    const std::string remote_address = endpoint_to_string(remote_endpoint);
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    endpoint_last_seen_milliseconds_by_address_[remote_address] = current_time_milliseconds;
+}
+
+void ice_udp_server::schedule_endpoint_idle_cleanup()
+{
+    if (!started_ || endpoint_idle_timeout_milliseconds_ == 0)
+    {
+        return;
+    }
+
+    endpoint_idle_cleanup_timer_.cancel();
+
+    endpoint_idle_cleanup_timer_.expires_after(k_endpoint_idle_cleanup_interval);
+
+    auto self = shared_from_this();
+
+    endpoint_idle_cleanup_timer_.async_wait([this, self](boost::system::error_code ec) { on_endpoint_idle_cleanup(ec); });
+}
+
+void ice_udp_server::on_endpoint_idle_cleanup(boost::system::error_code ec)
+{
+    if (ec == boost::asio::error::operation_aborted)
+    {
+        return;
+    }
+
+    if (ec)
+    {
+        WEBRTC_LOG_WARN("endpoint idle cleanup timer failed error={}", ec.message());
+
+        schedule_endpoint_idle_cleanup();
+
+        return;
+    }
+
+    if (!started_)
+    {
+        return;
+    }
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    std::vector<std::string> expired_session_ids = collect_idle_session_ids(current_time_milliseconds);
+
+    for (const auto& session_id : expired_session_ids)
+    {
+        WEBRTC_LOG_WARN("endpoint idle session expired session={} timeout_ms={}", session_id, endpoint_idle_timeout_milliseconds_);
+
+        remove_idle_session(session_id);
+    }
+
+    schedule_endpoint_idle_cleanup();
+}
+
+std::vector<std::string> ice_udp_server::collect_idle_session_ids(uint64_t current_time_milliseconds)
+{
+    std::vector<std::string> expired_session_ids;
+
+    if (endpoint_idle_timeout_milliseconds_ == 0)
+    {
+        return expired_session_ids;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    for (auto iterator = endpoint_last_seen_milliseconds_by_address_.begin(); iterator != endpoint_last_seen_milliseconds_by_address_.end();)
+    {
+        const std::string& remote_address = iterator->first;
+
+        uint64_t& last_seen_milliseconds = iterator->second;
+
+        if (last_seen_milliseconds == 0)
+        {
+            last_seen_milliseconds = current_time_milliseconds;
+
+            ++iterator;
+
+            continue;
+        }
+
+        if (current_time_milliseconds < last_seen_milliseconds)
+        {
+            last_seen_milliseconds = current_time_milliseconds;
+
+            ++iterator;
+
+            continue;
+        }
+
+        const uint64_t idle_milliseconds = current_time_milliseconds - last_seen_milliseconds;
+
+        if (idle_milliseconds < endpoint_idle_timeout_milliseconds_)
+        {
+            ++iterator;
+
+            continue;
+        }
+
+        const auto session_iterator = session_id_by_endpoint_address_.find(remote_address);
+
+        if (session_iterator == session_id_by_endpoint_address_.end())
+        {
+            iterator = endpoint_last_seen_milliseconds_by_address_.erase(iterator);
+
+            continue;
+        }
+
+        expired_session_ids.push_back(session_iterator->second);
+
+        ++iterator;
+    }
+
+    return expired_session_ids;
+}
+
+void ice_udp_server::remove_idle_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    if (registry_ == nullptr)
+    {
+        forget_session(session_id);
+
+        return;
+    }
+
+    auto publisher = registry_->find_publisher_by_session_id(session_id);
+
+    if (publisher != nullptr)
+    {
+        auto result = registry_->remove_publisher_session(session_id);
+
+        if (!result)
+        {
+            WEBRTC_LOG_WARN(
+                "endpoint idle publisher removal failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
+
+            forget_session(session_id);
+        }
+
+        return;
+    }
+
+    auto subscriber = registry_->find_subscriber_by_session_id(session_id);
+
+    if (subscriber != nullptr)
+    {
+        auto result = registry_->remove_subscriber_session(session_id);
+
+        if (!result)
+        {
+            WEBRTC_LOG_WARN(
+                "endpoint idle subscriber removal failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
+
+            forget_session(session_id);
+        }
+
+        return;
+    }
+
+    forget_session(session_id);
 }
 
 uint16_t ice_udp_server::local_port() const { return bind_port_; }
@@ -1243,6 +1445,8 @@ void ice_udp_server::on_receive(boost::system::error_code ec, std::size_t bytes_
     }
 
     std::span<const uint8_t> packet(receive_buffer_.data(), bytes_transferred);
+
+    touch_endpoint_activity(remote_endpoint_);
 
     if (is_stun_packet(packet))
     {

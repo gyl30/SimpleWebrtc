@@ -244,6 +244,17 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void forget_peer_transport_state(std::string_view remote_address);
 
+    void touch_endpoint_activity(const boost::asio::ip::udp::endpoint& remote_endpoint);
+
+    void schedule_endpoint_idle_cleanup();
+
+    void on_endpoint_idle_cleanup(boost::system::error_code ec);
+
+    [[nodiscard]]
+    std::vector<std::string> collect_idle_session_ids(uint64_t current_time_milliseconds);
+
+    void remove_idle_session(std::string_view session_id);
+
     void erase_candidate_pairs_for_session_locked(std::string_view session_id);
 
     void erase_candidate_pairs_for_endpoint_locked(std::string_view remote_address);
@@ -275,6 +286,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     boost::asio::steady_timer ice_consent_timer_;
 
     boost::asio::steady_timer rtcp_report_timer_;
+
+    boost::asio::steady_timer endpoint_idle_cleanup_timer_;
 
     std::string bind_host_;
 
@@ -308,6 +321,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     std::unordered_map<std::string, std::string> session_id_by_endpoint_address_;
 
+    std::unordered_map<std::string, uint64_t> endpoint_last_seen_milliseconds_by_address_;
+
     std::unordered_map<std::string, ice_candidate_pair> candidate_pairs_by_key_;
 
     std::unordered_map<std::string, media_payload_type_mapping_cache_entry> payload_type_mappings_by_key_;
@@ -317,6 +332,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     bool registry_callback_registered_ = false;
 
     uint64_t last_empty_rtcp_report_log_milliseconds_ = 0;
+
+    uint64_t endpoint_idle_timeout_milliseconds_ = 120000;
 
     std::atomic<uint64_t> rtcp_report_inbound_rtcp_observe_attempts_total_{0};
 
