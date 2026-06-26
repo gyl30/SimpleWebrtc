@@ -77,6 +77,12 @@ constexpr uint64_t k_default_pending_session_timeout_milliseconds = 60000;
 
 constexpr uint64_t k_keyframe_request_interval_milliseconds = 1000;
 
+constexpr std::size_t k_default_rtp_packet_cache_max_packets = 4096;
+
+constexpr std::size_t k_min_rtp_packet_cache_max_packets = 128;
+
+constexpr std::size_t k_max_rtp_packet_cache_max_packets = 262144;
+
 struct ice_username_parts
 {
     std::string_view recipient_ufrag;
@@ -553,6 +559,17 @@ rtcp_report_service_config make_rtcp_report_service_config_from_env()
 std::shared_ptr<rtcp_report_service> make_rtcp_report_service_from_env()
 {
     return std::make_shared<rtcp_report_service>(make_rtcp_report_service_config_from_env());
+}
+
+std::size_t make_rtp_packet_cache_max_packets_from_env()
+{
+    std::size_t max_packets = get_env_size_or_default("WEBRTC_RTP_CACHE_MAX_PACKETS", k_default_rtp_packet_cache_max_packets);
+
+    max_packets = std::max(max_packets, k_min_rtp_packet_cache_max_packets);
+
+    max_packets = std::min(max_packets, k_max_rtp_packet_cache_max_packets);
+
+    return max_packets;
 }
 uint64_t make_endpoint_idle_timeout_milliseconds_from_env()
 {
@@ -1708,7 +1725,7 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
 
     rtp_packet_cache_config cache_config;
 
-    cache_config.max_packets = 4096;
+    cache_config.max_packets = make_rtp_packet_cache_max_packets_from_env();
 
     rtp_packet_cache_ = std::make_shared<rtp_packet_cache>(cache_config);
 
