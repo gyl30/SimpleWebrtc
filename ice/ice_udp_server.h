@@ -198,17 +198,16 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                  const std::optional<media_payload_type_mapping>& payload_type_mapping);
 
     [[nodiscard]]
-    std::vector<uint8_t> make_forward_plain_packet(const srtp_packet_process_result& packet,
-                                                   const media_route_result& route,
-                                                   const std::optional<media_track_resolution>& track_resolution,
-                                                   const std::optional<rtcp_feedback_route_event>& feedback_event,
-                                                   const media_peer_info& target_peer);
+    std::optional<std::vector<uint8_t>> make_forward_plain_packet(const srtp_packet_process_result& packet,
+                                                                  const media_route_result& route,
+                                                                  const std::optional<media_track_resolution>& track_resolution,
+                                                                  const std::optional<rtcp_feedback_route_event>& feedback_event,
+                                                                  const media_peer_info& target_peer);
 
     [[nodiscard]]
-    std::vector<uint8_t> make_retransmit_plain_packet(const rtcp_feedback_route_event& event,
-                                                      const rtp_packet_cache_entry& cached_packet,
-                                                      const std::optional<media_ssrc_mapping>& ssrc_mapping);
-
+    std::optional<std::vector<uint8_t>> make_retransmit_plain_packet(const rtcp_feedback_route_event& event,
+                                                                     const rtp_packet_cache_entry& cached_packet,
+                                                                     const std::optional<media_ssrc_mapping>& ssrc_mapping);
     void cache_inbound_rtp_packet(const srtp_packet_process_result& packet, const media_route_result& route);
 
     void handle_rtcp_feedback_event(const rtcp_feedback_route_event& event);
