@@ -1,10 +1,13 @@
 #include "session/publisher_session.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <string>
+#include <string_view>
 #include <utility>
 
+#include "ice/ice_candidate.h"
 #include "util/timestamp.h"
 
 namespace webrtc
@@ -16,6 +19,40 @@ constexpr std::size_t k_max_remote_ice_candidates = 256;
 uint64_t now_milliseconds() { return static_cast<uint64_t>(timestamp::now().milliseconds()); }
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+
+bool remote_ice_candidates_equal(const remote_ice_candidate& left, const remote_ice_candidate& right)
+{
+    return left.candidate == right.candidate && left.sdp_mid == right.sdp_mid && left.sdp_mline_index == right.sdp_mline_index &&
+           left.end_of_candidates == right.end_of_candidates;
+}
+
+bool contains_remote_ice_candidate(const std::vector<remote_ice_candidate>& candidates, const remote_ice_candidate& candidate)
+{
+    for (const auto& current : candidates)
+    {
+        if (remote_ice_candidates_equal(current, candidate))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::size_t count_remote_ice_candidates(const std::vector<remote_ice_candidate>& candidates)
+{
+    std::size_t count = 0;
+
+    for (const auto& candidate : candidates)
+    {
+        if (!candidate.end_of_candidates)
+        {
+            count += 1;
+        }
+    }
+
+    return count;
+}
 }    // namespace
 
 publisher_session::publisher_session(std::string session_id,
@@ -72,7 +109,9 @@ void publisher_session::set_state(session_state state)
 void publisher_session::set_local_sdp_answer(std::string local_sdp_answer)
 {
     local_sdp_answer_ = std::move(local_sdp_answer);
+
     state_ = session_state::sdp_answered;
+
     updated_at_milliseconds_ = now_milliseconds();
 }
 
@@ -83,27 +122,57 @@ void publisher_session::set_local_answer(std::string local_sdp_answer,
                                          uint64_t sdp_session_version)
 {
     local_sdp_answer_ = std::move(local_sdp_answer);
+
     local_ice_ = std::move(local_ice);
+
     local_fingerprint_ = std::move(local_fingerprint);
+
     sdp_session_id_ = sdp_session_id;
+
     sdp_session_version_ = sdp_session_version;
+
     state_ = session_state::sdp_answered;
+
     updated_at_milliseconds_ = now_milliseconds();
 }
 
 std::expected<void, std::string> publisher_session::add_remote_ice_candidate(remote_ice_candidate candidate)
 {
-    if (remote_ice_candidates_.size() >= k_max_remote_ice_candidates)
+    if (contains_remote_ice_candidate(remote_ice_candidates_, candidate))
     {
-        return make_error("too many remote ice candidates");
+        return {};
     }
 
     if (candidate.end_of_candidates)
     {
+        if (remote_ice_completed_)
+        {
+            return {};
+        }
+
         remote_ice_completed_ = true;
+
+        remote_ice_candidates_.push_back(std::move(candidate));
+
+        updated_at_milliseconds_ = now_milliseconds();
+
+        return {};
+    }
+
+    if (remote_ice_completed_)
+    {
+        return make_error("remote ice candidates already completed");
+    }
+
+    const std::size_t candidate_count = count_remote_ice_candidates(remote_ice_candidates_);
+
+    if (candidate_count >= k_max_remote_ice_candidates)
+    {
+        return make_error("too many remote ice candidates");
     }
 
     remote_ice_candidates_.push_back(std::move(candidate));
+
     updated_at_milliseconds_ = now_milliseconds();
 
     return {};

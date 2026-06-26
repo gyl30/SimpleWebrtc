@@ -26,36 +26,47 @@ class subscriber_session
     ~subscriber_session() = default;
 
     subscriber_session(const subscriber_session&) = delete;
+
     subscriber_session& operator=(const subscriber_session&) = delete;
 
     subscriber_session(subscriber_session&&) = delete;
+
     subscriber_session& operator=(subscriber_session&&) = delete;
 
    public:
     [[nodiscard]] const std::string& session_id() const;
+
     [[nodiscard]] const std::string& stream_id() const;
 
     [[nodiscard]] const std::string& remote_sdp_offer() const;
+
     [[nodiscard]] const sdp::webrtc_offer_summary& remote_offer_summary() const;
 
     [[nodiscard]] const std::string& local_sdp_answer() const;
+
     [[nodiscard]] const ice_credentials& local_ice() const;
+
     [[nodiscard]] const sdp::fingerprint_info& local_fingerprint() const;
 
     [[nodiscard]] uint64_t sdp_session_id() const;
+
     [[nodiscard]] uint64_t sdp_session_version() const;
 
     [[nodiscard]] const std::vector<remote_ice_candidate>& remote_ice_candidates() const;
+
     [[nodiscard]] bool remote_ice_completed() const;
 
     [[nodiscard]] session_state state() const;
+
     [[nodiscard]] std::string state_string() const;
 
     [[nodiscard]] uint64_t created_at_milliseconds() const;
+
     [[nodiscard]] uint64_t updated_at_milliseconds() const;
 
    public:
     void set_state(session_state state);
+
     void set_local_sdp_answer(std::string local_sdp_answer);
 
     void set_local_answer(std::string local_sdp_answer,
@@ -81,6 +92,7 @@ class subscriber_session
     uint64_t sdp_session_version_ = 0;
 
     std::vector<remote_ice_candidate> remote_ice_candidates_;
+
     bool remote_ice_completed_ = false;
 
     session_state state_ = session_state::created;
