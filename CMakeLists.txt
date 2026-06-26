@@ -210,6 +210,7 @@ set(WEBRTC_SOURCES
     media/media_router.cpp
     media/media_track_resolver.cpp
     media/media_payload_type_mapper.cpp
+    media/media_ssrc_mapper.cpp
     media/rtcp_feedback_router.cpp
     media/rtp_packet_cache.cpp
     media/media_router_stats_json.cpp
