@@ -93,6 +93,13 @@ std::string json_error_body(std::string_view message)
     return body;
 }
 
+bool stream_has_publisher_snapshot(std::string_view stream_id, const std::vector<stream_session_lifecycle_snapshot>& snapshots)
+{
+    return std::ranges::any_of(snapshots,
+                               [stream_id](const stream_session_lifecycle_snapshot& snapshot)
+                               { return snapshot.kind == stream_session_kind::publisher && std::string_view(snapshot.stream_id) == stream_id; });
+}
+
 std::string beast_string_view_to_string(boost::beast::string_view value) { return std::string(value.data(), value.size()); }
 
 std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return std::string_view(value.data(), value.size()); }
@@ -345,11 +352,12 @@ http_response_ptr router::handle_sessions(http_request_t& request)
 
     return json_response(request, 200, body);
 }
+
 http_response_ptr router::handle_stream(http_request_t& request, std::string_view stream_id)
 {
-    if (request.req.method() != http::verb::delete_)
+    if (!is_valid_resource_id(stream_id))
     {
-        return method_not_allowed(request);
+        return bad_request(request, "invalid stream id");
     }
 
     if (registry_ == nullptr)
@@ -357,29 +365,51 @@ http_response_ptr router::handle_stream(http_request_t& request, std::string_vie
         return json_response(request, 503, json_error_body("session registry unavailable"));
     }
 
-    auto publisher = registry_->find_publisher_by_stream_id(stream_id);
+    const auto method = request.req.method();
 
-    if (publisher == nullptr)
+    if (method == http::verb::get)
     {
-        return json_response(request, 404, json_error_body("stream publisher not found"));
-    }
+        const std::vector<stream_session_lifecycle_snapshot> snapshots = registry_->session_lifecycle_snapshots();
 
-    const std::string publisher_session_id = publisher->session_id();
-
-    auto result = registry_->remove_publisher_session(publisher_session_id);
-
-    if (!result)
-    {
-        if (result.error() == stream_registry_error::publisher_session_not_found)
+        if (!stream_has_publisher_snapshot(stream_id, snapshots))
         {
             return json_response(request, 404, json_error_body("stream publisher not found"));
         }
 
-        return json_response(request, 500, json_error_body("delete stream failed"));
+        const std::string body = make_stream_detail_response_body(stream_id, snapshots);
+
+        return json_response(request, 200, body);
     }
 
-    return text_response(request, 204, "");
+    if (method == http::verb::delete_)
+    {
+        auto publisher = registry_->find_publisher_by_stream_id(stream_id);
+
+        if (publisher == nullptr)
+        {
+            return json_response(request, 404, json_error_body("stream publisher not found"));
+        }
+
+        const std::string publisher_session_id = publisher->session_id();
+
+        auto result = registry_->remove_publisher_session(publisher_session_id);
+
+        if (!result)
+        {
+            if (result.error() == stream_registry_error::publisher_session_not_found)
+            {
+                return json_response(request, 404, json_error_body("stream publisher not found"));
+            }
+
+            return json_response(request, 500, json_error_body("delete stream failed"));
+        }
+
+        return text_response(request, 204, "");
+    }
+
+    return method_not_allowed(request);
 }
+
 http_response_ptr router::handle_media_stats(http_request_t& request)
 {
     if (request.req.method() != http::verb::get)

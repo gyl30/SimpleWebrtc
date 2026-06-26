@@ -40,11 +40,21 @@ struct session_lifecycle_response
     std::vector<session_lifecycle_entry_response> sessions;
 };
 
+struct stream_detail_response
+{
+    std::string stream_id;
+    uint64_t publisher_count = 0;
+    uint64_t subscriber_count = 0;
+    uint64_t session_count = 0;
+    std::vector<session_lifecycle_entry_response> sessions;
+};
+
 REFLECT_STRUCT(webrtc::error_response, (error));                                                    // NOLINT
 REFLECT_STRUCT(webrtc::session_created_response, (type)(stream_id)(session_id)(state)(message));    // NOLINT
 REFLECT_STRUCT(webrtc::session_lifecycle_entry_response,
-               (type)(stream_id)(session_id)(state)(created_at_milliseconds)(updated_at_milliseconds));              // NOLINT
-REFLECT_STRUCT(webrtc::session_lifecycle_response, (publisher_count)(subscriber_count)(session_count)(sessions));    // NOLINT
+               (type)(stream_id)(session_id)(state)(created_at_milliseconds)(updated_at_milliseconds));                     // NOLINT
+REFLECT_STRUCT(webrtc::session_lifecycle_response, (publisher_count)(subscriber_count)(session_count)(sessions));           // NOLINT
+REFLECT_STRUCT(webrtc::stream_detail_response, (stream_id)(publisher_count)(subscriber_count)(session_count)(sessions));    // NOLINT
 
 inline std::string make_error_response_body(std::string_view message)
 {
@@ -88,6 +98,37 @@ inline std::string make_session_lifecycle_response_body(const std::vector<stream
 
     for (const auto& snapshot : snapshots)
     {
+        if (snapshot.kind == stream_session_kind::publisher)
+        {
+            response.publisher_count += 1;
+        }
+        else if (snapshot.kind == stream_session_kind::subscriber)
+        {
+            response.subscriber_count += 1;
+        }
+
+        response.sessions.push_back(make_session_lifecycle_entry_response(snapshot));
+    }
+
+    response.session_count = to_json_count(response.sessions.size());
+
+    return serialize_struct(response);
+}
+inline std::string make_stream_detail_response_body(std::string_view stream_id, const std::vector<stream_session_lifecycle_snapshot>& snapshots)
+{
+    stream_detail_response response;
+
+    response.stream_id = std::string(stream_id);
+
+    response.sessions.reserve(snapshots.size());
+
+    for (const auto& snapshot : snapshots)
+    {
+        if (std::string_view(snapshot.stream_id) != stream_id)
+        {
+            continue;
+        }
+
         if (snapshot.kind == stream_session_kind::publisher)
         {
             response.publisher_count += 1;
