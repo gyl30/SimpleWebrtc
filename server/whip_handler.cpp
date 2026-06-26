@@ -167,6 +167,31 @@ std::size_t count_candidate_bytes(const std::vector<remote_ice_candidate>& candi
     return count;
 }
 
+bool remote_ice_candidate_matches(const remote_ice_candidate& left, const remote_ice_candidate& right)
+{
+    return left.end_of_candidates == right.end_of_candidates && left.candidate == right.candidate && left.sdp_mid == right.sdp_mid &&
+           left.sdp_mline_index == right.sdp_mline_index;
+}
+
+template <typename session_type>
+bool remote_ice_candidate_already_known(const session_type& session, const remote_ice_candidate& candidate)
+{
+    if (candidate.end_of_candidates && session.remote_ice_completed())
+    {
+        return true;
+    }
+
+    for (const auto& existing_candidate : session.remote_ice_candidates())
+    {
+        if (remote_ice_candidate_matches(existing_candidate, candidate))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool content_type_matches(std::string_view content_type, std::string_view expected)
 {
     if (boost::algorithm::iequals(content_type, expected))
@@ -322,19 +347,6 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
         return json_error_response(request, 415, "unsupported media type, expected application/json or application/trickle-ice-sdpfrag");
     }
 
-    if (trickle_ice_patch_body_too_large(request.req.body()))
-    {
-        global_trickle_ice_metrics().record_body_too_large();
-        global_trickle_ice_metrics().record_patch_failed();
-
-        WEBRTC_LOG_WARN("WHIP trickle ice patch body too large session={} body_size={} limit={}",
-                        session_id,
-                        request.req.body().size(),
-                        k_trickle_ice_max_patch_body_bytes);
-
-        return json_error_response(request, 413, "trickle ice patch body too large");
-    }
-
     auto session = registry_->find_publisher_by_session_id(session_id);
 
     if (session == nullptr)
@@ -365,19 +377,6 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
         return json_error_response(request, 400, message);
     }
 
-    if (trickle_ice_candidate_batch_too_large(candidates->size()))
-    {
-        global_trickle_ice_metrics().record_too_many_candidates();
-        global_trickle_ice_metrics().record_patch_failed();
-
-        WEBRTC_LOG_WARN("WHIP trickle ice patch too many candidates session={} candidates={} limit={}",
-                        session_id,
-                        candidates->size(),
-                        k_trickle_ice_max_candidates_per_patch);
-
-        return json_error_response(request, 413, "too many trickle ice candidates in one patch");
-    }
-
     const std::size_t received_count = candidates->size();
 
     const std::size_t end_of_candidates_received_count = count_end_of_candidates(*candidates);
@@ -387,6 +386,7 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
     global_trickle_ice_metrics().record_candidate_batch(received_count, end_of_candidates_received_count, received_candidate_bytes);
 
     std::size_t accepted_count = 0;
+    std::size_t duplicate_count = 0;
     std::size_t end_of_candidates_count = 0;
     std::size_t total_candidate_bytes = 0;
 
@@ -399,6 +399,21 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
         const std::string sdp_mid = candidate.sdp_mid;
 
         const int sdp_mline_index = candidate.sdp_mline_index;
+
+        if (remote_ice_candidate_already_known(*session, candidate))
+        {
+            duplicate_count += 1;
+
+            WEBRTC_LOG_DEBUG("WHIP trickle ice duplicate candidate ignored stream={} session={} mid={} mline={} end={} candidate_size={}",
+                             session->stream_id(),
+                             session->session_id(),
+                             sdp_mid,
+                             sdp_mline_index,
+                             end_of_candidates ? 1 : 0,
+                             candidate_size);
+
+            continue;
+        }
 
         auto add_result = session->add_remote_ice_candidate(std::move(candidate));
 
@@ -449,10 +464,12 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
     global_trickle_ice_metrics().record_patch_success();
 
     WEBRTC_LOG_INFO(
-        "WHIP trickle ice patch accepted stream={} session={} candidates={} end_of_candidates={} candidate_bytes={} total_candidates={} completed={}",
+        "WHIP trickle ice patch accepted stream={} session={} candidates={} duplicates={} end_of_candidates={} candidate_bytes={} "
+        "total_candidates={} completed={}",
         session->stream_id(),
         session->session_id(),
         accepted_count,
+        duplicate_count,
         end_of_candidates_count,
         total_candidate_bytes,
         session->remote_ice_candidates().size(),
