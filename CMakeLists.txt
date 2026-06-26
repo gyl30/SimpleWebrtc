@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.18)
 
 if(POLICY CMP0144)
   cmake_policy(SET CMP0144 NEW)
@@ -159,7 +159,7 @@ endif()
 
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
 find_package(Threads REQUIRED)
-find_package(OpenSSL REQUIRED)
+find_package(OpenSSL 3.2 REQUIRED)
 find_package(Boost 1.83.0 REQUIRED COMPONENTS filesystem)
 
 set(ENABLE_TESTING

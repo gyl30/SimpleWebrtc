@@ -1,6 +1,7 @@
 #ifndef SIMPLE_WEBRTC_DTLS_DTLS_TRANSPORT_H
 #define SIMPLE_WEBRTC_DTLS_DTLS_TRANSPORT_H
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -35,23 +36,39 @@ struct dtls_peer_identity
     sdp::fingerprint_info remote_fingerprint;
 };
 
+struct dtls_transport_config
+{
+    std::chrono::milliseconds handshake_timeout{std::chrono::seconds(30)};
+};
+
 using dtls_transport_packet_list = std::vector<std::vector<uint8_t>>;
 
 using dtls_transport_packet_result = std::expected<dtls_transport_packet_list, std::string>;
 
+struct dtls_timeout_event
+{
+    std::string remote_endpoint;
+
+    dtls_transport_packet_list packets;
+
+    bool peer_failed = false;
+
+    std::string error;
+};
+
+using dtls_timeout_event_list = std::vector<dtls_timeout_event>;
+
 class dtls_transport
 {
    public:
-    explicit dtls_transport(std::shared_ptr<dtls_context> context);
+    explicit dtls_transport(std::shared_ptr<dtls_context> context, dtls_transport_config config = {});
 
     ~dtls_transport();
 
     dtls_transport(const dtls_transport&) = delete;
-
     dtls_transport& operator=(const dtls_transport&) = delete;
 
     dtls_transport(dtls_transport&&) = delete;
-
     dtls_transport& operator=(dtls_transport&&) = delete;
 
    public:
@@ -60,6 +77,11 @@ class dtls_transport
     void forget_peer(std::string_view remote_endpoint);
 
     [[nodiscard]] dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint);
+
+    [[nodiscard]] dtls_timeout_event_list handle_timeouts();
+
+    [[nodiscard]]
+    std::optional<std::chrono::milliseconds> next_timeout() const;
 
     [[nodiscard]]
     std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint) const;

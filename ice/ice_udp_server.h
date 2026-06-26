@@ -39,11 +39,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     ~ice_udp_server() = default;
 
     ice_udp_server(const ice_udp_server&) = delete;
-
     ice_udp_server& operator=(const ice_udp_server&) = delete;
 
     ice_udp_server(ice_udp_server&&) = delete;
-
     ice_udp_server& operator=(ice_udp_server&&) = delete;
 
    public:
@@ -65,6 +63,10 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void do_receive();
 
     void on_receive(boost::system::error_code ec, std::size_t bytes_transferred);
+
+    void schedule_dtls_timeout();
+
+    void on_dtls_timeout(boost::system::error_code ec);
 
     void handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
 
@@ -104,7 +106,10 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
    private:
     boost::asio::io_context& io_context_;
+
     udp::socket socket_;
+
+    boost::asio::steady_timer dtls_timeout_timer_;
 
     std::string bind_host_;
     uint16_t bind_port_ = 0;

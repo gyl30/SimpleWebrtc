@@ -1,6 +1,8 @@
 #include "ice/ice_udp_server.h"
 
+#include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <cstdint>
@@ -35,6 +37,8 @@ namespace
 constexpr std::size_t k_max_ice_username_fragment_size = 256;
 
 constexpr std::size_t k_max_ice_username_size = k_max_ice_username_fragment_size * 2 + 1;
+
+constexpr auto k_minimum_dtls_timer_delay = std::chrono::milliseconds(1);
 
 struct ice_username_parts
 {
@@ -273,6 +277,7 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
                                std::shared_ptr<media_router> media_router)
     : io_context_(io_context),
       socket_(io_context),
+      dtls_timeout_timer_(io_context),
       bind_host_(std::move(bind_host)),
       bind_port_(bind_port),
       registry_(std::move(registry)),
@@ -384,22 +389,20 @@ void ice_udp_server::stop()
         registry_callback_registered_ = false;
     }
 
-    boost::system::error_code ec;
+    boost::system::error_code socket_ec;
 
-    socket_.close(ec);
+    socket_ec = socket_.close(socket_ec);
 
-    if (ec)
+    if (socket_ec)
     {
-        WEBRTC_LOG_WARN("ice udp server close failed: {}", ec.message());
+        WEBRTC_LOG_WARN("ice udp server close failed: {}", socket_ec.message());
     }
 
     {
         std::lock_guard lock(endpoint_mutex_);
 
         endpoints_by_address_.clear();
-
         endpoint_address_by_session_id_.clear();
-
         session_id_by_endpoint_address_.clear();
     }
 
@@ -441,6 +444,8 @@ void ice_udp_server::forget_session(std::string_view session_id)
 
     forget_peer_transport_state(remote_address);
 
+    schedule_dtls_timeout();
+
     WEBRTC_LOG_INFO("ice udp session transport state removed session={} remote={}", session_id, remote_address);
 }
 
@@ -467,20 +472,24 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
         return std::unexpected(private_key_file.error());
     }
 
-    dtls_context_config config;
+    dtls_context_config context_config;
 
-    config.certificate_file = *certificate_file;
+    context_config.certificate_file = *certificate_file;
 
-    config.private_key_file = *private_key_file;
+    context_config.private_key_file = *private_key_file;
 
-    auto context = make_dtls_context(config);
+    auto context = make_dtls_context(context_config);
 
     if (!context)
     {
         return std::unexpected(context.error());
     }
 
-    dtls_transport_ = std::make_shared<dtls_transport>(*context);
+    dtls_transport_config transport_config;
+
+    transport_config.handshake_timeout = std::chrono::seconds(30);
+
+    dtls_transport_ = std::make_shared<dtls_transport>(*context, transport_config);
 
     srtp_transport_ = std::make_shared<srtp_transport>(dtls_transport_);
 
@@ -490,7 +499,7 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
 
     rtp_packet_cache_ = std::make_shared<rtp_packet_cache>(cache_config);
 
-    WEBRTC_LOG_INFO("dtls transport initialized");
+    WEBRTC_LOG_INFO("dtls transport initialized handshake_timeout_ms={}", transport_config.handshake_timeout.count());
 
     WEBRTC_LOG_INFO("srtp transport initialized");
 
@@ -589,6 +598,89 @@ void ice_udp_server::on_receive(boost::system::error_code ec, std::size_t bytes_
     }
 
     do_receive();
+}
+
+void ice_udp_server::schedule_dtls_timeout()
+{
+    if (!started_ || dtls_transport_ == nullptr)
+    {
+        return;
+    }
+
+    dtls_timeout_timer_.cancel();
+
+    auto timeout = dtls_transport_->next_timeout();
+
+    if (!timeout.has_value())
+    {
+        return;
+    }
+
+    const auto delay = std::max(*timeout, k_minimum_dtls_timer_delay);
+
+    dtls_timeout_timer_.expires_after(delay);
+
+    auto self = shared_from_this();
+
+    dtls_timeout_timer_.async_wait([this, self](boost::system::error_code ec) { on_dtls_timeout(ec); });
+
+    WEBRTC_LOG_DEBUG("dtls timeout timer scheduled delay_ms={}", delay.count());
+}
+
+void ice_udp_server::on_dtls_timeout(boost::system::error_code ec)
+{
+    if (ec == boost::asio::error::operation_aborted)
+    {
+        return;
+    }
+
+    if (ec)
+    {
+        WEBRTC_LOG_WARN("dtls timeout timer failed: {}", ec.message());
+
+        schedule_dtls_timeout();
+
+        return;
+    }
+
+    if (!started_ || dtls_transport_ == nullptr)
+    {
+        return;
+    }
+
+    auto events = dtls_transport_->handle_timeouts();
+
+    for (auto& event : events)
+    {
+        if (event.peer_failed)
+        {
+            WEBRTC_LOG_WARN("dtls timeout peer failed remote={} error={}", event.remote_endpoint, event.error);
+
+            forget_peer_endpoint(event.remote_endpoint);
+
+            continue;
+        }
+
+        auto remote_endpoint = find_remote_endpoint(event.remote_endpoint);
+
+        if (!remote_endpoint.has_value())
+        {
+            WEBRTC_LOG_WARN("dtls retransmit endpoint not found remote={} packets={}", event.remote_endpoint, event.packets.size());
+
+            forget_peer_transport_state(event.remote_endpoint);
+
+            continue;
+        }
+
+        for (auto& packet : event.packets)
+        {
+            WEBRTC_LOG_DEBUG("dtls retransmit packet remote={} size={}", event.remote_endpoint, packet.size());
+
+            send_response(std::move(packet), *remote_endpoint);
+        }
+    }
+
+    schedule_dtls_timeout();
 }
 
 void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
@@ -754,7 +846,6 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
     options.message_integrity_key = integrity_key;
 
     options.include_message_integrity = true;
-
     options.include_fingerprint = true;
 
     auto response = write_stun_binding_success_response(*message, options);
@@ -794,6 +885,10 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
     {
         WEBRTC_LOG_WARN("dtls packet handle failed remote={} error={}", remote_address, packets.error());
 
+        forget_peer_endpoint(remote_address);
+
+        schedule_dtls_timeout();
+
         return;
     }
 
@@ -803,6 +898,8 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
 
         send_response(std::move(packet), remote_endpoint);
     }
+
+    schedule_dtls_timeout();
 }
 
 void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)

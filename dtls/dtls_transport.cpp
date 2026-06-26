@@ -1,5 +1,6 @@
 #include "dtls/dtls_transport.h"
 
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <limits>
@@ -9,6 +10,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <sys/time.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -23,11 +25,40 @@
 #include "log/log.h"
 #include "security/certificate_fingerprint.h"
 
+#if OPENSSL_VERSION_NUMBER < 0x30200000L
+#error "SimpleWebrtc requires OpenSSL 3.2 or newer"
+#endif
+
 namespace webrtc
 {
 namespace
 {
+using steady_clock = std::chrono::steady_clock;
+using milliseconds = std::chrono::milliseconds;
+using microseconds = std::chrono::microseconds;
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+
+std::string make_openssl_error(std::string_view prefix)
+{
+    const unsigned long error_code = ERR_get_error();
+
+    if (error_code == 0)
+    {
+        return std::string(prefix);
+    }
+
+    char buffer[256]{};
+
+    ERR_error_string_n(error_code, buffer, sizeof(buffer));
+
+    std::string message(prefix);
+
+    message.append(": ");
+    message.append(buffer);
+
+    return message;
+}
 
 std::string make_openssl_error(SSL* ssl, int ssl_result, std::string_view prefix)
 {
@@ -50,7 +81,6 @@ std::string make_openssl_error(SSL* ssl, int ssl_result, std::string_view prefix
         std::string message(prefix);
 
         message.append(": ssl_error=");
-
         message.append(std::to_string(ssl_error));
 
         return message;
@@ -93,6 +123,8 @@ struct x509_deleter
 using ssl_ptr = std::unique_ptr<SSL, ssl_deleter>;
 
 using x509_ptr = std::unique_ptr<X509, x509_deleter>;
+
+using ssl_event_timeout_result = std::expected<std::optional<milliseconds>, std::string>;
 
 bool fingerprints_equal(const sdp::fingerprint_info& left, const sdp::fingerprint_info& right)
 {
@@ -159,11 +191,7 @@ std::expected<x509_ptr, std::string> get_peer_certificate(SSL* ssl)
         return make_error("dtls ssl is null");
     }
 
-#if OPENSSL_VERSION_NUMBER >= 0x30000000L
     X509* certificate = SSL_get1_peer_certificate(ssl);
-#else
-    X509* certificate = SSL_get_peer_certificate(ssl);
-#endif
 
     if (certificate == nullptr)
     {
@@ -266,6 +294,8 @@ std::expected<void, std::string> run_dtls_handshake(SSL* ssl, dtls_transport_pac
             return {};
         }
 
+        ERR_clear_error();
+
         const int result = SSL_do_handshake(ssl);
 
         auto drain_result = drain_ssl_write_bio(ssl, packets);
@@ -292,11 +322,78 @@ std::expected<void, std::string> run_dtls_handshake(SSL* ssl, dtls_transport_pac
 
     return {};
 }
+
+milliseconds timeval_to_milliseconds(const timeval& timeout)
+{
+    const auto seconds_value = std::chrono::seconds(static_cast<int64_t>(timeout.tv_sec));
+
+    const auto microseconds_value = microseconds(static_cast<int64_t>(timeout.tv_usec));
+
+    const auto duration = std::chrono::duration_cast<microseconds>(seconds_value) + microseconds_value;
+
+    if (duration <= microseconds::zero())
+    {
+        return milliseconds::zero();
+    }
+
+    return std::chrono::ceil<milliseconds>(duration);
+}
+
+ssl_event_timeout_result get_ssl_event_timeout(SSL* ssl)
+{
+    if (ssl == nullptr)
+    {
+        return make_error("dtls ssl is null");
+    }
+
+    timeval timeout{};
+    int is_infinite = 0;
+
+    ERR_clear_error();
+
+    const int result = SSL_get_event_timeout(ssl, &timeout, &is_infinite);
+
+    if (result != 1)
+    {
+        return std::unexpected(make_openssl_error("dtls get event timeout failed"));
+    }
+
+    if (is_infinite != 0)
+    {
+        return std::optional<milliseconds>{};
+    }
+
+    return std::optional<milliseconds>{timeval_to_milliseconds(timeout)};
+}
+
+void update_minimum_timeout(std::optional<milliseconds>& current, milliseconds candidate)
+{
+    if (!current.has_value() || candidate < *current)
+    {
+        current = candidate;
+    }
+}
+
+milliseconds remaining_duration(steady_clock::time_point now, steady_clock::time_point deadline)
+{
+    if (now >= deadline)
+    {
+        return milliseconds::zero();
+    }
+
+    return std::chrono::ceil<milliseconds>(deadline - now);
+}
 }    // namespace
 
 struct dtls_transport::impl
 {
-    explicit impl(std::shared_ptr<dtls_context> context) : context_(std::move(context)) {}
+    explicit impl(std::shared_ptr<dtls_context> context, dtls_transport_config config) : context_(std::move(context)), config_(std::move(config))
+    {
+        if (config_.handshake_timeout <= milliseconds::zero())
+        {
+            config_.handshake_timeout = std::chrono::seconds(30);
+        }
+    }
 
     struct dtls_peer_context
     {
@@ -304,13 +401,17 @@ struct dtls_transport::impl
 
         uint64_t packet_count = 0;
         uint64_t byte_count = 0;
+        uint64_t timeout_event_count = 0;
+        uint64_t retransmission_packet_count = 0;
 
         bool saw_client_hello = false;
         bool saw_dtls_packet = false;
-
+        bool handshake_started = false;
         bool fingerprint_verified = false;
         bool handshake_done = false;
         bool handshake_failed = false;
+
+        steady_clock::time_point handshake_started_at{};
 
         std::string handshake_error;
 
@@ -334,27 +435,27 @@ struct dtls_transport::impl
 
         auto [iterator, inserted] = peers_by_endpoint_.try_emplace(endpoint_key);
 
-        auto& context = iterator->second;
+        auto& peer = iterator->second;
 
-        if (!inserted && !identities_equal(context.identity, identity))
+        if (!inserted && !identities_equal(peer.identity, identity))
         {
             WEBRTC_LOG_INFO("dtls peer identity changed reset transport remote={} old_session={} new_session={}",
                             remote_endpoint,
-                            context.identity.session_id,
+                            peer.identity.session_id,
                             identity.session_id);
 
-            context = dtls_peer_context{};
+            peer = dtls_peer_context{};
         }
 
-        context.identity = std::move(identity);
+        peer.identity = std::move(identity);
 
         WEBRTC_LOG_INFO("dtls remember peer remote={} role={} stream={} session={} local_ufrag={} fingerprint_algorithm={}",
                         remote_endpoint,
-                        dtls_peer_role_to_string(context.identity.role),
-                        context.identity.stream_id,
-                        context.identity.session_id,
-                        context.identity.local_ice_ufrag,
-                        context.identity.remote_fingerprint.algorithm);
+                        dtls_peer_role_to_string(peer.identity.role),
+                        peer.identity.stream_id,
+                        peer.identity.session_id,
+                        peer.identity.local_ice_ufrag,
+                        peer.identity.remote_fingerprint.algorithm);
     }
 
     void forget_peer(std::string_view remote_endpoint)
@@ -419,17 +520,35 @@ struct dtls_transport::impl
 
             if (!ssl_result)
             {
-                return std::unexpected(ssl_result.error());
+                const std::string error = ssl_result.error();
+
+                mark_handshake_failed_locked(*peer, error, remote_endpoint);
+
+                return std::unexpected(error);
             }
 
             peer->ssl = std::move(*ssl_result);
+
+            peer->handshake_started = true;
+
+            peer->handshake_started_at = steady_clock::now();
+
+            WEBRTC_LOG_INFO("dtls handshake timer started remote={} stream={} session={} timeout_ms={}",
+                            remote_endpoint,
+                            peer->identity.stream_id,
+                            peer->identity.session_id,
+                            config_.handshake_timeout.count());
         }
 
         auto write_result = write_packet_to_ssl(peer->ssl.get(), data);
 
         if (!write_result)
         {
-            return std::unexpected(write_result.error());
+            const std::string error = write_result.error();
+
+            mark_handshake_failed_locked(*peer, error, remote_endpoint);
+
+            return std::unexpected(error);
         }
 
         log_packet_locked(*peer, data, remote_endpoint, *header);
@@ -438,10 +557,11 @@ struct dtls_transport::impl
 
         if (!handshake_result)
         {
-            WEBRTC_LOG_WARN(
-                "dtls handshake step failed remote={} session={} error={}", remote_endpoint, peer->identity.session_id, handshake_result.error());
+            const std::string error = handshake_result.error();
 
-            return std::unexpected(handshake_result.error());
+            mark_handshake_failed_locked(*peer, error, remote_endpoint);
+
+            return std::unexpected(error);
         }
 
         auto complete_result = complete_handshake_if_ready_locked(*peer, remote_endpoint);
@@ -452,6 +572,177 @@ struct dtls_transport::impl
         }
 
         return packets;
+    }
+
+    dtls_timeout_event_list handle_timeouts()
+    {
+        dtls_timeout_event_list events;
+
+        const auto now = steady_clock::now();
+
+        std::lock_guard lock(mutex_);
+
+        for (auto& [remote_endpoint, peer] : peers_by_endpoint_)
+        {
+            if (peer.ssl == nullptr || peer.handshake_done || peer.handshake_failed)
+            {
+                continue;
+            }
+
+            if (handshake_deadline_reached_locked(peer, now))
+            {
+                dtls_timeout_event event;
+
+                event.remote_endpoint = remote_endpoint;
+
+                event.peer_failed = true;
+
+                event.error = "dtls handshake timeout";
+
+                mark_handshake_failed_locked(peer, event.error, remote_endpoint);
+
+                events.push_back(std::move(event));
+
+                continue;
+            }
+
+            auto timeout_result = get_ssl_event_timeout(peer.ssl.get());
+
+            if (!timeout_result)
+            {
+                dtls_timeout_event event;
+
+                event.remote_endpoint = remote_endpoint;
+
+                event.peer_failed = true;
+
+                event.error = timeout_result.error();
+
+                mark_handshake_failed_locked(peer, event.error, remote_endpoint);
+
+                events.push_back(std::move(event));
+
+                continue;
+            }
+
+            if (!timeout_result->has_value() || **timeout_result > milliseconds::zero())
+            {
+                continue;
+            }
+
+            dtls_timeout_event event;
+
+            event.remote_endpoint = remote_endpoint;
+
+            ERR_clear_error();
+
+            const int handle_result = SSL_handle_events(peer.ssl.get());
+
+            if (handle_result != 1)
+            {
+                event.peer_failed = true;
+
+                event.error = make_openssl_error("dtls handle events failed");
+
+                mark_handshake_failed_locked(peer, event.error, remote_endpoint);
+
+                events.push_back(std::move(event));
+
+                continue;
+            }
+
+            peer.timeout_event_count += 1;
+
+            auto drain_result = drain_ssl_write_bio(peer.ssl.get(), event.packets);
+
+            if (!drain_result)
+            {
+                event.peer_failed = true;
+
+                event.error = drain_result.error();
+
+                mark_handshake_failed_locked(peer, event.error, remote_endpoint);
+
+                events.push_back(std::move(event));
+
+                continue;
+            }
+
+            auto complete_result = complete_handshake_if_ready_locked(peer, remote_endpoint);
+
+            if (!complete_result)
+            {
+                event.peer_failed = true;
+
+                event.error = complete_result.error();
+
+                events.push_back(std::move(event));
+
+                continue;
+            }
+
+            if (!event.packets.empty())
+            {
+                peer.retransmission_packet_count += static_cast<uint64_t>(event.packets.size());
+
+                WEBRTC_LOG_INFO("dtls handshake retransmit remote={} stream={} session={} timeout_events={} retransmission_packets={} packets={}",
+                                remote_endpoint,
+                                peer.identity.stream_id,
+                                peer.identity.session_id,
+                                peer.timeout_event_count,
+                                peer.retransmission_packet_count,
+                                event.packets.size());
+
+                events.push_back(std::move(event));
+            }
+        }
+
+        return events;
+    }
+
+    std::optional<milliseconds> next_timeout() const
+    {
+        const auto now = steady_clock::now();
+
+        std::optional<milliseconds> minimum_timeout;
+
+        std::lock_guard lock(mutex_);
+
+        for (const auto& [remote_endpoint, peer] : peers_by_endpoint_)
+        {
+            if (peer.ssl == nullptr || peer.handshake_done || peer.handshake_failed)
+            {
+                continue;
+            }
+
+            if (peer.handshake_started)
+            {
+                const auto deadline = peer.handshake_started_at + config_.handshake_timeout;
+
+                update_minimum_timeout(minimum_timeout, remaining_duration(now, deadline));
+            }
+
+            auto timeout_result = get_ssl_event_timeout(peer.ssl.get());
+
+            if (!timeout_result)
+            {
+                WEBRTC_LOG_WARN("dtls next timeout query failed remote={} session={} error={}",
+                                remote_endpoint,
+                                peer.identity.session_id,
+                                timeout_result.error());
+
+                update_minimum_timeout(minimum_timeout, milliseconds::zero());
+
+                continue;
+            }
+
+            if (timeout_result->has_value())
+            {
+                update_minimum_timeout(minimum_timeout, **timeout_result);
+            }
+        }
+
+        return minimum_timeout;
     }
 
     std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint) const
@@ -465,7 +756,7 @@ struct dtls_transport::impl
             return std::nullopt;
         }
 
-        if (!peer->handshake_done || !peer->fingerprint_verified)
+        if (!peer->handshake_done || !peer->fingerprint_verified || peer->handshake_failed)
         {
             return std::nullopt;
         }
@@ -518,6 +809,16 @@ struct dtls_transport::impl
         return &iterator->second;
     }
 
+    bool handshake_deadline_reached_locked(const dtls_peer_context& peer, steady_clock::time_point now) const
+    {
+        if (!peer.handshake_started)
+        {
+            return false;
+        }
+
+        return now - peer.handshake_started_at >= config_.handshake_timeout;
+    }
+
     void mark_handshake_failed_locked(dtls_peer_context& peer, std::string error, std::string_view remote_endpoint)
     {
         peer.handshake_failed = true;
@@ -527,14 +828,15 @@ struct dtls_transport::impl
         peer.handshake_error = std::move(error);
 
         peer.keying_material.reset();
-
         peer.verified_remote_fingerprint.reset();
 
-        WEBRTC_LOG_ERROR("dtls peer authentication failed remote={} role={} stream={} session={} error={}",
+        WEBRTC_LOG_ERROR("dtls peer handshake failed remote={} role={} stream={} session={} timeout_events={} retransmission_packets={} error={}",
                          remote_endpoint,
                          dtls_peer_role_to_string(peer.identity.role),
                          peer.identity.stream_id,
                          peer.identity.session_id,
+                         peer.timeout_event_count,
+                         peer.retransmission_packet_count,
                          peer.handshake_error);
 
         peer.ssl.reset();
@@ -625,9 +927,6 @@ struct dtls_transport::impl
         {
             const std::string error = material.error();
 
-            WEBRTC_LOG_WARN(
-                "dtls srtp keying material export failed remote={} session={} error={}", remote_endpoint, peer.identity.session_id, error);
-
             mark_handshake_failed_locked(peer, error, remote_endpoint);
 
             return std::unexpected(error);
@@ -637,9 +936,12 @@ struct dtls_transport::impl
 
         peer.handshake_done = true;
 
+        const auto elapsed =
+            peer.handshake_started ? std::chrono::duration_cast<milliseconds>(steady_clock::now() - peer.handshake_started_at) : milliseconds::zero();
+
         WEBRTC_LOG_INFO(
             "dtls handshake complete remote={} role={} stream={} session={} profile={} key_size={} salt_size={} packets={} bytes={} "
-            "fingerprint_verified={}",
+            "timeout_events={} retransmission_packets={} duration_ms={} fingerprint_verified={}",
             remote_endpoint,
             dtls_peer_role_to_string(peer.identity.role),
             peer.identity.stream_id,
@@ -649,6 +951,9 @@ struct dtls_transport::impl
             peer.keying_material->master_salt_size,
             peer.packet_count,
             peer.byte_count,
+            peer.timeout_event_count,
+            peer.retransmission_packet_count,
+            elapsed.count(),
             peer.fingerprint_verified ? 1 : 0);
 
         return {};
@@ -702,12 +1007,17 @@ struct dtls_transport::impl
 
     std::shared_ptr<dtls_context> context_;
 
+    dtls_transport_config config_;
+
     mutable std::mutex mutex_;
 
     std::unordered_map<std::string, dtls_peer_context> peers_by_endpoint_;
 };
 
-dtls_transport::dtls_transport(std::shared_ptr<dtls_context> context) : impl_(std::make_unique<impl>(std::move(context))) {}
+dtls_transport::dtls_transport(std::shared_ptr<dtls_context> context, dtls_transport_config config)
+    : impl_(std::make_unique<impl>(std::move(context), std::move(config)))
+{
+}
 
 dtls_transport::~dtls_transport() = default;
 
@@ -722,6 +1032,10 @@ dtls_transport_packet_result dtls_transport::handle_udp_packet(std::span<const u
 {
     return impl_->handle_udp_packet(data, remote_endpoint);
 }
+
+dtls_timeout_event_list dtls_transport::handle_timeouts() { return impl_->handle_timeouts(); }
+
+std::optional<std::chrono::milliseconds> dtls_transport::next_timeout() const { return impl_->next_timeout(); }
 
 std::optional<srtp_keying_material> dtls_transport::get_srtp_keying_material(std::string_view remote_endpoint) const
 {
