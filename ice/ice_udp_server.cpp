@@ -3566,7 +3566,8 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
         return;
     }
 
-    unretire_endpoint(remote_address);
+    accept_retired_endpoint_reuse_after_valid_stun(
+        remote_address, stream_id, session_id, username_parts->recipient_ufrag, username_parts->sender_ufrag);
 
     if (message->has_fingerprint)
     {
@@ -6602,6 +6603,95 @@ void ice_udp_server::unretire_endpoint(std::string_view remote_address)
     std::lock_guard lock(endpoint_mutex_);
 
     unretire_endpoint_locked(remote_address);
+}
+
+std::optional<ice_udp_server::retired_endpoint_state> ice_udp_server::find_retired_endpoint_state_locked(std::string_view remote_address)
+{
+    if (remote_address.empty())
+    {
+        return std::nullopt;
+    }
+
+    const auto iterator = retired_endpoints_by_address_.find(std::string(remote_address));
+
+    if (iterator == retired_endpoints_by_address_.end())
+    {
+        return std::nullopt;
+    }
+
+    return iterator->second;
+}
+
+void ice_udp_server::accept_retired_endpoint_reuse_after_valid_stun(std::string_view remote_address,
+                                                                    std::string_view stream_id,
+                                                                    std::string_view session_id,
+                                                                    std::string_view local_ice_ufrag,
+                                                                    std::string_view remote_ice_ufrag)
+{
+    if (remote_address.empty())
+    {
+        return;
+    }
+
+    std::optional<retired_endpoint_state> previous_state;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        expire_retired_endpoints_locked(now_milliseconds());
+
+        previous_state = find_retired_endpoint_state_locked(remote_address);
+
+        if (!previous_state.has_value())
+        {
+            return;
+        }
+
+        retired_endpoints_by_address_.erase(std::string(remote_address));
+    }
+
+    const bool reused_by_different_session = previous_state->session_id.empty() || previous_state->session_id != session_id;
+
+    if (reused_by_different_session)
+    {
+        WEBRTC_LOG_INFO(
+            "ice udp retired endpoint reused by valid stun remote={} old_session={} new_session={} stream={} local_ufrag={} remote_ufrag={} "
+            "retired_reason={} suppressed_packets={}",
+            remote_address,
+            previous_state->session_id,
+            session_id,
+            stream_id,
+            local_ice_ufrag,
+            remote_ice_ufrag,
+            previous_state->reason,
+            previous_state->suppressed_packets);
+
+        return;
+    }
+
+    if (previous_state->suppressed_packets != 0)
+    {
+        WEBRTC_LOG_INFO(
+            "ice udp retired endpoint resumed by valid stun remote={} session={} stream={} local_ufrag={} remote_ufrag={} retired_reason={} "
+            "suppressed_packets={}",
+            remote_address,
+            session_id,
+            stream_id,
+            local_ice_ufrag,
+            remote_ice_ufrag,
+            previous_state->reason,
+            previous_state->suppressed_packets);
+
+        return;
+    }
+
+    WEBRTC_LOG_DEBUG("ice udp retired endpoint resumed by valid stun remote={} session={} stream={} local_ufrag={} remote_ufrag={} retired_reason={}",
+                     remote_address,
+                     session_id,
+                     stream_id,
+                     local_ice_ufrag,
+                     remote_ice_ufrag,
+                     previous_state->reason);
 }
 
 bool ice_udp_server::retired_endpoint_matches_session(std::string_view remote_address, std::string_view session_id)

@@ -358,6 +358,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void unretire_endpoint(std::string_view remote_address);
 
     [[nodiscard]]
+    std::optional<retired_endpoint_state> find_retired_endpoint_state_locked(std::string_view remote_address);
+
+    void accept_retired_endpoint_reuse_after_valid_stun(std::string_view remote_address,
+                                                        std::string_view stream_id,
+                                                        std::string_view session_id,
+                                                        std::string_view local_ice_ufrag,
+                                                        std::string_view remote_ice_ufrag);
+    [[nodiscard]]
     current_session_endpoint_state find_current_session_endpoint(std::string_view remote_address, std::string_view packet_kind);
 
     [[nodiscard]]
