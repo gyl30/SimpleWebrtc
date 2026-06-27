@@ -276,6 +276,10 @@ class media_router
 
     void forget_peer(std::string_view remote_endpoint);
 
+    void forget_stream(std::string_view stream_id);
+
+    void clear();
+
     [[nodiscard]] media_route_result handle_inbound_packet(std::string_view remote_endpoint, const srtp_packet_process_result& packet);
 
     void observe_inbound_track(const media_peer_info& peer, const srtp_packet_process_result& packet, const media_track_resolution& track_resolution);

@@ -175,6 +175,18 @@ uint32_t optional_uint8_to_uint32(const std::optional<uint8_t>& value)
 
     return static_cast<uint32_t>(*value);
 }
+bool contains_endpoint(const std::vector<std::string>& endpoints, std::string_view endpoint)
+{
+    for (const auto& current : endpoints)
+    {
+        if (current == endpoint)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
 }    // namespace
 
 void media_router::remember_publisher(std::string_view remote_endpoint, std::string_view stream_id, std::string_view session_id)
@@ -211,6 +223,126 @@ void media_router::forget_peer(std::string_view remote_endpoint)
     std::lock_guard lock(mutex_);
 
     forget_peer_locked(remote_endpoint);
+}
+
+void media_router::forget_stream(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return;
+    }
+
+    const std::string stream_key(stream_id);
+
+    std::lock_guard lock(mutex_);
+
+    std::vector<std::string> endpoints;
+
+    const auto publisher_iterator = publisher_by_stream_.find(stream_key);
+
+    if (publisher_iterator != publisher_by_stream_.end())
+    {
+        endpoints.push_back(publisher_iterator->second);
+    }
+
+    const auto subscribers_iterator = subscribers_by_stream_.find(stream_key);
+
+    if (subscribers_iterator != subscribers_by_stream_.end())
+    {
+        for (const auto& endpoint : subscribers_iterator->second)
+        {
+            if (contains_endpoint(endpoints, endpoint))
+            {
+                continue;
+            }
+
+            endpoints.push_back(endpoint);
+        }
+    }
+
+    for (const auto& endpoint : endpoints)
+    {
+        forget_peer_locked(endpoint);
+    }
+
+    std::size_t peer_sweep_count = 0;
+
+    for (auto iterator = peers_by_endpoint_.begin(); iterator != peers_by_endpoint_.end();)
+    {
+        if (iterator->second.stream_id == stream_key)
+        {
+            peer_stats_by_endpoint_.erase(iterator->first);
+
+            iterator = peers_by_endpoint_.erase(iterator);
+
+            peer_sweep_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    std::size_t peer_stats_sweep_count = 0;
+
+    for (auto iterator = peer_stats_by_endpoint_.begin(); iterator != peer_stats_by_endpoint_.end();)
+    {
+        if (iterator->second.peer.stream_id == stream_key)
+        {
+            iterator = peer_stats_by_endpoint_.erase(iterator);
+
+            peer_stats_sweep_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    const std::size_t publisher_erased = publisher_by_stream_.erase(stream_key);
+
+    const std::size_t subscriber_group_erased = subscribers_by_stream_.erase(stream_key);
+
+    const std::size_t stream_stats_erased = stream_stats_by_stream_.erase(stream_key);
+
+    WEBRTC_LOG_INFO(
+        "media router stream forgotten stream={} endpoints={} peer_sweep={} peer_stats_sweep={} publisher_erased={} subscriber_group_erased={} "
+        "stream_stats_erased={}",
+        stream_key,
+        endpoints.size(),
+        peer_sweep_count,
+        peer_stats_sweep_count,
+        publisher_erased,
+        subscriber_group_erased,
+        stream_stats_erased);
+}
+
+void media_router::clear()
+{
+    std::lock_guard lock(mutex_);
+
+    const std::size_t peer_count = peers_by_endpoint_.size();
+
+    const std::size_t peer_stats_count = peer_stats_by_endpoint_.size();
+
+    const std::size_t stream_stats_count = stream_stats_by_stream_.size();
+
+    const std::size_t publisher_count = publisher_by_stream_.size();
+
+    const std::size_t subscriber_stream_count = subscribers_by_stream_.size();
+
+    peers_by_endpoint_.clear();
+    peer_stats_by_endpoint_.clear();
+    stream_stats_by_stream_.clear();
+    publisher_by_stream_.clear();
+    subscribers_by_stream_.clear();
+
+    WEBRTC_LOG_INFO("media router cleared peers={} peer_stats={} stream_stats={} publishers={} subscriber_streams={}",
+                    peer_count,
+                    peer_stats_count,
+                    stream_stats_count,
+                    publisher_count,
+                    subscriber_stream_count);
 }
 
 media_route_result media_router::handle_inbound_packet(std::string_view remote_endpoint, const srtp_packet_process_result& packet)

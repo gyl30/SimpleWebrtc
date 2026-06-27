@@ -277,7 +277,7 @@ bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
     return snapshot.endpoint_count == 0 && snapshot.endpoint_session_index_count == 0 && snapshot.endpoint_reverse_index_count == 0 &&
            snapshot.endpoint_last_seen_count == 0 && snapshot.candidate_pair_count == 0 && snapshot.payload_type_mapping_count == 0 &&
            snapshot.keyframe_request_state_count == 0 && snapshot.dtls_peer_count == 0 && snapshot.srtp_peer_count == 0 &&
-           snapshot.media_router_peer_count == 0 && snapshot.media_router_active_publisher_count == 0 &&
+           snapshot.media_router_peer_count == 0 && snapshot.media_router_stream_count == 0 && snapshot.media_router_active_publisher_count == 0 &&
            snapshot.media_router_active_subscriber_count == 0 && snapshot.track_binding_count == 0 && snapshot.ssrc_mapping_count == 0 &&
            snapshot.rtcp_report_source_count == 0 && snapshot.rtp_cache_packet_count == 0;
 }
@@ -1389,6 +1389,10 @@ void ice_udp_server::stop()
     {
         rtp_packet_cache_->clear();
     }
+    if (media_router_ != nullptr)
+    {
+        media_router_->clear();
+    }
 }
 
 void ice_udp_server::forget_session(std::string_view session_id)
@@ -2161,7 +2165,8 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
     {
         WEBRTC_LOG_WARN(
             "lifecycle snapshot residual reason={} stream={} session={} registry_sessions={} registry_publishers={} registry_subscribers={} "
-            "endpoints={} endpoint_index={} endpoint_reverse_index={} dtls_peers={} srtp_peers={} media_router_peers={} track_bindings={} "
+            "endpoints={} endpoint_index={} endpoint_reverse_index={} dtls_peers={} srtp_peers={} media_router_peers={} media_router_streams={} "
+            "track_bindings={} "
             "ssrc_mappings={} payload_type_mappings={} keyframe_states={} rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} "
             "idle_clean={} consistent={} inconsistencies={}",
             reason,
@@ -2176,6 +2181,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
             snapshot.dtls_peer_count,
             snapshot.srtp_peer_count,
             snapshot.media_router_peer_count,
+            snapshot.media_router_stream_count,
             snapshot.track_binding_count,
             snapshot.ssrc_mapping_count,
             snapshot.payload_type_mapping_count,
@@ -2192,7 +2198,8 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
 
     WEBRTC_LOG_INFO(
         "lifecycle snapshot clean reason={} stream={} session={} registry_sessions={} registry_publishers={} registry_subscribers={} endpoints={} "
-        "dtls_peers={} srtp_peers={} media_router_peers={} track_bindings={} ssrc_mappings={} payload_type_mappings={} keyframe_states={} "
+        "dtls_peers={} srtp_peers={} media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} payload_type_mappings={} "
+        "keyframe_states={} "
         "rtcp_report_sources={} rtp_cache_packets={} idle_clean={} consistent={}",
         reason,
         stream_id,
@@ -2204,6 +2211,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
         snapshot.dtls_peer_count,
         snapshot.srtp_peer_count,
         snapshot.media_router_peer_count,
+        snapshot.media_router_stream_count,
         snapshot.track_binding_count,
         snapshot.ssrc_mapping_count,
         snapshot.payload_type_mapping_count,
@@ -5276,6 +5284,22 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         track_resolver_->forget_stream(stream_id);
     }
 
+    std::size_t media_router_stream_count_before = 0;
+    std::size_t media_router_stream_count_after = 0;
+
+    if (media_router_ != nullptr)
+    {
+        const media_router_stats_snapshot before_snapshot = media_router_->get_stats_snapshot();
+
+        media_router_stream_count_before = before_snapshot.stream_count;
+
+        media_router_->forget_stream(stream_id);
+
+        const media_router_stats_snapshot after_snapshot = media_router_->get_stats_snapshot();
+
+        media_router_stream_count_after = after_snapshot.stream_count;
+    }
+
     std::size_t erased_payload_type_mappings = 0;
     std::size_t erased_keyframe_request_states = 0;
 
@@ -5288,11 +5312,13 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
     }
 
     WEBRTC_LOG_INFO(
-        "ice udp stream runtime state cleanup stream={} cache_erased={} remaining_cache_packets={} payload_type_mappings_erased={} "
-        "keyframe_request_states_erased={}",
+        "ice udp stream runtime state cleanup stream={} cache_erased={} remaining_cache_packets={} media_router_streams_before={} "
+        "media_router_streams_after={} payload_type_mappings_erased={} keyframe_request_states_erased={}",
         stream_id,
         cache_erased ? 1 : 0,
         remaining_packets,
+        media_router_stream_count_before,
+        media_router_stream_count_after,
         erased_payload_type_mappings,
         erased_keyframe_request_states);
 }
