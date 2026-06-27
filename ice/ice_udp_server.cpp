@@ -2882,7 +2882,39 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
         send_response(std::move(packet), remote_endpoint);
     }
 
+    if (dtls_transport_->has_received_close_notify(remote_address))
+    {
+        handle_dtls_close_notify(remote_address);
+
+        schedule_dtls_timeout();
+
+        return;
+    }
+
     schedule_dtls_timeout();
+}
+
+void ice_udp_server::handle_dtls_close_notify(std::string_view remote_address)
+{
+    if (remote_address.empty())
+    {
+        return;
+    }
+
+    std::optional<std::string> session_id = find_session_id_by_endpoint(remote_address);
+
+    if (!session_id.has_value() || session_id->empty())
+    {
+        WEBRTC_LOG_WARN("dtls close notify session not found remote={}", remote_address);
+
+        forget_peer_transport_state(remote_address);
+
+        return;
+    }
+
+    WEBRTC_LOG_INFO("dtls close notify session cleanup remote={} session={}", remote_address, *session_id);
+
+    remove_expired_session(*session_id, "dtls close notify");
 }
 
 void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_process_result& packet,
@@ -5281,6 +5313,24 @@ void ice_udp_server::erase_payload_type_mappings_for_session_locked(std::string_
     }
 }
 
+std::optional<std::string> ice_udp_server::find_session_id_by_endpoint(std::string_view remote_address) const
+{
+    if (remote_address.empty())
+    {
+        return std::nullopt;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto iterator = session_id_by_endpoint_address_.find(std::string(remote_address));
+
+    if (iterator == session_id_by_endpoint_address_.end())
+    {
+        return std::nullopt;
+    }
+
+    return iterator->second;
+}
 std::optional<ice_udp_server::udp::endpoint> ice_udp_server::find_remote_endpoint(std::string_view remote_address) const
 {
     std::lock_guard lock(endpoint_mutex_);

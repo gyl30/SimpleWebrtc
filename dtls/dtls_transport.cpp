@@ -323,6 +323,60 @@ std::expected<void, std::string> run_dtls_handshake(SSL* ssl, dtls_transport_pac
     return {};
 }
 
+std::expected<void, std::string> consume_dtls_application_data_and_alerts(SSL* ssl, dtls_transport_packet_list& packets, bool& received_close_notify)
+{
+    if (ssl == nullptr)
+    {
+        return make_error("dtls ssl is null");
+    }
+
+    std::array<uint8_t, 2048> buffer{};
+
+    for (int loop_count = 0; loop_count < 8; ++loop_count)
+    {
+        ERR_clear_error();
+
+        const int read_result = SSL_read(ssl, buffer.data(), static_cast<int>(buffer.size()));
+
+        auto drain_result = drain_ssl_write_bio(ssl, packets);
+
+        if (!drain_result)
+        {
+            return std::unexpected(drain_result.error());
+        }
+
+        if (read_result > 0)
+        {
+            continue;
+        }
+
+        const int ssl_error = SSL_get_error(ssl, read_result);
+
+        if (ssl_error == SSL_ERROR_ZERO_RETURN)
+        {
+            received_close_notify = true;
+
+            return {};
+        }
+
+        if ((SSL_get_shutdown(ssl) & SSL_RECEIVED_SHUTDOWN) != 0)
+        {
+            received_close_notify = true;
+
+            return {};
+        }
+
+        if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
+        {
+            return {};
+        }
+
+        return std::unexpected(make_openssl_error(ssl, read_result, "dtls read failed"));
+    }
+
+    return {};
+}
+
 milliseconds timeval_to_milliseconds(const timeval& timeout)
 {
     const auto seconds_value = std::chrono::seconds(static_cast<int64_t>(timeout.tv_sec));
@@ -410,8 +464,9 @@ struct dtls_transport::impl
         bool fingerprint_verified = false;
         bool handshake_done = false;
         bool handshake_failed = false;
+        bool received_close_notify = false;
 
-        steady_clock::time_point handshake_started_at{};
+        steady_clock::time_point handshake_started_at;
 
         std::string handshake_error;
 
@@ -620,6 +675,34 @@ struct dtls_transport::impl
             return std::unexpected(complete_result.error());
         }
 
+        if (peer->handshake_done)
+        {
+            bool received_close_notify = false;
+
+            auto consume_result = consume_dtls_application_data_and_alerts(peer->ssl.get(), packets, received_close_notify);
+
+            if (!consume_result)
+            {
+                const std::string error = consume_result.error();
+
+                WEBRTC_LOG_WARN(
+                    "dtls application data consume failed remote={} session={} error={}", remote_endpoint, peer->identity.session_id, error);
+
+                return std::unexpected(error);
+            }
+
+            if (received_close_notify)
+            {
+                peer->received_close_notify = true;
+
+                WEBRTC_LOG_INFO("dtls close notify received remote={} role={} stream={} session={}",
+                                remote_endpoint,
+                                dtls_peer_role_to_string(peer->identity.role),
+                                peer->identity.stream_id,
+                                peer->identity.session_id);
+            }
+        }
+
         return packets;
     }
 
@@ -825,6 +908,15 @@ struct dtls_transport::impl
         }
 
         return peer->handshake_done && peer->fingerprint_verified && !peer->handshake_failed;
+    }
+
+    bool has_received_close_notify(std::string_view remote_endpoint)
+    {
+        std::lock_guard lock(mutex_);
+
+        const auto* peer = find_peer_locked(remote_endpoint);
+
+        return peer != nullptr && peer->received_close_notify;
     }
 
     std::size_t peer_count() const
@@ -1094,6 +1186,8 @@ std::optional<srtp_keying_material> dtls_transport::get_srtp_keying_material(std
 }
 
 bool dtls_transport::is_handshake_done(std::string_view remote_endpoint) const { return impl_->is_handshake_done(remote_endpoint); }
+
+bool dtls_transport::has_received_close_notify(std::string_view remote_endpoint) const { return impl_->has_received_close_notify(remote_endpoint); }
 
 std::size_t dtls_transport::peer_count() const { return impl_->peer_count(); }
 

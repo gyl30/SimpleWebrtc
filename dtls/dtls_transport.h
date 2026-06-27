@@ -91,6 +91,8 @@ class dtls_transport
 
     [[nodiscard]] bool is_handshake_done(std::string_view remote_endpoint) const;
 
+    [[nodiscard]] bool has_received_close_notify(std::string_view remote_endpoint) const;
+
     [[nodiscard]] std::size_t peer_count() const;
 
    private:

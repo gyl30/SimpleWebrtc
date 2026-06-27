@@ -164,6 +164,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void handle_dtls_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
 
+    void handle_dtls_close_notify(std::string_view remote_address);
+
     void handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
 
     [[nodiscard]]
@@ -285,6 +287,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     std::optional<udp::endpoint> find_remote_endpoint(std::string_view remote_address) const;
+
+    [[nodiscard]] std::optional<std::string> find_session_id_by_endpoint(std::string_view remote_address) const;
 
     [[nodiscard]]
     std::shared_ptr<publisher_session> find_publisher_for_username(std::string_view username) const;
