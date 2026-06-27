@@ -194,6 +194,123 @@ std::expected<void, std::string> parse_payload_feedback(std::span<const uint8_t>
             return {};
     }
 }
+
+void write_u32(std::vector<uint8_t>& data, std::size_t offset, uint32_t value)
+{
+    data[offset] = static_cast<uint8_t>((value >> 24U) & 0xffU);
+    data[offset + 1] = static_cast<uint8_t>((value >> 16U) & 0xffU);
+    data[offset + 2] = static_cast<uint8_t>((value >> 8U) & 0xffU);
+    data[offset + 3] = static_cast<uint8_t>(value & 0xffU);
+}
+
+std::expected<void, std::string> validate_block_rewrite(std::span<const uint8_t> packet, const rtcp_feedback_block_rewrite& rewrite)
+{
+    if (rewrite.block_size < 12)
+    {
+        return make_error("rtcp feedback block rewrite block is too small");
+    }
+
+    if (rewrite.block_offset > packet.size())
+    {
+        return make_error("rtcp feedback block rewrite offset exceeds packet size");
+    }
+
+    if (rewrite.block_size > packet.size() - rewrite.block_offset)
+    {
+        return make_error("rtcp feedback block rewrite size exceeds packet size");
+    }
+
+    std::span<const uint8_t> block = packet.subspan(rewrite.block_offset, rewrite.block_size);
+
+    auto header = parse_rtcp_packet_header(block);
+
+    if (!header)
+    {
+        return std::unexpected(header.error());
+    }
+
+    if (!is_feedback_packet_type(header->packet_type))
+    {
+        return make_error("rtcp feedback block rewrite block is not feedback");
+    }
+
+    if (header->packet_size != rewrite.block_size)
+    {
+        return make_error("rtcp feedback block rewrite size mismatch");
+    }
+
+    return {};
+}
+
+std::expected<void, std::string> apply_media_ssrc_rewrite(std::vector<uint8_t>& packet, const rtcp_feedback_block_rewrite& rewrite)
+{
+    if (!rewrite.rewrite_media_ssrc)
+    {
+        return {};
+    }
+
+    if (rewrite.source_media_ssrc == 0)
+    {
+        return make_error("rtcp feedback block rewrite source media ssrc is zero");
+    }
+
+    if (rewrite.target_media_ssrc == 0)
+    {
+        return make_error("rtcp feedback block rewrite target media ssrc is zero");
+    }
+
+    const std::size_t media_ssrc_offset = rewrite.block_offset + 8;
+
+    const uint32_t current_ssrc = read_u32(packet, media_ssrc_offset);
+
+    if (current_ssrc != rewrite.source_media_ssrc)
+    {
+        return make_error("rtcp feedback block rewrite source media ssrc mismatch");
+    }
+
+    write_u32(packet, media_ssrc_offset, rewrite.target_media_ssrc);
+
+    return {};
+}
+
+std::expected<void, std::string> apply_fci_ssrc_rewrites(std::vector<uint8_t>& packet, const rtcp_feedback_block_rewrite& rewrite)
+{
+    for (const auto& fci_rewrite : rewrite.fci_ssrc_rewrites)
+    {
+        if (fci_rewrite.source_ssrc == 0)
+        {
+            return make_error("rtcp feedback block rewrite fci source ssrc is zero");
+        }
+
+        if (fci_rewrite.target_ssrc == 0)
+        {
+            return make_error("rtcp feedback block rewrite fci target ssrc is zero");
+        }
+
+        if (fci_rewrite.offset > rewrite.block_size)
+        {
+            return make_error("rtcp feedback block rewrite fci offset exceeds block size");
+        }
+
+        if (4 > rewrite.block_size - fci_rewrite.offset)
+        {
+            return make_error("rtcp feedback block rewrite fci ssrc exceeds block size");
+        }
+
+        const std::size_t absolute_offset = rewrite.block_offset + fci_rewrite.offset;
+
+        const uint32_t current_ssrc = read_u32(packet, absolute_offset);
+
+        if (current_ssrc != fci_rewrite.source_ssrc)
+        {
+            return make_error("rtcp feedback block rewrite fci source ssrc mismatch");
+        }
+
+        write_u32(packet, absolute_offset, fci_rewrite.target_ssrc);
+    }
+
+    return {};
+}
 }    // namespace
 
 bool is_rtcp_feedback_packet(std::span<const uint8_t> data)
@@ -307,5 +424,48 @@ std::string rtcp_feedback_format_to_string(uint8_t packet_type, uint8_t format)
     }
 
     return "unknown";
+}
+rtcp_feedback_rewrite_result rewrite_rtcp_feedback_blocks(std::span<const uint8_t> packet, std::span<const rtcp_feedback_block_rewrite> rewrites)
+{
+    if (packet.empty())
+    {
+        return make_error("rtcp feedback block rewrite packet is empty");
+    }
+
+    if (rewrites.empty())
+    {
+        std::vector<uint8_t> copied;
+        copied.assign(packet.begin(), packet.end());
+        return copied;
+    }
+
+    std::vector<uint8_t> rewritten;
+    rewritten.assign(packet.begin(), packet.end());
+
+    for (const auto& rewrite : rewrites)
+    {
+        auto validation_result = validate_block_rewrite(packet, rewrite);
+
+        if (!validation_result)
+        {
+            return std::unexpected(validation_result.error());
+        }
+
+        auto media_rewrite_result = apply_media_ssrc_rewrite(rewritten, rewrite);
+
+        if (!media_rewrite_result)
+        {
+            return std::unexpected(media_rewrite_result.error());
+        }
+
+        auto fci_rewrite_result = apply_fci_ssrc_rewrites(rewritten, rewrite);
+
+        if (!fci_rewrite_result)
+        {
+            return std::unexpected(fci_rewrite_result.error());
+        }
+    }
+
+    return rewritten;
 }
 }    // namespace webrtc

@@ -201,7 +201,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::optional<std::vector<uint8_t>> make_forward_plain_packet(const srtp_packet_process_result& packet,
                                                                   const media_route_result& route,
                                                                   const std::optional<media_track_resolution>& track_resolution,
-                                                                  const std::optional<rtcp_feedback_route_event>& feedback_event,
+                                                                  const std::vector<rtcp_feedback_route_event>& feedback_events,
                                                                   const media_peer_info& target_peer);
 
     [[nodiscard]]
@@ -224,7 +224,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void forward_media_packet(const srtp_packet_process_result& packet,
                               const media_route_result& route,
                               const std::optional<media_track_resolution>& track_resolution,
-                              const std::optional<rtcp_feedback_route_event>& feedback_event);
+                              const std::vector<rtcp_feedback_route_event>& feedback_events);
 
     void maybe_request_keyframe_from_publisher(const srtp_packet_process_result& packet,
                                                const media_route_result& route,
@@ -318,6 +318,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void send_dtls_close_notify(std::string_view remote_address);
 
     void observe_outbound_track_stats(const media_peer_info& target_peer, std::span<const uint8_t> outbound_plain_packet);
+
+    [[nodiscard]]
+    std::optional<std::vector<uint8_t>> make_forward_rtcp_feedback_packet(const srtp_packet_process_result& packet,
+                                                                          const media_route_result& route,
+                                                                          const std::vector<rtcp_feedback_route_event>& feedback_events,
+                                                                          const media_peer_info& target_peer);
 
    private:
     boost::asio::io_context& io_context_;

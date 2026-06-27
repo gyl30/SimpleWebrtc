@@ -51,6 +51,7 @@ void fill_feedback_block(const rtcp_feedback_packet& feedback, rtcp_compound_blo
     if (feedback.remb.has_value())
     {
         block.remb_bitrate_bps = feedback.remb->bitrate_bps;
+        block.remb_ssrcs = feedback.remb->ssrcs;
     }
 }
 

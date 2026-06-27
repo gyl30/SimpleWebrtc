@@ -170,7 +170,7 @@ std::unexpected<std::string> make_field_error(std::string_view field, std::strin
     return std::unexpected(std::move(error));
 }
 
-uint64_t now_milliseconds() { return static_cast<uint64_t>(timestamp::now().milliseconds()); }
+uint64_t now_milliseconds() { return timestamp::now().milliseconds(); }
 
 bool contains_string(const std::vector<std::string>& values, std::string_view value)
 {
@@ -189,25 +189,6 @@ uint16_t read_network_u16(std::span<const uint8_t> data, std::size_t offset)
 {
     return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
 }
-
-uint32_t read_network_u32(std::span<const uint8_t> data, std::size_t offset)
-{
-    return (static_cast<uint32_t>(data[offset]) << 24U) | (static_cast<uint32_t>(data[offset + 1]) << 16U) |
-           (static_cast<uint32_t>(data[offset + 2]) << 8U) | static_cast<uint32_t>(data[offset + 3]);
-}
-
-void write_network_u32(std::vector<uint8_t>& packet, std::size_t offset, uint32_t value)
-{
-    packet[offset] = static_cast<uint8_t>((value >> 24U) & 0xffU);
-
-    packet[offset + 1] = static_cast<uint8_t>((value >> 16U) & 0xffU);
-
-    packet[offset + 2] = static_cast<uint8_t>((value >> 8U) & 0xffU);
-
-    packet[offset + 3] = static_cast<uint8_t>(value & 0xffU);
-}
-
-bool is_rtcp_feedback_packet_type(uint8_t packet_type) { return packet_type == 205 || packet_type == 206; }
 
 void hash_byte(uint64_t& hash, uint8_t value)
 {
@@ -370,82 +351,6 @@ std::expected<std::size_t, std::string> compute_rtp_payload_size(std::span<const
     }
 
     return packet.size() - offset - padding_size;
-}
-
-std::expected<std::vector<uint8_t>, std::string> rewrite_rtcp_feedback_media_ssrc(std::span<const uint8_t> packet, uint32_t target_media_ssrc)
-{
-    if (packet.empty())
-    {
-        return make_error("rtcp feedback rewrite packet is empty");
-    }
-
-    if (target_media_ssrc == 0)
-    {
-        return make_error("rtcp feedback rewrite target media ssrc is zero");
-    }
-
-    if (packet.size() < 4)
-    {
-        return make_error("rtcp feedback rewrite packet is too small");
-    }
-
-    std::vector<uint8_t> rewritten;
-
-    rewritten.assign(packet.begin(), packet.end());
-
-    std::size_t offset = 0;
-    bool changed = false;
-
-    while (offset + 4 <= rewritten.size())
-    {
-        const std::span<const uint8_t> view(rewritten.data(), rewritten.size());
-
-        const uint8_t version = static_cast<uint8_t>(view[offset] >> 6U);
-
-        if (version != 2)
-        {
-            return make_error("rtcp feedback rewrite version is invalid");
-        }
-
-        const uint8_t packet_type = view[offset + 1];
-
-        const uint16_t length = read_network_u16(view, offset + 2);
-
-        const std::size_t packet_size = (static_cast<std::size_t>(length) + 1) * 4;
-
-        if (packet_size == 0 || offset + packet_size > rewritten.size())
-        {
-            return make_error("rtcp feedback rewrite packet is truncated");
-        }
-
-        if (is_rtcp_feedback_packet_type(packet_type))
-        {
-            if (packet_size < 12)
-            {
-                return make_error("rtcp feedback rewrite feedback packet is too small");
-            }
-
-            const uint32_t current_media_ssrc = read_network_u32(view, offset + 8);
-
-            if (current_media_ssrc != target_media_ssrc)
-            {
-                write_network_u32(rewritten, offset + 8, target_media_ssrc);
-
-                changed = true;
-            }
-        }
-
-        offset += packet_size;
-    }
-
-    if (offset != rewritten.size())
-    {
-        return make_error("rtcp feedback rewrite compound packet has trailing bytes");
-    }
-
-    (void)changed;
-
-    return rewritten;
 }
 
 std::string make_candidate_pair_key(std::string_view session_id, std::string_view remote_address)
@@ -1137,20 +1042,26 @@ bool is_resolved_video_track(const std::optional<media_track_resolution>& track_
     return is_video_media_kind(track_resolution->kind);
 }
 
-bool rtcp_feedback_is_video_only_control(const rtcp_feedback_route_event& event)
+bool rtcp_feedback_event_needs_block_rewrite(const rtcp_feedback_route_event& event)
 {
-    return event.has_generic_nack || event.has_keyframe_request || event.fir_count > 0;
+    return event.has_generic_nack || event.has_keyframe_request || event.has_remb;
 }
 
-uint32_t rtcp_feedback_media_ssrc_or_zero(const rtcp_feedback_route_event& event)
+bool rtcp_feedback_event_has_valid_block_range(const rtcp_feedback_route_event& event, std::size_t packet_size)
 {
-    if (event.media_ssrc != 0)
+    if (event.block_size < 12)
     {
-        return event.media_ssrc;
+        return false;
     }
 
-    return event.ssrc;
+    if (event.block_offset > packet_size)
+    {
+        return false;
+    }
+
+    return event.block_size <= packet_size - event.block_offset;
 }
+
 bool is_publisher_rtp_fanout_to_subscriber(const srtp_packet_process_result& packet,
                                            const media_route_result& route,
                                            const media_peer_info& target_peer)
@@ -3211,8 +3122,6 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
     const std::vector<rtcp_feedback_route_event> feedback_events = make_rtcp_feedback_route_events(*result, route);
 
-    std::optional<rtcp_feedback_route_event> feedback_event_for_forward;
-
     for (const auto& feedback_event : feedback_events)
     {
         log_rtcp_feedback_route_event(feedback_event);
@@ -3220,23 +3129,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
         handle_rtcp_feedback_event(feedback_event);
     }
 
-    if (feedback_events.size() == 1)
-    {
-        feedback_event_for_forward = feedback_events.front();
-    }
-
-    if (result->kind == srtp_packet_kind::rtcp && result->rtcp_is_feedback && feedback_events.size() > 1)
-    {
-        WEBRTC_LOG_WARN("rtcp compound feedback forwarding skipped until block rewrite stream={} session={} remote={} feedback_blocks={}",
-                        route.source.stream_id,
-                        route.source.session_id,
-                        route.source.remote_endpoint,
-                        feedback_events.size());
-
-        return;
-    }
-
-    forward_media_packet(*result, route, track_resolution, feedback_event_for_forward);
+    forward_media_packet(*result, route, track_resolution, feedback_events);
 }
 
 std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const media_peer_info& peer, const srtp_packet_process_result& packet)
@@ -3911,10 +3804,209 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(con
     return *mapping_result;
 }
 
+std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_packet(const srtp_packet_process_result& packet,
+                                                                                      const media_route_result& route,
+                                                                                      const std::vector<rtcp_feedback_route_event>& feedback_events,
+                                                                                      const media_peer_info& target_peer)
+{
+    std::vector<uint8_t> original_packet;
+    original_packet.assign(packet.plain_packet.begin(), packet.plain_packet.end());
+
+    if (packet.kind != srtp_packet_kind::rtcp)
+    {
+        return original_packet;
+    }
+
+    if (route.source.role != media_peer_role::subscriber || target_peer.role != media_peer_role::publisher)
+    {
+        return original_packet;
+    }
+
+    if (feedback_events.empty())
+    {
+        return original_packet;
+    }
+
+    if (ssrc_mapper_ == nullptr)
+    {
+        WEBRTC_LOG_WARN("rtcp feedback block rewrite skipped ssrc mapper is null stream={} subscriber_session={} remote={}",
+                        route.source.stream_id,
+                        route.source.session_id,
+                        route.source.remote_endpoint);
+
+        return std::nullopt;
+    }
+
+    std::vector<rtcp_feedback_block_rewrite> rewrites;
+
+    for (const auto& event : feedback_events)
+    {
+        if (!rtcp_feedback_event_needs_block_rewrite(event))
+        {
+            continue;
+        }
+
+        if (!rtcp_feedback_event_has_valid_block_range(event, packet.plain_packet.size()))
+        {
+            WEBRTC_LOG_WARN(
+                "rtcp feedback block rewrite skipped invalid block range stream={} subscriber_session={} feedback={} offset={} size={} "
+                "packet_size={}",
+                route.source.stream_id,
+                route.source.session_id,
+                event.feedback_name,
+                event.block_offset,
+                event.block_size,
+                packet.plain_packet.size());
+
+            return std::nullopt;
+        }
+
+        rtcp_feedback_block_rewrite rewrite;
+
+        rewrite.block_offset = event.block_offset;
+        rewrite.block_size = event.block_size;
+
+        if (event.media_ssrc != 0)
+        {
+            auto mapping = ssrc_mapper_->find_by_subscriber_ssrc(route.source.session_id, event.media_ssrc);
+
+            if (!mapping.has_value())
+            {
+                WEBRTC_LOG_WARN("rtcp feedback block rewrite skipped mapping not found stream={} subscriber_session={} feedback={} media_ssrc={}",
+                                route.source.stream_id,
+                                route.source.session_id,
+                                event.feedback_name,
+                                event.media_ssrc);
+
+                return std::nullopt;
+            }
+
+            if (!is_video_media_kind(mapping->kind))
+            {
+                WEBRTC_LOG_WARN(
+                    "rtcp feedback block rewrite skipped non video media stream={} subscriber_session={} feedback={} subscriber_ssrc={} kind={}",
+                    route.source.stream_id,
+                    route.source.session_id,
+                    event.feedback_name,
+                    event.media_ssrc,
+                    mapping->kind);
+
+                return std::nullopt;
+            }
+
+            rewrite.rewrite_media_ssrc = true;
+            rewrite.source_media_ssrc = event.media_ssrc;
+            rewrite.target_media_ssrc = mapping->publisher_ssrc;
+        }
+
+        for (std::size_t i = 0; i < event.fir_items.size(); ++i)
+        {
+            const auto& item = event.fir_items[i];
+
+            auto mapping = ssrc_mapper_->find_by_subscriber_ssrc(route.source.session_id, item.ssrc);
+
+            if (!mapping.has_value())
+            {
+                WEBRTC_LOG_WARN("rtcp fir block rewrite skipped mapping not found stream={} subscriber_session={} item_ssrc={}",
+                                route.source.stream_id,
+                                route.source.session_id,
+                                item.ssrc);
+
+                return std::nullopt;
+            }
+
+            if (!is_video_media_kind(mapping->kind))
+            {
+                WEBRTC_LOG_WARN("rtcp fir block rewrite skipped non video media stream={} subscriber_session={} item_ssrc={} kind={}",
+                                route.source.stream_id,
+                                route.source.session_id,
+                                item.ssrc,
+                                mapping->kind);
+
+                return std::nullopt;
+            }
+
+            rtcp_feedback_block_ssrc_rewrite fci_rewrite;
+            fci_rewrite.offset = 12 + i * 8;
+            fci_rewrite.source_ssrc = item.ssrc;
+            fci_rewrite.target_ssrc = mapping->publisher_ssrc;
+
+            rewrite.fci_ssrc_rewrites.push_back(fci_rewrite);
+        }
+
+        for (std::size_t i = 0; i < event.remb_ssrcs.size(); ++i)
+        {
+            const uint32_t subscriber_ssrc = event.remb_ssrcs[i];
+
+            auto mapping = ssrc_mapper_->find_by_subscriber_ssrc(route.source.session_id, subscriber_ssrc);
+
+            if (!mapping.has_value())
+            {
+                WEBRTC_LOG_WARN("rtcp remb block rewrite skipped mapping not found stream={} subscriber_session={} remb_ssrc={}",
+                                route.source.stream_id,
+                                route.source.session_id,
+                                subscriber_ssrc);
+
+                return std::nullopt;
+            }
+
+            if (!is_video_media_kind(mapping->kind))
+            {
+                WEBRTC_LOG_WARN("rtcp remb block rewrite skipped non video media stream={} subscriber_session={} remb_ssrc={} kind={}",
+                                route.source.stream_id,
+                                route.source.session_id,
+                                subscriber_ssrc,
+                                mapping->kind);
+
+                return std::nullopt;
+            }
+
+            rtcp_feedback_block_ssrc_rewrite fci_rewrite;
+            fci_rewrite.offset = 20 + i * 4;
+            fci_rewrite.source_ssrc = subscriber_ssrc;
+            fci_rewrite.target_ssrc = mapping->publisher_ssrc;
+
+            rewrite.fci_ssrc_rewrites.push_back(fci_rewrite);
+        }
+
+        if (rewrite.rewrite_media_ssrc || !rewrite.fci_ssrc_rewrites.empty())
+        {
+            rewrites.push_back(std::move(rewrite));
+        }
+    }
+
+    if (rewrites.empty())
+    {
+        return original_packet;
+    }
+
+    auto rewrite_result = rewrite_rtcp_feedback_blocks(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()),
+                                                       std::span<const rtcp_feedback_block_rewrite>(rewrites.data(), rewrites.size()));
+
+    if (!rewrite_result)
+    {
+        WEBRTC_LOG_WARN("rtcp feedback block rewrite failed stream={} subscriber_session={} remote={} error={}",
+                        route.source.stream_id,
+                        route.source.session_id,
+                        route.source.remote_endpoint,
+                        rewrite_result.error());
+
+        return std::nullopt;
+    }
+
+    WEBRTC_LOG_DEBUG("rtcp feedback block rewrite applied stream={} subscriber_session={} remote={} blocks={}",
+                     route.source.stream_id,
+                     route.source.session_id,
+                     route.source.remote_endpoint,
+                     rewrites.size());
+
+    return std::move(*rewrite_result);
+}
+
 std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(const srtp_packet_process_result& packet,
                                                                               const media_route_result& route,
                                                                               const std::optional<media_track_resolution>& track_resolution,
-                                                                              const std::optional<rtcp_feedback_route_event>& feedback_event,
+                                                                              const std::vector<rtcp_feedback_route_event>& feedback_events,
                                                                               const media_peer_info& target_peer)
 {
     std::vector<uint8_t> original_packet;
@@ -3928,93 +4020,8 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
     if (packet.kind == srtp_packet_kind::rtcp)
     {
-        if (route.source.role != media_peer_role::subscriber || target_peer.role != media_peer_role::publisher || !feedback_event.has_value())
-        {
-            return original_packet;
-        }
-
-        if (!rtcp_feedback_is_video_only_control(*feedback_event))
-        {
-            return original_packet;
-        }
-
-        if (ssrc_mapper_ == nullptr)
-        {
-            WEBRTC_LOG_WARN("rtcp media feedback skipped ssrc mapper is null stream={} subscriber_session={} remote={}",
-                            route.source.stream_id,
-                            route.source.session_id,
-                            route.source.remote_endpoint);
-
-            return std::nullopt;
-        }
-
-        const uint32_t feedback_media_ssrc = rtcp_feedback_media_ssrc_or_zero(*feedback_event);
-
-        if (feedback_media_ssrc == 0)
-        {
-            WEBRTC_LOG_WARN("rtcp media feedback skipped empty media ssrc stream={} subscriber_session={} remote={} feedback={}",
-                            route.source.stream_id,
-                            route.source.session_id,
-                            route.source.remote_endpoint,
-                            feedback_event->feedback_name);
-
-            return std::nullopt;
-        }
-
-        auto mapping = ssrc_mapper_->find_by_subscriber_ssrc(route.source.session_id, feedback_media_ssrc);
-
-        if (!mapping.has_value())
-        {
-            WEBRTC_LOG_WARN("rtcp media feedback skipped mapping not found stream={} subscriber_session={} remote={} media_ssrc={} feedback={}",
-                            route.source.stream_id,
-                            route.source.session_id,
-                            route.source.remote_endpoint,
-                            feedback_media_ssrc,
-                            feedback_event->feedback_name);
-
-            return std::nullopt;
-        }
-
-        if (!is_video_media_kind(mapping->kind))
-        {
-            WEBRTC_LOG_WARN(
-                "rtcp media feedback skipped non video media stream={} subscriber_session={} publisher_session={} subscriber_ssrc={} "
-                "publisher_ssrc={} kind={} feedback={}",
-                mapping->stream_id,
-                mapping->subscriber_session_id,
-                mapping->publisher_session_id,
-                mapping->subscriber_ssrc,
-                mapping->publisher_ssrc,
-                mapping->kind,
-                feedback_event->feedback_name);
-
-            return std::nullopt;
-        }
-
-        auto rewrite_result = rewrite_rtcp_feedback_media_ssrc(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()),
-                                                               mapping->publisher_ssrc);
-        if (!rewrite_result)
-        {
-            WEBRTC_LOG_WARN(
-                "rtcp feedback reverse ssrc rewrite failed subscriber_session={} publisher_session={} subscriber_ssrc={} publisher_ssrc={} error={}",
-                mapping->subscriber_session_id,
-                mapping->publisher_session_id,
-                mapping->subscriber_ssrc,
-                mapping->publisher_ssrc,
-                rewrite_result.error());
-
-            return std::nullopt;
-        }
-
-        WEBRTC_LOG_DEBUG("rtcp feedback reverse ssrc rewrite applied subscriber_session={} publisher_session={} subscriber_ssrc={} publisher_ssrc={}",
-                         mapping->subscriber_session_id,
-                         mapping->publisher_session_id,
-                         mapping->subscriber_ssrc,
-                         mapping->publisher_ssrc);
-
-        return std::move(*rewrite_result);
+        return make_forward_rtcp_feedback_packet(packet, route, feedback_events, target_peer);
     }
-
     if (packet.kind != srtp_packet_kind::rtp)
     {
         return original_packet;
@@ -4732,7 +4739,7 @@ void ice_udp_server::erase_rtp_cache(std::string_view stream_id)
 void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet,
                                           const media_route_result& route,
                                           const std::optional<media_track_resolution>& track_resolution,
-                                          const std::optional<rtcp_feedback_route_event>& feedback_event)
+                                          const std::vector<rtcp_feedback_route_event>& feedback_events)
 {
     if (packet.plain_packet.empty())
     {
@@ -4784,8 +4791,7 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
             continue;
         }
 
-        auto outbound_plain_packet = make_forward_plain_packet(packet, route, track_resolution, feedback_event, *target_peer);
-
+        auto outbound_plain_packet = make_forward_plain_packet(packet, route, track_resolution, feedback_events, *target_peer);
         if (!outbound_plain_packet.has_value())
         {
             WEBRTC_LOG_WARN("media forward skipped rewrite failed stream={} source={} target={} kind={}",

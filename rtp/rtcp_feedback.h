@@ -70,7 +70,30 @@ struct rtcp_feedback_packet
     std::optional<rtcp_remb_info> remb;
 };
 
+struct rtcp_feedback_block_ssrc_rewrite
+{
+    std::size_t offset = 0;
+    uint32_t source_ssrc = 0;
+    uint32_t target_ssrc = 0;
+};
+
+struct rtcp_feedback_block_rewrite
+{
+    std::size_t block_offset = 0;
+    std::size_t block_size = 0;
+
+    bool rewrite_media_ssrc = false;
+    uint32_t source_media_ssrc = 0;
+    uint32_t target_media_ssrc = 0;
+
+    std::vector<rtcp_feedback_block_ssrc_rewrite> fci_ssrc_rewrites;
+};
+
+using rtcp_feedback_rewrite_result = std::expected<std::vector<uint8_t>, std::string>;
 using rtcp_feedback_packet_result = std::expected<rtcp_feedback_packet, std::string>;
+
+[[nodiscard]]
+rtcp_feedback_rewrite_result rewrite_rtcp_feedback_blocks(std::span<const uint8_t> packet, std::span<const rtcp_feedback_block_rewrite> rewrites);
 
 [[nodiscard]] bool is_rtcp_feedback_packet(std::span<const uint8_t> data);
 

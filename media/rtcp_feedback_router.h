@@ -37,6 +37,9 @@ struct rtcp_feedback_route_event
     uint8_t feedback_format = 0;
     std::string feedback_name;
 
+    std::size_t block_offset = 0;
+    std::size_t block_size = 0;
+
     uint32_t ssrc = 0;
     uint32_t sender_ssrc = 0;
     uint32_t media_ssrc = 0;
@@ -52,6 +55,7 @@ struct rtcp_feedback_route_event
     bool has_transport_cc = false;
     bool has_remb = false;
     uint64_t remb_bitrate_bps = 0;
+    std::vector<uint32_t> remb_ssrcs;
 
     std::vector<std::string> target_endpoints;
 };

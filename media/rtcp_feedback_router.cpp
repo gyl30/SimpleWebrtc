@@ -143,6 +143,9 @@ std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const rt
     event.feedback_format = block.feedback_format;
     event.feedback_name = block.feedback_name;
 
+    event.block_offset = block.offset;
+    event.block_size = block.packet_size;
+
     event.ssrc = block.has_ssrc ? block.ssrc : block.feedback_sender_ssrc;
     event.sender_ssrc = block.feedback_sender_ssrc;
     event.media_ssrc = block.feedback_media_ssrc;
@@ -158,7 +161,7 @@ std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const rt
     event.has_transport_cc = block.has_transport_cc;
     event.has_remb = block.has_remb;
     event.remb_bitrate_bps = block.remb_bitrate_bps;
-
+    event.remb_ssrcs = block.remb_ssrcs;
     event.target_endpoints = route.target_endpoints;
 
     return event;

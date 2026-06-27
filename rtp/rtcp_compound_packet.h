@@ -48,6 +48,7 @@ struct rtcp_compound_block
     bool has_transport_cc = false;
     bool has_remb = false;
     uint64_t remb_bitrate_bps = 0;
+    std::vector<uint32_t> remb_ssrcs;
 
     bool is_report = false;
     bool is_sender_report = false;
