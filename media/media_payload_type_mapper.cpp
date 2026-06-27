@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <expected>
 #include <optional>
@@ -224,6 +225,184 @@ std::optional<std::string> find_fmtp_parameter(std::string_view fmtp, std::strin
 
     return std::nullopt;
 }
+std::optional<uint16_t> parse_payload_type_text(std::string_view value)
+{
+    value = trim(value);
+
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    uint32_t payload_type = 0;
+
+    const auto result = std::from_chars(value.data(), value.data() + value.size(), payload_type);
+
+    if (result.ec != std::errc() || result.ptr != value.data() + value.size() || payload_type > 127U)
+    {
+        return std::nullopt;
+    }
+
+    return static_cast<uint16_t>(payload_type);
+}
+
+bool codec_is_rtx(const sdp::codec_info& codec) { return equals_ignore_case(codec.name, "rtx"); }
+
+std::optional<uint16_t> find_codec_apt_payload_type(const sdp::codec_info& codec)
+{
+    const auto apt = find_fmtp_parameter(codec.fmtp, "apt");
+
+    if (!apt.has_value())
+    {
+        return std::nullopt;
+    }
+
+    return parse_payload_type_text(*apt);
+}
+
+const sdp::codec_info* find_codec_by_payload_type(const sdp::media_summary& media, uint16_t payload_type)
+{
+    if (!payload_type_exists(media, payload_type))
+    {
+        return nullptr;
+    }
+
+    for (const auto& codec : media.codecs)
+    {
+        if (codec.payload_type == payload_type)
+        {
+            return &codec;
+        }
+    }
+
+    return nullptr;
+}
+
+bool mapping_exists(const media_payload_type_mapping_table& table, std::string_view publisher_mid, uint16_t publisher_payload_type)
+{
+    for (const auto& mapping : table.mappings)
+    {
+        if (mapping.publisher_mid == publisher_mid && mapping.publisher_payload_type == publisher_payload_type)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+const media_payload_type_mapping* find_mapping_by_publisher_payload_type(const media_payload_type_mapping_table& table,
+                                                                         std::string_view publisher_mid,
+                                                                         uint16_t publisher_payload_type)
+{
+    for (const auto& mapping : table.mappings)
+    {
+        if (mapping.publisher_mid == publisher_mid && mapping.publisher_payload_type == publisher_payload_type)
+        {
+            return &mapping;
+        }
+    }
+
+    return nullptr;
+}
+
+const sdp::codec_info* find_rtx_codec_for_apt(const sdp::media_summary& media, uint16_t apt_payload_type)
+{
+    for (const auto& codec : media.codecs)
+    {
+        if (!payload_type_exists(media, codec.payload_type))
+        {
+            continue;
+        }
+
+        if (!codec_is_rtx(codec))
+        {
+            continue;
+        }
+
+        const auto codec_apt = find_codec_apt_payload_type(codec);
+
+        if (!codec_apt.has_value() || *codec_apt != apt_payload_type)
+        {
+            continue;
+        }
+
+        return &codec;
+    }
+
+    return nullptr;
+}
+
+void append_rtx_mappings(media_payload_type_mapping_table& table,
+                         const sdp::media_summary& publisher_media,
+                         const sdp::media_summary& subscriber_media)
+{
+    for (const auto& publisher_codec : publisher_media.codecs)
+    {
+        if (!payload_type_exists(publisher_media, publisher_codec.payload_type))
+        {
+            continue;
+        }
+
+        if (!codec_is_rtx(publisher_codec))
+        {
+            continue;
+        }
+
+        const auto publisher_apt = find_codec_apt_payload_type(publisher_codec);
+
+        if (!publisher_apt.has_value())
+        {
+            continue;
+        }
+
+        const media_payload_type_mapping* primary_mapping = find_mapping_by_publisher_payload_type(table, publisher_media.mid, *publisher_apt);
+
+        if (primary_mapping == nullptr)
+        {
+            continue;
+        }
+
+        const sdp::codec_info* subscriber_rtx_codec = find_rtx_codec_for_apt(subscriber_media, primary_mapping->subscriber_payload_type);
+
+        if (subscriber_rtx_codec == nullptr)
+        {
+            continue;
+        }
+
+        if (mapping_exists(table, publisher_media.mid, publisher_codec.payload_type))
+        {
+            continue;
+        }
+
+        media_payload_type_mapping mapping;
+
+        mapping.stream_id = table.stream_id;
+        mapping.kind = publisher_media.kind;
+
+        mapping.publisher_mid = publisher_media.mid;
+        mapping.subscriber_mid = subscriber_media.mid;
+
+        mapping.publisher_payload_type = publisher_codec.payload_type;
+        mapping.subscriber_payload_type = subscriber_rtx_codec->payload_type;
+
+        mapping.codec_name = publisher_codec.name;
+        mapping.clock_rate = publisher_codec.clock_rate;
+
+        mapping.encoding_parameters =
+            publisher_codec.encoding_parameters.empty() ? subscriber_rtx_codec->encoding_parameters : publisher_codec.encoding_parameters;
+
+        mapping.rtx = true;
+        mapping.publisher_apt_payload_type = *publisher_apt;
+        mapping.subscriber_apt_payload_type = primary_mapping->subscriber_payload_type;
+
+        mapping.payload_type_rewrite_required = mapping.publisher_payload_type != mapping.subscriber_payload_type;
+
+        mapping.mid_rewrite_required = mapping.publisher_mid != mapping.subscriber_mid;
+
+        table.mappings.push_back(std::move(mapping));
+    }
+}
 
 bool is_h264_codec(const sdp::codec_info& codec) { return equals_ignore_case(codec.name, "h264"); }
 
@@ -316,9 +495,13 @@ const sdp::media_summary* find_matching_subscriber_media(const sdp::media_summar
 
     return find_receive_capable_media_by_kind_ordinal(subscriber_offer, publisher_media.kind, *publisher_ordinal);
 }
-
 std::optional<sdp::codec_info> find_compatible_subscriber_codec(const sdp::media_summary& subscriber_media, const sdp::codec_info& publisher_codec)
 {
+    if (codec_is_rtx(publisher_codec))
+    {
+        return std::nullopt;
+    }
+
     for (const auto& subscriber_codec : subscriber_media.codecs)
     {
         if (!payload_type_exists(subscriber_media, subscriber_codec.payload_type))
@@ -348,8 +531,12 @@ void append_media_mappings(media_payload_type_mapping_table& table,
             continue;
         }
 
-        auto subscriber_codec = find_compatible_subscriber_codec(subscriber_media, publisher_codec);
+        if (codec_is_rtx(publisher_codec))
+        {
+            continue;
+        }
 
+        auto subscriber_codec = find_compatible_subscriber_codec(subscriber_media, publisher_codec);
         if (!subscriber_codec.has_value())
         {
             continue;
@@ -382,6 +569,7 @@ void append_media_mappings(media_payload_type_mapping_table& table,
 
         table.mappings.push_back(std::move(mapping));
     }
+    append_rtx_mappings(table, publisher_media, subscriber_media);
 }
 }    // namespace
 
@@ -476,6 +664,50 @@ std::optional<media_payload_type_mapping> find_media_payload_type_mapping_by_kin
 
     return std::nullopt;
 }
+bool media_payload_type_mapping_is_rtx(const media_payload_type_mapping& mapping) { return mapping.rtx; }
+
+bool media_payload_type_is_rtx(const sdp::media_summary& media, uint16_t payload_type)
+{
+    const sdp::codec_info* codec = find_codec_by_payload_type(media, payload_type);
+
+    return codec != nullptr && codec_is_rtx(*codec);
+}
+
+bool media_offer_payload_type_is_rtx(const sdp::webrtc_offer_summary& offer, std::string_view mid, uint16_t payload_type)
+{
+    bool matched = false;
+    bool rtx = false;
+
+    for (const auto& media : offer.media)
+    {
+        if (!mid.empty() && media.mid != mid)
+        {
+            continue;
+        }
+
+        if (!payload_type_exists(media, payload_type))
+        {
+            continue;
+        }
+
+        const sdp::codec_info* codec = find_codec_by_payload_type(media, payload_type);
+
+        if (codec == nullptr)
+        {
+            continue;
+        }
+
+        if (matched)
+        {
+            return false;
+        }
+
+        matched = true;
+        rtx = codec_is_rtx(*codec);
+    }
+
+    return matched && rtx;
+}
 
 bool media_payload_type_mapping_requires_packet_rewrite(const media_payload_type_mapping& mapping)
 {
@@ -511,6 +743,17 @@ std::string media_payload_type_mapping_to_string(const media_payload_type_mappin
 
     result.append(" clock=");
     result.append(std::to_string(mapping.clock_rate));
+    result.append(" rtx=");
+    result.append(mapping.rtx ? "1" : "0");
+
+    if (mapping.rtx)
+    {
+        result.append(" publisher_apt=");
+        result.append(std::to_string(mapping.publisher_apt_payload_type));
+
+        result.append(" subscriber_apt=");
+        result.append(std::to_string(mapping.subscriber_apt_payload_type));
+    }
 
     return result;
 }

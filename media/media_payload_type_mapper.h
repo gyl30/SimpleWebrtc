@@ -28,6 +28,10 @@ struct media_payload_type_mapping
     uint32_t clock_rate = 0;
     std::string encoding_parameters;
 
+    bool rtx = false;
+    uint16_t publisher_apt_payload_type = 0;
+    uint16_t subscriber_apt_payload_type = 0;
+
     bool payload_type_rewrite_required = false;
     bool mid_rewrite_required = false;
 };
@@ -58,6 +62,15 @@ std::optional<media_payload_type_mapping> find_media_payload_type_mapping_by_kin
 
 [[nodiscard]]
 bool media_payload_type_mapping_requires_packet_rewrite(const media_payload_type_mapping& mapping);
+
+[[nodiscard]]
+bool media_payload_type_mapping_is_rtx(const media_payload_type_mapping& mapping);
+
+[[nodiscard]]
+bool media_payload_type_is_rtx(const sdp::media_summary& media, uint16_t payload_type);
+
+[[nodiscard]]
+bool media_offer_payload_type_is_rtx(const sdp::webrtc_offer_summary& offer, std::string_view mid, uint16_t payload_type);
 
 [[nodiscard]]
 std::string media_payload_type_mapping_to_string(const media_payload_type_mapping& mapping);

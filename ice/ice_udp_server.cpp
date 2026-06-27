@@ -5287,6 +5287,25 @@ void ice_udp_server::cache_inbound_rtp_packet(const srtp_packet_process_result& 
         return;
     }
 
+    if (track_resolution.has_value() && track_resolution->resolved && registry_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
+
+        if (publisher != nullptr &&
+            media_offer_payload_type_is_rtx(publisher->remote_offer_summary(), track_resolution->mid, track_resolution->payload_type))
+        {
+            WEBRTC_LOG_DEBUG("rtp cache skip rtx stream={} remote={} mid={} ssrc={} sequence={} payload_type={}",
+                             route.source.stream_id,
+                             route.source.remote_endpoint,
+                             track_resolution->mid,
+                             packet.ssrc,
+                             packet.sequence_number,
+                             static_cast<unsigned int>(packet.payload_type));
+
+            return;
+        }
+    }
+
     auto result = rtp_packet_cache_->put(route.source.stream_id, std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
 
     if (!result)
