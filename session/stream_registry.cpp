@@ -230,6 +230,9 @@ remove_session_result stream_registry::remove_publisher_session(std::string_view
         removed_publisher.kind = stream_session_kind::publisher;
         removed_publisher.stream_id = stream_id;
         removed_publisher.session_id = publisher->session_id();
+        removed_publisher.local_ice_ufrag = publisher->local_ice().ufrag;
+        removed_publisher.remote_ice_ufrag = publisher->remote_offer_summary().ice_ufrag;
+
         removed_sessions.push_back(std::move(removed_publisher));
 
         const auto subscribers_iterator = subscriber_session_ids_by_stream_id_.find(stream_id);
@@ -253,6 +256,9 @@ remove_session_result stream_registry::remove_publisher_session(std::string_view
                 removed_subscriber.kind = stream_session_kind::subscriber;
                 removed_subscriber.stream_id = subscriber->stream_id();
                 removed_subscriber.session_id = subscriber->session_id();
+                removed_subscriber.local_ice_ufrag = subscriber->local_ice().ufrag;
+                removed_subscriber.remote_ice_ufrag = subscriber->remote_offer_summary().ice_ufrag;
+
                 removed_sessions.push_back(std::move(removed_subscriber));
 
                 subscribers_by_session_id_.erase(subscriber_iterator);
@@ -299,8 +305,10 @@ remove_session_result stream_registry::remove_subscriber_session(std::string_vie
         removed_subscriber.kind = stream_session_kind::subscriber;
         removed_subscriber.stream_id = stream_id;
         removed_subscriber.session_id = subscriber_session_id;
-        removed_sessions.push_back(std::move(removed_subscriber));
+        removed_subscriber.local_ice_ufrag = subscriber->local_ice().ufrag;
+        removed_subscriber.remote_ice_ufrag = subscriber->remote_offer_summary().ice_ufrag;
 
+        removed_sessions.push_back(std::move(removed_subscriber));
         subscribers_by_session_id_.erase(subscriber_iterator);
 
         const auto stream_iterator = subscriber_session_ids_by_stream_id_.find(stream_id);

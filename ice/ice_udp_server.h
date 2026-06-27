@@ -323,6 +323,20 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     bool retired_endpoint_matches_session(std::string_view remote_address, std::string_view session_id);
+    void retire_removed_session_ice_credentials(const stream_removed_session& removed_session, std::string_view reason);
+
+    void retire_ice_credentials_locked(std::string_view local_ice_ufrag,
+                                       std::string_view remote_ice_ufrag,
+                                       std::string_view stream_id,
+                                       std::string_view session_id,
+                                       uint64_t current_time_milliseconds,
+                                       std::string_view reason);
+
+    [[nodiscard]]
+    bool suppress_retired_ice_credential_stun(std::string_view local_ice_ufrag, std::string_view remote_ice_ufrag, std::string_view remote_address);
+
+    [[nodiscard]]
+    std::size_t expire_retired_ice_credentials_locked(uint64_t current_time_milliseconds);
 
     [[nodiscard]]
     bool suppress_retired_endpoint_packet(std::string_view remote_address, std::string_view packet_kind);
@@ -395,6 +409,19 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string session_id;
         std::string reason;
     };
+    struct retired_ice_credential_state
+    {
+        uint64_t expires_at_milliseconds = 0;
+        uint64_t suppressed_stun_packets = 0;
+
+        std::string stream_id;
+        std::string session_id;
+
+        std::string local_ice_ufrag;
+        std::string remote_ice_ufrag;
+
+        std::string reason;
+    };
     boost::asio::io_context& io_context_;
 
     udp::socket socket_;
@@ -450,6 +477,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, uint64_t> keyframe_request_last_time_milliseconds_by_key_;
 
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
+
+    std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
 
     bool started_ = false;
 

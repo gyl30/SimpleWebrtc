@@ -40,6 +40,9 @@ struct stream_removed_session
     stream_session_kind kind = stream_session_kind::publisher;
     std::string stream_id;
     std::string session_id;
+
+    std::string local_ice_ufrag;
+    std::string remote_ice_ufrag;
 };
 
 struct stream_session_lifecycle_snapshot
