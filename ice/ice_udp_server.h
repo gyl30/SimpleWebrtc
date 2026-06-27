@@ -360,6 +360,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     current_session_endpoint_state find_current_session_endpoint(std::string_view remote_address, std::string_view packet_kind);
 
+    [[nodiscard]]
+    current_session_endpoint_state validate_current_session_endpoint(std::string_view remote_address,
+                                                                     std::string_view expected_session_id,
+                                                                     std::string_view expected_stream_id,
+                                                                     std::string_view packet_kind);
     void cleanup_stale_current_session_endpoint(std::string remote_address, std::string session_id, std::string reason);
     [[nodiscard]]
     bool retired_endpoint_matches_session(std::string_view remote_address, std::string_view session_id);

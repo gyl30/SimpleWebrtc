@@ -3040,11 +3040,29 @@ void ice_udp_server::on_dtls_timeout(boost::system::error_code ec)
             continue;
         }
 
+        const current_session_endpoint_state current_session = find_current_session_endpoint(event.remote_endpoint, "dtls retransmit");
+
+        if (!current_session.allowed)
+        {
+            WEBRTC_LOG_DEBUG("dtls retransmit ignored by current session gate remote={} session={} packets={} reason={}",
+                             event.remote_endpoint,
+                             current_session.session_id,
+                             event.packets.size(),
+                             current_session.reject_reason);
+
+            forget_peer_transport_state(event.remote_endpoint);
+
+            continue;
+        }
+
         auto remote_endpoint = find_remote_endpoint(event.remote_endpoint);
 
         if (!remote_endpoint.has_value())
         {
-            WEBRTC_LOG_WARN("dtls retransmit endpoint not found remote={} packets={}", event.remote_endpoint, event.packets.size());
+            WEBRTC_LOG_WARN("dtls retransmit endpoint not found remote={} session={} packets={}",
+                            event.remote_endpoint,
+                            current_session.session_id,
+                            event.packets.size());
 
             forget_peer_transport_state(event.remote_endpoint);
 
@@ -3053,7 +3071,23 @@ void ice_udp_server::on_dtls_timeout(boost::system::error_code ec)
 
         for (auto& packet : event.packets)
         {
-            WEBRTC_LOG_DEBUG("dtls retransmit packet remote={} size={}", event.remote_endpoint, packet.size());
+            const current_session_endpoint_state send_session = validate_current_session_endpoint(
+                event.remote_endpoint, current_session.session_id, current_session.stream_id, "dtls retransmit send");
+
+            if (!send_session.allowed)
+            {
+                WEBRTC_LOG_DEBUG("dtls retransmit send skipped by current session gate remote={} session={} size={} reason={}",
+                                 event.remote_endpoint,
+                                 current_session.session_id,
+                                 packet.size(),
+                                 send_session.reject_reason);
+
+                forget_peer_transport_state(event.remote_endpoint);
+
+                break;
+            }
+
+            WEBRTC_LOG_DEBUG("dtls retransmit packet remote={} session={} size={}", event.remote_endpoint, current_session.session_id, packet.size());
 
             send_response(std::move(packet), *remote_endpoint);
         }
@@ -3206,13 +3240,33 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
     std::size_t endpoint_not_found_count = 0;
     std::size_t protect_failed_count = 0;
     std::size_t protect_ignored_count = 0;
+    std::size_t current_session_gate_skipped_count = 0;
 
     for (const auto& report_packet : generation.packets)
     {
         rtcp_report_send_attempts_total_.fetch_add(1, std::memory_order_relaxed);
 
-        auto remote_endpoint = find_remote_endpoint(report_packet.source.remote_endpoint);
+        const current_session_endpoint_state current_session = validate_current_session_endpoint(
+            report_packet.source.remote_endpoint, report_packet.source.session_id, report_packet.source.stream_id, "rtcp active report");
 
+        if (!current_session.allowed)
+        {
+            current_session_gate_skipped_count += 1;
+
+            rtcp_report_service_->forget_source(
+                report_packet.source.session_id, report_packet.source.remote_endpoint, report_packet.source.local_ssrc);
+
+            WEBRTC_LOG_DEBUG("rtcp active report source forgotten by current session gate stream={} session={} remote={} local_ssrc={} reason={}",
+                             report_packet.source.stream_id,
+                             report_packet.source.session_id,
+                             report_packet.source.remote_endpoint,
+                             report_packet.source.local_ssrc,
+                             current_session.reject_reason);
+
+            continue;
+        }
+
+        auto remote_endpoint = find_remote_endpoint(report_packet.source.remote_endpoint);
         if (!remote_endpoint.has_value())
         {
             endpoint_not_found_count += 1;
@@ -3268,6 +3322,26 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
             continue;
         }
 
+        const current_session_endpoint_state send_session = validate_current_session_endpoint(
+            report_packet.source.remote_endpoint, report_packet.source.session_id, report_packet.source.stream_id, "rtcp active report send");
+
+        if (!send_session.allowed)
+        {
+            current_session_gate_skipped_count += 1;
+
+            rtcp_report_service_->forget_source(
+                report_packet.source.session_id, report_packet.source.remote_endpoint, report_packet.source.local_ssrc);
+
+            WEBRTC_LOG_DEBUG("rtcp active report send skipped by current session gate stream={} session={} remote={} local_ssrc={} reason={}",
+                             report_packet.source.stream_id,
+                             report_packet.source.session_id,
+                             report_packet.source.remote_endpoint,
+                             report_packet.source.local_ssrc,
+                             send_session.reject_reason);
+
+            continue;
+        }
+
         WEBRTC_LOG_DEBUG("rtcp active report send stream={} session={} remote={} local_ssrc={} report={} protected_size={}",
                          report_packet.source.stream_id,
                          report_packet.source.session_id,
@@ -3277,7 +3351,6 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
                          protected_packet->protected_packet.size());
 
         send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
-
         sent_count += 1;
 
         rtcp_report_send_success_total_.fetch_add(1, std::memory_order_relaxed);
@@ -3287,42 +3360,51 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
     const bool has_hard_error = generation.failed != 0 || !generation.errors.empty() || endpoint_not_found_count != 0 || protect_failed_count != 0;
 
-    const bool has_soft_event =
-        generation.skipped != 0 || generation.throttled_sources != 0 || generation.stale_sources_expired != 0 || protect_ignored_count != 0;
+    const bool has_soft_event = generation.skipped != 0 || generation.throttled_sources != 0 || generation.stale_sources_expired != 0 ||
+                                protect_ignored_count != 0 || current_session_gate_skipped_count != 0;
 
     if (has_hard_error)
     {
-        WEBRTC_LOG_WARN("rtcp active report generation summary {} sent={} endpoint_not_found={} protect_failed={} protect_ignored={} runtime={}",
-                        rtcp_report_service_generation_to_string(generation),
-                        sent_count,
-                        endpoint_not_found_count,
-                        protect_failed_count,
-                        protect_ignored_count,
-                        rtcp_report_service_runtime_snapshot_to_string(snapshot));
+        WEBRTC_LOG_WARN(
+            "rtcp active report generation summary {} sent={} endpoint_not_found={} protect_failed={} protect_ignored={} "
+            "current_session_gate_skipped={} runtime={} ",
+            rtcp_report_service_generation_to_string(generation),
+            sent_count,
+            endpoint_not_found_count,
+            protect_failed_count,
+            protect_ignored_count,
+            current_session_gate_skipped_count,
+            rtcp_report_service_runtime_snapshot_to_string(snapshot));
 
         return;
     }
 
     if (has_soft_event)
     {
-        WEBRTC_LOG_INFO("rtcp active report generation summary {} sent={} endpoint_not_found={} protect_failed={} protect_ignored={} runtime={}",
-                        rtcp_report_service_generation_to_string(generation),
-                        sent_count,
-                        endpoint_not_found_count,
-                        protect_failed_count,
-                        protect_ignored_count,
-                        rtcp_report_service_runtime_snapshot_to_string(snapshot));
+        WEBRTC_LOG_INFO(
+            "rtcp active report generation summary {} sent={} endpoint_not_found={} protect_failed={} protect_ignored={} "
+            "current_session_gate_skipped={} runtime={}",
+            rtcp_report_service_generation_to_string(generation),
+            sent_count,
+            endpoint_not_found_count,
+            protect_failed_count,
+            protect_ignored_count,
+            current_session_gate_skipped_count,
+            rtcp_report_service_runtime_snapshot_to_string(snapshot));
 
         return;
     }
 
-    WEBRTC_LOG_DEBUG("rtcp active report generation summary {} sent={} endpoint_not_found={} protect_failed={} protect_ignored={} runtime={}",
-                     rtcp_report_service_generation_to_string(generation),
-                     sent_count,
-                     endpoint_not_found_count,
-                     protect_failed_count,
-                     protect_ignored_count,
-                     rtcp_report_service_runtime_snapshot_to_string(snapshot));
+    WEBRTC_LOG_DEBUG(
+        "rtcp active report generation summary {} sent={} endpoint_not_found={} protect_failed={} protect_ignored={}  "
+        "current_session_gate_skipped={} runtime={}",
+        rtcp_report_service_generation_to_string(generation),
+        sent_count,
+        endpoint_not_found_count,
+        protect_failed_count,
+        protect_ignored_count,
+        current_session_gate_skipped_count,
+        rtcp_report_service_runtime_snapshot_to_string(snapshot));
 }
 
 void ice_udp_server::reset_rtcp_report_runtime_counters()
@@ -6810,6 +6892,14 @@ std::optional<std::string> ice_udp_server::find_session_id_by_endpoint(std::stri
 ice_udp_server::current_session_endpoint_state ice_udp_server::find_current_session_endpoint(std::string_view remote_address,
                                                                                              std::string_view packet_kind)
 {
+    return validate_current_session_endpoint(remote_address, "", "", packet_kind);
+}
+
+ice_udp_server::current_session_endpoint_state ice_udp_server::validate_current_session_endpoint(std::string_view remote_address,
+                                                                                                 std::string_view expected_session_id,
+                                                                                                 std::string_view expected_stream_id,
+                                                                                                 std::string_view packet_kind)
+{
     current_session_endpoint_state state;
 
     state.remote_address = std::string(remote_address);
@@ -6821,7 +6911,7 @@ ice_udp_server::current_session_endpoint_state ice_udp_server::find_current_sess
         return state;
     }
 
-    std::string session_id;
+    std::string mapped_session_id;
 
     {
         std::lock_guard lock(endpoint_mutex_);
@@ -6835,10 +6925,17 @@ ice_udp_server::current_session_endpoint_state ice_udp_server::find_current_sess
             return state;
         }
 
-        session_id = iterator->second;
+        mapped_session_id = iterator->second;
     }
 
-    state.session_id = session_id;
+    state.session_id = mapped_session_id;
+
+    if (!expected_session_id.empty() && mapped_session_id != expected_session_id)
+    {
+        state.reject_reason = "endpoint session does not match expected session";
+
+        return state;
+    }
 
     if (registry_ == nullptr)
     {
@@ -6847,36 +6944,46 @@ ice_udp_server::current_session_endpoint_state ice_udp_server::find_current_sess
         return state;
     }
 
-    auto publisher = registry_->find_publisher_by_session_id(session_id);
+    auto publisher = registry_->find_publisher_by_session_id(mapped_session_id);
 
     if (publisher != nullptr)
     {
-        state.allowed = true;
         state.kind = stream_session_kind::publisher;
         state.stream_id = publisher->stream_id();
-
-        return state;
     }
-
-    auto subscriber = registry_->find_subscriber_by_session_id(session_id);
-
-    if (subscriber != nullptr)
+    else
     {
-        state.allowed = true;
-        state.kind = stream_session_kind::subscriber;
-        state.stream_id = subscriber->stream_id();
+        auto subscriber = registry_->find_subscriber_by_session_id(mapped_session_id);
+
+        if (subscriber != nullptr)
+        {
+            state.kind = stream_session_kind::subscriber;
+            state.stream_id = subscriber->stream_id();
+        }
+    }
+
+    if (state.stream_id.empty())
+    {
+        state.stale_endpoint = true;
+        state.reject_reason = "session is missing from registry";
+
+        std::string cleanup_reason(packet_kind);
+
+        cleanup_reason.append(" current session gate");
+
+        cleanup_stale_current_session_endpoint(std::string(remote_address), std::move(mapped_session_id), std::move(cleanup_reason));
 
         return state;
     }
 
-    state.stale_endpoint = true;
-    state.reject_reason = "session is missing from registry";
+    if (!expected_stream_id.empty() && state.stream_id != expected_stream_id)
+    {
+        state.reject_reason = "endpoint stream does not match expected stream";
 
-    std::string cleanup_reason(packet_kind);
+        return state;
+    }
 
-    cleanup_reason.append(" current session gate");
-
-    cleanup_stale_current_session_endpoint(std::string(remote_address), std::move(session_id), std::move(cleanup_reason));
+    state.allowed = true;
 
     return state;
 }
