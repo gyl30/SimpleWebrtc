@@ -158,6 +158,42 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     };
 
    private:
+    struct retired_endpoint_state
+    {
+        uint64_t expires_at_milliseconds = 0;
+        uint64_t suppressed_packets = 0;
+
+        std::string session_id;
+        std::string reason;
+    };
+    struct retired_ice_credential_state
+    {
+        uint64_t expires_at_milliseconds = 0;
+        uint64_t suppressed_stun_packets = 0;
+
+        std::string stream_id;
+        std::string session_id;
+
+        std::string local_ice_ufrag;
+        std::string remote_ice_ufrag;
+
+        std::string reason;
+    };
+
+    struct current_session_endpoint_state
+    {
+        bool allowed = false;
+        bool stale_endpoint = false;
+
+        std::string remote_address;
+        std::string stream_id;
+        std::string session_id;
+        stream_session_kind kind = stream_session_kind::publisher;
+
+        std::string reject_reason;
+    };
+
+   private:
     [[nodiscard]]
     ice_udp_server_result init_dtls_transport();
 
@@ -322,6 +358,10 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void unretire_endpoint(std::string_view remote_address);
 
     [[nodiscard]]
+    current_session_endpoint_state find_current_session_endpoint(std::string_view remote_address, std::string_view packet_kind);
+
+    void cleanup_stale_current_session_endpoint(std::string remote_address, std::string session_id, std::string reason);
+    [[nodiscard]]
     bool retired_endpoint_matches_session(std::string_view remote_address, std::string_view session_id);
     void retire_removed_session_ice_credentials(const stream_removed_session& removed_session, std::string_view reason);
 
@@ -401,27 +441,6 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                           const media_peer_info& target_peer);
 
    private:
-    struct retired_endpoint_state
-    {
-        uint64_t expires_at_milliseconds = 0;
-        uint64_t suppressed_packets = 0;
-
-        std::string session_id;
-        std::string reason;
-    };
-    struct retired_ice_credential_state
-    {
-        uint64_t expires_at_milliseconds = 0;
-        uint64_t suppressed_stun_packets = 0;
-
-        std::string stream_id;
-        std::string session_id;
-
-        std::string local_ice_ufrag;
-        std::string remote_ice_ufrag;
-
-        std::string reason;
-    };
     boost::asio::io_context& io_context_;
 
     udp::socket socket_;

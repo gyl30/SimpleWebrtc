@@ -3652,14 +3652,20 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
 
-    if (!is_selected_endpoint(remote_address))
+    const current_session_endpoint_state current_session = find_current_session_endpoint(remote_address, "dtls");
+
+    if (!current_session.allowed)
     {
-        WEBRTC_LOG_DEBUG("dtls packet ignored from unselected ice endpoint remote={} size={}", remote_address, data.size());
+        WEBRTC_LOG_DEBUG("dtls packet ignored by current session gate remote={} session={} size={} reason={}",
+                         remote_address,
+                         current_session.session_id,
+                         data.size(),
+                         current_session.reject_reason);
 
         return;
     }
-    touch_endpoint_activity(remote_endpoint);
 
+    touch_endpoint_activity(remote_endpoint);
     if (dtls_transport_ == nullptr)
     {
         WEBRTC_LOG_WARN("dtls transport is null remote={} size={}", remote_address, data.size());
@@ -3847,12 +3853,20 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
 void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
-    if (!is_selected_endpoint(remote_address))
+
+    const current_session_endpoint_state current_session = find_current_session_endpoint(remote_address, "srtp");
+
+    if (!current_session.allowed)
     {
-        WEBRTC_LOG_DEBUG("srtp packet ignored from unselected ice endpoint remote={} size={}", remote_address, data.size());
+        WEBRTC_LOG_DEBUG("srtp packet ignored by current session gate remote={} session={} size={} reason={}",
+                         remote_address,
+                         current_session.session_id,
+                         data.size(),
+                         current_session.reject_reason);
 
         return;
     }
+
     touch_endpoint_activity(remote_endpoint);
 
     if (srtp_transport_ == nullptr)
@@ -6255,6 +6269,44 @@ void ice_udp_server::erase_endpoint_indexes_for_remote_locked(std::string_view r
     erase_candidate_pairs_for_endpoint_locked(remote_key);
 }
 
+void ice_udp_server::cleanup_stale_current_session_endpoint(std::string remote_address, std::string session_id, std::string reason)
+{
+    if (remote_address.empty())
+    {
+        return;
+    }
+
+    bool had_endpoint_index = false;
+    std::size_t orphan_endpoint_indexes_erased = 0;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        had_endpoint_index = endpoints_by_address_.contains(remote_address) || session_id_by_endpoint_address_.contains(remote_address) ||
+                             endpoint_last_seen_milliseconds_by_address_.contains(remote_address);
+
+        if (!session_id.empty())
+        {
+            had_endpoint_index = had_endpoint_index || endpoint_address_by_session_id_.contains(session_id);
+        }
+
+        erase_endpoint_indexes_for_remote_locked(remote_address);
+
+        retire_endpoint_locked(remote_address, session_id, now_milliseconds(), reason);
+
+        orphan_endpoint_indexes_erased = erase_orphan_endpoint_indexes_locked();
+    }
+
+    forget_peer_transport_state(remote_address);
+
+    WEBRTC_LOG_INFO("ice udp current session gate cleanup remote={} session={} reason={} had_endpoint_index={} orphan_endpoint_indexes_erased={}",
+                    remote_address,
+                    session_id,
+                    reason,
+                    had_endpoint_index ? 1 : 0,
+                    orphan_endpoint_indexes_erased);
+}
+
 void ice_udp_server::retire_endpoint_locked(std::string_view remote_address,
                                             std::string_view session_id,
                                             uint64_t current_time_milliseconds,
@@ -6754,6 +6806,81 @@ std::optional<std::string> ice_udp_server::find_session_id_by_endpoint(std::stri
 
     return iterator->second;
 }
+
+ice_udp_server::current_session_endpoint_state ice_udp_server::find_current_session_endpoint(std::string_view remote_address,
+                                                                                             std::string_view packet_kind)
+{
+    current_session_endpoint_state state;
+
+    state.remote_address = std::string(remote_address);
+
+    if (remote_address.empty())
+    {
+        state.reject_reason = "remote endpoint is empty";
+
+        return state;
+    }
+
+    std::string session_id;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        const auto iterator = session_id_by_endpoint_address_.find(std::string(remote_address));
+
+        if (iterator == session_id_by_endpoint_address_.end())
+        {
+            state.reject_reason = "endpoint is not selected";
+
+            return state;
+        }
+
+        session_id = iterator->second;
+    }
+
+    state.session_id = session_id;
+
+    if (registry_ == nullptr)
+    {
+        state.reject_reason = "registry is unavailable";
+
+        return state;
+    }
+
+    auto publisher = registry_->find_publisher_by_session_id(session_id);
+
+    if (publisher != nullptr)
+    {
+        state.allowed = true;
+        state.kind = stream_session_kind::publisher;
+        state.stream_id = publisher->stream_id();
+
+        return state;
+    }
+
+    auto subscriber = registry_->find_subscriber_by_session_id(session_id);
+
+    if (subscriber != nullptr)
+    {
+        state.allowed = true;
+        state.kind = stream_session_kind::subscriber;
+        state.stream_id = subscriber->stream_id();
+
+        return state;
+    }
+
+    state.stale_endpoint = true;
+    state.reject_reason = "session is missing from registry";
+
+    std::string cleanup_reason(packet_kind);
+
+    cleanup_reason.append(" current session gate");
+
+    cleanup_stale_current_session_endpoint(std::string(remote_address), std::move(session_id), std::move(cleanup_reason));
+
+    return state;
+}
+
 std::optional<ice_udp_server::udp::endpoint> ice_udp_server::find_remote_endpoint(std::string_view remote_address) const
 {
     std::lock_guard lock(endpoint_mutex_);
