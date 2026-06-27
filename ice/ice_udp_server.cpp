@@ -2933,6 +2933,16 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
     if (generation.packets.empty())
     {
         const rtcp_report_service_runtime_snapshot snapshot = rtcp_report_runtime_snapshot();
+        if (generation.stale_sources_expired != 0)
+        {
+            last_empty_rtcp_report_log_milliseconds_ = current_time_milliseconds;
+
+            WEBRTC_LOG_INFO("rtcp active report stale cleanup {} runtime={}",
+                            rtcp_report_service_generation_to_string(generation),
+                            rtcp_report_service_runtime_snapshot_to_string(snapshot));
+
+            return;
+        }
 
         if (should_log_empty_rtcp_generation(generation, current_time_milliseconds, last_empty_rtcp_report_log_milliseconds_))
         {
@@ -3033,7 +3043,8 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
     const bool has_hard_error = generation.failed != 0 || !generation.errors.empty() || endpoint_not_found_count != 0 || protect_failed_count != 0;
 
-    const bool has_soft_event = generation.skipped != 0 || generation.throttled_sources != 0 || protect_ignored_count != 0;
+    const bool has_soft_event =
+        generation.skipped != 0 || generation.throttled_sources != 0 || generation.stale_sources_expired != 0 || protect_ignored_count != 0;
 
     if (has_hard_error)
     {

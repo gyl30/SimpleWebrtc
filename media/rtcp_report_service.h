@@ -111,6 +111,8 @@ struct rtcp_report_service_generation
 
     std::size_t due_sources = 0;
     std::size_t throttled_sources = 0;
+
+    std::size_t stale_sources_expired = 0;
 };
 
 struct rtcp_report_service_rtcp_observation

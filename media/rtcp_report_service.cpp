@@ -309,9 +309,7 @@ rtcp_report_service_generation rtcp_report_service::generate_reports(uint64_t no
 
     {
         std::lock_guard lock(mutex_);
-
-        const std::size_t expired_sources = expire_stale_sources_locked(now_milliseconds);
-        (void)expired_sources;
+        generation.stale_sources_expired = expire_stale_sources_locked(now_milliseconds);
 
         pending_sources.reserve(sources_by_key_.size());
 
@@ -1032,6 +1030,8 @@ std::string rtcp_report_service_generation_to_string(const rtcp_report_service_g
     result.append(" throttled_sources=");
     result.append(std::to_string(generation.throttled_sources));
 
+    result.append(" stale_sources_expired=");
+    result.append(std::to_string(generation.stale_sources_expired));
     return result;
 }
 
