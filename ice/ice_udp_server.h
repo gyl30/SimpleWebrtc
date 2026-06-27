@@ -108,6 +108,22 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void log_lifecycle_snapshot(std::string_view reason, std::string_view stream_id, std::string_view session_id) const;
 
+    void schedule_lifecycle_convergence_checks(std::string reason, std::string stream_id, std::string session_id);
+
+    void schedule_lifecycle_convergence_check(std::string reason,
+                                              std::string stream_id,
+                                              std::string session_id,
+                                              uint64_t delay_milliseconds,
+                                              bool require_retired_endpoints_empty,
+                                              uint64_t generation);
+
+    void log_lifecycle_convergence_check(std::string_view reason,
+                                         std::string_view stream_id,
+                                         std::string_view session_id,
+                                         uint64_t delay_milliseconds,
+                                         bool require_retired_endpoints_empty,
+                                         uint64_t generation);
+
    private:
     using udp = boost::asio::ip::udp;
 
@@ -466,6 +482,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::atomic<uint64_t> rtcp_report_protect_failed_total_{0};
 
     std::atomic<uint64_t> rtcp_report_protect_ignored_total_{0};
+    std::atomic<uint64_t> lifecycle_convergence_check_generation_{0};
 };
 }    // namespace webrtc
 

@@ -71,6 +71,9 @@ constexpr auto k_endpoint_idle_cleanup_interval = std::chrono::seconds(5);
 
 constexpr uint64_t k_retired_endpoint_retention_milliseconds = 15000;
 
+constexpr uint64_t k_lifecycle_fast_convergence_check_delay_milliseconds = 3000;
+constexpr uint64_t k_lifecycle_final_convergence_check_delay_milliseconds = k_retired_endpoint_retention_milliseconds + 1000;
+
 constexpr uint64_t k_default_endpoint_idle_timeout_milliseconds = 120000;
 
 constexpr std::size_t k_max_nack_retransmit_sequences = 128;
@@ -1339,6 +1342,7 @@ void ice_udp_server::stop()
 
         registry_callback_registered_ = false;
     }
+    lifecycle_convergence_check_generation_.fetch_add(1, std::memory_order_relaxed);
 
     dtls_timeout_timer_.cancel();
 
@@ -2156,13 +2160,20 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
     return snapshot;
 }
+
 void ice_udp_server::schedule_lifecycle_snapshot_log(std::string reason, std::string stream_id, std::string session_id)
 {
+    std::string convergence_reason = reason;
+    std::string convergence_stream_id = stream_id;
+    std::string convergence_session_id = session_id;
+
     auto self = shared_from_this();
 
     boost::asio::post(io_context_,
                       [self, reason = std::move(reason), stream_id = std::move(stream_id), session_id = std::move(session_id)]()
                       { self->log_lifecycle_snapshot(reason, stream_id, session_id); });
+
+    schedule_lifecycle_convergence_checks(std::move(convergence_reason), std::move(convergence_stream_id), std::move(convergence_session_id));
 }
 
 void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string_view stream_id, std::string_view session_id) const
@@ -2230,6 +2241,175 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
         snapshot.rtp_cache_packet_count,
         snapshot.idle_clean ? 1 : 0,
         snapshot.consistent ? 1 : 0);
+}
+void ice_udp_server::schedule_lifecycle_convergence_checks(std::string reason, std::string stream_id, std::string session_id)
+{
+    const uint64_t generation = lifecycle_convergence_check_generation_.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    schedule_lifecycle_convergence_check(reason, stream_id, session_id, k_lifecycle_fast_convergence_check_delay_milliseconds, false, generation);
+
+    schedule_lifecycle_convergence_check(
+        std::move(reason), std::move(stream_id), std::move(session_id), k_lifecycle_final_convergence_check_delay_milliseconds, true, generation);
+}
+
+void ice_udp_server::schedule_lifecycle_convergence_check(std::string reason,
+                                                          std::string stream_id,
+                                                          std::string session_id,
+                                                          uint64_t delay_milliseconds,
+                                                          bool require_retired_endpoints_empty,
+                                                          uint64_t generation)
+{
+    auto timer = std::make_shared<boost::asio::steady_timer>(io_context_);
+
+    timer->expires_after(std::chrono::milliseconds(delay_milliseconds));
+
+    auto self = shared_from_this();
+
+    timer->async_wait(
+        [self,
+         timer,
+         reason = std::move(reason),
+         stream_id = std::move(stream_id),
+         session_id = std::move(session_id),
+         delay_milliseconds,
+         require_retired_endpoints_empty,
+         generation](const boost::system::error_code& error)
+        {
+            (void)timer;
+
+            if (error)
+            {
+                return;
+            }
+
+            const uint64_t current_generation = self->lifecycle_convergence_check_generation_.load(std::memory_order_relaxed);
+
+            if (current_generation != generation)
+            {
+                return;
+            }
+
+            self->log_lifecycle_convergence_check(reason, stream_id, session_id, delay_milliseconds, require_retired_endpoints_empty, generation);
+        });
+}
+
+void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
+                                                     std::string_view stream_id,
+                                                     std::string_view session_id,
+                                                     uint64_t delay_milliseconds,
+                                                     bool require_retired_endpoints_empty,
+                                                     uint64_t generation)
+{
+    std::size_t retired_endpoint_count = 0;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        const std::size_t expired_retired_endpoint_count = expire_retired_endpoints_locked(now_milliseconds());
+
+        if (expired_retired_endpoint_count != 0)
+        {
+            WEBRTC_LOG_INFO("ice udp retired endpoints expired during lifecycle convergence check count={}", expired_retired_endpoint_count);
+        }
+
+        retired_endpoint_count = retired_endpoints_by_address_.size();
+    }
+
+    const lifecycle_debug_snapshot snapshot = debug_state_snapshot();
+
+    if (snapshot.registry_session_count != 0)
+    {
+        WEBRTC_LOG_DEBUG(
+            "lifecycle convergence waiting generation={} delay_ms={} reason={} stream={} session={} registry_sessions={} registry_publishers={} "
+            "registry_subscribers={} endpoints={} dtls_peers={} srtp_peers={} media_router_peers={} media_router_streams={} retired_endpoints={}",
+            generation,
+            delay_milliseconds,
+            reason,
+            stream_id,
+            session_id,
+            snapshot.registry_session_count,
+            snapshot.registry_publisher_count,
+            snapshot.registry_subscriber_count,
+            snapshot.endpoint_count,
+            snapshot.dtls_peer_count,
+            snapshot.srtp_peer_count,
+            snapshot.media_router_peer_count,
+            snapshot.media_router_stream_count,
+            retired_endpoint_count);
+
+        return;
+    }
+
+    const bool retired_endpoints_clean = !require_retired_endpoints_empty || retired_endpoint_count == 0;
+
+    if (snapshot.idle_clean && snapshot.consistent && retired_endpoints_clean)
+    {
+        WEBRTC_LOG_INFO(
+            "lifecycle convergence clean generation={} delay_ms={} reason={} stream={} session={} endpoints={} endpoint_index={} "
+            "endpoint_reverse_index={} endpoint_last_seen={} candidate_pairs={} selected_candidate_pairs={} dtls_peers={} srtp_peers={} "
+            "media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} payload_type_mappings={} keyframe_states={} "
+            "rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} retired_endpoints={} idle_clean={} consistent={}",
+            generation,
+            delay_milliseconds,
+            reason,
+            stream_id,
+            session_id,
+            snapshot.endpoint_count,
+            snapshot.endpoint_session_index_count,
+            snapshot.endpoint_reverse_index_count,
+            snapshot.endpoint_last_seen_count,
+            snapshot.candidate_pair_count,
+            snapshot.selected_candidate_pair_count,
+            snapshot.dtls_peer_count,
+            snapshot.srtp_peer_count,
+            snapshot.media_router_peer_count,
+            snapshot.media_router_stream_count,
+            snapshot.track_binding_count,
+            snapshot.ssrc_mapping_count,
+            snapshot.payload_type_mapping_count,
+            snapshot.keyframe_request_state_count,
+            snapshot.rtcp_report_source_count,
+            snapshot.rtcp_report_stats_source_count,
+            snapshot.rtp_cache_packet_count,
+            retired_endpoint_count,
+            snapshot.idle_clean ? 1 : 0,
+            snapshot.consistent ? 1 : 0);
+
+        return;
+    }
+
+    WEBRTC_LOG_WARN(
+        "lifecycle convergence residual generation={} delay_ms={} reason={} stream={} session={} endpoints={} endpoint_index={} "
+        "endpoint_reverse_index={} endpoint_last_seen={} candidate_pairs={} selected_candidate_pairs={} dtls_peers={} srtp_peers={} "
+        "media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} payload_type_mappings={} keyframe_states={} "
+        "rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} retired_endpoints={} idle_clean={} consistent={} "
+        "inconsistencies={}",
+        generation,
+        delay_milliseconds,
+        reason,
+        stream_id,
+        session_id,
+        snapshot.endpoint_count,
+        snapshot.endpoint_session_index_count,
+        snapshot.endpoint_reverse_index_count,
+        snapshot.endpoint_last_seen_count,
+        snapshot.candidate_pair_count,
+        snapshot.selected_candidate_pair_count,
+        snapshot.dtls_peer_count,
+        snapshot.srtp_peer_count,
+        snapshot.media_router_peer_count,
+        snapshot.media_router_stream_count,
+        snapshot.track_binding_count,
+        snapshot.ssrc_mapping_count,
+        snapshot.payload_type_mapping_count,
+        snapshot.keyframe_request_state_count,
+        snapshot.rtcp_report_source_count,
+        snapshot.rtcp_report_stats_source_count,
+        snapshot.rtp_cache_packet_count,
+        retired_endpoint_count,
+        snapshot.idle_clean ? 1 : 0,
+        snapshot.consistent ? 1 : 0,
+        snapshot.inconsistency_count);
 }
 
 ice_udp_server_result ice_udp_server::init_dtls_transport()
