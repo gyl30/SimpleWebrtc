@@ -106,13 +106,19 @@ const sdp::media_summary* find_unique_media_by_payload_type(const sdp::webrtc_of
 
     return matched_media;
 }
-const sdp::media_summary* find_single_active_media(const sdp::webrtc_offer_summary& offer)
+
+const sdp::media_summary* find_single_active_media_with_payload_type(const sdp::webrtc_offer_summary& offer, uint8_t payload_type)
 {
     const sdp::media_summary* selected_media = nullptr;
 
     for (const auto& media : offer.media)
     {
         if (!is_active_media(media))
+        {
+            continue;
+        }
+
+        if (!media_has_payload_type(media, payload_type))
         {
             continue;
         }
@@ -197,6 +203,16 @@ std::expected<media_extension_match, std::string> find_media_by_mid_extension(st
 {
     for (const auto& media : offer.media)
     {
+        if (!is_active_media(media))
+        {
+            continue;
+        }
+
+        if (!media_has_payload_type(media, header.payload_type))
+        {
+            continue;
+        }
+
         auto mid = extract_mid_for_media(packet, header, media);
 
         if (!mid.has_value())
@@ -210,7 +226,6 @@ std::expected<media_extension_match, std::string> find_media_by_mid_extension(st
         }
 
         auto values = parse_rtp_header_extension_values(packet, header, media);
-
         if (!values)
         {
             return std::unexpected(values.error());
@@ -336,12 +351,11 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
         {
             const sdp::media_summary* media = find_media_by_mid(offer, binding->mid);
 
-            if (media != nullptr)
+            if (media != nullptr && is_active_media(*media) && media_has_payload_type(*media, header->payload_type))
             {
                 const rtp_header_extension_values values = parse_optional_extension_values(plain_packet, *header, *media);
 
                 resolution.state = media_track_resolution_state::resolved_by_ssrc;
-
                 resolution.resolved = true;
                 resolution.newly_bound = false;
 
@@ -467,7 +481,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
         return resolution;
     }
-    const sdp::media_summary* single_media = find_single_active_media(offer);
+    const sdp::media_summary* single_media = find_single_active_media_with_payload_type(offer, header->payload_type);
 
     if (single_media != nullptr)
     {
