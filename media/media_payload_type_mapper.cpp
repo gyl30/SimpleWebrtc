@@ -88,6 +88,50 @@ bool media_can_receive(const sdp::media_summary& media)
            media.direction == sdp::media_direction::unknown;
 }
 
+std::size_t count_send_capable_media_by_kind(const sdp::webrtc_offer_summary& offer, std::string_view kind)
+{
+    std::size_t count = 0;
+
+    for (const auto& media : offer.media)
+    {
+        if (media.kind != kind)
+        {
+            continue;
+        }
+
+        if (!media_can_send(media))
+        {
+            continue;
+        }
+
+        count += 1;
+    }
+
+    return count;
+}
+
+std::size_t count_receive_capable_media_by_kind(const sdp::webrtc_offer_summary& offer, std::string_view kind)
+{
+    std::size_t count = 0;
+
+    for (const auto& media : offer.media)
+    {
+        if (media.kind != kind)
+        {
+            continue;
+        }
+
+        if (!media_can_receive(media))
+        {
+            continue;
+        }
+
+        count += 1;
+    }
+
+    return count;
+}
+
 std::optional<std::string> find_fmtp_parameter(std::string_view fmtp, std::string_view key)
 {
     std::size_t start = 0;
@@ -186,7 +230,9 @@ bool codecs_are_compatible(const sdp::codec_info& publisher_codec, const sdp::co
     return true;
 }
 
-const sdp::media_summary* find_matching_subscriber_media(const sdp::media_summary& publisher_media, const sdp::webrtc_offer_summary& subscriber_offer)
+const sdp::media_summary* find_matching_subscriber_media(const sdp::media_summary& publisher_media,
+                                                         const sdp::webrtc_offer_summary& publisher_offer,
+                                                         const sdp::webrtc_offer_summary& subscriber_offer)
 {
     for (const auto& subscriber_media : subscriber_offer.media)
     {
@@ -196,7 +242,14 @@ const sdp::media_summary* find_matching_subscriber_media(const sdp::media_summar
         }
     }
 
-    const sdp::media_summary* selected_media = nullptr;
+    const std::size_t publisher_kind_count = count_send_capable_media_by_kind(publisher_offer, publisher_media.kind);
+
+    const std::size_t subscriber_kind_count = count_receive_capable_media_by_kind(subscriber_offer, publisher_media.kind);
+
+    if (publisher_kind_count != 1 || subscriber_kind_count != 1)
+    {
+        return nullptr;
+    }
 
     for (const auto& subscriber_media : subscriber_offer.media)
     {
@@ -210,15 +263,10 @@ const sdp::media_summary* find_matching_subscriber_media(const sdp::media_summar
             continue;
         }
 
-        if (selected_media != nullptr)
-        {
-            return nullptr;
-        }
-
-        selected_media = &subscriber_media;
+        return &subscriber_media;
     }
 
-    return selected_media;
+    return nullptr;
 }
 
 std::optional<sdp::codec_info> find_compatible_subscriber_codec(const sdp::media_summary& subscriber_media, const sdp::codec_info& publisher_codec)
@@ -324,8 +372,7 @@ media_payload_type_mapping_table_result build_media_payload_type_mapping_table(s
             continue;
         }
 
-        const sdp::media_summary* subscriber_media = find_matching_subscriber_media(publisher_media, subscriber_offer);
-
+        const sdp::media_summary* subscriber_media = find_matching_subscriber_media(publisher_media, publisher_offer, subscriber_offer);
         if (subscriber_media == nullptr)
         {
             continue;

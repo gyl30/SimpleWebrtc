@@ -475,8 +475,63 @@ bool media_can_send(const media_summary& media)
     return media.direction == media_direction::send_only || media.direction == media_direction::send_recv;
 }
 
-const media_summary* find_matching_publisher_media(const media_summary& subscriber_media, const webrtc_offer_summary& publisher_offer)
+bool media_can_receive(const media_summary& media)
 {
+    return media.direction == media_direction::recv_only || media.direction == media_direction::send_recv;
+}
+
+std::size_t count_send_capable_media_by_kind(const webrtc_offer_summary& offer, std::string_view kind)
+{
+    std::size_t count = 0;
+
+    for (const auto& media : offer.media)
+    {
+        if (media.kind != kind)
+        {
+            continue;
+        }
+
+        if (!media_can_send(media))
+        {
+            continue;
+        }
+
+        count += 1;
+    }
+
+    return count;
+}
+
+std::size_t count_receive_capable_media_by_kind(const webrtc_offer_summary& offer, std::string_view kind)
+{
+    std::size_t count = 0;
+
+    for (const auto& media : offer.media)
+    {
+        if (media.kind != kind)
+        {
+            continue;
+        }
+
+        if (!media_can_receive(media))
+        {
+            continue;
+        }
+
+        count += 1;
+    }
+
+    return count;
+}
+const media_summary* find_matching_publisher_media(const media_summary& subscriber_media,
+                                                   const webrtc_offer_summary& subscriber_offer,
+                                                   const webrtc_offer_summary& publisher_offer)
+{
+    if (!media_can_receive(subscriber_media))
+    {
+        return nullptr;
+    }
+
     for (const auto& publisher_media : publisher_offer.media)
     {
         if (publisher_media.mid == subscriber_media.mid && publisher_media.kind == subscriber_media.kind && media_can_send(publisher_media))
@@ -485,7 +540,14 @@ const media_summary* find_matching_publisher_media(const media_summary& subscrib
         }
     }
 
-    const media_summary* selected_media = nullptr;
+    const std::size_t publisher_kind_count = count_send_capable_media_by_kind(publisher_offer, subscriber_media.kind);
+
+    const std::size_t subscriber_kind_count = count_receive_capable_media_by_kind(subscriber_offer, subscriber_media.kind);
+
+    if (publisher_kind_count != 1 || subscriber_kind_count != 1)
+    {
+        return nullptr;
+    }
 
     for (const auto& publisher_media : publisher_offer.media)
     {
@@ -499,15 +561,10 @@ const media_summary* find_matching_publisher_media(const media_summary& subscrib
             continue;
         }
 
-        if (selected_media != nullptr)
-        {
-            return nullptr;
-        }
-
-        selected_media = &publisher_media;
+        return &publisher_media;
     }
 
-    return selected_media;
+    return nullptr;
 }
 
 bool is_answer_media_rejected(const media_description& media) { return media.media_name.port.value == 0; }
@@ -733,21 +790,24 @@ std::expected<media_description, std::string> make_rejected_answer_media(const s
 std::expected<media_description, std::string> make_answer_media(answer_endpoint_role role,
                                                                 const sdp_answer_options& options,
                                                                 const media_summary& media,
+                                                                const webrtc_offer_summary* whep_subscriber_offer,
                                                                 const webrtc_offer_summary* whep_publisher_offer)
 {
     std::vector<codec_info> codecs;
 
     if (role == answer_endpoint_role::whep && whep_publisher_offer != nullptr)
     {
-        const media_summary* publisher_media = find_matching_publisher_media(media, *whep_publisher_offer);
-
+        if (whep_subscriber_offer == nullptr)
+        {
+            return make_rejected_answer_media(options, media);
+        }
+        const media_summary* publisher_media = find_matching_publisher_media(media, *whep_subscriber_offer, *whep_publisher_offer);
         if (publisher_media == nullptr)
         {
             return make_rejected_answer_media(options, media);
         }
 
         auto codec_result = negotiate_codecs(media, *publisher_media);
-
         if (!codec_result)
         {
             return make_rejected_answer_media(options, media);
@@ -825,8 +885,7 @@ validation_result append_answer_media_descriptions(session_description& answer,
 
     for (const auto& media : offer.media)
     {
-        auto answer_media = make_answer_media(role, options, media, whep_publisher_offer);
-
+        auto answer_media = make_answer_media(role, options, media, &offer, whep_publisher_offer);
         if (!answer_media)
         {
             return std::unexpected(answer_media.error());
