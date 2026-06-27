@@ -130,6 +130,20 @@ void fill_rtcp_fields_from_compound(const rtcp_compound_packet& compound, srtp_p
     result.rtcp_fir_count = compound.fir_count;
     result.rtcp_nack_items = compound.nack_items;
     result.rtcp_fir_items = compound.fir_items;
+
+    result.rtcp_feedback_blocks.clear();
+    result.rtcp_feedback_blocks.reserve(compound.feedback_block_count);
+
+    for (const auto& block : compound.blocks)
+    {
+        if (!block.is_feedback)
+        {
+            continue;
+        }
+
+        result.rtcp_feedback_blocks.push_back(block);
+    }
+
     result.rtcp_has_generic_nack = compound.has_generic_nack;
     result.rtcp_has_keyframe_request = compound.has_keyframe_request;
     result.rtcp_has_transport_cc = compound.has_transport_cc;

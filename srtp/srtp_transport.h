@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "rtp/rtcp_compound_packet.h"
 #include "dtls/dtls_transport.h"
 #include "rtp/rtcp_feedback.h"
 #include "rtp/rtcp_report.h"
@@ -53,6 +54,8 @@ struct srtp_packet_process_result
 
     std::size_t rtcp_block_count = 0;
     std::size_t rtcp_feedback_block_count = 0;
+
+    std::vector<rtcp_compound_block> rtcp_feedback_blocks;
 
     bool rtcp_is_feedback = false;
     uint8_t rtcp_feedback_format = 0;

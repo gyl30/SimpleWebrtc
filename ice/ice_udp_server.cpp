@@ -3209,16 +3209,34 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
         return;
     }
 
-    const auto feedback_event = make_rtcp_feedback_route_event(*result, route);
+    const std::vector<rtcp_feedback_route_event> feedback_events = make_rtcp_feedback_route_events(*result, route);
 
-    if (feedback_event.has_value())
+    std::optional<rtcp_feedback_route_event> feedback_event_for_forward;
+
+    for (const auto& feedback_event : feedback_events)
     {
-        log_rtcp_feedback_route_event(*feedback_event);
+        log_rtcp_feedback_route_event(feedback_event);
 
-        handle_rtcp_feedback_event(*feedback_event);
+        handle_rtcp_feedback_event(feedback_event);
     }
 
-    forward_media_packet(*result, route, track_resolution, feedback_event);
+    if (feedback_events.size() == 1)
+    {
+        feedback_event_for_forward = feedback_events.front();
+    }
+
+    if (result->kind == srtp_packet_kind::rtcp && result->rtcp_is_feedback && feedback_events.size() > 1)
+    {
+        WEBRTC_LOG_WARN("rtcp compound feedback forwarding skipped until block rewrite stream={} session={} remote={} feedback_blocks={}",
+                        route.source.stream_id,
+                        route.source.session_id,
+                        route.source.remote_endpoint,
+                        feedback_events.size());
+
+        return;
+    }
+
+    forward_media_packet(*result, route, track_resolution, feedback_event_for_forward);
 }
 
 std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const media_peer_info& peer, const srtp_packet_process_result& packet)

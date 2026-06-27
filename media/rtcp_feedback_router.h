@@ -7,9 +7,10 @@
 #include <string>
 #include <vector>
 
-#include "media/media_router.h"
 #include "rtp/rtcp_feedback.h"
+#include "media/media_router.h"
 #include "srtp/srtp_transport.h"
+#include "rtp/rtcp_compound_packet.h"
 
 namespace webrtc
 {
@@ -57,6 +58,12 @@ struct rtcp_feedback_route_event
 
 [[nodiscard]] std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const srtp_packet_process_result& packet,
                                                                                       const media_route_result& route);
+
+[[nodiscard]] std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const rtcp_compound_block& block,
+                                                                                      const media_route_result& route);
+
+[[nodiscard]] std::vector<rtcp_feedback_route_event> make_rtcp_feedback_route_events(const srtp_packet_process_result& packet,
+                                                                                     const media_route_result& route);
 
 [[nodiscard]] std::string rtcp_feedback_event_type_to_string(rtcp_feedback_event_type event_type);
 }    // namespace webrtc
