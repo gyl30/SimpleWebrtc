@@ -85,6 +85,8 @@ class media_track_resolver
 
     void forget_session(std::string_view session_id);
 
+    void forget_stream(std::string_view stream_id);
+
     [[nodiscard]]
     std::size_t binding_count() const;
 

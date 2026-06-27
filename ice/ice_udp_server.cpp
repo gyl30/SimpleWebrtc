@@ -2343,7 +2343,7 @@ void ice_udp_server::register_session_removed_callback()
 
             if (removed_session.kind == stream_session_kind::publisher)
             {
-                self->erase_rtp_cache(removed_session.stream_id);
+                self->cleanup_stream_runtime_state(removed_session.stream_id);
             }
         });
 
@@ -4920,7 +4920,9 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         failed_count);
 }
 
-void ice_udp_server::erase_rtp_cache(std::string_view stream_id)
+void ice_udp_server::erase_rtp_cache(std::string_view stream_id) { cleanup_stream_runtime_state(stream_id); }
+
+void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
 {
     if (stream_id.empty())
     {
@@ -4944,33 +4946,35 @@ void ice_udp_server::erase_rtp_cache(std::string_view stream_id)
         rtcp_report_service_->forget_stream(stream_id);
     }
 
+    if (ssrc_mapper_ != nullptr)
+    {
+        ssrc_mapper_->forget_stream(stream_id);
+    }
+
+    if (track_resolver_ != nullptr)
+    {
+        track_resolver_->forget_stream(stream_id);
+    }
+
+    std::size_t erased_payload_type_mappings = 0;
     std::size_t erased_keyframe_request_states = 0;
 
     {
         std::lock_guard lock(endpoint_mutex_);
 
-        const std::string prefix = std::string(stream_id) + "|";
+        erased_payload_type_mappings = erase_payload_type_mappings_for_stream_locked(stream_id);
 
-        for (auto iterator = keyframe_request_last_time_milliseconds_by_key_.begin();
-             iterator != keyframe_request_last_time_milliseconds_by_key_.end();)
-        {
-            if (iterator->first.starts_with(prefix))
-            {
-                iterator = keyframe_request_last_time_milliseconds_by_key_.erase(iterator);
-
-                erased_keyframe_request_states += 1;
-            }
-            else
-            {
-                ++iterator;
-            }
-        }
+        erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
     }
-    WEBRTC_LOG_INFO("rtp cache stream cleanup stream={} cache_erased={} remaining={} keyframe_request_states_erased={}",
-                    stream_id,
-                    cache_erased ? 1 : 0,
-                    remaining_packets,
-                    erased_keyframe_request_states);
+
+    WEBRTC_LOG_INFO(
+        "ice udp stream runtime state cleanup stream={} cache_erased={} remaining_cache_packets={} payload_type_mappings_erased={} "
+        "keyframe_request_states_erased={}",
+        stream_id,
+        cache_erased ? 1 : 0,
+        remaining_packets,
+        erased_payload_type_mappings,
+        erased_keyframe_request_states);
 }
 
 void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet,
@@ -5527,6 +5531,32 @@ void ice_udp_server::erase_payload_type_mappings_for_session_locked(std::string_
     }
 }
 
+std::size_t ice_udp_server::erase_payload_type_mappings_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = payload_type_mappings_by_key_.begin(); iterator != payload_type_mappings_by_key_.end();)
+    {
+        if (iterator->second.stream_id == stream_id)
+        {
+            iterator = payload_type_mappings_by_key_.erase(iterator);
+
+            erased_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
+}
+
 std::size_t ice_udp_server::erase_keyframe_request_states_for_session_locked(std::string_view session_id)
 {
     if (session_id.empty())
@@ -5539,6 +5569,34 @@ std::size_t ice_udp_server::erase_keyframe_request_states_for_session_locked(std
     for (auto iterator = keyframe_request_last_time_milliseconds_by_key_.begin(); iterator != keyframe_request_last_time_milliseconds_by_key_.end();)
     {
         if (keyframe_request_key_matches_session(iterator->first, session_id))
+        {
+            iterator = keyframe_request_last_time_milliseconds_by_key_.erase(iterator);
+
+            erased_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
+}
+
+std::size_t ice_udp_server::erase_keyframe_request_states_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    const std::string prefix = std::string(stream_id) + "|";
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = keyframe_request_last_time_milliseconds_by_key_.begin(); iterator != keyframe_request_last_time_milliseconds_by_key_.end();)
+    {
+        if (iterator->first.starts_with(prefix))
         {
             iterator = keyframe_request_last_time_milliseconds_by_key_.erase(iterator);
 

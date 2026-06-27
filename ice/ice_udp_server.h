@@ -226,6 +226,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void erase_rtp_cache(std::string_view stream_id);
 
+    void cleanup_stream_runtime_state(std::string_view stream_id);
+
     void forward_media_packet(const srtp_packet_process_result& packet,
                               const media_route_result& route,
                               const std::optional<media_track_resolution>& track_resolution,
@@ -290,6 +292,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     std::size_t erase_keyframe_request_states_for_session_locked(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_payload_type_mappings_for_stream_locked(std::string_view stream_id);
+
+    [[nodiscard]]
+    std::size_t erase_keyframe_request_states_for_stream_locked(std::string_view stream_id);
 
     [[nodiscard]]
     std::optional<udp::endpoint> find_remote_endpoint(std::string_view remote_address) const;

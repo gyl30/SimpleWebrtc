@@ -581,6 +581,28 @@ void media_track_resolver::forget_session(std::string_view session_id)
     }
 }
 
+void media_track_resolver::forget_stream(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (auto iterator = bindings_by_peer_ssrc_.begin(); iterator != bindings_by_peer_ssrc_.end();)
+    {
+        if (iterator->second.stream_id == stream_id)
+        {
+            iterator = bindings_by_peer_ssrc_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
 std::size_t media_track_resolver::binding_count() const
 {
     std::lock_guard lock(mutex_);
