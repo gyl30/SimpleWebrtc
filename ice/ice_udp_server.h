@@ -317,6 +317,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void send_dtls_close_notify(std::string_view remote_address);
 
+    void observe_outbound_track_stats(const media_peer_info& target_peer, std::span<const uint8_t> outbound_plain_packet);
+
    private:
     boost::asio::io_context& io_context_;
 

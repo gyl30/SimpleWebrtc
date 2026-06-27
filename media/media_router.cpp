@@ -42,8 +42,7 @@ uint16_t next_rtp_sequence_number(uint16_t sequence_number) { return static_cast
 
 int32_t rtp_sequence_delta(uint16_t sequence_number, uint16_t expected_sequence_number)
 {
-    const uint16_t raw_delta = static_cast<uint16_t>(sequence_number - expected_sequence_number);
-
+    const auto raw_delta = static_cast<uint16_t>(sequence_number - expected_sequence_number);
     if (raw_delta <= 0x7fffU)
     {
         return static_cast<int32_t>(raw_delta);
@@ -145,7 +144,16 @@ void finalize_snapshot(media_router_stats_snapshot& snapshot)
 }
 bool same_track_stats_key(const media_track_stats& stats, const media_peer_info& peer, const media_track_resolution& track_resolution)
 {
-    return stats.session_id == peer.session_id && stats.mid == track_resolution.mid && stats.ssrc == track_resolution.ssrc;
+    return stats.direction == "inbound" && stats.session_id == peer.session_id && stats.mid == track_resolution.mid &&
+           stats.ssrc == track_resolution.ssrc;
+}
+
+bool same_outbound_track_stats_key(const media_track_stats& stats,
+                                   const media_peer_info& peer,
+                                   const media_ssrc_mapping& mapping,
+                                   uint32_t outbound_ssrc)
+{
+    return stats.direction == "outbound" && stats.session_id == peer.session_id && stats.mid == mapping.subscriber_mid && stats.ssrc == outbound_ssrc;
 }
 
 uint32_t optional_uint16_to_uint32(const std::optional<uint16_t>& value)
@@ -321,6 +329,43 @@ void media_router::observe_inbound_track(const media_peer_info& peer,
     media_track_stats& track_stats = get_or_create_track_stats_locked(stream_stats, peer, track_resolution);
 
     update_track_stats_locked(track_stats, packet, track_resolution);
+}
+
+void media_router::observe_outbound_track(const media_peer_info& peer,
+                                          const media_ssrc_mapping& mapping,
+                                          std::span<const uint8_t> outbound_plain_packet)
+{
+    if (peer.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (outbound_plain_packet.empty())
+    {
+        return;
+    }
+
+    if (mapping.stream_id.empty() || mapping.subscriber_session_id.empty() || mapping.subscriber_mid.empty() || mapping.kind.empty())
+    {
+        return;
+    }
+
+    auto header = parse_rtp_packet_header(outbound_plain_packet);
+
+    if (!header)
+    {
+        return;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    media_stream_stats& stream_stats = stream_stats_by_stream_[mapping.stream_id];
+
+    stream_stats.stream_id = mapping.stream_id;
+
+    media_track_stats& track_stats = get_or_create_outbound_track_stats_locked(stream_stats, peer, mapping, header->ssrc);
+
+    update_outbound_track_stats_locked(track_stats, outbound_plain_packet);
 }
 
 std::optional<media_peer_info> media_router::get_peer(std::string_view remote_endpoint) const
@@ -554,6 +599,7 @@ media_track_stats& media_router::get_or_create_track_stats_locked(media_stream_s
     track_stats.stream_id = peer.stream_id;
     track_stats.session_id = peer.session_id;
     track_stats.remote_endpoint = peer.remote_endpoint;
+    track_stats.direction = "inbound";
 
     track_stats.mid = track_resolution.mid;
     track_stats.kind = track_resolution.kind;
@@ -620,6 +666,66 @@ void media_router::update_track_stats_locked(media_track_stats& track_stats,
     {
         track_stats.last_voice_activity = *track_resolution.voice_activity;
     }
+}
+media_track_stats& media_router::get_or_create_outbound_track_stats_locked(media_stream_stats& stream_stats,
+                                                                           const media_peer_info& peer,
+                                                                           const media_ssrc_mapping& mapping,
+                                                                           uint32_t outbound_ssrc)
+{
+    for (auto& track_stats : stream_stats.tracks)
+    {
+        if (same_outbound_track_stats_key(track_stats, peer, mapping, outbound_ssrc))
+        {
+            return track_stats;
+        }
+    }
+
+    media_track_stats track_stats;
+
+    track_stats.stream_id = mapping.stream_id;
+    track_stats.session_id = peer.session_id;
+    track_stats.remote_endpoint = peer.remote_endpoint;
+    track_stats.direction = "outbound";
+
+    track_stats.mid = mapping.subscriber_mid;
+    track_stats.kind = mapping.kind;
+
+    track_stats.ssrc = outbound_ssrc;
+    track_stats.outbound_ssrc = outbound_ssrc;
+
+    stream_stats.tracks.push_back(std::move(track_stats));
+
+    return stream_stats.tracks.back();
+}
+
+void media_router::update_outbound_track_stats_locked(media_track_stats& track_stats, std::span<const uint8_t> outbound_plain_packet)
+{
+    auto header = parse_rtp_packet_header(outbound_plain_packet);
+
+    if (!header)
+    {
+        return;
+    }
+
+    const uint64_t packet_size = static_cast<uint64_t>(outbound_plain_packet.size());
+
+    if (track_stats.outbound_rtp_packets == 0)
+    {
+        track_stats.first_outbound_rtp_sequence_number = static_cast<uint32_t>(header->sequence_number);
+    }
+
+    track_stats.outbound_rtp_packets += 1;
+    track_stats.outbound_rtp_bytes += packet_size;
+
+    track_stats.outbound_ssrc = header->ssrc;
+
+    track_stats.outbound_payload_type = static_cast<uint32_t>(header->payload_type);
+
+    track_stats.payload_type = static_cast<uint32_t>(header->payload_type);
+
+    track_stats.last_outbound_rtp_sequence_number = static_cast<uint32_t>(header->sequence_number);
+
+    track_stats.last_outbound_rtp_timestamp = header->timestamp;
 }
 
 void media_router::update_inbound_stats_locked(const media_peer_info& peer,

@@ -3638,6 +3638,39 @@ void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_pe
                          remember_result.error());
     }
 }
+void ice_udp_server::observe_outbound_track_stats(const media_peer_info& target_peer, std::span<const uint8_t> outbound_plain_packet)
+{
+    if (target_peer.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (outbound_plain_packet.empty())
+    {
+        return;
+    }
+
+    if (ssrc_mapper_ == nullptr || media_router_ == nullptr)
+    {
+        return;
+    }
+
+    auto header = parse_rtp_packet_header(outbound_plain_packet);
+
+    if (!header)
+    {
+        return;
+    }
+
+    std::optional<media_ssrc_mapping> mapping = ssrc_mapper_->find_by_subscriber_ssrc(target_peer.session_id, header->ssrc);
+
+    if (!mapping.has_value())
+    {
+        return;
+    }
+
+    media_router_->observe_outbound_track(target_peer, *mapping, outbound_plain_packet);
+}
 
 std::optional<media_payload_type_mapping_table> ice_udp_server::get_or_create_payload_type_mapping_table(const media_route_result& route,
                                                                                                          const media_peer_info& target_peer)
@@ -4535,7 +4568,11 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
             continue;
         }
 
-        observe_outbound_rtp_stats(event.source, std::span<const uint8_t>(retransmit_plain_packet->data(), retransmit_plain_packet->size()));
+        const std::span<const uint8_t> retransmit_span(retransmit_plain_packet->data(), retransmit_plain_packet->size());
+
+        observe_outbound_rtp_stats(event.source, retransmit_span);
+
+        observe_outbound_track_stats(event.source, retransmit_span);
 
         send_response(std::move(protected_packet->protected_packet), *target_endpoint);
 
@@ -4781,10 +4818,12 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
 
         if (packet.kind == srtp_packet_kind::rtp)
         {
-            observe_outbound_rtp_stats(*target_peer, std::span<const uint8_t>(outbound_plain_packet->data(), outbound_plain_packet->size()));
-
+            const std::span<const uint8_t> outbound_span(outbound_plain_packet->data(), outbound_plain_packet->size());
+            observe_outbound_rtp_stats(*target_peer, outbound_span);
+            observe_outbound_track_stats(*target_peer, outbound_span);
             maybe_request_keyframe_from_publisher(packet, route, track_resolution, *target_peer);
         }
+
         WEBRTC_LOG_DEBUG("media forward send stream={} source={} target={} kind={} plain_size={} protected_size={}",
                          route.source.stream_id,
                          route.source.remote_endpoint,

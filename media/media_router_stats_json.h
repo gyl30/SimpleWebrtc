@@ -23,6 +23,7 @@ struct media_track_stats_json
     std::string stream_id;
     std::string session_id;
     std::string remote_endpoint;
+    std::string direction;
 
     std::string mid;
     std::string kind;
@@ -48,6 +49,16 @@ struct media_track_stats_json
     uint32_t first_rtp_sequence_number = 0;
     uint32_t last_rtp_sequence_number = 0;
     uint32_t last_rtp_timestamp = 0;
+
+    uint64_t outbound_rtp_packets = 0;
+    uint64_t outbound_rtp_bytes = 0;
+
+    uint32_t outbound_ssrc = 0;
+    uint32_t outbound_payload_type = 0;
+
+    uint32_t first_outbound_rtp_sequence_number = 0;
+    uint32_t last_outbound_rtp_sequence_number = 0;
+    uint32_t last_outbound_rtp_timestamp = 0;
 };
 struct media_peer_stats_json
 {
@@ -233,9 +244,9 @@ REFLECT_STRUCT(webrtc::media_stream_stats_json,
 REFLECT_STRUCT(webrtc::media_router_stats_snapshot_json,
                (
                    peer_count)(stream_count)(active_publisher_count)(active_subscriber_count)(inbound_rtp_packets)(inbound_rtp_bytes)(inbound_rtcp_packets)(inbound_rtcp_bytes)(routed_target_packets)(routed_target_bytes)(rtcp_feedback_packets)(rtcp_report_packets)(rtcp_report_blocks)(rtcp_nack_items)(rtcp_fir_items)(rtcp_keyframe_request_packets)(rtcp_generic_nack_packets)(rtcp_transport_cc_packets)(rtcp_remb_packets)(rtcp_rtt_sample_count)(rtcp_last_rtt_ms)(rtcp_max_rtt_ms)(rtcp_avg_rtt_ms)(rtcp_rtt_sum_ms)(rtp_sequence_gap_events)(rtp_sequence_lost_packets)(rtp_out_of_order_packets)(rtp_duplicate_packets)(rtp_sequence_wraps)(track_count)(peers)(streams));
-REFLECT_STRUCT(
-    webrtc::media_track_stats_json,
-    (stream_id)(session_id)(remote_endpoint)(mid)(kind)(rid)(repaired_rid)(has_transport_wide_sequence_number)(last_transport_wide_sequence_number)(has_audio_level)(last_audio_level)(has_voice_activity)(last_voice_activity)(ssrc)(payload_type)(inbound_rtp_packets)(inbound_rtp_bytes)(first_rtp_sequence_number)(last_rtp_sequence_number)(last_rtp_timestamp));
 
+REFLECT_STRUCT(webrtc::media_track_stats_json,
+               (
+                   stream_id)(session_id)(remote_endpoint)(direction)(mid)(kind)(rid)(repaired_rid)(has_transport_wide_sequence_number)(last_transport_wide_sequence_number)(has_audio_level)(last_audio_level)(has_voice_activity)(last_voice_activity)(ssrc)(payload_type)(inbound_rtp_packets)(inbound_rtp_bytes)(first_rtp_sequence_number)(last_rtp_sequence_number)(last_rtp_timestamp)(outbound_rtp_packets)(outbound_rtp_bytes)(outbound_ssrc)(outbound_payload_type)(first_outbound_rtp_sequence_number)(last_outbound_rtp_sequence_number)(last_outbound_rtp_timestamp));
 }    // namespace webrtc
 #endif

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "srtp/srtp_transport.h"
+#include "media/media_ssrc_mapper.h"
 #include "media/media_track_resolver.h"
 
 namespace webrtc
@@ -43,6 +44,7 @@ struct media_track_stats
     std::string stream_id;
     std::string session_id;
     std::string remote_endpoint;
+    std::string direction;
 
     std::string mid;
     std::string kind;
@@ -64,6 +66,16 @@ struct media_track_stats
 
     uint64_t inbound_rtp_packets = 0;
     uint64_t inbound_rtp_bytes = 0;
+
+    uint64_t outbound_rtp_packets = 0;
+    uint64_t outbound_rtp_bytes = 0;
+
+    uint32_t outbound_ssrc = 0;
+    uint32_t outbound_payload_type = 0;
+
+    uint32_t first_outbound_rtp_sequence_number = 0;
+    uint32_t last_outbound_rtp_sequence_number = 0;
+    uint32_t last_outbound_rtp_timestamp = 0;
 
     uint32_t first_rtp_sequence_number = 0;
     uint32_t last_rtp_sequence_number = 0;
@@ -268,6 +280,8 @@ class media_router
 
     void observe_inbound_track(const media_peer_info& peer, const srtp_packet_process_result& packet, const media_track_resolution& track_resolution);
 
+    void observe_outbound_track(const media_peer_info& peer, const media_ssrc_mapping& mapping, std::span<const uint8_t> outbound_plain_packet);
+
     [[nodiscard]] std::optional<media_peer_info> get_peer(std::string_view remote_endpoint) const;
 
     [[nodiscard]] std::optional<media_peer_stats> get_peer_stats(std::string_view remote_endpoint) const;
@@ -302,6 +316,14 @@ class media_router
     void update_track_stats_locked(media_track_stats& track_stats,
                                    const srtp_packet_process_result& packet,
                                    const media_track_resolution& track_resolution);
+
+    [[nodiscard]]
+    media_track_stats& get_or_create_outbound_track_stats_locked(media_stream_stats& stream_stats,
+                                                                 const media_peer_info& peer,
+                                                                 const media_ssrc_mapping& mapping,
+                                                                 uint32_t outbound_ssrc);
+
+    void update_outbound_track_stats_locked(media_track_stats& track_stats, std::span<const uint8_t> outbound_plain_packet);
 
     void update_rtcp_stats_locked(media_peer_stats& peer_stats, media_stream_stats& stream_stats, const srtp_packet_process_result& packet);
 

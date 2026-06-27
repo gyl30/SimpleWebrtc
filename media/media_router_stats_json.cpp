@@ -95,6 +95,7 @@ namespace
     json.stream_id = stats.stream_id;
     json.session_id = stats.session_id;
     json.remote_endpoint = stats.remote_endpoint;
+    json.direction = stats.direction;
 
     json.mid = stats.mid;
     json.kind = stats.kind;
@@ -121,6 +122,15 @@ namespace
     json.last_rtp_sequence_number = stats.last_rtp_sequence_number;
     json.last_rtp_timestamp = stats.last_rtp_timestamp;
 
+    json.outbound_rtp_packets = stats.outbound_rtp_packets;
+    json.outbound_rtp_bytes = stats.outbound_rtp_bytes;
+
+    json.outbound_ssrc = stats.outbound_ssrc;
+    json.outbound_payload_type = stats.outbound_payload_type;
+
+    json.first_outbound_rtp_sequence_number = stats.first_outbound_rtp_sequence_number;
+    json.last_outbound_rtp_sequence_number = stats.last_outbound_rtp_sequence_number;
+    json.last_outbound_rtp_timestamp = stats.last_outbound_rtp_timestamp;
     return json;
 }
 
