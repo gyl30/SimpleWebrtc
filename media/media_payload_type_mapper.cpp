@@ -132,6 +132,62 @@ std::size_t count_receive_capable_media_by_kind(const sdp::webrtc_offer_summary&
     return count;
 }
 
+std::optional<std::size_t> find_send_capable_media_ordinal_by_kind(const sdp::webrtc_offer_summary& offer, const sdp::media_summary& target_media)
+{
+    std::size_t ordinal = 0;
+
+    for (const auto& media : offer.media)
+    {
+        if (media.kind != target_media.kind)
+        {
+            continue;
+        }
+
+        if (!media_can_send(media))
+        {
+            continue;
+        }
+
+        if (&media == &target_media)
+        {
+            return ordinal;
+        }
+
+        ordinal += 1;
+    }
+
+    return std::nullopt;
+}
+
+const sdp::media_summary* find_receive_capable_media_by_kind_ordinal(const sdp::webrtc_offer_summary& offer,
+                                                                     std::string_view kind,
+                                                                     std::size_t target_ordinal)
+{
+    std::size_t ordinal = 0;
+
+    for (const auto& media : offer.media)
+    {
+        if (media.kind != kind)
+        {
+            continue;
+        }
+
+        if (!media_can_receive(media))
+        {
+            continue;
+        }
+
+        if (ordinal == target_ordinal)
+        {
+            return &media;
+        }
+
+        ordinal += 1;
+    }
+
+    return nullptr;
+}
+
 std::optional<std::string> find_fmtp_parameter(std::string_view fmtp, std::string_view key)
 {
     std::size_t start = 0;
@@ -242,31 +298,23 @@ const sdp::media_summary* find_matching_subscriber_media(const sdp::media_summar
         }
     }
 
-    const std::size_t publisher_kind_count = count_send_capable_media_by_kind(publisher_offer, publisher_media.kind);
+    const std::optional<std::size_t> publisher_ordinal = find_send_capable_media_ordinal_by_kind(publisher_offer, publisher_media);
 
-    const std::size_t subscriber_kind_count = count_receive_capable_media_by_kind(subscriber_offer, publisher_media.kind);
-
-    if (publisher_kind_count != 1 || subscriber_kind_count != 1)
+    if (!publisher_ordinal.has_value())
     {
         return nullptr;
     }
 
-    for (const auto& subscriber_media : subscriber_offer.media)
+    const std::size_t publisher_kind_count = count_send_capable_media_by_kind(publisher_offer, publisher_media.kind);
+
+    const std::size_t subscriber_kind_count = count_receive_capable_media_by_kind(subscriber_offer, publisher_media.kind);
+
+    if (publisher_kind_count != subscriber_kind_count)
     {
-        if (subscriber_media.kind != publisher_media.kind)
-        {
-            continue;
-        }
-
-        if (!media_can_receive(subscriber_media))
-        {
-            continue;
-        }
-
-        return &subscriber_media;
+        return nullptr;
     }
 
-    return nullptr;
+    return find_receive_capable_media_by_kind_ordinal(subscriber_offer, publisher_media.kind, *publisher_ordinal);
 }
 
 std::optional<sdp::codec_info> find_compatible_subscriber_codec(const sdp::media_summary& subscriber_media, const sdp::codec_info& publisher_codec)
