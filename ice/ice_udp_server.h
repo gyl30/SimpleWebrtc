@@ -296,7 +296,22 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::vector<std::string> erase_endpoint_indexes_for_session_locked(std::string_view session_id);
 
     void erase_endpoint_indexes_for_remote_locked(std::string_view remote_address);
+    void retire_endpoint_locked(std::string_view remote_address,
+                                std::string_view session_id,
+                                uint64_t current_time_milliseconds,
+                                std::string_view reason);
 
+    void unretire_endpoint_locked(std::string_view remote_address);
+
+    void unretire_endpoint(std::string_view remote_address);
+
+    [[nodiscard]]
+    bool retired_endpoint_matches_session(std::string_view remote_address, std::string_view session_id);
+
+    [[nodiscard]]
+    bool suppress_retired_endpoint_packet(std::string_view remote_address, std::string_view packet_kind);
+
+    std::size_t expire_retired_endpoints_locked(uint64_t current_time_milliseconds);
     [[nodiscard]]
     std::size_t erase_orphan_endpoint_indexes_locked();
 
@@ -356,6 +371,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                           const media_peer_info& target_peer);
 
    private:
+    struct retired_endpoint_state
+    {
+        uint64_t expires_at_milliseconds = 0;
+        uint64_t suppressed_packets = 0;
+
+        std::string session_id;
+        std::string reason;
+    };
     boost::asio::io_context& io_context_;
 
     udp::socket socket_;
@@ -409,6 +432,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, media_payload_type_mapping_cache_entry> payload_type_mappings_by_key_;
 
     std::unordered_map<std::string, uint64_t> keyframe_request_last_time_milliseconds_by_key_;
+
+    std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
 
     bool started_ = false;
 
