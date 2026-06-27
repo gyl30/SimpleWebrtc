@@ -289,6 +289,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void erase_payload_type_mappings_for_session_locked(std::string_view session_id);
 
     [[nodiscard]]
+    std::size_t erase_keyframe_request_states_for_session_locked(std::string_view session_id);
+
+    [[nodiscard]]
     std::optional<udp::endpoint> find_remote_endpoint(std::string_view remote_address) const;
 
     [[nodiscard]] std::optional<std::string> find_session_id_by_endpoint(std::string_view remote_address) const;

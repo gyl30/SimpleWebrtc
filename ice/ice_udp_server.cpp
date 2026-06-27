@@ -155,6 +155,41 @@ std::string make_keyframe_request_key(const media_route_result& route, const med
     return key;
 }
 
+bool keyframe_request_key_matches_session(std::string_view key, std::string_view session_id)
+{
+    if (key.empty() || session_id.empty())
+    {
+        return false;
+    }
+
+    const std::size_t first_separator = key.find('|');
+
+    if (first_separator == std::string_view::npos)
+    {
+        return false;
+    }
+
+    const std::size_t second_separator = key.find('|', first_separator + 1);
+
+    if (second_separator == std::string_view::npos)
+    {
+        return false;
+    }
+
+    const std::size_t third_separator = key.find('|', second_separator + 1);
+
+    if (third_separator == std::string_view::npos)
+    {
+        return false;
+    }
+
+    const std::string_view publisher_session_id = key.substr(first_separator + 1, second_separator - first_separator - 1);
+
+    const std::string_view subscriber_session_id = key.substr(second_separator + 1, third_separator - second_separator - 1);
+
+    return publisher_session_id == session_id || subscriber_session_id == session_id;
+}
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 std::unexpected<std::string> make_field_error(std::string_view field, std::string_view message)
@@ -1242,6 +1277,7 @@ ice_udp_server_result ice_udp_server::start()
     schedule_endpoint_idle_cleanup();
 
     schedule_pending_session_cleanup();
+
     return {};
 }
 
@@ -1292,6 +1328,8 @@ void ice_udp_server::stop()
         candidate_pairs_by_key_.clear();
 
         payload_type_mappings_by_key_.clear();
+
+        keyframe_request_last_time_milliseconds_by_key_.clear();
 
         endpoint_last_seen_milliseconds_by_address_.clear();
     }
@@ -1351,6 +1389,15 @@ void ice_udp_server::forget_session(std::string_view session_id)
         erase_candidate_pairs_for_session_locked(session_id);
 
         erase_payload_type_mappings_for_session_locked(session_id);
+
+        const std::size_t erased_keyframe_request_state_count = erase_keyframe_request_states_for_session_locked(session_id);
+
+        WEBRTC_LOG_DEBUG("ice udp session keyframe request states erased session={} count={}", session_id, erased_keyframe_request_state_count);
+    }
+
+    if (track_resolver_ != nullptr)
+    {
+        track_resolver_->forget_session(session_id);
     }
 
     if (ssrc_mapper_ != nullptr)
@@ -1362,7 +1409,6 @@ void ice_udp_server::forget_session(std::string_view session_id)
     {
         rtcp_report_service_->forget_session(session_id);
     }
-
     if (endpoint_removed)
     {
         send_dtls_close_notify(remote_address);
@@ -5389,6 +5435,7 @@ void ice_udp_server::forget_peer_transport_state(std::string_view remote_address
     bool dtls_forgot = false;
     bool srtp_forgot = false;
     bool router_forgot = false;
+    bool track_forgot = false;
     bool rtcp_forgot = false;
 
     if (dtls_transport_ != nullptr)
@@ -5412,6 +5459,13 @@ void ice_udp_server::forget_peer_transport_state(std::string_view remote_address
         router_forgot = true;
     }
 
+    if (track_resolver_ != nullptr)
+    {
+        track_resolver_->forget_peer(remote_address);
+
+        track_forgot = true;
+    }
+
     if (rtcp_report_service_ != nullptr)
     {
         rtcp_report_service_->forget_peer(remote_address);
@@ -5419,11 +5473,12 @@ void ice_udp_server::forget_peer_transport_state(std::string_view remote_address
         rtcp_forgot = true;
     }
 
-    WEBRTC_LOG_INFO("ice udp peer transport state forgotten remote={} dtls={} srtp={} router={} rtcp={}",
+    WEBRTC_LOG_INFO("ice udp peer transport state forgotten remote={} dtls={} srtp={} router={} track={} rtcp={}",
                     remote_address,
                     dtls_forgot ? 1 : 0,
                     srtp_forgot ? 1 : 0,
                     router_forgot ? 1 : 0,
+                    track_forgot ? 1 : 0,
                     rtcp_forgot ? 1 : 0);
 }
 
@@ -5470,6 +5525,32 @@ void ice_udp_server::erase_payload_type_mappings_for_session_locked(std::string_
 
         ++iterator;
     }
+}
+
+std::size_t ice_udp_server::erase_keyframe_request_states_for_session_locked(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = keyframe_request_last_time_milliseconds_by_key_.begin(); iterator != keyframe_request_last_time_milliseconds_by_key_.end();)
+    {
+        if (keyframe_request_key_matches_session(iterator->first, session_id))
+        {
+            iterator = keyframe_request_last_time_milliseconds_by_key_.erase(iterator);
+
+            erased_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
 }
 
 std::optional<std::string> ice_udp_server::find_session_id_by_endpoint(std::string_view remote_address) const
