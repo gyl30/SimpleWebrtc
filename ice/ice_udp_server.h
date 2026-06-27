@@ -235,6 +235,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                    const std::optional<media_track_resolution>& track_resolution);
 
     void observe_inbound_rtcp_sender_reports(const media_peer_info& peer, const srtp_packet_process_result& packet);
+    void normalize_inbound_rtcp_report_stats(const media_peer_info& peer, srtp_packet_process_result& packet);
 
     void observe_outbound_rtp_stats(const media_peer_info& target_peer,
                                     std::span<const uint8_t> outbound_plain_packet,

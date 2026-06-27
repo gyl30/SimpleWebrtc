@@ -4021,10 +4021,11 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     if (peer.has_value())
     {
         track_resolution = resolve_media_track(*peer, *result);
+
+        normalize_inbound_rtcp_report_stats(*peer, *result);
     }
 
     const media_route_result route = media_router_->handle_inbound_packet(remote_address, *result);
-
     if (!route.known_peer)
     {
         WEBRTC_LOG_WARN(
@@ -4472,6 +4473,150 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
     {
         rtcp_report_inbound_sender_report_sources_total_.fetch_add(static_cast<uint64_t>(remembered_sender_report_source_count),
                                                                    std::memory_order_relaxed);
+    }
+}
+void ice_udp_server::normalize_inbound_rtcp_report_stats(const media_peer_info& peer, srtp_packet_process_result& packet)
+{
+    if (packet.kind != srtp_packet_kind::rtcp)
+    {
+        return;
+    }
+
+    if (packet.rtcp_report_packet_count == 0)
+    {
+        return;
+    }
+
+    bool sender_report_skipped = false;
+
+    if (peer.role == media_peer_role::publisher && packet.rtcp_has_sender_report && packet.rtcp_report_sender_ssrc != 0 && registry_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(peer.session_id);
+
+        if (publisher != nullptr && offer_ssrc_is_rtx_repair(publisher->remote_offer_summary(), packet.rtcp_report_sender_ssrc))
+        {
+            WEBRTC_LOG_DEBUG("rtcp report stats skipped rtx sender report stream={} session={} remote={} sender_ssrc={}",
+                             peer.stream_id,
+                             peer.session_id,
+                             peer.remote_endpoint,
+                             packet.rtcp_report_sender_ssrc);
+
+            packet.rtcp_has_sender_report = false;
+            packet.rtcp_has_sender_info = false;
+            packet.rtcp_report_sender_ssrc = 0;
+            packet.rtcp_sender_info_data = rtcp_sender_info{};
+
+            sender_report_skipped = true;
+        }
+    }
+
+    if (packet.rtcp_report_blocks.empty())
+    {
+        if (sender_report_skipped && !packet.rtcp_has_receiver_report && !packet.rtcp_has_sender_report)
+        {
+            packet.rtcp_report_packet_count = 0;
+            packet.rtcp_report_block_count = 0;
+        }
+
+        return;
+    }
+
+    if (peer.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (ssrc_mapper_ == nullptr)
+    {
+        return;
+    }
+
+    std::vector<rtcp_report_block> normalized_blocks;
+
+    normalized_blocks.reserve(packet.rtcp_report_blocks.size());
+
+    std::size_t rtx_skipped_count = 0;
+    std::size_t mapping_missing_count = 0;
+    std::size_t rewritten_count = 0;
+
+    for (rtcp_report_block report_block : packet.rtcp_report_blocks)
+    {
+        if (report_block.ssrc == 0)
+        {
+            continue;
+        }
+
+        const std::optional<media_ssrc_mapping> mapping = ssrc_mapper_->find_by_subscriber_ssrc(peer.session_id, report_block.ssrc);
+
+        if (!mapping.has_value())
+        {
+            mapping_missing_count += 1;
+
+            WEBRTC_LOG_DEBUG("rtcp report block skipped mapping not found stream={} session={} remote={} subscriber_ssrc={}",
+                             peer.stream_id,
+                             peer.session_id,
+                             peer.remote_endpoint,
+                             report_block.ssrc);
+
+            continue;
+        }
+
+        if (media_ssrc_mapping_is_rtx(*mapping))
+        {
+            rtx_skipped_count += 1;
+
+            WEBRTC_LOG_DEBUG("rtcp report block skipped rtx mapping stream={} session={} remote={} subscriber_ssrc={} publisher_ssrc={} kind={}",
+                             peer.stream_id,
+                             peer.session_id,
+                             peer.remote_endpoint,
+                             mapping->subscriber_ssrc,
+                             mapping->publisher_ssrc,
+                             mapping->kind);
+
+            continue;
+        }
+
+        if (report_block.ssrc != mapping->publisher_ssrc)
+        {
+            rewritten_count += 1;
+        }
+
+        report_block.ssrc = mapping->publisher_ssrc;
+
+        normalized_blocks.push_back(report_block);
+    }
+
+    packet.rtcp_report_blocks = std::move(normalized_blocks);
+
+    packet.rtcp_report_block_count = packet.rtcp_report_blocks.size();
+
+    if (packet.rtcp_report_blocks.empty())
+    {
+        packet.rtcp_last_fraction_lost = 0;
+        packet.rtcp_last_cumulative_lost = 0;
+        packet.rtcp_last_jitter = 0;
+    }
+    else
+    {
+        const rtcp_report_block& last_report_block = packet.rtcp_report_blocks.back();
+
+        packet.rtcp_last_fraction_lost = last_report_block.fraction_lost;
+
+        packet.rtcp_last_cumulative_lost = last_report_block.cumulative_lost;
+
+        packet.rtcp_last_jitter = last_report_block.jitter;
+    }
+
+    if (rtx_skipped_count != 0 || mapping_missing_count != 0 || rewritten_count != 0)
+    {
+        WEBRTC_LOG_DEBUG("rtcp report blocks normalized stream={} session={} remote={} kept={} rtx_skipped={} mapping_missing={} rewritten={}",
+                         peer.stream_id,
+                         peer.session_id,
+                         peer.remote_endpoint,
+                         packet.rtcp_report_blocks.size(),
+                         rtx_skipped_count,
+                         mapping_missing_count,
+                         rewritten_count);
     }
 }
 std::optional<media_ssrc_mapping> ice_udp_server::find_outbound_ssrc_mapping(const media_peer_info& target_peer,
