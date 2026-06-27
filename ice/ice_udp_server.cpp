@@ -1723,16 +1723,16 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
     {
         return;
     }
-
     if (registry_ == nullptr)
     {
         WEBRTC_LOG_WARN("{} session removal fallback registry missing session={}", reason, session_id);
 
         forget_session(session_id);
 
+        schedule_lifecycle_snapshot_log(std::string(reason) + " registry missing", "", std::string(session_id));
+
         return;
     }
-
     auto publisher = registry_->find_publisher_by_session_id(session_id);
 
     if (publisher != nullptr)
@@ -1740,17 +1740,20 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
         const std::string stream_id = publisher->stream_id();
 
         auto result = registry_->remove_publisher_session(session_id);
-
         if (!result)
         {
             WEBRTC_LOG_WARN("{} publisher removal failed session={} error={}", reason, session_id, stream_registry_error_to_string(result.error()));
 
+            const std::string stream_id = publisher->stream_id();
+
             forget_session(session_id);
 
-            erase_rtp_cache(stream_id);
+            cleanup_stream_runtime_state(stream_id);
 
-            return;
+            schedule_lifecycle_snapshot_log(std::string(reason) + " publisher removal failed", stream_id, std::string(session_id));
         }
+
+        return;
 
         if (!registry_callback_registered_)
         {
@@ -1771,16 +1774,18 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
         const std::string stream_id = subscriber->stream_id();
 
         auto result = registry_->remove_subscriber_session(session_id);
-
         if (!result)
         {
             WEBRTC_LOG_WARN("{} subscriber removal failed session={} error={}", reason, session_id, stream_registry_error_to_string(result.error()));
 
+            const std::string stream_id = subscriber->stream_id();
+
             forget_session(session_id);
 
-            return;
+            schedule_lifecycle_snapshot_log(std::string(reason) + " subscriber removal failed", stream_id, std::string(session_id));
         }
 
+        return;
         if (!registry_callback_registered_)
         {
             forget_session(session_id);
@@ -1794,6 +1799,8 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
     WEBRTC_LOG_WARN("{} session not found in registry session={}", reason, session_id);
 
     forget_session(session_id);
+
+    schedule_lifecycle_snapshot_log(std::string(reason) + " session missing", "", std::string(session_id));
 }
 
 uint16_t ice_udp_server::local_port() const { return bind_port_; }
@@ -2134,6 +2141,77 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
     snapshot.consistent = snapshot.inconsistency_count == 0;
 
     return snapshot;
+}
+void ice_udp_server::schedule_lifecycle_snapshot_log(std::string reason, std::string stream_id, std::string session_id)
+{
+    auto self = shared_from_this();
+
+    boost::asio::post(io_context_,
+                      [self, reason = std::move(reason), stream_id = std::move(stream_id), session_id = std::move(session_id)]()
+                      { self->log_lifecycle_snapshot(reason, stream_id, session_id); });
+}
+
+void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string_view stream_id, std::string_view session_id) const
+{
+    const lifecycle_debug_snapshot snapshot = debug_state_snapshot();
+
+    const bool runtime_residual_after_idle = snapshot.registry_session_count == 0 && !snapshot.idle_clean;
+
+    if (!snapshot.consistent || runtime_residual_after_idle)
+    {
+        WEBRTC_LOG_WARN(
+            "lifecycle snapshot residual reason={} stream={} session={} registry_sessions={} registry_publishers={} registry_subscribers={} "
+            "endpoints={} endpoint_index={} endpoint_reverse_index={} dtls_peers={} srtp_peers={} media_router_peers={} track_bindings={} "
+            "ssrc_mappings={} payload_type_mappings={} keyframe_states={} rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} "
+            "idle_clean={} consistent={} inconsistencies={}",
+            reason,
+            stream_id,
+            session_id,
+            snapshot.registry_session_count,
+            snapshot.registry_publisher_count,
+            snapshot.registry_subscriber_count,
+            snapshot.endpoint_count,
+            snapshot.endpoint_session_index_count,
+            snapshot.endpoint_reverse_index_count,
+            snapshot.dtls_peer_count,
+            snapshot.srtp_peer_count,
+            snapshot.media_router_peer_count,
+            snapshot.track_binding_count,
+            snapshot.ssrc_mapping_count,
+            snapshot.payload_type_mapping_count,
+            snapshot.keyframe_request_state_count,
+            snapshot.rtcp_report_source_count,
+            snapshot.rtcp_report_stats_source_count,
+            snapshot.rtp_cache_packet_count,
+            snapshot.idle_clean ? 1 : 0,
+            snapshot.consistent ? 1 : 0,
+            snapshot.inconsistency_count);
+
+        return;
+    }
+
+    WEBRTC_LOG_INFO(
+        "lifecycle snapshot clean reason={} stream={} session={} registry_sessions={} registry_publishers={} registry_subscribers={} endpoints={} "
+        "dtls_peers={} srtp_peers={} media_router_peers={} track_bindings={} ssrc_mappings={} payload_type_mappings={} keyframe_states={} "
+        "rtcp_report_sources={} rtp_cache_packets={} idle_clean={} consistent={}",
+        reason,
+        stream_id,
+        session_id,
+        snapshot.registry_session_count,
+        snapshot.registry_publisher_count,
+        snapshot.registry_subscriber_count,
+        snapshot.endpoint_count,
+        snapshot.dtls_peer_count,
+        snapshot.srtp_peer_count,
+        snapshot.media_router_peer_count,
+        snapshot.track_binding_count,
+        snapshot.ssrc_mapping_count,
+        snapshot.payload_type_mapping_count,
+        snapshot.keyframe_request_state_count,
+        snapshot.rtcp_report_source_count,
+        snapshot.rtp_cache_packet_count,
+        snapshot.idle_clean ? 1 : 0,
+        snapshot.consistent ? 1 : 0);
 }
 
 ice_udp_server_result ice_udp_server::init_dtls_transport()
@@ -2586,6 +2664,7 @@ void ice_udp_server::register_session_removed_callback()
             {
                 self->cleanup_stream_runtime_state(removed_session.stream_id);
             }
+            self->schedule_lifecycle_snapshot_log("registry removal callback", removed_session.stream_id, removed_session.session_id);
         });
 
     registry_callback_registered_ = true;

@@ -104,6 +104,10 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     lifecycle_debug_snapshot debug_state_snapshot() const;
 
+    void schedule_lifecycle_snapshot_log(std::string reason, std::string stream_id, std::string session_id);
+
+    void log_lifecycle_snapshot(std::string_view reason, std::string_view stream_id, std::string_view session_id) const;
+
    private:
     using udp = boost::asio::ip::udp;
 
