@@ -24,6 +24,10 @@ struct media_ssrc_mapping
     std::string subscriber_mid;
     std::string kind;
 
+    bool rtx = false;
+    uint32_t publisher_rtx_primary_ssrc = 0;
+    uint32_t publisher_rtx_repair_ssrc = 0;
+
     uint32_t publisher_ssrc = 0;
     uint32_t subscriber_ssrc = 0;
 
@@ -57,8 +61,10 @@ class media_ssrc_mapper
                                                     std::string_view subscriber_mid,
                                                     std::string_view kind,
                                                     uint32_t publisher_ssrc,
-                                                    uint64_t now_milliseconds);
-
+                                                    uint64_t now_milliseconds,
+                                                    bool rtx = false,
+                                                    uint32_t publisher_rtx_primary_ssrc = 0,
+                                                    uint32_t publisher_rtx_repair_ssrc = 0);
     [[nodiscard]]
     std::optional<media_ssrc_mapping> find_by_publisher_ssrc(std::string_view stream_id,
                                                              std::string_view publisher_session_id,
@@ -125,6 +131,12 @@ class media_ssrc_mapper
 
 [[nodiscard]]
 bool media_ssrc_mapping_requires_rewrite(const media_ssrc_mapping& mapping);
+
+[[nodiscard]]
+bool media_ssrc_mapping_is_rtx(const media_ssrc_mapping& mapping);
+
+[[nodiscard]]
+bool media_ssrc_mapping_is_primary_video(const media_ssrc_mapping& mapping);
 
 [[nodiscard]]
 std::string media_ssrc_mapping_to_string(const media_ssrc_mapping& mapping);

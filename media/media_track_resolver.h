@@ -49,6 +49,10 @@ struct media_track_resolution
     std::optional<uint8_t> audio_level;
     std::optional<bool> voice_activity;
 
+    bool rtx = false;
+    uint32_t rtx_primary_ssrc = 0;
+    uint32_t rtx_repair_ssrc = 0;
+
     uint32_t ssrc = 0;
     uint8_t payload_type = 0;
     uint16_t sequence_number = 0;
@@ -90,7 +94,7 @@ class media_track_resolver
     [[nodiscard]]
     std::size_t binding_count() const;
 
-   private:
+   public:
     struct media_track_binding
     {
         std::string remote_endpoint;
@@ -98,6 +102,10 @@ class media_track_resolver
         std::string session_id;
         std::string mid;
         std::string kind;
+
+        bool rtx = false;
+        uint32_t rtx_primary_ssrc = 0;
+        uint32_t rtx_repair_ssrc = 0;
 
         uint32_t ssrc = 0;
         uint8_t payload_type = 0;

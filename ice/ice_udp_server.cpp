@@ -4021,7 +4021,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     {
         WEBRTC_LOG_DEBUG(
             "media track resolved remote={} action={} stream={} session={} state={} mid={} kind={} ssrc={} sequence={} payload_type={} "
-            "newly_bound={} has_twcc={} twcc={}",
+            "newly_bound={} has_twcc={} twcc={} rtx={} rtx_primary_ssrc={} rtx_repair_ssrc={}",
             remote_address,
             media_route_action_to_string(route.action),
             track_resolution->stream_id,
@@ -4036,7 +4036,10 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
             track_resolution->transport_wide_sequence_number.has_value() ? 1 : 0,
             track_resolution->transport_wide_sequence_number.has_value()
                 ? static_cast<unsigned int>(*track_resolution->transport_wide_sequence_number)
-                : 0U);
+                : 0U,
+            track_resolution->rtx ? 1 : 0,
+            track_resolution->rtx_primary_ssrc,
+            track_resolution->rtx_repair_ssrc);
     }
 
     WEBRTC_LOG_DEBUG("media route resolved remote={} action={} stream={} session={} targets={}",
@@ -4715,8 +4718,10 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(con
                                                               subscriber_mid,
                                                               track_resolution->kind,
                                                               track_resolution->ssrc,
-                                                              now_milliseconds());
-
+                                                              now_milliseconds(),
+                                                              track_resolution->rtx,
+                                                              track_resolution->rtx_primary_ssrc,
+                                                              track_resolution->rtx_repair_ssrc);
     if (!mapping_result)
     {
         WEBRTC_LOG_WARN("media ssrc mapping failed stream={} publisher_session={} subscriber_session={} mid={} ssrc={} error={}",

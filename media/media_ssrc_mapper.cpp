@@ -129,7 +129,10 @@ media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping(std::string_v
                                                                    std::string_view subscriber_mid,
                                                                    std::string_view kind,
                                                                    uint32_t publisher_ssrc,
-                                                                   uint64_t now_milliseconds)
+                                                                   uint64_t now_milliseconds,
+                                                                   bool rtx,
+                                                                   uint32_t publisher_rtx_primary_ssrc,
+                                                                   uint32_t publisher_rtx_repair_ssrc)
 {
     auto validation_result =
         validate_mapping_input(stream_id, publisher_session_id, subscriber_session_id, publisher_mid, subscriber_mid, publisher_ssrc);
@@ -147,6 +150,13 @@ media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping(std::string_v
 
     if (iterator != mappings_by_publisher_key_.end())
     {
+        iterator->second.last_used_at_milliseconds = now_milliseconds;
+
+        iterator->second.rtx = rtx;
+
+        iterator->second.publisher_rtx_primary_ssrc = publisher_rtx_primary_ssrc;
+
+        iterator->second.publisher_rtx_repair_ssrc = publisher_rtx_repair_ssrc;
         iterator->second.last_used_at_milliseconds = now_milliseconds;
 
         iterator->second.packet_count += 1;
@@ -167,6 +177,12 @@ media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping(std::string_v
     mapping.subscriber_mid = std::string(subscriber_mid);
 
     mapping.kind = std::string(kind);
+
+    mapping.rtx = rtx;
+
+    mapping.publisher_rtx_primary_ssrc = publisher_rtx_primary_ssrc;
+
+    mapping.publisher_rtx_repair_ssrc = publisher_rtx_repair_ssrc;
 
     mapping.publisher_ssrc = publisher_ssrc;
 
@@ -437,6 +453,10 @@ void media_ssrc_mapper::erase_mapping_locked(const std::string& publisher_key)
 
 bool media_ssrc_mapping_requires_rewrite(const media_ssrc_mapping& mapping) { return mapping.publisher_ssrc != mapping.subscriber_ssrc; }
 
+bool media_ssrc_mapping_is_rtx(const media_ssrc_mapping& mapping) { return mapping.rtx; }
+
+bool media_ssrc_mapping_is_primary_video(const media_ssrc_mapping& mapping) { return mapping.kind == "video" && !mapping.rtx; }
+
 std::string media_ssrc_mapping_to_string(const media_ssrc_mapping& mapping)
 {
     std::string result;
@@ -461,6 +481,17 @@ std::string media_ssrc_mapping_to_string(const media_ssrc_mapping& mapping)
     result.append(" kind=");
     result.append(mapping.kind);
 
+    result.append(" rtx=");
+    result.append(mapping.rtx ? "1" : "0");
+
+    if (mapping.rtx)
+    {
+        result.append(" publisher_rtx_primary_ssrc=");
+        result.append(std::to_string(mapping.publisher_rtx_primary_ssrc));
+
+        result.append(" publisher_rtx_repair_ssrc=");
+        result.append(std::to_string(mapping.publisher_rtx_repair_ssrc));
+    }
     result.append(" publisher_ssrc=");
     result.append(std::to_string(mapping.publisher_ssrc));
 

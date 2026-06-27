@@ -267,11 +267,67 @@ void fill_resolution_from_header(media_track_resolution& resolution, const rtp_p
     resolution.timestamp = header.timestamp;
 }
 
+void fill_resolution_rtx_from_media(media_track_resolution& resolution, const sdp::media_summary& media)
+{
+    resolution.rtx = false;
+    resolution.rtx_primary_ssrc = 0;
+    resolution.rtx_repair_ssrc = 0;
+
+    const std::optional<uint32_t> primary_ssrc = sdp::find_rtx_primary_ssrc(media, resolution.ssrc);
+
+    if (primary_ssrc.has_value())
+    {
+        resolution.rtx = true;
+        resolution.rtx_primary_ssrc = *primary_ssrc;
+        resolution.rtx_repair_ssrc = resolution.ssrc;
+
+        return;
+    }
+
+    const std::optional<uint32_t> repair_ssrc = sdp::find_rtx_repair_ssrc(media, resolution.ssrc);
+
+    if (repair_ssrc.has_value())
+    {
+        resolution.rtx = false;
+        resolution.rtx_primary_ssrc = resolution.ssrc;
+        resolution.rtx_repair_ssrc = *repair_ssrc;
+    }
+}
+
+void fill_binding_rtx_from_media(media_track_resolver::media_track_binding& binding, const sdp::media_summary& media)
+{
+    binding.rtx = false;
+    binding.rtx_primary_ssrc = 0;
+    binding.rtx_repair_ssrc = 0;
+
+    const std::optional<uint32_t> primary_ssrc = sdp::find_rtx_primary_ssrc(media, binding.ssrc);
+
+    if (primary_ssrc.has_value())
+    {
+        binding.rtx = true;
+        binding.rtx_primary_ssrc = *primary_ssrc;
+        binding.rtx_repair_ssrc = binding.ssrc;
+
+        return;
+    }
+
+    const std::optional<uint32_t> repair_ssrc = sdp::find_rtx_repair_ssrc(media, binding.ssrc);
+
+    if (repair_ssrc.has_value())
+    {
+        binding.rtx = false;
+        binding.rtx_primary_ssrc = binding.ssrc;
+        binding.rtx_repair_ssrc = *repair_ssrc;
+    }
+}
+
 void fill_resolution_from_media(media_track_resolution& resolution, const sdp::media_summary& media)
 {
     resolution.mid = media.mid;
 
     resolution.kind = media.kind;
+
+    fill_resolution_rtx_from_media(resolution, media);
 }
 
 void fill_resolution_from_values(media_track_resolution& resolution, const rtp_header_extension_values& values)
@@ -367,10 +423,11 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
                 updated_binding.payload_type = header->payload_type;
 
+                fill_binding_rtx_from_media(updated_binding, *media);
+
                 updated_binding.packet_count += 1;
 
                 remember_binding_locked(updated_binding);
-
                 return resolution;
             }
 
@@ -417,14 +474,19 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
             fill_resolution_from_values(resolution, match->values);
 
-            WEBRTC_LOG_INFO("media track bound by mid remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={}",
-                            remote_endpoint,
-                            stream_id,
-                            session_id,
-                            resolution.mid,
-                            resolution.kind,
-                            resolution.ssrc,
-                            static_cast<unsigned int>(resolution.payload_type));
+            WEBRTC_LOG_INFO(
+                "media track bound by mid remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={} rtx={} rtx_primary_ssrc={} "
+                "rtx_repair_ssrc={}",
+                remote_endpoint,
+                stream_id,
+                session_id,
+                resolution.mid,
+                resolution.kind,
+                resolution.ssrc,
+                static_cast<unsigned int>(resolution.payload_type),
+                resolution.rtx ? 1 : 0,
+                resolution.rtx_primary_ssrc,
+                resolution.rtx_repair_ssrc);
 
             return resolution;
         }
@@ -470,14 +532,19 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
         fill_resolution_from_values(resolution, values);
 
-        WEBRTC_LOG_INFO("media track bound by payload type remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={}",
-                        remote_endpoint,
-                        stream_id,
-                        session_id,
-                        resolution.mid,
-                        resolution.kind,
-                        resolution.ssrc,
-                        static_cast<unsigned int>(resolution.payload_type));
+        WEBRTC_LOG_INFO(
+            "media track bound by mid remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={} rtx={} rtx_primary_ssrc={} "
+            "rtx_repair_ssrc={}",
+            remote_endpoint,
+            stream_id,
+            session_id,
+            resolution.mid,
+            resolution.kind,
+            resolution.ssrc,
+            static_cast<unsigned int>(resolution.payload_type),
+            resolution.rtx ? 1 : 0,
+            resolution.rtx_primary_ssrc,
+            resolution.rtx_repair_ssrc);
 
         return resolution;
     }
@@ -520,14 +587,19 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
         fill_resolution_from_values(resolution, values);
 
-        WEBRTC_LOG_INFO("media track bound by single media remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={}",
-                        remote_endpoint,
-                        stream_id,
-                        session_id,
-                        resolution.mid,
-                        resolution.kind,
-                        resolution.ssrc,
-                        static_cast<unsigned int>(resolution.payload_type));
+        WEBRTC_LOG_INFO(
+            "media track bound by mid remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={} rtx={} rtx_primary_ssrc={} "
+            "rtx_repair_ssrc={}",
+            remote_endpoint,
+            stream_id,
+            session_id,
+            resolution.mid,
+            resolution.kind,
+            resolution.ssrc,
+            static_cast<unsigned int>(resolution.payload_type),
+            resolution.rtx ? 1 : 0,
+            resolution.rtx_primary_ssrc,
+            resolution.rtx_repair_ssrc);
 
         return resolution;
     }

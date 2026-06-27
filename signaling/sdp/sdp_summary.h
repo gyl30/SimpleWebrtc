@@ -25,16 +25,22 @@ struct codec_info
     std::string fmtp;
     std::vector<std::string> rtcp_feedback;
 };
-
+struct ssrc_group_summary
+{
+    std::string semantics;
+    std::vector<uint32_t> ssrcs;
+};
 struct media_summary
 {
     std::string kind;
     std::string mid;
     media_direction direction = media_direction::unknown;
     bool rtcp_mux = false;
+
     std::vector<uint16_t> payload_types;
     std::vector<codec_info> codecs;
     std::vector<rtp_header_extension> header_extensions;
+    std::vector<ssrc_group_summary> ssrc_groups;
 };
 
 struct webrtc_offer_summary
@@ -48,6 +54,15 @@ struct webrtc_offer_summary
 };
 
 using webrtc_offer_summary_result = std::expected<webrtc_offer_summary, std::string>;
+
+[[nodiscard]]
+std::optional<uint32_t> find_rtx_primary_ssrc(const media_summary& media, uint32_t repair_ssrc);
+
+[[nodiscard]]
+std::optional<uint32_t> find_rtx_repair_ssrc(const media_summary& media, uint32_t primary_ssrc);
+
+[[nodiscard]]
+bool media_ssrc_is_rtx_repair(const media_summary& media, uint32_t ssrc);
 
 [[nodiscard]] webrtc_offer_summary_result extract_webrtc_offer_summary(const session_description& description);
 }    // namespace webrtc::sdp

@@ -451,6 +451,88 @@ std::expected<void, std::string> parse_codecs(media_summary& summary, const medi
     return {};
 }
 
+std::optional<uint32_t> parse_u32_text(std::string_view value)
+{
+    value = trim(value);
+
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    uint32_t result = 0;
+
+    const auto parse_result = std::from_chars(value.data(), value.data() + value.size(), result);
+
+    if (parse_result.ec != std::errc() || parse_result.ptr != value.data() + value.size())
+    {
+        return std::nullopt;
+    }
+
+    return result;
+}
+
+bool equals_ignore_case_ascii(std::string_view left, std::string_view right)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < left.size(); ++index)
+    {
+        const char left_char = static_cast<char>(std::tolower(static_cast<unsigned char>(left[index])));
+
+        const char right_char = static_cast<char>(std::tolower(static_cast<unsigned char>(right[index])));
+
+        if (left_char != right_char)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::expected<void, std::string> parse_ssrc_groups(media_summary& summary, const media_description& media)
+{
+    const auto attributes = media.find_attributes("ssrc-group");
+
+    for (const auto* attribute : attributes)
+    {
+        const std::string_view value = attribute->value;
+
+        const auto fields = split_whitespace(value);
+
+        if (fields.size() < 2)
+        {
+            continue;
+        }
+
+        ssrc_group_summary group;
+
+        group.semantics = std::string(fields[0]);
+
+        for (std::size_t index = 1; index < fields.size(); ++index)
+        {
+            const std::optional<uint32_t> ssrc = parse_u32_text(fields[index]);
+
+            if (!ssrc.has_value() || *ssrc == 0)
+            {
+                return make_error("invalid ssrc-group ssrc");
+            }
+
+            group.ssrcs.push_back(*ssrc);
+        }
+
+        if (!group.semantics.empty() && !group.ssrcs.empty())
+        {
+            summary.ssrc_groups.push_back(std::move(group));
+        }
+    }
+
+    return {};
+}
 std::expected<void, std::string> parse_header_extensions(media_summary& summary, const media_description& media)
 {
     const auto ext_map_attributes = media.find_attributes(k_attribute_ext_map);
@@ -539,9 +621,17 @@ std::expected<media_summary, std::string> parse_media_summary(const session_desc
     }
 
     auto header_extension_result = parse_header_extensions(summary, media);
+
     if (!header_extension_result)
     {
         return make_error(header_extension_result.error());
+    }
+
+    auto ssrc_group_result = parse_ssrc_groups(summary, media);
+
+    if (!ssrc_group_result)
+    {
+        return make_error(ssrc_group_result.error());
     }
 
     return summary;
@@ -656,4 +746,61 @@ webrtc_offer_summary_result extract_webrtc_offer_summary(const session_descripti
 
     return summary;
 }
+std::optional<uint32_t> find_rtx_primary_ssrc(const media_summary& media, uint32_t repair_ssrc)
+{
+    if (repair_ssrc == 0)
+    {
+        return std::nullopt;
+    }
+
+    for (const auto& group : media.ssrc_groups)
+    {
+        if (!equals_ignore_case_ascii(group.semantics, "FID"))
+        {
+            continue;
+        }
+
+        if (group.ssrcs.size() < 2)
+        {
+            continue;
+        }
+
+        if (group.ssrcs[1] == repair_ssrc)
+        {
+            return group.ssrcs[0];
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<uint32_t> find_rtx_repair_ssrc(const media_summary& media, uint32_t primary_ssrc)
+{
+    if (primary_ssrc == 0)
+    {
+        return std::nullopt;
+    }
+
+    for (const auto& group : media.ssrc_groups)
+    {
+        if (!equals_ignore_case_ascii(group.semantics, "FID"))
+        {
+            continue;
+        }
+
+        if (group.ssrcs.size() < 2)
+        {
+            continue;
+        }
+
+        if (group.ssrcs[0] == primary_ssrc)
+        {
+            return group.ssrcs[1];
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool media_ssrc_is_rtx_repair(const media_summary& media, uint32_t ssrc) { return find_rtx_primary_ssrc(media, ssrc).has_value(); }
 }    // namespace webrtc::sdp
