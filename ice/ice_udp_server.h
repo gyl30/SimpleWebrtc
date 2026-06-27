@@ -292,6 +292,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void erase_candidate_pairs_for_endpoint_locked(std::string_view remote_address);
 
+    [[nodiscard]]
+    std::vector<std::string> erase_endpoint_indexes_for_session_locked(std::string_view session_id);
+
+    void erase_endpoint_indexes_for_remote_locked(std::string_view remote_address);
+
+    [[nodiscard]]
+    std::size_t erase_orphan_endpoint_indexes_locked();
+
     void erase_payload_type_mappings_for_session_locked(std::string_view session_id);
 
     [[nodiscard]]

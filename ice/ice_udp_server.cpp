@@ -1407,31 +1407,28 @@ void ice_udp_server::forget_session(std::string_view session_id)
 
     {
         std::lock_guard lock(endpoint_mutex_);
+        const std::vector<std::string> erased_remote_addresses = erase_endpoint_indexes_for_session_locked(session_id);
 
-        const std::string session_id_text(session_id);
-
-        const auto iterator = endpoint_address_by_session_id_.find(session_id_text);
-
-        if (iterator == endpoint_address_by_session_id_.end())
+        if (erased_remote_addresses.empty())
         {
             WEBRTC_LOG_DEBUG("ice udp session endpoint not found session={}", session_id);
         }
         else
         {
-            remote_address = iterator->second;
-
-            endpoint_address_by_session_id_.erase(iterator);
-
-            session_id_by_endpoint_address_.erase(remote_address);
-
-            endpoints_by_address_.erase(remote_address);
-
-            endpoint_last_seen_milliseconds_by_address_.erase(remote_address);
+            remote_address = erased_remote_addresses.front();
 
             endpoint_removed = true;
         }
 
         erase_candidate_pairs_for_session_locked(session_id);
+
+        const std::size_t orphan_endpoint_indexes_erased = erase_orphan_endpoint_indexes_locked();
+
+        if (orphan_endpoint_indexes_erased != 0)
+        {
+            WEBRTC_LOG_INFO(
+                "ice udp orphan endpoint indexes erased during session cleanup session={} count={}", session_id, orphan_endpoint_indexes_erased);
+        }
 
         erase_payload_type_mappings_for_session_locked(session_id);
 
@@ -1571,14 +1568,18 @@ std::vector<std::string> ice_udp_server::collect_idle_session_ids(uint64_t curre
         }
 
         const auto session_iterator = session_id_by_endpoint_address_.find(remote_address);
-
         if (session_iterator == session_id_by_endpoint_address_.end())
         {
+            const std::string orphan_remote_address = remote_address;
+
             iterator = endpoint_last_seen_milliseconds_by_address_.erase(iterator);
+
+            erase_candidate_pairs_for_endpoint_locked(orphan_remote_address);
+
+            WEBRTC_LOG_DEBUG("ice endpoint idle removed orphan last seen remote={}", orphan_remote_address);
 
             continue;
         }
-
         expired_session_ids.push_back(session_iterator->second);
 
         ++iterator;
@@ -5583,18 +5584,7 @@ std::expected<ice_udp_server::ice_candidate_pair_selection_result, std::string> 
 
         result.previous_remote_address = current_selection->second;
 
-        session_id_by_endpoint_address_.erase(result.previous_remote_address);
-
-        endpoints_by_address_.erase(result.previous_remote_address);
-
-        const std::string previous_key = make_candidate_pair_key(session_id, result.previous_remote_address);
-
-        const auto previous_pair = candidate_pairs_by_key_.find(previous_key);
-
-        if (previous_pair != candidate_pairs_by_key_.end())
-        {
-            previous_pair->second.selected = false;
-        }
+        erase_endpoint_indexes_for_remote_locked(result.previous_remote_address);
     }
 
     endpoint_address_by_session_id_[std::string(session_id)] = remote_address;
@@ -5704,6 +5694,12 @@ void ice_udp_server::cleanup_unselected_candidate_pairs(uint64_t current_time_mi
 
         iterator = candidate_pairs_by_key_.erase(iterator);
     }
+    const std::size_t orphan_endpoint_indexes_erased = erase_orphan_endpoint_indexes_locked();
+
+    if (orphan_endpoint_indexes_erased != 0)
+    {
+        WEBRTC_LOG_INFO("ice orphan endpoint indexes erased during candidate cleanup count={}", orphan_endpoint_indexes_erased);
+    }
 }
 
 void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
@@ -5738,11 +5734,15 @@ void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
     {
         std::lock_guard lock(endpoint_mutex_);
 
-        endpoints_by_address_.erase(std::string(remote_address));
+        erase_endpoint_indexes_for_remote_locked(remote_address);
 
-        endpoint_last_seen_milliseconds_by_address_.erase(std::string(remote_address));
+        const std::size_t orphan_endpoint_indexes_erased = erase_orphan_endpoint_indexes_locked();
 
-        erase_candidate_pairs_for_endpoint_locked(remote_address);
+        if (orphan_endpoint_indexes_erased != 0)
+        {
+            WEBRTC_LOG_INFO(
+                "ice orphan endpoint indexes erased during peer endpoint cleanup remote={} count={}", remote_address, orphan_endpoint_indexes_erased);
+        }
     }
     send_dtls_close_notify(remote_address);
     forget_peer_transport_state(remote_address);
@@ -5871,6 +5871,194 @@ void ice_udp_server::erase_candidate_pairs_for_endpoint_locked(std::string_view 
 
         ++iterator;
     }
+}
+
+std::vector<std::string> ice_udp_server::erase_endpoint_indexes_for_session_locked(std::string_view session_id)
+{
+    std::vector<std::string> remote_addresses;
+
+    if (session_id.empty())
+    {
+        return remote_addresses;
+    }
+
+    const std::string session_key(session_id);
+
+    const auto forward_iterator = endpoint_address_by_session_id_.find(session_key);
+
+    if (forward_iterator != endpoint_address_by_session_id_.end())
+    {
+        if (!contains_string(remote_addresses, forward_iterator->second))
+        {
+            remote_addresses.push_back(forward_iterator->second);
+        }
+    }
+
+    for (const auto& [remote_address, current_session_id] : session_id_by_endpoint_address_)
+    {
+        if (current_session_id != session_key)
+        {
+            continue;
+        }
+
+        if (contains_string(remote_addresses, remote_address))
+        {
+            continue;
+        }
+
+        remote_addresses.push_back(remote_address);
+    }
+
+    for (const auto& [key, pair] : candidate_pairs_by_key_)
+    {
+        (void)key;
+
+        if (pair.session_id != session_key)
+        {
+            continue;
+        }
+
+        if (pair.remote_address.empty())
+        {
+            continue;
+        }
+
+        if (contains_string(remote_addresses, pair.remote_address))
+        {
+            continue;
+        }
+
+        remote_addresses.push_back(pair.remote_address);
+    }
+
+    endpoint_address_by_session_id_.erase(session_key);
+
+    for (const auto& remote_address : remote_addresses)
+    {
+        session_id_by_endpoint_address_.erase(remote_address);
+
+        endpoints_by_address_.erase(remote_address);
+
+        endpoint_last_seen_milliseconds_by_address_.erase(remote_address);
+    }
+
+    return remote_addresses;
+}
+
+void ice_udp_server::erase_endpoint_indexes_for_remote_locked(std::string_view remote_address)
+{
+    if (remote_address.empty())
+    {
+        return;
+    }
+
+    const std::string remote_key(remote_address);
+
+    const auto reverse_iterator = session_id_by_endpoint_address_.find(remote_key);
+
+    if (reverse_iterator != session_id_by_endpoint_address_.end())
+    {
+        const std::string session_id = reverse_iterator->second;
+
+        session_id_by_endpoint_address_.erase(reverse_iterator);
+
+        const auto forward_iterator = endpoint_address_by_session_id_.find(session_id);
+
+        if (forward_iterator != endpoint_address_by_session_id_.end() && forward_iterator->second == remote_key)
+        {
+            endpoint_address_by_session_id_.erase(forward_iterator);
+        }
+    }
+
+    for (auto iterator = endpoint_address_by_session_id_.begin(); iterator != endpoint_address_by_session_id_.end();)
+    {
+        if (iterator->second == remote_key)
+        {
+            iterator = endpoint_address_by_session_id_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    endpoints_by_address_.erase(remote_key);
+
+    endpoint_last_seen_milliseconds_by_address_.erase(remote_key);
+
+    erase_candidate_pairs_for_endpoint_locked(remote_key);
+}
+
+std::size_t ice_udp_server::erase_orphan_endpoint_indexes_locked()
+{
+    std::vector<std::string> orphan_remote_addresses;
+
+    for (const auto& [remote_address, session_id] : session_id_by_endpoint_address_)
+    {
+        const auto forward_iterator = endpoint_address_by_session_id_.find(session_id);
+
+        if (forward_iterator != endpoint_address_by_session_id_.end() && forward_iterator->second == remote_address)
+        {
+            continue;
+        }
+
+        if (!contains_string(orphan_remote_addresses, remote_address))
+        {
+            orphan_remote_addresses.push_back(remote_address);
+        }
+    }
+
+    for (const auto& [session_id, remote_address] : endpoint_address_by_session_id_)
+    {
+        const auto reverse_iterator = session_id_by_endpoint_address_.find(remote_address);
+
+        if (reverse_iterator != session_id_by_endpoint_address_.end() && reverse_iterator->second == session_id)
+        {
+            continue;
+        }
+
+        if (!contains_string(orphan_remote_addresses, remote_address))
+        {
+            orphan_remote_addresses.push_back(remote_address);
+        }
+    }
+
+    for (const auto& [remote_address, endpoint] : endpoints_by_address_)
+    {
+        (void)endpoint;
+
+        if (session_id_by_endpoint_address_.contains(remote_address))
+        {
+            continue;
+        }
+
+        if (!contains_string(orphan_remote_addresses, remote_address))
+        {
+            orphan_remote_addresses.push_back(remote_address);
+        }
+    }
+
+    for (const auto& [remote_address, last_seen] : endpoint_last_seen_milliseconds_by_address_)
+    {
+        (void)last_seen;
+
+        if (session_id_by_endpoint_address_.contains(remote_address))
+        {
+            continue;
+        }
+
+        if (!contains_string(orphan_remote_addresses, remote_address))
+        {
+            orphan_remote_addresses.push_back(remote_address);
+        }
+    }
+
+    for (const auto& remote_address : orphan_remote_addresses)
+    {
+        erase_endpoint_indexes_for_remote_locked(remote_address);
+    }
+
+    return orphan_remote_addresses.size();
 }
 
 void ice_udp_server::erase_payload_type_mappings_for_session_locked(std::string_view session_id)
