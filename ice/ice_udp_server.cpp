@@ -231,6 +231,47 @@ void add_lifecycle_inconsistency(lifecycle_debug_snapshot& snapshot, std::string
     snapshot.inconsistency_count = to_debug_count(snapshot.inconsistencies.size());
 }
 
+void add_lifecycle_residual(lifecycle_debug_snapshot& snapshot, std::string message) { snapshot.residuals.push_back(std::move(message)); }
+
+lifecycle_debug_session_entry* find_lifecycle_debug_session_entry(std::vector<lifecycle_debug_session_entry>& sessions, std::string_view session_id)
+{
+    for (auto& session : sessions)
+    {
+        if (session.session_id == session_id)
+        {
+            return &session;
+        }
+    }
+
+    return nullptr;
+}
+
+bool lifecycle_debug_endpoint_exists(const std::vector<lifecycle_debug_endpoint_entry>& endpoints, std::string_view endpoint)
+{
+    for (const auto& entry : endpoints)
+    {
+        if (entry.endpoint == endpoint)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool lifecycle_debug_session_exists(const std::vector<lifecycle_debug_session_entry>& sessions, std::string_view session_id)
+{
+    for (const auto& entry : sessions)
+    {
+        if (entry.session_id == session_id)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
 {
     return snapshot.endpoint_count == 0 && snapshot.endpoint_session_index_count == 0 && snapshot.endpoint_reverse_index_count == 0 &&
@@ -1788,6 +1829,20 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             {
                 snapshot.registry_pending_session_count += 1;
             }
+
+            lifecycle_debug_session_entry entry;
+
+            entry.kind = std::string(stream_session_kind_to_string(session.kind));
+
+            entry.stream_id = session.stream_id;
+            entry.session_id = session.session_id;
+
+            entry.state = std::string(session_state_to_string(session.state));
+
+            entry.created_at_milliseconds = session.created_at_milliseconds;
+            entry.updated_at_milliseconds = session.updated_at_milliseconds;
+
+            snapshot.sessions.push_back(std::move(entry));
         }
 
         snapshot.registry_stream_count = to_debug_count(stream_ids.size());
@@ -1819,6 +1874,109 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.payload_type_mapping_count = to_debug_count(payload_type_mappings_by_key_.size());
 
         snapshot.keyframe_request_state_count = to_debug_count(keyframe_request_last_time_milliseconds_by_key_.size());
+        for (const auto& [endpoint, value] : endpoints_by_address_)
+        {
+            (void)value;
+
+            lifecycle_debug_endpoint_entry entry;
+
+            entry.endpoint = endpoint;
+            entry.has_endpoint = true;
+
+            const auto reverse_iterator = session_id_by_endpoint_address_.find(endpoint);
+
+            if (reverse_iterator != session_id_by_endpoint_address_.end())
+            {
+                entry.session_id = reverse_iterator->second;
+                entry.has_reverse_endpoint_index = true;
+            }
+
+            if (!entry.session_id.empty())
+            {
+                const auto forward_iterator = endpoint_address_by_session_id_.find(entry.session_id);
+
+                entry.has_forward_session_index = forward_iterator != endpoint_address_by_session_id_.end() && forward_iterator->second == endpoint;
+            }
+
+            const auto last_seen_iterator = endpoint_last_seen_milliseconds_by_address_.find(endpoint);
+
+            if (last_seen_iterator != endpoint_last_seen_milliseconds_by_address_.end())
+            {
+                entry.has_last_seen = true;
+                entry.last_seen_milliseconds = last_seen_iterator->second;
+            }
+
+            if (!entry.session_id.empty())
+            {
+                lifecycle_debug_session_entry* session_entry = find_lifecycle_debug_session_entry(snapshot.sessions, entry.session_id);
+
+                if (session_entry != nullptr)
+                {
+                    session_entry->endpoint = endpoint;
+                    session_entry->has_endpoint = true;
+                }
+            }
+
+            snapshot.endpoints.push_back(std::move(entry));
+        }
+
+        for (const auto& [session_id, endpoint] : endpoint_address_by_session_id_)
+        {
+            if (lifecycle_debug_endpoint_exists(snapshot.endpoints, endpoint))
+            {
+                continue;
+            }
+
+            lifecycle_debug_endpoint_entry entry;
+
+            entry.endpoint = endpoint;
+            entry.session_id = session_id;
+            entry.has_endpoint = false;
+            entry.has_forward_session_index = true;
+
+            const auto reverse_iterator = session_id_by_endpoint_address_.find(endpoint);
+
+            entry.has_reverse_endpoint_index = reverse_iterator != session_id_by_endpoint_address_.end() && reverse_iterator->second == session_id;
+
+            const auto last_seen_iterator = endpoint_last_seen_milliseconds_by_address_.find(endpoint);
+
+            if (last_seen_iterator != endpoint_last_seen_milliseconds_by_address_.end())
+            {
+                entry.has_last_seen = true;
+                entry.last_seen_milliseconds = last_seen_iterator->second;
+            }
+
+            snapshot.endpoints.push_back(std::move(entry));
+        }
+
+        for (const auto& [endpoint, session_id] : session_id_by_endpoint_address_)
+        {
+            if (lifecycle_debug_endpoint_exists(snapshot.endpoints, endpoint))
+            {
+                continue;
+            }
+
+            lifecycle_debug_endpoint_entry entry;
+
+            entry.endpoint = endpoint;
+            entry.session_id = session_id;
+            entry.has_endpoint = false;
+            entry.has_reverse_endpoint_index = true;
+
+            const auto forward_iterator = endpoint_address_by_session_id_.find(session_id);
+
+            entry.has_forward_session_index = forward_iterator != endpoint_address_by_session_id_.end() && forward_iterator->second == endpoint;
+
+            const auto last_seen_iterator = endpoint_last_seen_milliseconds_by_address_.find(endpoint);
+
+            if (last_seen_iterator != endpoint_last_seen_milliseconds_by_address_.end())
+            {
+                entry.has_last_seen = true;
+                entry.last_seen_milliseconds = last_seen_iterator->second;
+            }
+
+            snapshot.endpoints.push_back(std::move(entry));
+        }
     }
 
     if (dtls_transport_ != nullptr)
@@ -1885,7 +2043,90 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
     {
         add_lifecycle_inconsistency(snapshot, "registry is empty but runtime state remains");
     }
+    for (const auto& endpoint : snapshot.endpoints)
+    {
+        if (!endpoint.session_id.empty() && !lifecycle_debug_session_exists(snapshot.sessions, endpoint.session_id))
+        {
+            add_lifecycle_inconsistency(
+                snapshot, "endpoint references missing registry session endpoint=" + endpoint.endpoint + " session=" + endpoint.session_id);
+        }
 
+        if (endpoint.has_forward_session_index != endpoint.has_reverse_endpoint_index)
+        {
+            add_lifecycle_inconsistency(snapshot,
+                                        "endpoint forward reverse index mismatch endpoint=" + endpoint.endpoint + " session=" + endpoint.session_id);
+        }
+
+        if (!endpoint.has_endpoint)
+        {
+            add_lifecycle_inconsistency(
+                snapshot, "endpoint index remains without endpoint object endpoint=" + endpoint.endpoint + " session=" + endpoint.session_id);
+        }
+    }
+
+    for (const auto& session : snapshot.sessions)
+    {
+        const bool pending = session.state == "created" || session.state == "sdp_received" || session.state == "sdp_answered";
+
+        if (!pending && !session.has_endpoint)
+        {
+            add_lifecycle_inconsistency(snapshot,
+                                        "active registry session has no endpoint session=" + session.session_id + " stream=" + session.stream_id);
+        }
+    }
+
+    if (snapshot.registry_session_count == 0)
+    {
+        if (snapshot.endpoint_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "endpoint remains count=" + std::to_string(snapshot.endpoint_count));
+        }
+
+        if (snapshot.dtls_peer_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "dtls peer remains count=" + std::to_string(snapshot.dtls_peer_count));
+        }
+
+        if (snapshot.srtp_peer_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "srtp peer remains count=" + std::to_string(snapshot.srtp_peer_count));
+        }
+
+        if (snapshot.media_router_peer_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "media router peer remains count=" + std::to_string(snapshot.media_router_peer_count));
+        }
+
+        if (snapshot.track_binding_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "track binding remains count=" + std::to_string(snapshot.track_binding_count));
+        }
+
+        if (snapshot.ssrc_mapping_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "ssrc mapping remains count=" + std::to_string(snapshot.ssrc_mapping_count));
+        }
+
+        if (snapshot.payload_type_mapping_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "payload type mapping remains count=" + std::to_string(snapshot.payload_type_mapping_count));
+        }
+
+        if (snapshot.keyframe_request_state_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "keyframe request state remains count=" + std::to_string(snapshot.keyframe_request_state_count));
+        }
+
+        if (snapshot.rtcp_report_source_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "rtcp report source remains count=" + std::to_string(snapshot.rtcp_report_source_count));
+        }
+
+        if (snapshot.rtp_cache_packet_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "rtp cache packet remains count=" + std::to_string(snapshot.rtp_cache_packet_count));
+        }
+    }
     snapshot.idle_clean = snapshot.registry_session_count == 0 && lifecycle_runtime_state_is_empty(snapshot);
 
     snapshot.inconsistency_count = to_debug_count(snapshot.inconsistencies.size());
