@@ -445,6 +445,10 @@ void media_router::observe_inbound_track(const media_peer_info& peer,
     {
         return;
     }
+    if (track_resolution.rtx)
+    {
+        return;
+    }
 
     if (track_resolution.stream_id.empty() || track_resolution.session_id.empty() || track_resolution.mid.empty() || track_resolution.kind.empty() ||
         track_resolution.ssrc == 0)
@@ -478,6 +482,10 @@ void media_router::observe_outbound_track(const media_peer_info& peer,
     }
 
     if (mapping.stream_id.empty() || mapping.subscriber_session_id.empty() || mapping.subscriber_mid.empty() || mapping.kind.empty())
+    {
+        return;
+    }
+    if (media_ssrc_mapping_is_rtx(mapping))
     {
         return;
     }

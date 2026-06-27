@@ -236,7 +236,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void observe_inbound_rtcp_sender_reports(const media_peer_info& peer, const srtp_packet_process_result& packet);
 
-    void observe_outbound_rtp_stats(const media_peer_info& target_peer, std::span<const uint8_t> outbound_plain_packet);
+    void observe_outbound_rtp_stats(const media_peer_info& target_peer,
+                                    std::span<const uint8_t> outbound_plain_packet,
+                                    const std::optional<media_ssrc_mapping>& mapping);
+
+    [[nodiscard]]
+    std::optional<media_ssrc_mapping> find_outbound_ssrc_mapping(const media_peer_info& target_peer,
+                                                                 std::span<const uint8_t> outbound_plain_packet) const;
 
     [[nodiscard]]
     std::optional<media_payload_type_mapping_table> get_or_create_payload_type_mapping_table(const media_route_result& route,
@@ -445,7 +451,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void send_dtls_close_notify(std::string_view remote_address);
 
-    void observe_outbound_track_stats(const media_peer_info& target_peer, std::span<const uint8_t> outbound_plain_packet);
+    void observe_outbound_track_stats(const media_peer_info& target_peer,
+                                      std::span<const uint8_t> outbound_plain_packet,
+                                      const std::optional<media_ssrc_mapping>& mapping);
 
     [[nodiscard]]
     std::optional<std::vector<uint8_t>> make_forward_rtcp_feedback_packet(const srtp_packet_process_result& packet,
