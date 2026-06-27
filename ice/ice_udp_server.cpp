@@ -4830,19 +4830,21 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
                 return std::nullopt;
             }
 
-            if (!is_video_media_kind(mapping->kind))
+            if (!media_ssrc_mapping_is_primary_video(*mapping))
             {
                 WEBRTC_LOG_WARN(
-                    "rtcp feedback block rewrite skipped non video media stream={} subscriber_session={} feedback={} subscriber_ssrc={} kind={}",
+                    "rtcp feedback block rewrite skipped non primary video mapping stream={} subscriber_session={} feedback={} subscriber_ssrc={} "
+                    "publisher_ssrc={} kind={} rtx={}",
                     route.source.stream_id,
                     route.source.session_id,
                     event.feedback_name,
                     event.media_ssrc,
-                    mapping->kind);
+                    mapping->publisher_ssrc,
+                    mapping->kind,
+                    media_ssrc_mapping_is_rtx(*mapping) ? 1 : 0);
 
                 return std::nullopt;
             }
-
             rewrite.rewrite_media_ssrc = true;
             rewrite.source_media_ssrc = event.media_ssrc;
             rewrite.target_media_ssrc = mapping->publisher_ssrc;
@@ -4864,13 +4866,17 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
                 return std::nullopt;
             }
 
-            if (!is_video_media_kind(mapping->kind))
+            if (!media_ssrc_mapping_is_primary_video(*mapping))
             {
-                WEBRTC_LOG_WARN("rtcp fir block rewrite skipped non video media stream={} subscriber_session={} item_ssrc={} kind={}",
-                                route.source.stream_id,
-                                route.source.session_id,
-                                item.ssrc,
-                                mapping->kind);
+                WEBRTC_LOG_WARN(
+                    "rtcp fir block rewrite skipped non primary video mapping stream={} subscriber_session={} item_ssrc={} publisher_ssrc={} kind={} "
+                    "rtx={}",
+                    route.source.stream_id,
+                    route.source.session_id,
+                    item.ssrc,
+                    mapping->publisher_ssrc,
+                    mapping->kind,
+                    media_ssrc_mapping_is_rtx(*mapping) ? 1 : 0);
 
                 return std::nullopt;
             }
@@ -4899,17 +4905,20 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
                 return std::nullopt;
             }
 
-            if (!is_video_media_kind(mapping->kind))
+            if (!media_ssrc_mapping_is_primary_video(*mapping))
             {
-                WEBRTC_LOG_WARN("rtcp remb block rewrite skipped non video media stream={} subscriber_session={} remb_ssrc={} kind={}",
-                                route.source.stream_id,
-                                route.source.session_id,
-                                subscriber_ssrc,
-                                mapping->kind);
+                WEBRTC_LOG_WARN(
+                    "rtcp remb block rewrite skipped non primary video mapping stream={} subscriber_session={} remb_ssrc={} publisher_ssrc={} "
+                    "kind={} rtx={}",
+                    route.source.stream_id,
+                    route.source.session_id,
+                    subscriber_ssrc,
+                    mapping->publisher_ssrc,
+                    mapping->kind,
+                    media_ssrc_mapping_is_rtx(*mapping) ? 1 : 0);
 
                 return std::nullopt;
             }
-
             rtcp_feedback_block_ssrc_rewrite fci_rewrite;
             fci_rewrite.offset = 20 + i * 4;
             fci_rewrite.source_ssrc = subscriber_ssrc;
