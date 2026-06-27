@@ -63,6 +63,8 @@ inline constexpr std::string_view k_bearer_prefix = "Bearer ";
 
 inline constexpr std::string_view k_media_stats_path = "/api/stats/media";
 
+inline constexpr std::string_view k_debug_state_path = "/api/debug/state";
+
 inline constexpr std::string_view k_prometheus_metrics_path = "/metrics";
 
 std::string_view remove_query(std::string_view target)
@@ -389,6 +391,11 @@ http_response_ptr router::handle(http_request_t& request)
         return handle_media_stats(request);
     }
 
+    if (path == k_debug_state_path)
+    {
+        return handle_debug_state(request);
+    }
+
     if (path == k_prometheus_metrics_path)
     {
         return handle_prometheus_metrics(request);
@@ -430,6 +437,10 @@ void router::set_rtcp_report_runtime_snapshot_provider(rtcp_report_runtime_snaps
     rtcp_report_runtime_snapshot_provider_ = std::move(provider);
 
     WEBRTC_LOG_INFO("rtcp report runtime snapshot provider {}", rtcp_report_runtime_snapshot_provider_ ? "mounted" : "cleared");
+}
+void router::set_lifecycle_debug_snapshot_provider(lifecycle_debug_snapshot_provider provider)
+{
+    lifecycle_debug_snapshot_provider_ = std::move(provider);
 }
 
 void router::set_admin_token(std::string token) { admin_token_ = std::move(token); }
@@ -721,6 +732,23 @@ http_response_ptr router::handle_stream_keyframe(http_request_t& request, std::s
     }
 
     return json_response(request, 200, make_keyframe_request_response_body(*result));
+}
+
+http_response_ptr router::handle_debug_state(http_request_t& request)
+{
+    if (request.req.method() != http::verb::get)
+    {
+        return method_not_allowed(request);
+    }
+
+    if (!lifecycle_debug_snapshot_provider_)
+    {
+        return json_response(request, 503, json_error_body("debug state provider unavailable"));
+    }
+
+    const lifecycle_debug_snapshot snapshot = lifecycle_debug_snapshot_provider_();
+
+    return json_response(request, 200, lifecycle_debug_snapshot_to_json(snapshot));
 }
 
 http_response_ptr router::handle_media_stats(http_request_t& request)

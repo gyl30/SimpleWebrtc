@@ -18,6 +18,7 @@
 #include <boost/asio.hpp>
 
 #include "dtls/dtls_transport.h"
+#include "server/lifecycle_debug_json.h"
 #include "media/media_payload_type_mapper.h"
 #include "media/media_router.h"
 #include "media/keyframe_request.h"
@@ -100,6 +101,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
         return snapshot;
     }
+    [[nodiscard]]
+    lifecycle_debug_snapshot debug_state_snapshot() const;
 
    private:
     using udp = boost::asio::ip::udp;

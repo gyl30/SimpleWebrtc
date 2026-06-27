@@ -185,6 +185,27 @@ bool contains_string(const std::vector<std::string>& values, std::string_view va
     return false;
 }
 
+uint64_t to_debug_count(std::size_t value) { return static_cast<uint64_t>(value); }
+
+void add_lifecycle_inconsistency(lifecycle_debug_snapshot& snapshot, std::string message)
+{
+    snapshot.consistent = false;
+
+    snapshot.inconsistencies.push_back(std::move(message));
+
+    snapshot.inconsistency_count = to_debug_count(snapshot.inconsistencies.size());
+}
+
+bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
+{
+    return snapshot.endpoint_count == 0 && snapshot.endpoint_session_index_count == 0 && snapshot.endpoint_reverse_index_count == 0 &&
+           snapshot.endpoint_last_seen_count == 0 && snapshot.candidate_pair_count == 0 && snapshot.payload_type_mapping_count == 0 &&
+           snapshot.keyframe_request_state_count == 0 && snapshot.dtls_peer_count == 0 && snapshot.srtp_peer_count == 0 &&
+           snapshot.media_router_peer_count == 0 && snapshot.media_router_active_publisher_count == 0 &&
+           snapshot.media_router_active_subscriber_count == 0 && snapshot.track_binding_count == 0 && snapshot.ssrc_mapping_count == 0 &&
+           snapshot.rtcp_report_source_count == 0 && snapshot.rtp_cache_packet_count == 0;
+}
+
 uint16_t read_network_u16(std::span<const uint8_t> data, std::size_t offset)
 {
     return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
@@ -1689,6 +1710,144 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
 }
 
 uint16_t ice_udp_server::local_port() const { return bind_port_; }
+lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
+{
+    lifecycle_debug_snapshot snapshot;
+
+    std::vector<std::string> stream_ids;
+
+    if (registry_ != nullptr)
+    {
+        const std::vector<stream_session_lifecycle_snapshot> sessions = registry_->session_lifecycle_snapshots();
+
+        for (const auto& session : sessions)
+        {
+            snapshot.registry_session_count += 1;
+
+            if (!contains_string(stream_ids, session.stream_id))
+            {
+                stream_ids.push_back(session.stream_id);
+            }
+
+            if (session.kind == stream_session_kind::publisher)
+            {
+                snapshot.registry_publisher_count += 1;
+            }
+            else if (session.kind == stream_session_kind::subscriber)
+            {
+                snapshot.registry_subscriber_count += 1;
+            }
+
+            if (is_pending_connection_state(session.state))
+            {
+                snapshot.registry_pending_session_count += 1;
+            }
+        }
+
+        snapshot.registry_stream_count = to_debug_count(stream_ids.size());
+    }
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        snapshot.endpoint_count = to_debug_count(endpoints_by_address_.size());
+
+        snapshot.endpoint_session_index_count = to_debug_count(endpoint_address_by_session_id_.size());
+
+        snapshot.endpoint_reverse_index_count = to_debug_count(session_id_by_endpoint_address_.size());
+
+        snapshot.endpoint_last_seen_count = to_debug_count(endpoint_last_seen_milliseconds_by_address_.size());
+
+        snapshot.candidate_pair_count = to_debug_count(candidate_pairs_by_key_.size());
+
+        for (const auto& [key, pair] : candidate_pairs_by_key_)
+        {
+            (void)key;
+
+            if (pair.selected)
+            {
+                snapshot.selected_candidate_pair_count += 1;
+            }
+        }
+
+        snapshot.payload_type_mapping_count = to_debug_count(payload_type_mappings_by_key_.size());
+
+        snapshot.keyframe_request_state_count = to_debug_count(keyframe_request_last_time_milliseconds_by_key_.size());
+    }
+
+    if (dtls_transport_ != nullptr)
+    {
+        snapshot.dtls_peer_count = to_debug_count(dtls_transport_->peer_count());
+    }
+
+    if (srtp_transport_ != nullptr)
+    {
+        snapshot.srtp_peer_count = to_debug_count(srtp_transport_->peer_count());
+    }
+
+    if (media_router_ != nullptr)
+    {
+        const media_router_stats_snapshot media_snapshot = media_router_->get_stats_snapshot();
+
+        snapshot.media_router_peer_count = to_debug_count(media_snapshot.peers.size());
+
+        snapshot.media_router_stream_count = to_debug_count(media_snapshot.streams.size());
+
+        snapshot.media_router_active_publisher_count = media_snapshot.active_publisher_count;
+
+        snapshot.media_router_active_subscriber_count = media_snapshot.active_subscriber_count;
+    }
+
+    if (track_resolver_ != nullptr)
+    {
+        snapshot.track_binding_count = to_debug_count(track_resolver_->binding_count());
+    }
+
+    if (ssrc_mapper_ != nullptr)
+    {
+        snapshot.ssrc_mapping_count = to_debug_count(ssrc_mapper_->mapping_count());
+    }
+
+    if (rtcp_report_service_ != nullptr)
+    {
+        snapshot.rtcp_report_source_count = to_debug_count(rtcp_report_service_->source_count());
+
+        snapshot.rtcp_report_stats_source_count = to_debug_count(rtcp_report_service_->stats_source_count());
+    }
+
+    if (rtp_packet_cache_ != nullptr)
+    {
+        snapshot.rtp_cache_packet_count = to_debug_count(rtp_packet_cache_->size());
+    }
+
+    if (snapshot.endpoint_session_index_count != snapshot.endpoint_reverse_index_count)
+    {
+        add_lifecycle_inconsistency(snapshot, "endpoint session index count does not match reverse index count");
+    }
+
+    if (snapshot.endpoint_count < snapshot.endpoint_session_index_count)
+    {
+        add_lifecycle_inconsistency(snapshot, "endpoint count is smaller than session endpoint index count");
+    }
+
+    if (snapshot.endpoint_count < snapshot.endpoint_reverse_index_count)
+    {
+        add_lifecycle_inconsistency(snapshot, "endpoint count is smaller than endpoint session reverse index count");
+    }
+
+    if (snapshot.registry_session_count == 0 && !lifecycle_runtime_state_is_empty(snapshot))
+    {
+        add_lifecycle_inconsistency(snapshot, "registry is empty but runtime state remains");
+    }
+
+    snapshot.idle_clean = snapshot.registry_session_count == 0 && lifecycle_runtime_state_is_empty(snapshot);
+
+    snapshot.inconsistency_count = to_debug_count(snapshot.inconsistencies.size());
+
+    snapshot.consistent = snapshot.inconsistency_count == 0;
+
+    return snapshot;
+}
 
 ice_udp_server_result ice_udp_server::init_dtls_transport()
 {

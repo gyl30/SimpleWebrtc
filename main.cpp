@@ -359,6 +359,19 @@ int main(int argc, char* argv[])
             return server->rtcp_report_runtime_snapshot();
         });
 
+    http_router->set_lifecycle_debug_snapshot_provider(
+        [weak_ice_server = std::weak_ptr<webrtc::ice_udp_server>(ice_server)]() -> webrtc::lifecycle_debug_snapshot
+        {
+            auto server = weak_ice_server.lock();
+
+            if (server == nullptr)
+            {
+                return {};
+            }
+
+            return server->debug_state_snapshot();
+        });
+
     http_router->set_keyframe_request_handler(
         [ice_server](std::string_view stream_id) -> webrtc::keyframe_request_expected
         {

@@ -511,6 +511,13 @@ inline std::string serialize_struct(T& t)
     return sb.GetString();
 }
 template <typename T>
+inline std::string serialize_struct(const T& t)
+{
+    auto Temp = const_cast<T&>(t);
+    return serialize_struct(Temp);
+}
+
+template <typename T>
 inline std::string serialize_struct_pretty(T& t)
 {
     rapidjson::StringBuffer sb;
