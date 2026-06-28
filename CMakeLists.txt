@@ -181,6 +181,7 @@ set(WEBRTC_SOURCES
     server/router.cpp
     server/whip_handler.cpp
     server/whep_handler.cpp
+    server/runtime_offer_filter.cpp
     session/publisher_session.cpp
     session/subscriber_session.cpp
     session/stream_registry.cpp

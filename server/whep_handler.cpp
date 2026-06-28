@@ -14,6 +14,7 @@
 #include "server/signaling_json.h"
 #include "server/trickle_ice_http.h"
 #include "server/trickle_ice_patch_handler.h"
+#include "server/runtime_offer_filter.h"
 #include "signaling/sdp/sdp_offer_validator.h"
 #include "signaling/sdp/sdp_parser.h"
 #include "signaling/sdp/sdp_summary.h"
@@ -38,185 +39,6 @@ std::string make_prefixed_error(std::string_view prefix, std::string_view error)
     message.append(error);
 
     return message;
-}
-std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
-
-bool contains_mid(const std::vector<std::string>& mids, std::string_view mid)
-{
-    for (const auto& current : mids)
-    {
-        if (current == mid)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-std::expected<std::vector<std::string>, std::string> collect_accepted_answer_mids(std::string_view answer_sdp)
-{
-    auto answer_description = sdp::parse_session_description(answer_sdp);
-
-    if (!answer_description)
-    {
-        std::string message = "accepted media parse answer failed: ";
-
-        message.append(answer_description.error());
-
-        return std::unexpected(std::move(message));
-    }
-
-    std::vector<std::string> accepted_mids;
-
-    for (const auto& media : answer_description->media_descriptions)
-    {
-        if (media.media_name.port.value == 0)
-        {
-            continue;
-        }
-
-        const std::optional<std::string> mid = media.find_attribute_value("mid");
-
-        if (!mid.has_value() || mid->empty())
-        {
-            return make_error("accepted answer media is missing mid");
-        }
-
-        if (contains_mid(accepted_mids, *mid))
-        {
-            return make_error("accepted answer media mid is duplicated");
-        }
-
-        accepted_mids.push_back(*mid);
-    }
-
-    if (accepted_mids.empty())
-    {
-        return make_error("answer has no accepted media");
-    }
-
-    return accepted_mids;
-}
-
-std::expected<sdp::webrtc_offer_summary, std::string> make_runtime_subscriber_offer_summary(const sdp::webrtc_offer_summary& original_offer,
-                                                                                            std::string_view answer_sdp)
-{
-    auto accepted_mids = collect_accepted_answer_mids(answer_sdp);
-
-    if (!accepted_mids)
-    {
-        return std::unexpected(accepted_mids.error());
-    }
-
-    sdp::webrtc_offer_summary runtime_offer = original_offer;
-
-    runtime_offer.bundle_mids.clear();
-    runtime_offer.media.clear();
-
-    for (const auto& mid : *accepted_mids)
-    {
-        bool media_found = false;
-
-        for (const auto& media : original_offer.media)
-        {
-            if (media.mid != mid)
-            {
-                continue;
-            }
-
-            runtime_offer.media.push_back(media);
-
-            media_found = true;
-
-            break;
-        }
-
-        if (!media_found)
-        {
-            std::string message = "accepted answer mid not found in subscriber offer mid=";
-
-            message.append(mid);
-
-            return std::unexpected(std::move(message));
-        }
-    }
-
-    for (const auto& mid : original_offer.bundle_mids)
-    {
-        if (!contains_mid(*accepted_mids, mid))
-        {
-            continue;
-        }
-
-        runtime_offer.bundle_mids.push_back(mid);
-    }
-
-    if (runtime_offer.bundle_mids.empty())
-    {
-        for (const auto& mid : *accepted_mids)
-        {
-            runtime_offer.bundle_mids.push_back(mid);
-        }
-    }
-
-    return runtime_offer;
-}
-std::expected<std::vector<int>, std::string> collect_accepted_offer_mline_indexes(const sdp::webrtc_offer_summary& original_offer,
-                                                                                  std::string_view answer_sdp)
-{
-    auto accepted_mids = collect_accepted_answer_mids(answer_sdp);
-
-    if (!accepted_mids)
-    {
-        return std::unexpected(accepted_mids.error());
-    }
-
-    std::vector<int> accepted_mline_indexes;
-
-    accepted_mline_indexes.reserve(accepted_mids->size());
-
-    for (const auto& accepted_mid : *accepted_mids)
-    {
-        bool media_found = false;
-
-        for (std::size_t index = 0; index < original_offer.media.size(); ++index)
-        {
-            const auto& media = original_offer.media[index];
-
-            if (media.mid != accepted_mid)
-            {
-                continue;
-            }
-
-            if (index > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-            {
-                return make_error("accepted offer media mline index is too large");
-            }
-
-            accepted_mline_indexes.push_back(static_cast<int>(index));
-
-            media_found = true;
-
-            break;
-        }
-
-        if (!media_found)
-        {
-            std::string message = "accepted answer mid not found in subscriber offer mid=";
-
-            message.append(accepted_mid);
-
-            return std::unexpected(std::move(message));
-        }
-    }
-
-    if (accepted_mline_indexes.empty())
-    {
-        return make_error("answer has no accepted media mline indexes");
-    }
-
-    return accepted_mline_indexes;
 }
 }    // namespace
 
@@ -288,28 +110,16 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         return json_error_response(request, 400, make_prefixed_error("failed to build sdp answer: ", generated_answer.error()));
     }
 
-    auto runtime_offer_summary = make_runtime_subscriber_offer_summary(*offer_summary, generated_answer->sdp);
+    auto runtime_offer_filter = make_runtime_offer_filter_result(*offer_summary, generated_answer->sdp);
 
-    if (!runtime_offer_summary)
+    if (!runtime_offer_filter)
     {
-        WEBRTC_LOG_WARN("WHEP runtime subscriber offer summary failed stream={} error={}", stream_id, runtime_offer_summary.error());
+        WEBRTC_LOG_WARN("WHEP runtime subscriber offer filter failed stream={} error={}", stream_id, runtime_offer_filter.error());
 
-        return json_error_response(
-            request, 400, make_prefixed_error("failed to build runtime subscriber offer summary: ", runtime_offer_summary.error()));
+        return json_error_response(request, 400, make_prefixed_error("failed to filter runtime subscriber offer: ", runtime_offer_filter.error()));
     }
 
-    auto accepted_remote_media_mline_indexes = collect_accepted_offer_mline_indexes(*offer_summary, generated_answer->sdp);
-
-    if (!accepted_remote_media_mline_indexes)
-    {
-        WEBRTC_LOG_WARN(
-            "WHEP accepted media mline index collection failed stream={} error={}", stream_id, accepted_remote_media_mline_indexes.error());
-
-        return json_error_response(
-            request, 400, make_prefixed_error("failed to collect accepted media mline indexes: ", accepted_remote_media_mline_indexes.error()));
-    }
-
-    auto session_result = registry_->create_subscriber_session(std::string(stream_id), offer, std::move(*runtime_offer_summary));
+    auto session_result = registry_->create_subscriber_session(std::string(stream_id), offer, std::move(runtime_offer_filter->offer_summary));
     if (!session_result)
     {
         const auto error = session_result.error();
@@ -328,8 +138,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     const auto& session = *session_result;
 
-    session->set_accepted_remote_media_mline_indexes(std::move(*accepted_remote_media_mline_indexes));
-
+    session->set_accepted_remote_media_mline_indexes(std::move(runtime_offer_filter->accepted_mline_indexes));
     generated_sdp_answer generated = std::move(*generated_answer);
 
     session->set_local_answer(std::move(generated.sdp),
