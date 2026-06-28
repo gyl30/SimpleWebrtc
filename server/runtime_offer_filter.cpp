@@ -181,6 +181,158 @@ std::expected<std::vector<int>, std::string> collect_accepted_offer_mline_indexe
 
     return accepted_mline_indexes;
 }
+bool contains_int(const std::vector<int>& values, int value)
+{
+    for (int current : values)
+    {
+        if (current == value)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::expected<void, std::string> validate_runtime_offer_filter_result(const sdp::webrtc_offer_summary& original_offer,
+                                                                      const runtime_offer_filter_result& result)
+{
+    if (result.accepted_mids.empty())
+    {
+        return make_error("runtime offer filter accepted mids is empty");
+    }
+
+    if (result.offer_summary.media.empty())
+    {
+        return make_error("runtime offer filter media is empty");
+    }
+
+    if (result.accepted_mline_indexes.empty())
+    {
+        return make_error("runtime offer filter accepted mline indexes is empty");
+    }
+
+    if (result.accepted_mids.size() != result.offer_summary.media.size())
+    {
+        return make_error("runtime offer filter accepted mids and media size mismatch");
+    }
+
+    if (result.accepted_mids.size() != result.accepted_mline_indexes.size())
+    {
+        return make_error("runtime offer filter accepted mids and mline index size mismatch");
+    }
+
+    if (result.offer_summary.bundle_mids.empty())
+    {
+        return make_error("runtime offer filter bundle mids is empty");
+    }
+
+    std::vector<std::string> seen_mids;
+    std::vector<int> seen_mline_indexes;
+
+    seen_mids.reserve(result.accepted_mids.size());
+
+    seen_mline_indexes.reserve(result.accepted_mline_indexes.size());
+
+    for (std::size_t index = 0; index < result.accepted_mids.size(); ++index)
+    {
+        const std::string& accepted_mid = result.accepted_mids[index];
+
+        if (accepted_mid.empty())
+        {
+            return make_error("runtime offer filter accepted mid is empty");
+        }
+
+        if (contains_mid(seen_mids, accepted_mid))
+        {
+            std::string message = "runtime offer filter accepted mid duplicated mid=";
+
+            message.append(accepted_mid);
+
+            return std::unexpected(std::move(message));
+        }
+
+        seen_mids.push_back(accepted_mid);
+
+        const int accepted_mline_index = result.accepted_mline_indexes[index];
+
+        if (accepted_mline_index < 0)
+        {
+            return make_error("runtime offer filter accepted mline index is negative");
+        }
+
+        if (contains_int(seen_mline_indexes, accepted_mline_index))
+        {
+            std::string message = "runtime offer filter accepted mline index duplicated index=";
+
+            message.append(std::to_string(accepted_mline_index));
+
+            return std::unexpected(std::move(message));
+        }
+
+        seen_mline_indexes.push_back(accepted_mline_index);
+
+        const std::size_t original_media_index = static_cast<std::size_t>(accepted_mline_index);
+
+        if (original_media_index >= original_offer.media.size())
+        {
+            return make_error("runtime offer filter accepted mline index is out of original offer media range");
+        }
+
+        const auto& original_media = original_offer.media[original_media_index];
+
+        if (original_media.mid != accepted_mid)
+        {
+            std::string message = "runtime offer filter original offer mid mismatch expected=";
+
+            message.append(accepted_mid);
+
+            message.append(" actual=");
+
+            message.append(original_media.mid);
+
+            return std::unexpected(std::move(message));
+        }
+
+        const auto& runtime_media = result.offer_summary.media[index];
+
+        if (runtime_media.mid != accepted_mid)
+        {
+            std::string message = "runtime offer filter runtime media mid mismatch expected=";
+
+            message.append(accepted_mid);
+
+            message.append(" actual=");
+
+            message.append(runtime_media.mid);
+
+            return std::unexpected(std::move(message));
+        }
+
+        if (runtime_media.kind != original_media.kind)
+        {
+            std::string message = "runtime offer filter runtime media kind mismatch mid=";
+
+            message.append(accepted_mid);
+
+            return std::unexpected(std::move(message));
+        }
+    }
+
+    for (const auto& bundle_mid : result.offer_summary.bundle_mids)
+    {
+        if (!contains_mid(result.accepted_mids, bundle_mid))
+        {
+            std::string message = "runtime offer filter bundle mid is not accepted mid=";
+
+            message.append(bundle_mid);
+
+            return std::unexpected(std::move(message));
+        }
+    }
+
+    return {};
+}
 }    // namespace
 
 runtime_offer_filter_result_type make_runtime_offer_filter_result(const sdp::webrtc_offer_summary& original_offer, std::string_view answer_sdp)
@@ -213,6 +365,13 @@ runtime_offer_filter_result_type make_runtime_offer_filter_result(const sdp::web
     result.accepted_mids = std::move(*accepted_mids);
 
     result.accepted_mline_indexes = std::move(*accepted_mline_indexes);
+
+    auto validation_result = validate_runtime_offer_filter_result(original_offer, result);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
 
     return result;
 }
