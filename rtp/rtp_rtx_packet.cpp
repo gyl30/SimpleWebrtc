@@ -16,6 +16,18 @@ namespace
 {
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
+uint16_t read_u16(std::span<const uint8_t> data, std::size_t offset)
+{
+    return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
+}
+
+void append_u16(std::vector<uint8_t>& packet, uint16_t value)
+{
+    packet.push_back(static_cast<uint8_t>((value >> 8U) & 0xffU));
+
+    packet.push_back(static_cast<uint8_t>(value & 0xffU));
+}
+
 void write_u16(std::vector<uint8_t>& packet, std::size_t offset, uint16_t value)
 {
     packet[offset] = static_cast<uint8_t>((value >> 8U) & 0xffU);
@@ -239,15 +251,11 @@ rtp_rtx_packet_result make_rtp_rtx_packet(std::span<const uint8_t> primary_packe
     rtx_packet[1] = static_cast<uint8_t>((rtx_packet[1] & 0x80U) | options.payload_type);
 
     write_u16(rtx_packet, 2, options.sequence_number);
-
     write_u32(rtx_packet, 4, options.timestamp);
-
     write_u32(rtx_packet, 8, options.ssrc);
-
-    write_u16(rtx_packet, rtx_packet.size(), primary_header->sequence_number);
+    append_u16(rtx_packet, primary_header->sequence_number);
 
     const auto payload_begin = primary_packet.begin() + static_cast<std::ptrdiff_t>(primary_header->payload_offset);
-
     const auto payload_end = payload_begin + static_cast<std::ptrdiff_t>(primary_header->payload_size);
 
     rtx_packet.insert(rtx_packet.end(), payload_begin, payload_end);
@@ -262,6 +270,98 @@ rtp_rtx_packet_result make_rtp_rtx_packet(std::span<const uint8_t> primary_packe
         }
     }
 
+    auto validation_result =
+        validate_rtp_rtx_packet(std::span<const uint8_t>(rtx_packet.data(), rtx_packet.size()), options, primary_header->sequence_number);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
     return rtx_packet;
+}
+rtp_rtx_packet_info_result parse_rtp_rtx_packet(std::span<const uint8_t> rtx_packet)
+{
+    if (rtx_packet.empty())
+    {
+        return make_error("rtx packet is empty");
+    }
+
+    auto header = parse_rtp_packet_header(rtx_packet);
+
+    if (!header)
+    {
+        std::string message = "rtx packet parse failed: ";
+
+        message.append(header.error());
+
+        return std::unexpected(std::move(message));
+    }
+
+    if (header->payload_size < 2)
+    {
+        return make_error("rtx packet payload is shorter than osn");
+    }
+
+    if (header->payload_offset + 2 > rtx_packet.size())
+    {
+        return make_error("rtx packet osn is truncated");
+    }
+
+    rtp_rtx_packet_info info;
+
+    info.header = *header;
+
+    info.original_sequence_number = read_u16(rtx_packet, header->payload_offset);
+
+    info.original_payload_offset = header->payload_offset + 2;
+
+    info.original_payload_size = header->payload_size - 2;
+
+    return info;
+}
+
+rtp_rtx_packet_validation_result validate_rtp_rtx_packet(std::span<const uint8_t> rtx_packet,
+                                                         const rtp_rtx_packet_options& options,
+                                                         uint16_t expected_original_sequence_number)
+{
+    auto info = parse_rtp_rtx_packet(rtx_packet);
+
+    if (!info)
+    {
+        return std::unexpected(info.error());
+    }
+
+    if (info->header.padding)
+    {
+        return make_error("rtx packet must not use rtp padding");
+    }
+
+    if (info->header.payload_type != options.payload_type)
+    {
+        return make_error("rtx packet payload type does not match options");
+    }
+
+    if (info->header.ssrc != options.ssrc)
+    {
+        return make_error("rtx packet ssrc does not match options");
+    }
+
+    if (info->header.sequence_number != options.sequence_number)
+    {
+        return make_error("rtx packet sequence number does not match options");
+    }
+
+    if (info->header.timestamp != options.timestamp)
+    {
+        return make_error("rtx packet timestamp does not match options");
+    }
+
+    if (info->original_sequence_number != expected_original_sequence_number)
+    {
+        return make_error("rtx packet osn does not match primary sequence number");
+    }
+
+    return {};
 }
 }    // namespace webrtc

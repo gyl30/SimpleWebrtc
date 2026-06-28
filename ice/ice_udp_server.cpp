@@ -5574,6 +5574,42 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
             rtx_packet = std::move(rewrite_result->packet);
         }
     }
+    auto final_rtx_validation =
+        validate_rtp_rtx_packet(std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()), options, cached_packet.sequence_number);
+
+    if (!final_rtx_validation)
+    {
+        WEBRTC_LOG_WARN(
+            "rtx retransmit packet validation failed stream={} subscriber={} primary_ssrc={} rtx_ssrc={} primary_sequence={} rtx_sequence={} "
+            "error={}",
+            event.source.stream_id,
+            event.source.remote_endpoint,
+            primary_ssrc_mapping.publisher_ssrc,
+            rtx_ssrc_mapping->subscriber_ssrc,
+            cached_packet.sequence_number,
+            rtx_sequence_number,
+            final_rtx_validation.error());
+
+        return std::nullopt;
+    }
+
+    auto final_rtx_info = parse_rtp_rtx_packet(std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()));
+
+    if (!final_rtx_info)
+    {
+        WEBRTC_LOG_WARN(
+            "rtx retransmit packet parse failed after validation stream={} subscriber={} primary_ssrc={} rtx_ssrc={} primary_sequence={} "
+            "rtx_sequence={} error={}",
+            event.source.stream_id,
+            event.source.remote_endpoint,
+            primary_ssrc_mapping.publisher_ssrc,
+            rtx_ssrc_mapping->subscriber_ssrc,
+            cached_packet.sequence_number,
+            rtx_sequence_number,
+            final_rtx_info.error());
+
+        return std::nullopt;
+    }
     if (rtx_retransmission_index_ != nullptr)
     {
         rtx_retransmission_index_->remember(primary_ssrc_mapping.stream_id,
@@ -5588,7 +5624,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
 
     WEBRTC_LOG_DEBUG(
         "rtx retransmit packet built stream={} subscriber={} primary_ssrc={} subscriber_primary_ssrc={} rtx_ssrc={} primary_sequence={} "
-        "rtx_sequence={} primary_pt={} rtx_pt={} repaired_rid_rewrite={} size={}",
+        "rtx_sequence={} osn={} primary_pt={} rtx_pt={} repaired_rid_rewrite={} rtx_payload_size={} size={}",
         event.source.stream_id,
         event.source.remote_endpoint,
         primary_ssrc_mapping.publisher_ssrc,
@@ -5596,9 +5632,11 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
         rtx_ssrc_mapping->subscriber_ssrc,
         cached_packet.sequence_number,
         rtx_sequence_number,
+        final_rtx_info->original_sequence_number,
         static_cast<unsigned int>(cached_packet.payload_type),
         rtx_payload_type_mapping->subscriber_payload_type,
         repaired_rid_rewrite_applied ? 1 : 0,
+        final_rtx_info->original_payload_size,
         rtx_packet->size());
     return rtx_packet.value();
 }
