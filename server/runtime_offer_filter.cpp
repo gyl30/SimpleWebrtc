@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "signaling/sdp/sdp_parser.h"
+#include "signaling/sdp/sdp_types.h"
 
 namespace webrtc
 {
@@ -30,6 +31,99 @@ bool contains_mid(const std::vector<std::string>& mids, std::string_view mid)
     return false;
 }
 
+std::expected<void, std::string> observe_answer_media_direction(const sdp::media_description& media,
+                                                                std::string_view attribute_name,
+                                                                sdp::media_direction direction_value,
+                                                                std::optional<sdp::media_direction>& direction)
+{
+    const auto attributes = media.find_attributes(attribute_name);
+
+    if (attributes.empty())
+    {
+        return {};
+    }
+
+    if (attributes.size() > 1)
+    {
+        std::string message = "answer media has duplicated direction attribute direction=";
+
+        message.append(attribute_name);
+
+        return std::unexpected(std::move(message));
+    }
+
+    if (direction.has_value())
+    {
+        return make_error("answer media has multiple direction attributes");
+    }
+
+    direction = direction_value;
+
+    return {};
+}
+
+std::expected<std::optional<sdp::media_direction>, std::string> find_answer_media_direction(const sdp::media_description& media)
+{
+    std::optional<sdp::media_direction> direction;
+
+    auto send_recv_result = observe_answer_media_direction(media, sdp::k_attribute_send_recv, sdp::media_direction::send_recv, direction);
+
+    if (!send_recv_result)
+    {
+        return std::unexpected(send_recv_result.error());
+    }
+
+    auto send_only_result = observe_answer_media_direction(media, sdp::k_attribute_send_only, sdp::media_direction::send_only, direction);
+
+    if (!send_only_result)
+    {
+        return std::unexpected(send_only_result.error());
+    }
+
+    auto recv_only_result = observe_answer_media_direction(media, sdp::k_attribute_recv_only, sdp::media_direction::recv_only, direction);
+
+    if (!recv_only_result)
+    {
+        return std::unexpected(recv_only_result.error());
+    }
+
+    auto inactive_result = observe_answer_media_direction(media, sdp::k_attribute_inactive, sdp::media_direction::inactive, direction);
+
+    if (!inactive_result)
+    {
+        return std::unexpected(inactive_result.error());
+    }
+
+    return direction;
+}
+
+std::expected<bool, std::string> answer_media_is_accepted(const sdp::media_description& media)
+{
+    if (media.media_name.port.value == 0)
+    {
+        return false;
+    }
+
+    auto direction = find_answer_media_direction(media);
+
+    if (!direction)
+    {
+        return std::unexpected(direction.error());
+    }
+
+    if (!direction->has_value())
+    {
+        return make_error("accepted answer media is missing direction attribute");
+    }
+
+    if (**direction == sdp::media_direction::inactive)
+    {
+        return false;
+    }
+
+    return true;
+}
+
 std::expected<std::vector<std::string>, std::string> collect_accepted_answer_mids(std::string_view answer_sdp)
 {
     auto answer_description = sdp::parse_session_description(answer_sdp);
@@ -47,13 +141,19 @@ std::expected<std::vector<std::string>, std::string> collect_accepted_answer_mid
 
     for (const auto& media : answer_description->media_descriptions)
     {
-        if (media.media_name.port.value == 0)
+        auto accepted_result = answer_media_is_accepted(media);
+
+        if (!accepted_result)
+        {
+            return std::unexpected(accepted_result.error());
+        }
+
+        if (!*accepted_result)
         {
             continue;
         }
 
         const std::optional<std::string> mid = media.find_attribute_value("mid");
-
         if (!mid.has_value() || mid->empty())
         {
             return make_error("accepted answer media is missing mid");
