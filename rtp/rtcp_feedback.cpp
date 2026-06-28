@@ -7,6 +7,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <algorithm>
 #include <vector>
 
 #include "rtp/rtp_packet.h"
@@ -376,6 +377,80 @@ rtcp_feedback_packet_result parse_rtcp_feedback_packet(std::span<const uint8_t> 
     return packet;
 }
 
+struct rtcp_feedback_block_drop_range
+{
+    std::size_t begin = 0;
+    std::size_t end = 0;
+};
+
+std::expected<std::vector<rtcp_feedback_block_drop_range>, std::string> make_feedback_block_drop_ranges(
+    std::span<const rtcp_feedback_block_rewrite> rewrites)
+{
+    std::vector<rtcp_feedback_block_drop_range> ranges;
+
+    ranges.reserve(rewrites.size());
+
+    for (const auto& rewrite : rewrites)
+    {
+        if (!rewrite.drop_block)
+        {
+            continue;
+        }
+
+        rtcp_feedback_block_drop_range range;
+
+        range.begin = rewrite.block_offset;
+        range.end = rewrite.block_offset + rewrite.block_size;
+
+        ranges.push_back(range);
+    }
+
+    std::sort(ranges.begin(),
+              ranges.end(),
+              [](const rtcp_feedback_block_drop_range& left, const rtcp_feedback_block_drop_range& right) { return left.begin < right.begin; });
+
+    std::size_t previous_end = 0;
+
+    for (const auto& range : ranges)
+    {
+        if (range.begin < previous_end)
+        {
+            return make_error("rtcp feedback block drop ranges overlap");
+        }
+
+        previous_end = range.end;
+    }
+
+    return ranges;
+}
+
+std::vector<uint8_t> copy_without_feedback_block_ranges(std::span<const uint8_t> packet, const std::vector<rtcp_feedback_block_drop_range>& ranges)
+{
+    std::vector<uint8_t> filtered;
+
+    filtered.reserve(packet.size());
+
+    std::size_t cursor = 0;
+
+    for (const auto& range : ranges)
+    {
+        if (cursor < range.begin)
+        {
+            filtered.insert(
+                filtered.end(), packet.begin() + static_cast<std::ptrdiff_t>(cursor), packet.begin() + static_cast<std::ptrdiff_t>(range.begin));
+        }
+
+        cursor = range.end;
+    }
+
+    if (cursor < packet.size())
+    {
+        filtered.insert(filtered.end(), packet.begin() + static_cast<std::ptrdiff_t>(cursor), packet.end());
+    }
+
+    return filtered;
+}
+
 std::string rtcp_feedback_format_to_string(uint8_t packet_type, uint8_t format)
 {
     if (packet_type == k_rtcp_packet_type_transport_feedback)
@@ -425,6 +500,7 @@ std::string rtcp_feedback_format_to_string(uint8_t packet_type, uint8_t format)
 
     return "unknown";
 }
+
 rtcp_feedback_rewrite_result rewrite_rtcp_feedback_blocks(std::span<const uint8_t> packet, std::span<const rtcp_feedback_block_rewrite> rewrites)
 {
     if (packet.empty())
@@ -435,11 +511,14 @@ rtcp_feedback_rewrite_result rewrite_rtcp_feedback_blocks(std::span<const uint8_
     if (rewrites.empty())
     {
         std::vector<uint8_t> copied;
+
         copied.assign(packet.begin(), packet.end());
+
         return copied;
     }
 
     std::vector<uint8_t> rewritten;
+
     rewritten.assign(packet.begin(), packet.end());
 
     for (const auto& rewrite : rewrites)
@@ -449,6 +528,11 @@ rtcp_feedback_rewrite_result rewrite_rtcp_feedback_blocks(std::span<const uint8_
         if (!validation_result)
         {
             return std::unexpected(validation_result.error());
+        }
+
+        if (rewrite.drop_block)
+        {
+            continue;
         }
 
         auto media_rewrite_result = apply_media_ssrc_rewrite(rewritten, rewrite);
@@ -464,6 +548,18 @@ rtcp_feedback_rewrite_result rewrite_rtcp_feedback_blocks(std::span<const uint8_
         {
             return std::unexpected(fci_rewrite_result.error());
         }
+    }
+
+    auto drop_ranges = make_feedback_block_drop_ranges(rewrites);
+
+    if (!drop_ranges)
+    {
+        return std::unexpected(drop_ranges.error());
+    }
+
+    if (!drop_ranges->empty())
+    {
+        return copy_without_feedback_block_ranges(std::span<const uint8_t>(rewritten.data(), rewritten.size()), *drop_ranges);
     }
 
     return rewritten;

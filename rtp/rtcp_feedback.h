@@ -82,6 +82,8 @@ struct rtcp_feedback_block_rewrite
     std::size_t block_offset = 0;
     std::size_t block_size = 0;
 
+    bool drop_block = false;
+
     bool rewrite_media_ssrc = false;
     uint32_t source_media_ssrc = 0;
     uint32_t target_media_ssrc = 0;
