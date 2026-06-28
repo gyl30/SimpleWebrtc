@@ -193,6 +193,7 @@ set(WEBRTC_SOURCES
     signaling/sdp/sdp_formatter.cpp
     signaling/sdp/sdp_answer_builder.cpp
     signaling/sdp/sdp_codec_negotiator.cpp
+    signaling/sdp/h264_fmtp_compat.cpp
     security/certificate_fingerprint.cpp
     ice/ice_credentials.cpp
     ice/ice_candidate.cpp

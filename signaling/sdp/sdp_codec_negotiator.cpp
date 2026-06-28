@@ -10,10 +10,14 @@
 #include <utility>
 #include <vector>
 
+#include "signaling/sdp/h264_fmtp_compat.h"
+
 namespace webrtc::sdp
 {
 namespace
 {
+
+constexpr std::string_view kLocalH264Fmtp = "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f";
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 std::unexpected<std::string> make_media_error(const media_summary& media, std::string_view message)
@@ -325,16 +329,16 @@ std::expected<h264_fmtp_compat_info, std::string> make_h264_fmtp_compat_info(std
     return info;
 }
 
-bool is_supported_h264_packetization_mode(const codec_info& codec)
+std::optional<std::string> normalize_h264_answer_fmtp(std::string_view offer_fmtp)
 {
-    const auto packetization_mode = find_fmtp_parameter(codec.fmtp, "packetization-mode");
+    auto negotiation = negotiate_h264_fmtp_for_answer(offer_fmtp, kLocalH264Fmtp);
 
-    if (!packetization_mode.has_value())
+    if (!negotiation)
     {
-        return false;
+        return std::nullopt;
     }
 
-    return packetization_mode.value() == "1";
+    return negotiation->answer_fmtp;
 }
 
 bool is_h264_codec(const codec_info& codec)
@@ -349,7 +353,7 @@ bool is_h264_codec(const codec_info& codec)
         return false;
     }
 
-    return is_supported_h264_packetization_mode(codec);
+    return normalize_h264_answer_fmtp(codec.fmtp).has_value();
 }
 
 bool is_supported_audio_codec(const codec_info& codec) { return is_opus_codec(codec); }
@@ -714,21 +718,18 @@ std::optional<codec_info> normalize_supported_codec(const media_summary& media, 
             return std::nullopt;
         }
 
-        normalized_codec.fmtp = std::move(*normalized_fmtp);
+        normalized_codec.fmtp = *normalized_fmtp;
     }
 
     if (media.kind == "video" && is_h264_codec(codec))
     {
-        auto normalized_fmtp = normalize_h264_fmtp(codec.fmtp);
-
-        if (!normalized_fmtp)
+        auto normalized_fmtp = normalize_h264_answer_fmtp(codec.fmtp);
+        if (!normalized_fmtp.has_value())
         {
             return std::nullopt;
         }
 
-        normalized_codec.name = "H264";
-
-        normalized_codec.fmtp = std::move(*normalized_fmtp);
+        normalized_codec.fmtp = *normalized_fmtp;
     }
 
     return normalized_codec;
@@ -751,38 +752,15 @@ bool codec_encoding_parameters_are_compatible(std::string_view publisher_encodin
 
 bool h264_codecs_are_compatible(const codec_info& publisher_codec, const codec_info& subscriber_codec)
 {
-    auto publisher_info = make_h264_fmtp_compat_info(publisher_codec.fmtp);
+    auto compatibility = check_h264_fmtp_relay_compatibility(publisher_codec.fmtp, subscriber_codec.fmtp);
 
-    if (!publisher_info)
+    if (!compatibility)
     {
         return false;
     }
 
-    auto subscriber_info = make_h264_fmtp_compat_info(subscriber_codec.fmtp);
-
-    if (!subscriber_info)
-    {
-        return false;
-    }
-
-    if (!publisher_info->profile_level_id.has_value() || !subscriber_info->profile_level_id.has_value())
-    {
-        return true;
-    }
-
-    if (publisher_info->profile_id != subscriber_info->profile_id)
-    {
-        return false;
-    }
-
-    if (publisher_info->profile_level_id == subscriber_info->profile_level_id)
-    {
-        return true;
-    }
-
-    return publisher_info->level_asymmetry_allowed && subscriber_info->level_asymmetry_allowed;
+    return compatibility->compatible;
 }
-
 bool codecs_are_compatible(const codec_info& publisher_codec, const codec_info& subscriber_codec)
 {
     if (!equals_ignore_case(publisher_codec.name, subscriber_codec.name))

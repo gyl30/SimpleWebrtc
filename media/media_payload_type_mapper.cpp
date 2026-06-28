@@ -10,6 +10,8 @@
 #include <string_view>
 #include <utility>
 
+#include "signaling/sdp/h264_fmtp_compat.h"
+
 namespace webrtc
 {
 namespace
@@ -607,38 +609,15 @@ bool is_h264_codec(const sdp::codec_info& codec) { return equals_ignore_case(cod
 
 bool h264_codecs_are_compatible(const sdp::codec_info& publisher_codec, const sdp::codec_info& subscriber_codec)
 {
-    auto publisher_info = make_h264_fmtp_compat_info(publisher_codec.fmtp);
+    auto compatibility = sdp::check_h264_fmtp_relay_compatibility(publisher_codec.fmtp, subscriber_codec.fmtp);
 
-    if (!publisher_info)
+    if (!compatibility)
     {
         return false;
     }
 
-    auto subscriber_info = make_h264_fmtp_compat_info(subscriber_codec.fmtp);
-
-    if (!subscriber_info)
-    {
-        return false;
-    }
-
-    if (!publisher_info->profile_level_id.has_value() || !subscriber_info->profile_level_id.has_value())
-    {
-        return true;
-    }
-
-    if (publisher_info->profile_id != subscriber_info->profile_id)
-    {
-        return false;
-    }
-
-    if (publisher_info->profile_level_id == subscriber_info->profile_level_id)
-    {
-        return true;
-    }
-
-    return publisher_info->level_asymmetry_allowed && subscriber_info->level_asymmetry_allowed;
+    return compatibility->compatible;
 }
-
 bool codec_encoding_parameters_are_compatible(std::string_view publisher_encoding_parameters, std::string_view subscriber_encoding_parameters)
 {
     if (publisher_encoding_parameters.empty() || subscriber_encoding_parameters.empty())
