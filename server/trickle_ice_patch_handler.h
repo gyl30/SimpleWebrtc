@@ -36,6 +36,7 @@ struct trickle_ice_patch_apply_result
 {
     std::size_t accepted_count = 0;
     std::size_t duplicate_count = 0;
+    std::size_t filtered_media_count = 0;
     std::size_t end_of_candidates_count = 0;
     std::size_t total_candidate_bytes = 0;
 };
@@ -123,6 +124,43 @@ inline bool is_application_json(http_request_t& request) { return content_type_m
 inline bool is_application_trickle_ice_sdpfrag(http_request_t& request) { return content_type_matches(request, k_application_trickle_ice_sdpfrag); }
 
 inline uint64_t now_milliseconds() { return timestamp::now().milliseconds(); }
+
+template <typename session_type>
+bool remote_offer_media_mid_exists(const session_type& session, std::string_view mid)
+{
+    if (mid.empty())
+    {
+        return false;
+    }
+
+    const auto& offer = session.remote_offer_summary();
+
+    for (const auto& media : offer.media)
+    {
+        if (media.mid == mid)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+template <typename session_type>
+bool remote_ice_candidate_media_is_accepted(const session_type& session, const remote_ice_candidate& candidate)
+{
+    /*
+     * sdp_mid 是最可靠的 media 归属依据。
+     * 对没有 sdp_mid 的 mline-only candidate 暂时保持兼容，不在这里过滤；
+     * 否则 WHEP runtime offer 被收口后，原始 offer 的 mline index 可能无法一一对应。
+     */
+    if (candidate.sdp_mid.empty())
+    {
+        return true;
+    }
+
+    return remote_offer_media_mid_exists(session, candidate.sdp_mid);
+}
 
 inline trickle_ice_patch_content_kind content_kind_from_request(http_request_t& request)
 {
@@ -558,6 +596,22 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
 
         const int sdp_mline_index = candidate.sdp_mline_index;
 
+        if (!trickle_ice_patch_detail::remote_ice_candidate_media_is_accepted(*session, candidate))
+        {
+            apply_result.filtered_media_count += 1;
+
+            WEBRTC_LOG_DEBUG("{} trickle ice candidate filtered by rejected media stream={} session={} mid={} mline={} end={} candidate_size={}",
+                             protocol_name,
+                             session->stream_id(),
+                             session->session_id(),
+                             sdp_mid,
+                             sdp_mline_index,
+                             end_of_candidates ? 1 : 0,
+                             candidate_size);
+
+            continue;
+        }
+
         if (trickle_ice_patch_detail::remote_ice_candidate_already_known(*session, candidate))
         {
             apply_result.duplicate_count += 1;
@@ -624,13 +678,14 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
     global_trickle_ice_metrics().record_patch_success();
 
     WEBRTC_LOG_INFO(
-        "{} trickle ice patch accepted stream={} session={} candidates={} duplicates={} end_of_candidates={} candidate_bytes={} total_candidates={} "
-        "completed={}",
+        "{} trickle ice patch accepted stream={} session={} candidates={} duplicates={} filtered_media={} end_of_candidates={} candidate_bytes={} "
+        "total_candidates={} completed={}",
         protocol_name,
         session->stream_id(),
         session->session_id(),
         apply_result.accepted_count,
         apply_result.duplicate_count,
+        apply_result.filtered_media_count,
         apply_result.end_of_candidates_count,
         apply_result.total_candidate_bytes,
         session->remote_ice_candidates().size(),
