@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <optional>
 #include <utility>
 #include <vector>
 #include <string_view>
@@ -172,21 +173,77 @@ bool accepted_remote_media_mline_index_exists(const session_type& session, int s
 
     return media_index < session.remote_offer_summary().media.size();
 }
+template <typename session_type>
+bool remote_offer_media_mid_matches_mline_index(const session_type& session, std::string_view mid, int sdp_mline_index)
+{
+    if (mid.empty() || sdp_mline_index < 0)
+    {
+        return false;
+    }
+
+    const auto& accepted_mline_indexes = session.accepted_remote_media_mline_indexes();
+
+    const auto& media_values = session.remote_offer_summary().media;
+
+    /*
+     * 正常路径：
+     * accepted_remote_media_mline_indexes[i] 和 remote_offer_summary().media[i]
+     * 都来自同一份 runtime_offer_filter_result，顺序一致。
+     */
+    if (!accepted_mline_indexes.empty())
+    {
+        const std::size_t pair_count = accepted_mline_indexes.size() < media_values.size() ? accepted_mline_indexes.size() : media_values.size();
+
+        for (std::size_t index = 0; index < pair_count; ++index)
+        {
+            if (accepted_mline_indexes[index] != sdp_mline_index)
+            {
+                continue;
+            }
+
+            return media_values[index].mid == mid;
+        }
+
+        return false;
+    }
+
+    /*
+     * 兼容旧 session 或未初始化 accepted m-line index 的情况。
+     * 这时只能把 sdpMLineIndex 当作当前 runtime offer 的 media 下标。
+     */
+    const std::size_t media_index = static_cast<std::size_t>(sdp_mline_index);
+
+    if (media_index >= media_values.size())
+    {
+        return false;
+    }
+
+    return media_values[media_index].mid == mid;
+}
 
 template <typename session_type>
 bool remote_ice_candidate_media_is_accepted(const session_type& session, const remote_ice_candidate& candidate)
 {
-    if (!candidate.sdp_mid.empty() && !remote_offer_media_mid_exists(session, candidate.sdp_mid))
+    const bool has_mid = !candidate.sdp_mid.empty();
+
+    const bool has_mline_index = candidate.sdp_mline_index >= 0;
+
+    if (!has_mid && !has_mline_index)
     {
         return false;
     }
 
-    if (candidate.sdp_mline_index >= 0 && !accepted_remote_media_mline_index_exists(session, candidate.sdp_mline_index))
+    if (has_mid && !remote_offer_media_mid_exists(session, candidate.sdp_mid))
     {
         return false;
     }
 
-    if (candidate.sdp_mid.empty() && candidate.sdp_mline_index < 0)
+    if (has_mline_index && !accepted_remote_media_mline_index_exists(session, candidate.sdp_mline_index))
+    {
+        return false;
+    }
+
+    if (has_mid && has_mline_index && !remote_offer_media_mid_matches_mline_index(session, candidate.sdp_mid, candidate.sdp_mline_index))
     {
         return false;
     }
