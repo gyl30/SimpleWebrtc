@@ -837,6 +837,126 @@ bool answer_media_has_inactive_direction(const media_description& media)
     return !inactive_attributes.empty();
 }
 
+bool rejected_answer_media_attribute_is_allowed(std::string_view key)
+{
+    if (key == k_attribute_mid)
+    {
+        return true;
+    }
+
+    if (key == k_attribute_inactive)
+    {
+        return true;
+    }
+
+    if (key == k_attribute_rtcp_mux)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+bool rejected_answer_media_attribute_is_forbidden(std::string_view key)
+{
+    if (key == k_attribute_rtp_map || key == k_attribute_fmtp || key == k_attribute_rtcp_feedback || key == "extmap" || key == "msid" ||
+        key == "ssrc" || key == "ssrc-group" || key == "rid" || key == "repaired-rid" || key == "simulcast" || key == "candidate" ||
+        key == "end-of-candidates" || key == k_attribute_ice_ufrag || key == k_attribute_ice_pwd || key == k_attribute_fingerprint ||
+        key == k_attribute_setup || key == k_attribute_send_recv || key == k_attribute_send_only || key == k_attribute_recv_only || key == "ptime" ||
+        key == "maxptime")
+    {
+        return true;
+    }
+
+    return false;
+}
+
+std::expected<void, std::string> validate_rejected_answer_media_attributes(const media_description& media)
+{
+    std::size_t mid_count = 0;
+    std::size_t inactive_count = 0;
+
+    for (const auto& attribute : media.attributes)
+    {
+        if (attribute.key == k_attribute_mid)
+        {
+            mid_count += 1;
+
+            if (attribute.value.empty())
+            {
+                return make_error("rejected answer media mid is empty");
+            }
+
+            continue;
+        }
+
+        if (attribute.key == k_attribute_inactive)
+        {
+            inactive_count += 1;
+
+            if (!attribute.value.empty())
+            {
+                return make_error("rejected answer media inactive attribute must be property");
+            }
+
+            continue;
+        }
+
+        if (rejected_answer_media_attribute_is_forbidden(attribute.key))
+        {
+            std::string message = "rejected answer media has forbidden attribute key=";
+
+            message.append(attribute.key);
+
+            return std::unexpected(std::move(message));
+        }
+
+        if (!rejected_answer_media_attribute_is_allowed(attribute.key))
+        {
+            std::string message = "rejected answer media has unsupported attribute key=";
+
+            message.append(attribute.key);
+
+            return std::unexpected(std::move(message));
+        }
+    }
+
+    if (mid_count != 1)
+    {
+        return make_error("rejected answer media must have exactly one mid attribute");
+    }
+
+    if (inactive_count != 1)
+    {
+        return make_error("rejected answer media must have exactly one inactive attribute");
+    }
+
+    return {};
+}
+
+connection_information make_rejected_connection(const sdp_answer_options& options)
+{
+    connection_information connection;
+
+    connection.network_type = options.network_type;
+
+    connection.address_type = options.address_type;
+
+    sdp_address address;
+
+    if (options.address_type == "IP6")
+    {
+        address.address = "::";
+    }
+    else
+    {
+        address.address = "0.0.0.0";
+    }
+
+    connection.address = address;
+
+    return connection;
+}
 std::expected<void, std::string> validate_answer_media_rejection_state(const media_description& media)
 {
     const bool rejected = is_answer_media_rejected(media);
@@ -853,9 +973,18 @@ std::expected<void, std::string> validate_answer_media_rejection_state(const med
         return make_error("rejected answer media must use inactive direction");
     }
 
+    if (rejected)
+    {
+        auto attribute_result = validate_rejected_answer_media_attributes(media);
+
+        if (!attribute_result)
+        {
+            return std::unexpected(attribute_result.error());
+        }
+    }
+
     return {};
 }
-
 void push_attribute(std::vector<sdp_attribute>& attributes, std::string_view key, std::string_view value)
 {
     attributes.push_back(make_attribute(std::string(key), std::string(value)));
@@ -1061,10 +1190,15 @@ std::expected<media_description, std::string> make_rejected_answer_media(const s
     media_description answer_media;
 
     answer_media.media_name.media = media.kind;
+
     answer_media.media_name.port.value = 0;
+
     answer_media.media_name.protocols.push_back("UDP");
+
     answer_media.media_name.protocols.push_back("TLS");
+
     answer_media.media_name.protocols.push_back("RTP");
+
     answer_media.media_name.protocols.push_back("SAVPF");
 
     for (uint16_t payload_type : media.payload_types)
@@ -1077,7 +1211,7 @@ std::expected<media_description, std::string> make_rejected_answer_media(const s
         answer_media.media_name.formats.push_back("0");
     }
 
-    answer_media.connection = make_connection(options);
+    answer_media.connection = make_rejected_connection(options);
 
     push_attribute(answer_media.attributes, k_attribute_mid, media.mid);
 
@@ -1088,9 +1222,15 @@ std::expected<media_description, std::string> make_rejected_answer_media(const s
         push_property_attribute(answer_media.attributes, k_attribute_rtcp_mux);
     }
 
+    auto rejection_state_result = validate_answer_media_rejection_state(answer_media);
+
+    if (!rejection_state_result)
+    {
+        return std::unexpected(rejection_state_result.error());
+    }
+
     return answer_media;
 }
-
 std::expected<media_description, std::string> make_answer_media(answer_endpoint_role role,
                                                                 const sdp_answer_options& options,
                                                                 const media_summary& media,
