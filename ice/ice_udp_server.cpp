@@ -34,6 +34,7 @@
 #include "net/socket.h"
 #include "rtp/rtcp_feedback.h"
 #include "rtp/rtp_packet.h"
+#include "rtp/rtp_rtx_packet.h"
 #include "rtp/rtp_packet_rewriter.h"
 #include "rtp/rtcp_packet_writer.h"
 #include "session/session_state.h"
@@ -1416,6 +1417,10 @@ void ice_udp_server::stop()
     {
         rtp_packet_cache_->clear();
     }
+    if (rtx_sequence_allocator_ != nullptr)
+    {
+        rtx_sequence_allocator_->clear();
+    }
     if (media_router_ != nullptr)
     {
         media_router_->clear();
@@ -1483,6 +1488,11 @@ void ice_udp_server::forget_session(std::string_view session_id)
     {
         rtcp_report_service_->forget_session(session_id);
     }
+    if (rtx_sequence_allocator_ != nullptr)
+    {
+        rtx_sequence_allocator_->forget_session(session_id);
+    }
+
     if (endpoint_removed)
     {
         send_dtls_close_notify(remote_address);
@@ -2454,11 +2464,10 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
 
 ice_udp_server_result ice_udp_server::init_dtls_transport()
 {
-    if (dtls_transport_ != nullptr && srtp_transport_ != nullptr && rtp_packet_cache_ != nullptr)
+    if (dtls_transport_ != nullptr && srtp_transport_ != nullptr && rtp_packet_cache_ != nullptr && rtx_sequence_allocator_ != nullptr)
     {
         return {};
     }
-
     auto certificate_file = get_required_env("WEBRTC_CERT_FILE");
 
     if (!certificate_file)
@@ -2500,12 +2509,15 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
 
     rtp_packet_cache_ = std::make_shared<rtp_packet_cache>(cache_config);
 
+    rtx_sequence_allocator_ = std::make_shared<rtx_sequence_number_allocator>();
+
     WEBRTC_LOG_INFO("dtls transport initialized handshake_timeout_ms={}", transport_config.handshake_timeout.count());
 
     WEBRTC_LOG_INFO("srtp transport initialized");
 
     WEBRTC_LOG_INFO("rtp packet cache initialized max_packets={}", cache_config.max_packets);
 
+    WEBRTC_LOG_INFO("rtx sequence allocator initialized");
     return {};
 }
 
@@ -5226,6 +5238,233 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
 
     return std::move(*rewrite_result);
 }
+std::optional<media_payload_type_mapping> ice_udp_server::find_rtx_payload_type_mapping(const media_payload_type_mapping_table& table,
+                                                                                        const media_payload_type_mapping& primary_mapping) const
+{
+    for (const auto& mapping : table.mappings)
+    {
+        if (!media_payload_type_mapping_is_rtx(mapping))
+        {
+            continue;
+        }
+
+        if (mapping.publisher_mid != primary_mapping.publisher_mid)
+        {
+            continue;
+        }
+
+        if (mapping.subscriber_mid != primary_mapping.subscriber_mid)
+        {
+            continue;
+        }
+
+        if (mapping.publisher_apt_payload_type != primary_mapping.publisher_payload_type)
+        {
+            continue;
+        }
+
+        if (mapping.subscriber_apt_payload_type != primary_mapping.subscriber_payload_type)
+        {
+            continue;
+        }
+
+        return mapping;
+    }
+
+    return std::nullopt;
+}
+
+std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_rtx_ssrc_mapping(const media_ssrc_mapping& primary_mapping,
+                                                                                 const media_payload_type_mapping& rtx_payload_type_mapping)
+{
+    if (ssrc_mapper_ == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    if (primary_mapping.publisher_rtx_repair_ssrc == 0)
+    {
+        return std::nullopt;
+    }
+
+    auto mapping_result = ssrc_mapper_->get_or_create_mapping(primary_mapping.stream_id,
+                                                              primary_mapping.publisher_session_id,
+                                                              primary_mapping.subscriber_session_id,
+                                                              primary_mapping.publisher_mid,
+                                                              rtx_payload_type_mapping.subscriber_mid,
+                                                              primary_mapping.kind,
+                                                              primary_mapping.publisher_rtx_repair_ssrc,
+                                                              now_milliseconds(),
+                                                              true,
+                                                              primary_mapping.publisher_ssrc,
+                                                              primary_mapping.publisher_rtx_repair_ssrc);
+
+    if (!mapping_result)
+    {
+        WEBRTC_LOG_WARN("rtx ssrc mapping failed stream={} publisher_session={} subscriber_session={} primary_ssrc={} repair_ssrc={} error={}",
+                        primary_mapping.stream_id,
+                        primary_mapping.publisher_session_id,
+                        primary_mapping.subscriber_session_id,
+                        primary_mapping.publisher_ssrc,
+                        primary_mapping.publisher_rtx_repair_ssrc,
+                        mapping_result.error());
+
+        return std::nullopt;
+    }
+
+    if (mapping_result->packet_count == 1)
+    {
+        WEBRTC_LOG_INFO("rtx ssrc mapping created {}", media_ssrc_mapping_to_string(*mapping_result));
+    }
+
+    return *mapping_result;
+}
+
+std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_packet(const rtcp_feedback_route_event& event,
+                                                                                     const rtp_packet_cache_entry& cached_packet,
+                                                                                     const media_ssrc_mapping& primary_ssrc_mapping,
+                                                                                     const media_payload_type_mapping& primary_payload_type_mapping)
+{
+    if (rtx_sequence_allocator_ == nullptr)
+    {
+        rtx_sequence_allocator_ = std::make_shared<rtx_sequence_number_allocator>();
+    }
+
+    auto table = get_or_create_payload_type_mapping_table_for_sessions(
+        primary_ssrc_mapping.stream_id, primary_ssrc_mapping.publisher_session_id, primary_ssrc_mapping.subscriber_session_id);
+
+    if (!table.has_value())
+    {
+        return std::nullopt;
+    }
+
+    const std::optional<media_payload_type_mapping> rtx_payload_type_mapping = find_rtx_payload_type_mapping(*table, primary_payload_type_mapping);
+
+    if (!rtx_payload_type_mapping.has_value())
+    {
+        return std::nullopt;
+    }
+
+    if (rtx_payload_type_mapping->subscriber_payload_type > 127)
+    {
+        WEBRTC_LOG_WARN("rtx retransmit skipped invalid subscriber rtx payload type stream={} subscriber={} primary_pt={} rtx_pt={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        primary_payload_type_mapping.publisher_payload_type,
+                        rtx_payload_type_mapping->subscriber_payload_type);
+
+        return std::nullopt;
+    }
+
+    std::optional<media_ssrc_mapping> rtx_ssrc_mapping = get_or_create_rtx_ssrc_mapping(primary_ssrc_mapping, *rtx_payload_type_mapping);
+
+    if (!rtx_ssrc_mapping.has_value())
+    {
+        return std::nullopt;
+    }
+
+    const uint16_t seed_sequence_number = static_cast<uint16_t>(static_cast<uint32_t>(cached_packet.sequence_number) + 1U);
+
+    const uint16_t rtx_sequence_number = rtx_sequence_allocator_->allocate(
+        primary_ssrc_mapping.stream_id, primary_ssrc_mapping.subscriber_session_id, rtx_ssrc_mapping->subscriber_ssrc, seed_sequence_number);
+
+    rtp_rtx_packet_options options;
+
+    options.payload_type = static_cast<uint8_t>(rtx_payload_type_mapping->subscriber_payload_type);
+
+    options.ssrc = rtx_ssrc_mapping->subscriber_ssrc;
+
+    options.sequence_number = rtx_sequence_number;
+
+    options.timestamp = cached_packet.timestamp;
+
+    auto rtx_packet = make_rtp_rtx_packet(std::span<const uint8_t>(cached_packet.plain_packet.data(), cached_packet.plain_packet.size()), options);
+
+    if (!rtx_packet)
+    {
+        WEBRTC_LOG_WARN("rtx retransmit packet build failed stream={} subscriber={} primary_ssrc={} rtx_ssrc={} sequence={} error={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        primary_ssrc_mapping.publisher_ssrc,
+                        rtx_ssrc_mapping->subscriber_ssrc,
+                        cached_packet.sequence_number,
+                        rtx_packet.error());
+
+        return std::nullopt;
+    }
+
+    if (rtx_payload_type_mapping->mid_rewrite_required && registry_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(primary_ssrc_mapping.publisher_session_id);
+
+        auto subscriber = registry_->find_subscriber_by_session_id(primary_ssrc_mapping.subscriber_session_id);
+
+        if (publisher == nullptr || subscriber == nullptr)
+        {
+            WEBRTC_LOG_WARN("rtx retransmit mid rewrite skipped session not found stream={} publisher_session={} subscriber_session={} sequence={}",
+                            event.source.stream_id,
+                            primary_ssrc_mapping.publisher_session_id,
+                            primary_ssrc_mapping.subscriber_session_id,
+                            cached_packet.sequence_number);
+
+            return std::nullopt;
+        }
+
+        auto mid_rewrite = make_mid_header_extension_rewrite(*rtx_payload_type_mapping,
+                                                             publisher->remote_offer_summary(),
+                                                             subscriber->remote_offer_summary(),
+                                                             std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()));
+
+        if (!mid_rewrite)
+        {
+            WEBRTC_LOG_WARN("rtx retransmit mid rewrite failed stream={} subscriber={} sequence={} error={}",
+                            event.source.stream_id,
+                            event.source.remote_endpoint,
+                            cached_packet.sequence_number,
+                            mid_rewrite.error());
+
+            return std::nullopt;
+        }
+
+        if (mid_rewrite->has_value())
+        {
+            rtp_packet_rewrite_options rewrite_options;
+
+            rewrite_options.header_extensions.push_back(std::move(**mid_rewrite));
+
+            auto rewrite_result = rewrite_rtp_packet(std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()), rewrite_options);
+
+            if (!rewrite_result)
+            {
+                WEBRTC_LOG_WARN("rtx retransmit mid rewrite packet failed stream={} subscriber={} sequence={} error={}",
+                                event.source.stream_id,
+                                event.source.remote_endpoint,
+                                cached_packet.sequence_number,
+                                rewrite_result.error());
+
+                return std::nullopt;
+            }
+
+            rtx_packet = std::move(rewrite_result->packet);
+        }
+    }
+
+    WEBRTC_LOG_DEBUG(
+        "rtx retransmit packet built stream={} subscriber={} primary_ssrc={} subscriber_primary_ssrc={} rtx_ssrc={} primary_sequence={} "
+        "rtx_sequence={} primary_pt={} rtx_pt={} size={}",
+        event.source.stream_id,
+        event.source.remote_endpoint,
+        primary_ssrc_mapping.publisher_ssrc,
+        primary_ssrc_mapping.subscriber_ssrc,
+        rtx_ssrc_mapping->subscriber_ssrc,
+        cached_packet.sequence_number,
+        rtx_sequence_number,
+        static_cast<unsigned int>(cached_packet.payload_type),
+        rtx_payload_type_mapping->subscriber_payload_type,
+        rtx_packet->size());
+
+    return rtx_packet.value();
+}
 
 std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(const srtp_packet_process_result& packet,
                                                                               const media_route_result& route,
@@ -5462,6 +5701,16 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_retransmit_plain_packet
             static_cast<unsigned int>(cached_packet.payload_type));
 
         return std::nullopt;
+    }
+
+    if (media_ssrc_mapping_is_primary_video(*ssrc_mapping))
+    {
+        std::optional<std::vector<uint8_t>> rtx_packet = make_rtx_retransmit_plain_packet(event, cached_packet, *ssrc_mapping, *payload_type_mapping);
+
+        if (rtx_packet.has_value())
+        {
+            return rtx_packet;
+        }
     }
 
     if (payload_type_mapping->payload_type_rewrite_required)
@@ -5969,6 +6218,10 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
     if (track_resolver_ != nullptr)
     {
         track_resolver_->forget_stream(stream_id);
+    }
+    if (rtx_sequence_allocator_ != nullptr)
+    {
+        rtx_sequence_allocator_->forget_stream(stream_id);
     }
 
     std::size_t media_router_stream_count_before = 0;

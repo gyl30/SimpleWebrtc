@@ -27,6 +27,7 @@
 #include "media/rtcp_feedback_router.h"
 #include "media/rtcp_report_service.h"
 #include "media/rtp_packet_cache.h"
+#include "media/rtx_sequence_number_allocator.h"
 #include "session/stream_registry.h"
 #include "srtp/srtp_transport.h"
 
@@ -273,6 +274,20 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                   const media_peer_info& target_peer);
 
     [[nodiscard]]
+    std::optional<media_payload_type_mapping> find_rtx_payload_type_mapping(const media_payload_type_mapping_table& table,
+                                                                            const media_payload_type_mapping& primary_mapping) const;
+
+    [[nodiscard]]
+    std::optional<media_ssrc_mapping> get_or_create_rtx_ssrc_mapping(const media_ssrc_mapping& primary_mapping,
+                                                                     const media_payload_type_mapping& rtx_payload_type_mapping);
+
+    [[nodiscard]]
+    std::optional<std::vector<uint8_t>> make_rtx_retransmit_plain_packet(const rtcp_feedback_route_event& event,
+                                                                         const rtp_packet_cache_entry& cached_packet,
+                                                                         const media_ssrc_mapping& primary_ssrc_mapping,
+                                                                         const media_payload_type_mapping& primary_payload_type_mapping);
+
+    [[nodiscard]]
     std::optional<std::vector<uint8_t>> make_retransmit_plain_packet(const rtcp_feedback_route_event& event,
                                                                      const rtp_packet_cache_entry& cached_packet,
                                                                      const std::optional<media_ssrc_mapping>& ssrc_mapping);
@@ -280,7 +295,6 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void cache_inbound_rtp_packet(const srtp_packet_process_result& packet,
                                   const media_route_result& route,
                                   const std::optional<media_track_resolution>& track_resolution);
-
     void handle_rtcp_bye_packet(const srtp_packet_process_result& packet, const media_route_result& route);
 
     void handle_rtcp_feedback_event(const rtcp_feedback_route_event& event);
@@ -496,6 +510,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::shared_ptr<rtcp_report_service> rtcp_report_service_;
 
     std::shared_ptr<rtp_packet_cache> rtp_packet_cache_;
+
+    std::shared_ptr<rtx_sequence_number_allocator> rtx_sequence_allocator_;
 
     udp::endpoint remote_endpoint_;
 

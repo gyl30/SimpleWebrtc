@@ -202,6 +202,7 @@ set(WEBRTC_SOURCES
     dtls/dtls_transport.cpp
     rtp/rtp_packet.cpp
     rtp/rtp_packet_rewriter.cpp
+    rtp/rtp_rtx_packet.cpp
     rtp/rtcp_feedback.cpp
     rtp/rtcp_report.cpp
     rtp/rtcp_compound_packet.cpp
@@ -217,6 +218,7 @@ set(WEBRTC_SOURCES
     media/rtcp_report_service.cpp
     media/rtcp_feedback_router.cpp
     media/rtp_packet_cache.cpp
+    media/rtx_sequence_number_allocator.cpp
     media/media_router_stats_json.cpp
     media/media_router_stats_prometheus.cpp
     ice/ice_udp_server.cpp
