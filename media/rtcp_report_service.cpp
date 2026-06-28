@@ -214,6 +214,29 @@ rtcp_report_service_result rtcp_report_service::observe_sender_report(const rtcp
 
     return {};
 }
+rtcp_report_service_result rtcp_report_service::observe_receiver_report(const rtcp_received_receiver_report& report)
+{
+    auto result = stats_.observe_receiver_report(report);
+
+    if (!result)
+    {
+        return std::unexpected(result.error());
+    }
+
+    return {};
+}
+
+rtcp_report_service_result rtcp_report_service::observe_remb(const rtcp_received_remb& report)
+{
+    auto result = stats_.observe_remb(report);
+
+    if (!result)
+    {
+        return std::unexpected(result.error());
+    }
+
+    return {};
+}
 
 rtcp_report_service_result rtcp_report_service::observe_received_rtcp(std::string_view stream_id,
                                                                       std::string_view session_id,
@@ -265,38 +288,115 @@ rtcp_report_service_rtcp_observation_result rtcp_report_service::observe_receive
 
     for (const auto& block : compound->blocks)
     {
-        if (!block.is_sender_report || !block.has_sender_info || block.report_sender_ssrc == 0)
+        if (block.is_sender_report && block.has_sender_info && block.report_sender_ssrc != 0)
         {
+            rtcp_received_sender_report report;
+
+            report.stream_id = std::string(stream_id);
+
+            report.session_id = std::string(session_id);
+
+            report.remote_endpoint = std::string(remote_endpoint);
+
+            report.ssrc = block.report_sender_ssrc;
+
+            report.ntp_msw = block.sender_info.ntp_msw;
+
+            report.ntp_lsw = block.sender_info.ntp_lsw;
+
+            report.arrival_time_milliseconds = arrival_time_milliseconds;
+
+            auto observe_result = observe_sender_report(report);
+
+            if (!observe_result)
+            {
+                return std::unexpected(observe_result.error());
+            }
+
+            observation.sender_report_ssrcs.push_back(block.report_sender_ssrc);
+
             continue;
         }
 
-        rtcp_received_sender_report report;
-
-        report.stream_id = std::string(stream_id);
-
-        report.session_id = std::string(session_id);
-
-        report.remote_endpoint = std::string(remote_endpoint);
-
-        report.ssrc = block.report_sender_ssrc;
-
-        report.ntp_msw = block.sender_info.ntp_msw;
-
-        report.ntp_lsw = block.sender_info.ntp_lsw;
-
-        report.arrival_time_milliseconds = arrival_time_milliseconds;
-
-        auto observe_result = observe_sender_report(report);
-
-        if (!observe_result)
+        if (block.is_receiver_report && block.report_sender_ssrc != 0 && !block.report_blocks.empty())
         {
-            return std::unexpected(observe_result.error());
+            rtcp_received_receiver_report report;
+
+            report.stream_id = std::string(stream_id);
+
+            report.session_id = std::string(session_id);
+
+            report.remote_endpoint = std::string(remote_endpoint);
+
+            report.reporter_ssrc = block.report_sender_ssrc;
+
+            report.report_blocks = block.report_blocks;
+
+            report.arrival_time_milliseconds = arrival_time_milliseconds;
+
+            auto observe_result = observe_receiver_report(report);
+
+            if (!observe_result)
+            {
+                return std::unexpected(observe_result.error());
+            }
+
+            for (const auto& report_block : block.report_blocks)
+            {
+                observation.receiver_report_ssrcs.push_back(report_block.ssrc);
+            }
+
+            continue;
         }
 
-        observation.sender_report_ssrcs.push_back(block.report_sender_ssrc);
+        if (block.has_remb && block.feedback_sender_ssrc != 0 && block.remb_bitrate_bps != 0)
+        {
+            rtcp_received_remb report;
+
+            report.stream_id = std::string(stream_id);
+
+            report.session_id = std::string(session_id);
+
+            report.remote_endpoint = std::string(remote_endpoint);
+
+            report.sender_ssrc = block.feedback_sender_ssrc;
+
+            report.media_ssrc = block.feedback_media_ssrc;
+
+            report.bitrate_bps = block.remb_bitrate_bps;
+
+            report.ssrcs = block.remb_ssrcs;
+
+            report.arrival_time_milliseconds = arrival_time_milliseconds;
+
+            auto observe_result = observe_remb(report);
+
+            if (!observe_result)
+            {
+                return std::unexpected(observe_result.error());
+            }
+
+            if (!block.remb_ssrcs.empty())
+            {
+                observation.remb_ssrcs.insert(observation.remb_ssrcs.end(), block.remb_ssrcs.begin(), block.remb_ssrcs.end());
+            }
+            else if (block.feedback_media_ssrc != 0)
+            {
+                observation.remb_ssrcs.push_back(block.feedback_media_ssrc);
+            }
+
+            if (block.remb_bitrate_bps > observation.max_remb_bitrate_bps)
+            {
+                observation.max_remb_bitrate_bps = block.remb_bitrate_bps;
+            }
+        }
     }
 
     observation.sender_report_count = observation.sender_report_ssrcs.size();
+
+    observation.receiver_report_count = observation.receiver_report_ssrcs.size();
+
+    observation.remb_count = observation.remb_ssrcs.size();
 
     return observation;
 }

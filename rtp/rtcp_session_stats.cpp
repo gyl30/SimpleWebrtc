@@ -254,6 +254,104 @@ rtcp_session_stats_result rtcp_session_stats::observe_sender_report(const rtcp_r
 
     return {};
 }
+rtcp_session_stats_result rtcp_session_stats::observe_receiver_report(const rtcp_received_receiver_report& report)
+{
+    auto validation_result = validate_receiver_report(report);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (const auto& block : report.report_blocks)
+    {
+        const std::string key = make_source_key(report.session_id, report.remote_endpoint, block.ssrc);
+
+        auto [iterator, inserted] = sources_by_key_.try_emplace(key);
+
+        source_state& state = iterator->second;
+
+        if (inserted)
+        {
+            state.stream_id = report.stream_id;
+
+            state.session_id = report.session_id;
+
+            state.remote_endpoint = report.remote_endpoint;
+
+            state.ssrc = block.ssrc;
+        }
+
+        state.has_receiver_report = true;
+
+        state.last_receiver_reporter_ssrc = report.reporter_ssrc;
+
+        state.last_receiver_report_block = block;
+
+        state.last_receiver_report_time_milliseconds = report.arrival_time_milliseconds;
+    }
+
+    return {};
+}
+
+rtcp_session_stats_result rtcp_session_stats::observe_remb(const rtcp_received_remb& report)
+{
+    auto validation_result = validate_remb(report);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
+    std::vector<uint32_t> target_ssrcs;
+
+    target_ssrcs.reserve(report.ssrcs.empty() ? 1 : report.ssrcs.size());
+
+    if (!report.ssrcs.empty())
+    {
+        target_ssrcs = report.ssrcs;
+    }
+    else
+    {
+        target_ssrcs.push_back(report.media_ssrc);
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (uint32_t ssrc : target_ssrcs)
+    {
+        const std::string key = make_source_key(report.session_id, report.remote_endpoint, ssrc);
+
+        auto [iterator, inserted] = sources_by_key_.try_emplace(key);
+
+        source_state& state = iterator->second;
+
+        if (inserted)
+        {
+            state.stream_id = report.stream_id;
+
+            state.session_id = report.session_id;
+
+            state.remote_endpoint = report.remote_endpoint;
+
+            state.ssrc = ssrc;
+        }
+
+        state.has_remb = true;
+
+        state.last_remb_sender_ssrc = report.sender_ssrc;
+
+        state.last_remb_media_ssrc = report.media_ssrc;
+
+        state.last_remb_bitrate_bps = report.bitrate_bps;
+
+        state.last_remb_time_milliseconds = report.arrival_time_milliseconds;
+    }
+
+    return {};
+}
 
 rtcp_report_block_result rtcp_session_stats::make_report_block(std::string_view session_id,
                                                                std::string_view remote_endpoint,
@@ -295,6 +393,68 @@ std::vector<rtcp_report_block> rtcp_session_stats::make_report_blocks(std::strin
                                                                       std::size_t max_report_blocks)
 {
     return make_report_blocks(session_id, remote_endpoint, std::string_view{}, std::nullopt, std::nullopt, now_milliseconds, max_report_blocks);
+}
+
+std::vector<rtcp_report_block> rtcp_session_stats::make_report_blocks(std::string_view session_id,
+                                                                      std::string_view remote_endpoint,
+                                                                      std::string_view stream_id,
+                                                                      std::string_view mid,
+                                                                      const std::optional<std::string>& rid,
+                                                                      const std::optional<std::string>& repaired_rid,
+                                                                      uint64_t now_milliseconds,
+                                                                      std::size_t max_report_blocks)
+{
+    std::vector<rtcp_report_block> blocks;
+
+    if (session_id.empty() || remote_endpoint.empty() || max_report_blocks == 0)
+    {
+        return blocks;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    blocks.reserve(std::min(max_report_blocks, sources_by_key_.size()));
+
+    for (auto& [key, state] : sources_by_key_)
+    {
+        (void)key;
+
+        if (state.session_id != session_id || state.remote_endpoint != remote_endpoint || !state.sequence_initialized)
+        {
+            continue;
+        }
+
+        if (!stream_id.empty() && state.stream_id != stream_id)
+        {
+            continue;
+        }
+
+        if (!mid.empty() && state.mid != mid)
+        {
+            continue;
+        }
+
+        if (!optional_string_filter_matches(rid, state.rid))
+        {
+            continue;
+        }
+
+        if (!optional_string_filter_matches(repaired_rid, state.repaired_rid))
+        {
+            continue;
+        }
+
+        rtcp_session_report_snapshot snapshot = make_snapshot_from_state(state, now_milliseconds, true, &state);
+
+        blocks.push_back(snapshot.report_block);
+
+        if (blocks.size() >= max_report_blocks)
+        {
+            break;
+        }
+    }
+
+    return blocks;
 }
 
 std::vector<rtcp_report_block> rtcp_session_stats::make_report_blocks(std::string_view session_id,
@@ -610,6 +770,77 @@ rtcp_session_stats_result rtcp_session_stats::validate_sender_report(const rtcp_
     return {};
 }
 
+rtcp_session_stats_result rtcp_session_stats::validate_receiver_report(const rtcp_received_receiver_report& report)
+{
+    if (report.session_id.empty())
+    {
+        return make_error("rtcp receiver report session id is empty");
+    }
+
+    if (report.remote_endpoint.empty())
+    {
+        return make_error("rtcp receiver report remote endpoint is empty");
+    }
+
+    if (report.reporter_ssrc == 0)
+    {
+        return make_error("rtcp receiver report reporter ssrc is zero");
+    }
+
+    if (report.report_blocks.empty())
+    {
+        return make_error("rtcp receiver report block list is empty");
+    }
+
+    for (const auto& block : report.report_blocks)
+    {
+        if (block.ssrc == 0)
+        {
+            return make_error("rtcp receiver report block ssrc is zero");
+        }
+    }
+
+    return {};
+}
+
+rtcp_session_stats_result rtcp_session_stats::validate_remb(const rtcp_received_remb& report)
+{
+    if (report.session_id.empty())
+    {
+        return make_error("rtcp remb session id is empty");
+    }
+
+    if (report.remote_endpoint.empty())
+    {
+        return make_error("rtcp remb remote endpoint is empty");
+    }
+
+    if (report.sender_ssrc == 0)
+    {
+        return make_error("rtcp remb sender ssrc is zero");
+    }
+
+    if (report.bitrate_bps == 0)
+    {
+        return make_error("rtcp remb bitrate is zero");
+    }
+
+    if (report.media_ssrc == 0 && report.ssrcs.empty())
+    {
+        return make_error("rtcp remb target ssrc is empty");
+    }
+
+    for (uint32_t ssrc : report.ssrcs)
+    {
+        if (ssrc == 0)
+        {
+            return make_error("rtcp remb target ssrc is zero");
+        }
+    }
+
+    return {};
+}
+
 uint32_t rtcp_session_stats::make_extended_highest_sequence_number(const source_state& state)
 {
     return state.sequence_cycles + static_cast<uint32_t>(state.max_sequence_number);
@@ -747,6 +978,27 @@ rtcp_sender_stats_snapshot rtcp_session_stats::make_sender_snapshot_from_state(c
     snapshot.sender_octet_count = state.sender_octet_count;
 
     snapshot.last_send_time_milliseconds = state.last_send_time_milliseconds;
+
+    snapshot.has_receiver_report = state.has_receiver_report;
+
+    snapshot.last_receiver_reporter_ssrc = state.has_receiver_report ? state.last_receiver_reporter_ssrc : 0;
+
+    if (state.has_receiver_report)
+    {
+        snapshot.last_receiver_report_block = state.last_receiver_report_block;
+    }
+
+    snapshot.last_receiver_report_time_milliseconds = state.has_receiver_report ? state.last_receiver_report_time_milliseconds : 0;
+
+    snapshot.has_remb = state.has_remb;
+
+    snapshot.last_remb_sender_ssrc = state.has_remb ? state.last_remb_sender_ssrc : 0;
+
+    snapshot.last_remb_media_ssrc = state.has_remb ? state.last_remb_media_ssrc : 0;
+
+    snapshot.last_remb_bitrate_bps = state.has_remb ? state.last_remb_bitrate_bps : 0;
+
+    snapshot.last_remb_time_milliseconds = state.has_remb ? state.last_remb_time_milliseconds : 0;
 
     snapshot.sender_info = make_rtcp_sender_info_from_clock(
         now_milliseconds, state.last_sent_rtp_timestamp, low_u32(state.sender_packet_count), low_u32(state.sender_octet_count));
@@ -906,6 +1158,32 @@ std::string rtcp_sender_stats_snapshot_to_string(const rtcp_sender_stats_snapsho
     result.append(" rtp_timestamp=");
     result.append(std::to_string(snapshot.last_rtp_timestamp));
 
+    result.append(" has_rr=");
+    result.append(snapshot.has_receiver_report ? "1" : "0");
+
+    result.append(" rr_reporter_ssrc=");
+    result.append(std::to_string(snapshot.last_receiver_reporter_ssrc));
+
+    result.append(" rr_block_ssrc=");
+    result.append(std::to_string(snapshot.last_receiver_report_block.ssrc));
+
+    result.append(" rr_fraction_lost=");
+    result.append(std::to_string(snapshot.last_receiver_report_block.fraction_lost));
+
+    result.append(" rr_cumulative_lost=");
+    result.append(std::to_string(snapshot.last_receiver_report_block.cumulative_lost));
+
+    result.append(" has_remb=");
+    result.append(snapshot.has_remb ? "1" : "0");
+
+    result.append(" remb_bps=");
+    result.append(std::to_string(snapshot.last_remb_bitrate_bps));
+
+    result.append(" remb_sender_ssrc=");
+    result.append(std::to_string(snapshot.last_remb_sender_ssrc));
+
+    result.append(" remb_media_ssrc=");
+    result.append(std::to_string(snapshot.last_remb_media_ssrc));
     return result;
 }
 }    // namespace webrtc

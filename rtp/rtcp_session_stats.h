@@ -15,6 +15,7 @@
 
 namespace webrtc
 {
+
 struct rtcp_received_rtp_packet
 {
     std::string stream_id;
@@ -63,12 +64,43 @@ struct rtcp_received_sender_report
 
     uint64_t arrival_time_milliseconds = 0;
 };
+struct rtcp_received_receiver_report
+{
+    std::string stream_id;
+    std::string session_id;
+    std::string remote_endpoint;
 
+    uint32_t reporter_ssrc = 0;
+
+    std::vector<rtcp_report_block> report_blocks;
+
+    uint64_t arrival_time_milliseconds = 0;
+};
+
+struct rtcp_received_remb
+{
+    std::string stream_id;
+    std::string session_id;
+    std::string remote_endpoint;
+
+    uint32_t sender_ssrc = 0;
+    uint32_t media_ssrc = 0;
+
+    uint64_t bitrate_bps = 0;
+
+    std::vector<uint32_t> ssrcs;
+
+    uint64_t arrival_time_milliseconds = 0;
+};
 struct rtcp_session_report_snapshot
 {
     std::string stream_id;
     std::string session_id;
     std::string remote_endpoint;
+
+    std::string mid;
+    std::optional<std::string> rid;
+    std::optional<std::string> repaired_rid;
 
     uint32_t ssrc = 0;
     uint32_t clock_rate = 0;
@@ -109,6 +141,17 @@ struct rtcp_sender_stats_snapshot
     uint64_t sender_octet_count = 0;
     uint64_t last_send_time_milliseconds = 0;
 
+    bool has_receiver_report = false;
+    uint32_t last_receiver_reporter_ssrc = 0;
+    rtcp_report_block last_receiver_report_block;
+    uint64_t last_receiver_report_time_milliseconds = 0;
+
+    bool has_remb = false;
+    uint32_t last_remb_sender_ssrc = 0;
+    uint32_t last_remb_media_ssrc = 0;
+    uint64_t last_remb_bitrate_bps = 0;
+    uint64_t last_remb_time_milliseconds = 0;
+
     rtcp_sender_info sender_info;
 };
 
@@ -143,6 +186,12 @@ class rtcp_session_stats
     rtcp_session_stats_result observe_sender_report(const rtcp_received_sender_report& report);
 
     [[nodiscard]]
+    rtcp_session_stats_result observe_receiver_report(const rtcp_received_receiver_report& report);
+
+    [[nodiscard]]
+    rtcp_session_stats_result observe_remb(const rtcp_received_remb& report);
+
+    [[nodiscard]]
     rtcp_report_block_result make_report_block(std::string_view session_id,
                                                std::string_view remote_endpoint,
                                                uint32_t ssrc,
@@ -154,6 +203,15 @@ class rtcp_session_stats
                                                       uint64_t now_milliseconds,
                                                       std::size_t max_report_blocks);
 
+    [[nodiscard]]
+    std::vector<rtcp_report_block> make_report_blocks(std::string_view session_id,
+                                                      std::string_view remote_endpoint,
+                                                      std::string_view stream_id,
+                                                      std::string_view mid,
+                                                      const std::optional<std::string>& rid,
+                                                      const std::optional<std::string>& repaired_rid,
+                                                      uint64_t now_milliseconds,
+                                                      std::size_t max_report_blocks);
     [[nodiscard]]
     std::vector<rtcp_report_block> make_report_blocks(std::string_view session_id,
                                                       std::string_view remote_endpoint,
@@ -232,6 +290,17 @@ class rtcp_session_stats
         uint32_t last_sent_rtp_timestamp = 0;
         uint64_t last_send_time_milliseconds = 0;
         bool has_sent_rtp = false;
+
+        bool has_receiver_report = false;
+        uint32_t last_receiver_reporter_ssrc = 0;
+        rtcp_report_block last_receiver_report_block;
+        uint64_t last_receiver_report_time_milliseconds = 0;
+
+        bool has_remb = false;
+        uint32_t last_remb_sender_ssrc = 0;
+        uint32_t last_remb_media_ssrc = 0;
+        uint64_t last_remb_bitrate_bps = 0;
+        uint64_t last_remb_time_milliseconds = 0;
     };
 
    private:
@@ -246,6 +315,12 @@ class rtcp_session_stats
 
     [[nodiscard]]
     static rtcp_session_stats_result validate_sender_report(const rtcp_received_sender_report& report);
+
+    [[nodiscard]]
+    static rtcp_session_stats_result validate_receiver_report(const rtcp_received_receiver_report& report);
+
+    [[nodiscard]]
+    static rtcp_session_stats_result validate_remb(const rtcp_received_remb& report);
 
     [[nodiscard]]
     static uint32_t make_extended_highest_sequence_number(const source_state& state);

@@ -4448,7 +4448,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
             }
         }
 
-        observe_inbound_rtcp_sender_reports(*peer, *result);
+        observe_inbound_rtcp_reports(*peer, *result);
     }
     if (track_resolution.has_value() && track_resolution->resolved)
     {
@@ -4795,14 +4795,9 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
     }
 }
 
-void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& peer, const srtp_packet_process_result& packet)
+void ice_udp_server::observe_inbound_rtcp_reports(const media_peer_info& peer, const srtp_packet_process_result& packet)
 {
     if (rtcp_report_service_ == nullptr)
-    {
-        return;
-    }
-
-    if (peer.role != media_peer_role::publisher)
     {
         return;
     }
@@ -4827,11 +4822,28 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
     {
         rtcp_report_inbound_rtcp_observe_failed_total_.fetch_add(1, std::memory_order_relaxed);
 
-        WEBRTC_LOG_DEBUG("rtcp stats sender report observe skipped stream={} session={} remote={} error={}",
+        WEBRTC_LOG_DEBUG("rtcp stats observe skipped stream={} session={} remote={} role={} error={}",
                          peer.stream_id,
                          peer.session_id,
                          peer.remote_endpoint,
+                         media_peer_role_to_string(peer.role),
                          observation.error());
+
+        return;
+    }
+
+    if (peer.role != media_peer_role::publisher)
+    {
+        if (observation->receiver_report_count != 0 || observation->remb_count != 0)
+        {
+            WEBRTC_LOG_DEBUG("rtcp stats subscriber feedback observed stream={} session={} remote={} rr={} remb={} max_remb_bps={}",
+                             peer.stream_id,
+                             peer.session_id,
+                             peer.remote_endpoint,
+                             observation->receiver_report_count,
+                             observation->remb_count,
+                             observation->max_remb_bitrate_bps);
+        }
 
         return;
     }
@@ -4864,6 +4876,7 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
         }
 
         const uint32_t local_ssrc = make_rtcp_report_local_ssrc(peer, sender_report_ssrc);
+
         rtcp_report_source_config source;
 
         source.stream_id = peer.stream_id;
@@ -4877,6 +4890,7 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
         source.cname = make_rtcp_cname(peer.session_id, local_ssrc);
 
         source.sender_report_enabled = false;
+
         source.receiver_report_enabled = true;
 
         rtcp_report_remember_source_attempts_total_.fetch_add(1, std::memory_order_relaxed);
@@ -4900,13 +4914,6 @@ void ice_udp_server::observe_inbound_rtcp_sender_reports(const media_peer_info& 
         rtcp_report_remember_source_success_total_.fetch_add(1, std::memory_order_relaxed);
 
         remembered_sender_report_source_count += 1;
-
-        WEBRTC_LOG_DEBUG("rtcp stats sender report observed stream={} session={} remote={} sender_ssrc={} local_ssrc={}",
-                         peer.stream_id,
-                         peer.session_id,
-                         peer.remote_endpoint,
-                         sender_report_ssrc,
-                         local_ssrc);
     }
 
     if (remembered_sender_report_source_count != 0)

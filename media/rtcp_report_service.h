@@ -126,8 +126,14 @@ struct rtcp_report_service_rtcp_observation
     std::string remote_endpoint;
 
     std::vector<uint32_t> sender_report_ssrcs;
+    std::vector<uint32_t> receiver_report_ssrcs;
+    std::vector<uint32_t> remb_ssrcs;
 
     std::size_t sender_report_count = 0;
+    std::size_t receiver_report_count = 0;
+    std::size_t remb_count = 0;
+
+    uint64_t max_remb_bitrate_bps = 0;
 };
 
 using rtcp_report_service_result = std::expected<void, std::string>;
@@ -170,6 +176,12 @@ class rtcp_report_service
 
     [[nodiscard]]
     rtcp_report_service_result observe_sender_report(const rtcp_received_sender_report& report);
+
+    [[nodiscard]]
+    rtcp_report_service_result observe_receiver_report(const rtcp_received_receiver_report& report);
+
+    [[nodiscard]]
+    rtcp_report_service_result observe_remb(const rtcp_received_remb& report);
 
     [[nodiscard]]
     rtcp_report_service_result observe_received_rtcp(std::string_view stream_id,
