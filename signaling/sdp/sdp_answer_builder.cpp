@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -390,6 +391,213 @@ std::expected<std::string, std::string> make_bundle_group_value(const session_de
 
     return value;
 }
+std::vector<std::string> split_space_separated_tokens(std::string_view value)
+{
+    std::vector<std::string> tokens;
+
+    std::size_t position = 0;
+
+    while (position < value.size())
+    {
+        position = value.find_first_not_of(" \t", position);
+
+        if (position == std::string_view::npos)
+        {
+            break;
+        }
+
+        const std::size_t end = value.find_first_of(" \t", position);
+
+        if (end == std::string_view::npos)
+        {
+            tokens.emplace_back(value.substr(position));
+
+            break;
+        }
+
+        tokens.emplace_back(value.substr(position, end - position));
+
+        position = end + 1;
+    }
+
+    return tokens;
+}
+
+bool string_vector_contains(const std::vector<std::string>& values, std::string_view value)
+{
+    for (const auto& current : values)
+    {
+        if (current == value)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool is_answer_media_rejected(const media_description& media) { return media.media_name.port.value == 0; }
+std::expected<std::vector<std::string>, std::string> collect_accepted_answer_media_mids(const session_description& answer)
+{
+    std::vector<std::string> accepted_mids;
+
+    for (const auto& media : answer.media_descriptions)
+    {
+        if (is_answer_media_rejected(media))
+        {
+            continue;
+        }
+
+        const std::optional<std::string> mid = find_answer_media_mid(media);
+
+        if (!mid.has_value())
+        {
+            return make_error("accepted answer media is missing mid");
+        }
+
+        if (string_vector_contains(accepted_mids, *mid))
+        {
+            std::string message = "accepted answer media mid duplicated mid=";
+
+            message.append(*mid);
+
+            return std::unexpected(std::move(message));
+        }
+
+        accepted_mids.push_back(*mid);
+    }
+
+    if (accepted_mids.empty())
+    {
+        return make_error("answer has no accepted media mids");
+    }
+
+    return accepted_mids;
+}
+
+std::expected<std::vector<std::string>, std::string> collect_answer_bundle_mids(const session_description& answer)
+{
+    const auto group_attributes = answer.find_attributes(k_attribute_group);
+
+    std::optional<std::vector<std::string>> bundle_mids;
+
+    for (const auto* attribute : group_attributes)
+    {
+        if (attribute == nullptr)
+        {
+            continue;
+        }
+
+        const std::vector<std::string> tokens = split_space_separated_tokens(attribute->value);
+
+        if (tokens.empty())
+        {
+            return make_error("answer group attribute is empty");
+        }
+
+        if (tokens.front() != "BUNDLE")
+        {
+            continue;
+        }
+
+        if (bundle_mids.has_value())
+        {
+            return make_error("answer has multiple bundle groups");
+        }
+
+        if (tokens.size() == 1)
+        {
+            return make_error("answer bundle group has no mids");
+        }
+
+        std::vector<std::string> current_bundle_mids;
+
+        current_bundle_mids.reserve(tokens.size() - 1);
+
+        for (std::size_t index = 1; index < tokens.size(); ++index)
+        {
+            const std::string& mid = tokens[index];
+
+            if (mid.empty())
+            {
+                return make_error("answer bundle mid is empty");
+            }
+
+            if (string_vector_contains(current_bundle_mids, mid))
+            {
+                std::string message = "answer bundle mid duplicated mid=";
+
+                message.append(mid);
+
+                return std::unexpected(std::move(message));
+            }
+
+            current_bundle_mids.push_back(mid);
+        }
+
+        bundle_mids = std::move(current_bundle_mids);
+    }
+
+    if (!bundle_mids.has_value())
+    {
+        return make_error("answer bundle group is missing");
+    }
+
+    return *bundle_mids;
+}
+
+std::expected<void, std::string> validate_answer_bundle_group(const session_description& answer)
+{
+    auto accepted_mids = collect_accepted_answer_media_mids(answer);
+
+    if (!accepted_mids)
+    {
+        return std::unexpected(accepted_mids.error());
+    }
+
+    auto bundle_mids = collect_answer_bundle_mids(answer);
+
+    if (!bundle_mids)
+    {
+        return std::unexpected(bundle_mids.error());
+    }
+
+    if (accepted_mids->size() != bundle_mids->size())
+    {
+        return make_error("answer bundle mids and accepted media mids size mismatch");
+    }
+
+    for (std::size_t index = 0; index < accepted_mids->size(); ++index)
+    {
+        const std::string& accepted_mid = (*accepted_mids)[index];
+
+        const std::string& bundle_mid = (*bundle_mids)[index];
+
+        if (!string_vector_contains(*accepted_mids, bundle_mid))
+        {
+            std::string message = "answer bundle mid is not accepted mid=";
+
+            message.append(bundle_mid);
+
+            return std::unexpected(std::move(message));
+        }
+
+        if (accepted_mid != bundle_mid)
+        {
+            std::string message = "answer bundle mid order mismatch expected=";
+
+            message.append(accepted_mid);
+
+            message.append(" actual=");
+
+            message.append(bundle_mid);
+
+            return std::unexpected(std::move(message));
+        }
+    }
+
+    return {};
+}
 
 setup_text_result format_setup_role(dtls_connection_role role)
 {
@@ -621,8 +829,6 @@ const media_summary* find_matching_publisher_media(const media_summary& subscrib
 
     return find_send_capable_media_by_kind_ordinal(publisher_offer, subscriber_media.kind, *subscriber_ordinal);
 }
-
-bool is_answer_media_rejected(const media_description& media) { return media.media_name.port.value == 0; }
 
 bool answer_media_has_inactive_direction(const media_description& media)
 {
@@ -1072,12 +1278,21 @@ sdp_answer_result build_answer(answer_endpoint_role role,
     }
 
     auto bundle_group_value = make_bundle_group_value(answer);
+
     if (!bundle_group_value)
     {
         return std::unexpected(bundle_group_value.error());
     }
 
     answer.attributes.insert(answer.attributes.begin(), make_attribute(std::string(k_attribute_group), *bundle_group_value));
+
+    auto bundle_group_validation = validate_answer_bundle_group(answer);
+
+    if (!bundle_group_validation)
+    {
+        return std::unexpected(bundle_group_validation.error());
+    }
+
     return answer;
 }
 
