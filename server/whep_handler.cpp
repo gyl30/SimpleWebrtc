@@ -37,6 +37,129 @@ std::string make_prefixed_error(std::string_view prefix, std::string_view error)
 
     return message;
 }
+std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+
+bool contains_mid(const std::vector<std::string>& mids, std::string_view mid)
+{
+    for (const auto& current : mids)
+    {
+        if (current == mid)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::expected<std::vector<std::string>, std::string> collect_accepted_answer_mids(std::string_view answer_sdp)
+{
+    auto answer_description = sdp::parse_session_description(answer_sdp);
+
+    if (!answer_description)
+    {
+        std::string message = "accepted media parse answer failed: ";
+
+        message.append(answer_description.error());
+
+        return std::unexpected(std::move(message));
+    }
+
+    std::vector<std::string> accepted_mids;
+
+    for (const auto& media : answer_description->media_descriptions)
+    {
+        if (media.media_name.port.value == 0)
+        {
+            continue;
+        }
+
+        const std::optional<std::string> mid = media.find_attribute_value("mid");
+
+        if (!mid.has_value() || mid->empty())
+        {
+            return make_error("accepted answer media is missing mid");
+        }
+
+        if (contains_mid(accepted_mids, *mid))
+        {
+            return make_error("accepted answer media mid is duplicated");
+        }
+
+        accepted_mids.push_back(*mid);
+    }
+
+    if (accepted_mids.empty())
+    {
+        return make_error("answer has no accepted media");
+    }
+
+    return accepted_mids;
+}
+
+std::expected<sdp::webrtc_offer_summary, std::string> make_runtime_subscriber_offer_summary(const sdp::webrtc_offer_summary& original_offer,
+                                                                                            std::string_view answer_sdp)
+{
+    auto accepted_mids = collect_accepted_answer_mids(answer_sdp);
+
+    if (!accepted_mids)
+    {
+        return std::unexpected(accepted_mids.error());
+    }
+
+    sdp::webrtc_offer_summary runtime_offer = original_offer;
+
+    runtime_offer.bundle_mids.clear();
+    runtime_offer.media.clear();
+
+    for (const auto& mid : *accepted_mids)
+    {
+        bool media_found = false;
+
+        for (const auto& media : original_offer.media)
+        {
+            if (media.mid != mid)
+            {
+                continue;
+            }
+
+            runtime_offer.media.push_back(media);
+
+            media_found = true;
+
+            break;
+        }
+
+        if (!media_found)
+        {
+            std::string message = "accepted answer mid not found in subscriber offer mid=";
+
+            message.append(mid);
+
+            return std::unexpected(std::move(message));
+        }
+    }
+
+    for (const auto& mid : original_offer.bundle_mids)
+    {
+        if (!contains_mid(*accepted_mids, mid))
+        {
+            continue;
+        }
+
+        runtime_offer.bundle_mids.push_back(mid);
+    }
+
+    if (runtime_offer.bundle_mids.empty())
+    {
+        for (const auto& mid : *accepted_mids)
+        {
+            runtime_offer.bundle_mids.push_back(mid);
+        }
+    }
+
+    return runtime_offer;
+}
 }    // namespace
 
 whep_handler::whep_handler(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
@@ -99,21 +222,26 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         return json_error_response(request, 404, "publisher not found");
     }
 
-    auto answer = answer_factory_->build_whep_answer(stream_id, *offer_summary, publisher->remote_offer_summary());
+    auto generated_answer = answer_factory_->build_whep_answer(stream_id, *offer_summary);
 
-    if (!answer)
+    if (!generated_answer)
     {
-        WEBRTC_LOG_WARN("WHEP build SDP answer failed stream={} error={}", stream_id, answer.error());
+        WEBRTC_LOG_WARN("WHEP build SDP answer failed stream={} error={}", stream_id, generated_answer.error());
 
-        std::string error_message;
-        error_message.reserve(answer.error().size() + 32);
-        error_message.append("failed to build sdp answer: ");
-        error_message.append(answer.error());
-
-        return json_error_response(request, 400, error_message);
+        return json_error_response(request, 400, make_prefixed_error("failed to build sdp answer: ", generated_answer.error()));
     }
 
-    auto session_result = registry_->create_subscriber_session(std::string(stream_id), offer, std::move(*offer_summary));
+    auto runtime_offer_summary = make_runtime_subscriber_offer_summary(*offer_summary, generated_answer->sdp);
+
+    if (!runtime_offer_summary)
+    {
+        WEBRTC_LOG_WARN("WHEP runtime subscriber offer summary failed stream={} error={}", stream_id, runtime_offer_summary.error());
+
+        return json_error_response(
+            request, 400, make_prefixed_error("failed to build runtime subscriber offer summary: ", runtime_offer_summary.error()));
+    }
+
+    auto session_result = registry_->create_subscriber_session(std::string(stream_id), offer, std::move(*runtime_offer_summary));
     if (!session_result)
     {
         const auto error = session_result.error();
@@ -132,18 +260,16 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     const auto& session = *session_result;
 
-    generated_sdp_answer generated_answer = std::move(*answer);
-
-    session->set_local_answer(std::move(generated_answer.sdp),
-                              std::move(generated_answer.local_ice),
-                              std::move(generated_answer.local_fingerprint),
-                              generated_answer.sdp_session_id,
-                              generated_answer.sdp_session_version);
-
-    WEBRTC_LOG_INFO("WHEP create subscriber stream={} session={} sdp_size={} media_count={}",
+    session->set_local_answer(std::move(generated_answer->sdp),
+                              std::move(generated_answer->local_ice),
+                              std::move(generated_answer->local_fingerprint),
+                              generated_answer->sdp_session_id,
+                              generated_answer->sdp_session_version);
+    WEBRTC_LOG_INFO("WHEP create subscriber stream={} session={} sdp_size={} offer_media_count={} accepted_media_count={}",
                     session->stream_id(),
                     session->session_id(),
                     offer.size(),
+                    offer_summary->media.size(),
                     session->remote_offer_summary().media.size());
 
     auto response = sdp_response(request, 201, session->local_sdp_answer());
