@@ -5,6 +5,7 @@
 #include <string_view>
 #include <utility>
 #include <optional>
+#include <limits>
 
 #include <boost/beast/http.hpp>
 
@@ -161,6 +162,62 @@ std::expected<sdp::webrtc_offer_summary, std::string> make_runtime_subscriber_of
 
     return runtime_offer;
 }
+std::expected<std::vector<int>, std::string> collect_accepted_offer_mline_indexes(const sdp::webrtc_offer_summary& original_offer,
+                                                                                  std::string_view answer_sdp)
+{
+    auto accepted_mids = collect_accepted_answer_mids(answer_sdp);
+
+    if (!accepted_mids)
+    {
+        return std::unexpected(accepted_mids.error());
+    }
+
+    std::vector<int> accepted_mline_indexes;
+
+    accepted_mline_indexes.reserve(accepted_mids->size());
+
+    for (const auto& accepted_mid : *accepted_mids)
+    {
+        bool media_found = false;
+
+        for (std::size_t index = 0; index < original_offer.media.size(); ++index)
+        {
+            const auto& media = original_offer.media[index];
+
+            if (media.mid != accepted_mid)
+            {
+                continue;
+            }
+
+            if (index > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            {
+                return make_error("accepted offer media mline index is too large");
+            }
+
+            accepted_mline_indexes.push_back(static_cast<int>(index));
+
+            media_found = true;
+
+            break;
+        }
+
+        if (!media_found)
+        {
+            std::string message = "accepted answer mid not found in subscriber offer mid=";
+
+            message.append(accepted_mid);
+
+            return std::unexpected(std::move(message));
+        }
+    }
+
+    if (accepted_mline_indexes.empty())
+    {
+        return make_error("answer has no accepted media mline indexes");
+    }
+
+    return accepted_mline_indexes;
+}
 }    // namespace
 
 whep_handler::whep_handler(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
@@ -241,6 +298,17 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
             request, 400, make_prefixed_error("failed to build runtime subscriber offer summary: ", runtime_offer_summary.error()));
     }
 
+    auto accepted_remote_media_mline_indexes = collect_accepted_offer_mline_indexes(*offer_summary, generated_answer->sdp);
+
+    if (!accepted_remote_media_mline_indexes)
+    {
+        WEBRTC_LOG_WARN(
+            "WHEP accepted media mline index collection failed stream={} error={}", stream_id, accepted_remote_media_mline_indexes.error());
+
+        return json_error_response(
+            request, 400, make_prefixed_error("failed to collect accepted media mline indexes: ", accepted_remote_media_mline_indexes.error()));
+    }
+
     auto session_result = registry_->create_subscriber_session(std::string(stream_id), offer, std::move(*runtime_offer_summary));
     if (!session_result)
     {
@@ -260,18 +328,23 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     const auto& session = *session_result;
 
-    session->set_local_answer(std::move(generated_answer->sdp),
-                              std::move(generated_answer->local_ice),
-                              std::move(generated_answer->local_fingerprint),
-                              generated_answer->sdp_session_id,
-                              generated_answer->sdp_session_version);
-    WEBRTC_LOG_INFO("WHEP create subscriber stream={} session={} sdp_size={} offer_media_count={} accepted_media_count={}",
+    session->set_accepted_remote_media_mline_indexes(std::move(*accepted_remote_media_mline_indexes));
+
+    generated_sdp_answer generated = std::move(*generated_answer);
+
+    session->set_local_answer(std::move(generated.sdp),
+                              std::move(generated.local_ice),
+                              std::move(generated.local_fingerprint),
+                              generated.sdp_session_id,
+                              generated.sdp_session_version);
+
+    WEBRTC_LOG_INFO("WHEP create subscriber stream={} session={} sdp_size={} offer_media_count={} accepted_media_count={} accepted_mline_count={}",
                     session->stream_id(),
                     session->session_id(),
                     offer.size(),
                     offer_summary->media.size(),
-                    session->remote_offer_summary().media.size());
-
+                    session->remote_offer_summary().media.size(),
+                    session->accepted_remote_media_mline_indexes().size());
     auto response = sdp_response(request, 201, session->local_sdp_answer());
 
     response->set(http::field::location, "/whep/session/" + session->session_id());

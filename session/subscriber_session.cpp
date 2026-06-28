@@ -92,6 +92,8 @@ const std::vector<remote_ice_candidate>& subscriber_session::remote_ice_candidat
 
 bool subscriber_session::remote_ice_completed() const { return remote_ice_completed_; }
 
+const std::vector<int>& subscriber_session::accepted_remote_media_mline_indexes() const { return accepted_remote_media_mline_indexes_; }
+
 session_state subscriber_session::state() const { return state_; }
 
 std::string subscriber_session::state_string() const { return std::string(session_state_to_string(state_)); }
@@ -133,6 +135,13 @@ void subscriber_session::set_local_answer(std::string local_sdp_answer,
     sdp_session_version_ = sdp_session_version;
 
     state_ = session_state::sdp_answered;
+
+    updated_at_milliseconds_ = now_milliseconds();
+}
+
+void subscriber_session::set_accepted_remote_media_mline_indexes(std::vector<int> accepted_remote_media_mline_indexes)
+{
+    accepted_remote_media_mline_indexes_ = std::move(accepted_remote_media_mline_indexes);
 
     updated_at_milliseconds_ = now_milliseconds();
 }

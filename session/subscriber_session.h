@@ -56,6 +56,8 @@ class subscriber_session
 
     [[nodiscard]] bool remote_ice_completed() const;
 
+    [[nodiscard]] const std::vector<int>& accepted_remote_media_mline_indexes() const;
+
     [[nodiscard]] session_state state() const;
 
     [[nodiscard]] std::string state_string() const;
@@ -75,6 +77,8 @@ class subscriber_session
                           uint64_t sdp_session_id,
                           uint64_t sdp_session_version);
 
+    void set_accepted_remote_media_mline_indexes(std::vector<int> accepted_remote_media_mline_indexes);
+
     [[nodiscard]] std::expected<void, std::string> add_remote_ice_candidate(remote_ice_candidate candidate);
 
    private:
@@ -92,7 +96,7 @@ class subscriber_session
     uint64_t sdp_session_version_ = 0;
 
     std::vector<remote_ice_candidate> remote_ice_candidates_;
-
+    std::vector<int> accepted_remote_media_mline_indexes_;
     bool remote_ice_completed_ = false;
 
     session_state state_ = session_state::created;

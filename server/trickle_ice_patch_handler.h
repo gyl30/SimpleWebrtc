@@ -145,21 +145,53 @@ bool remote_offer_media_mid_exists(const session_type& session, std::string_view
 
     return false;
 }
+template <typename session_type>
+bool accepted_remote_media_mline_index_exists(const session_type& session, int sdp_mline_index)
+{
+    if (sdp_mline_index < 0)
+    {
+        return false;
+    }
+
+    const auto& accepted_mline_indexes = session.accepted_remote_media_mline_indexes();
+
+    if (!accepted_mline_indexes.empty())
+    {
+        for (int accepted_mline_index : accepted_mline_indexes)
+        {
+            if (accepted_mline_index == sdp_mline_index)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    const std::size_t media_index = static_cast<std::size_t>(sdp_mline_index);
+
+    return media_index < session.remote_offer_summary().media.size();
+}
 
 template <typename session_type>
 bool remote_ice_candidate_media_is_accepted(const session_type& session, const remote_ice_candidate& candidate)
 {
-    /*
-     * sdp_mid 是最可靠的 media 归属依据。
-     * 对没有 sdp_mid 的 mline-only candidate 暂时保持兼容，不在这里过滤；
-     * 否则 WHEP runtime offer 被收口后，原始 offer 的 mline index 可能无法一一对应。
-     */
-    if (candidate.sdp_mid.empty())
+    if (!candidate.sdp_mid.empty() && !remote_offer_media_mid_exists(session, candidate.sdp_mid))
     {
-        return true;
+        return false;
     }
 
-    return remote_offer_media_mid_exists(session, candidate.sdp_mid);
+    if (candidate.sdp_mline_index >= 0 && !accepted_remote_media_mline_index_exists(session, candidate.sdp_mline_index))
+    {
+        return false;
+    }
+
+    if (candidate.sdp_mid.empty() && candidate.sdp_mline_index < 0)
+    {
+        return false;
+    }
+
+    return true;
 }
 
 inline trickle_ice_patch_content_kind content_kind_from_request(http_request_t& request)
