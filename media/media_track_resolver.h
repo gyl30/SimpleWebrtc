@@ -103,6 +103,9 @@ class media_track_resolver
         std::string mid;
         std::string kind;
 
+        std::optional<std::string> rid;
+        std::optional<std::string> repaired_rid;
+
         bool rtx = false;
         uint32_t rtx_primary_ssrc = 0;
         uint32_t rtx_repair_ssrc = 0;

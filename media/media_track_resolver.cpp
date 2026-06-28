@@ -344,6 +344,63 @@ void fill_resolution_from_values(media_track_resolution& resolution, const rtp_h
 
     resolution.voice_activity = values.voice_activity;
 }
+void fill_binding_from_values(media_track_resolver::media_track_binding& binding, const rtp_header_extension_values& values)
+{
+    if (values.rid.has_value())
+    {
+        binding.rid = values.rid;
+    }
+
+    if (values.repaired_rid.has_value())
+    {
+        binding.repaired_rid = values.repaired_rid;
+    }
+}
+
+bool optional_string_conflicts(const std::optional<std::string>& expected, const std::optional<std::string>& actual)
+{
+    return expected.has_value() && actual.has_value() && *expected != *actual;
+}
+
+bool binding_rid_values_conflict(const media_track_resolver::media_track_binding& binding, const rtp_header_extension_values& values)
+{
+    if (optional_string_conflicts(binding.rid, values.rid))
+    {
+        return true;
+    }
+
+    if (optional_string_conflicts(binding.repaired_rid, values.repaired_rid))
+    {
+        return true;
+    }
+
+    if (binding.rid.has_value() && values.repaired_rid.has_value() && *binding.rid != *values.repaired_rid)
+    {
+        return true;
+    }
+
+    if (binding.repaired_rid.has_value() && values.rid.has_value() && *binding.repaired_rid != *values.rid)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+bool binding_mid_extension_conflicts(std::span<const uint8_t> packet,
+                                     const rtp_packet_header& header,
+                                     const sdp::media_summary& media,
+                                     const media_track_resolver::media_track_binding& binding)
+{
+    auto packet_mid = extract_mid_for_media(packet, header, media);
+
+    if (!packet_mid.has_value())
+    {
+        return false;
+    }
+
+    return *packet_mid != binding.mid;
+}
 }    // namespace
 
 media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::string_view remote_endpoint,
@@ -406,29 +463,35 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
         if (binding.has_value())
         {
             const sdp::media_summary* media = find_media_by_mid(offer, binding->mid);
-
             if (media != nullptr && is_active_media(*media) && media_has_payload_type(*media, header->payload_type))
             {
                 const rtp_header_extension_values values = parse_optional_extension_values(plain_packet, *header, *media);
 
-                resolution.state = media_track_resolution_state::resolved_by_ssrc;
-                resolution.resolved = true;
-                resolution.newly_bound = false;
+                if (!binding_mid_extension_conflicts(plain_packet, *header, *media, *binding) && !binding_rid_values_conflict(*binding, values))
+                {
+                    resolution.state = media_track_resolution_state::resolved_by_ssrc;
 
-                fill_resolution_from_media(resolution, *media);
+                    resolution.resolved = true;
+                    resolution.newly_bound = false;
 
-                fill_resolution_from_values(resolution, values);
+                    fill_resolution_from_media(resolution, *media);
 
-                media_track_binding updated_binding = *binding;
+                    fill_resolution_from_values(resolution, values);
 
-                updated_binding.payload_type = header->payload_type;
+                    media_track_binding updated_binding = *binding;
 
-                fill_binding_rtx_from_media(updated_binding, *media);
+                    updated_binding.payload_type = header->payload_type;
 
-                updated_binding.packet_count += 1;
+                    fill_binding_from_values(updated_binding, values);
 
-                remember_binding_locked(updated_binding);
-                return resolution;
+                    fill_binding_rtx_from_media(updated_binding, *media);
+
+                    updated_binding.packet_count += 1;
+
+                    remember_binding_locked(updated_binding);
+
+                    return resolution;
+                }
             }
 
             erase_binding_by_peer_ssrc_locked(remote_endpoint, header->ssrc);
@@ -456,6 +519,10 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
             binding.ssrc = header->ssrc;
 
             binding.payload_type = header->payload_type;
+
+            fill_binding_from_values(binding, match->values);
+
+            fill_binding_rtx_from_media(binding, *match->media);
 
             binding.packet_count = 1;
 
@@ -514,6 +581,10 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
         binding.payload_type = header->payload_type;
 
+        fill_binding_from_values(binding, values);
+
+        fill_binding_rtx_from_media(binding, *payload_type_media);
+
         binding.packet_count = 1;
 
         {
@@ -521,7 +592,6 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
             remember_binding_locked(binding);
         }
-
         resolution.state = media_track_resolution_state::resolved_by_payload_type;
 
         resolution.resolved = true;
@@ -570,6 +640,10 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
         binding.payload_type = header->payload_type;
 
+        fill_binding_from_values(binding, values);
+
+        fill_binding_rtx_from_media(binding, *single_media);
+
         binding.packet_count = 1;
 
         {
@@ -577,7 +651,6 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
             remember_binding_locked(binding);
         }
-
         resolution.state = media_track_resolution_state::resolved_by_single_media;
 
         resolution.resolved = true;
