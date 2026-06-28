@@ -20,10 +20,14 @@ constexpr uint8_t k_rtcp_transport_cc_feedback_format = 15;
 
 constexpr uint16_t k_transport_cc_status_not_received = 0;
 constexpr uint16_t k_transport_cc_status_small_delta = 1;
+constexpr uint16_t k_transport_cc_status_large_delta = 2;
+
+constexpr uint16_t k_transport_cc_run_length_max = 0x1fffU;
+constexpr uint16_t k_transport_cc_two_bit_vector_prefix = 0xc000U;
+constexpr std::size_t k_transport_cc_two_bit_vector_capacity = 7;
 
 constexpr uint64_t k_transport_cc_reference_time_unit_milliseconds = 64;
-constexpr uint64_t k_transport_cc_delta_unit_per_millisecond = 4;
-
+constexpr int64_t k_transport_cc_delta_unit_per_millisecond = 4;
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 void append_key_part(std::string& key, std::string_view value)
@@ -41,6 +45,8 @@ void append_u16(std::vector<uint8_t>& packet, uint16_t value)
 
     packet.push_back(static_cast<uint8_t>(value & 0xffU));
 }
+
+void append_i16(std::vector<uint8_t>& packet, int16_t value) { append_u16(packet, static_cast<uint16_t>(value)); }
 
 void append_u24(std::vector<uint8_t>& packet, uint32_t value)
 {
@@ -74,15 +80,17 @@ uint16_t sequence_distance(uint16_t base_sequence_number, uint16_t sequence_numb
     return static_cast<uint16_t>(sequence_number - base_sequence_number);
 }
 
-bool packet_sequence_equals(const rtcp_transport_cc_feedback_service::observed_packet_state& packet, uint16_t sequence_number)
+struct feedback_observed_packet
 {
-    return packet.transport_sequence_number == sequence_number;
-}
+    uint16_t transport_sequence_number = 0;
+    uint64_t arrival_time_milliseconds = 0;
+};
 
 struct feedback_status_entry
 {
     uint16_t status = k_transport_cc_status_not_received;
     uint64_t arrival_time_milliseconds = 0;
+    int16_t delta_units = 0;
 };
 
 struct feedback_build_plan
@@ -92,13 +100,47 @@ struct feedback_build_plan
     uint32_t reference_time_64ms = 0;
 
     std::vector<feedback_status_entry> statuses;
-    std::vector<uint8_t> small_deltas;
 };
 
-std::vector<rtcp_transport_cc_feedback_service::observed_packet_state> sorted_unique_packets_for_feedback(
-    const std::vector<rtcp_transport_cc_feedback_service::observed_packet_state>& packets, uint16_t base_sequence_number, uint16_t max_packets)
+bool delta_units_fits_small_delta(int64_t delta_units)
 {
-    std::vector<rtcp_transport_cc_feedback_service::observed_packet_state> result;
+    return delta_units >= 0 && delta_units <= static_cast<int64_t>(std::numeric_limits<uint8_t>::max());
+}
+
+bool delta_units_fits_large_delta(int64_t delta_units)
+{
+    return delta_units >= static_cast<int64_t>(std::numeric_limits<int16_t>::min()) &&
+           delta_units <= static_cast<int64_t>(std::numeric_limits<int16_t>::max());
+}
+
+std::expected<int64_t, std::string> make_delta_units(uint64_t current_time_milliseconds, uint64_t previous_time_milliseconds)
+{
+    if (current_time_milliseconds > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+        previous_time_milliseconds > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+    {
+        return make_error("transport cc feedback arrival time is too large");
+    }
+
+    const int64_t current = static_cast<int64_t>(current_time_milliseconds);
+
+    const int64_t previous = static_cast<int64_t>(previous_time_milliseconds);
+
+    const int64_t delta_milliseconds = current - previous;
+
+    if (delta_milliseconds > std::numeric_limits<int64_t>::max() / k_transport_cc_delta_unit_per_millisecond ||
+        delta_milliseconds < std::numeric_limits<int64_t>::min() / k_transport_cc_delta_unit_per_millisecond)
+    {
+        return make_error("transport cc feedback delta is too large");
+    }
+
+    return delta_milliseconds * k_transport_cc_delta_unit_per_millisecond;
+}
+
+std::vector<feedback_observed_packet> sorted_unique_packets_for_feedback(const std::vector<feedback_observed_packet>& packets,
+                                                                         uint16_t base_sequence_number,
+                                                                         uint16_t max_packets)
+{
+    std::vector<feedback_observed_packet> result;
 
     result.reserve(packets.size());
 
@@ -132,8 +174,7 @@ std::vector<rtcp_transport_cc_feedback_service::observed_packet_state> sorted_un
     return result;
 }
 
-std::expected<feedback_build_plan, std::string> make_feedback_build_plan(
-    const std::vector<rtcp_transport_cc_feedback_service::observed_packet_state>& packets, uint16_t max_packets)
+std::expected<feedback_build_plan, std::string> make_feedback_build_plan(const std::vector<feedback_observed_packet>& packets, uint16_t max_packets)
 {
     if (packets.empty())
     {
@@ -142,8 +183,7 @@ std::expected<feedback_build_plan, std::string> make_feedback_build_plan(
 
     const uint16_t base_sequence_number = packets.front().transport_sequence_number;
 
-    std::vector<rtcp_transport_cc_feedback_service::observed_packet_state> ordered_packets =
-        sorted_unique_packets_for_feedback(packets, base_sequence_number, max_packets);
+    std::vector<feedback_observed_packet> ordered_packets = sorted_unique_packets_for_feedback(packets, base_sequence_number, max_packets);
 
     if (ordered_packets.empty())
     {
@@ -186,7 +226,7 @@ std::expected<feedback_build_plan, std::string> make_feedback_build_plan(
 
     for (std::size_t index = 0; index < plan.statuses.size(); ++index)
     {
-        const auto& status = plan.statuses[index];
+        auto& status = plan.statuses[index];
 
         if (status.status == k_transport_cc_status_not_received)
         {
@@ -195,21 +235,29 @@ std::expected<feedback_build_plan, std::string> make_feedback_build_plan(
             continue;
         }
 
-        if (status.arrival_time_milliseconds < previous_received_time_milliseconds)
+        auto delta_units = make_delta_units(status.arrival_time_milliseconds, previous_received_time_milliseconds);
+
+        if (!delta_units)
         {
             break;
         }
 
-        const uint64_t delta_milliseconds = status.arrival_time_milliseconds - previous_received_time_milliseconds;
+        if (delta_units_fits_small_delta(*delta_units))
+        {
+            status.status = k_transport_cc_status_small_delta;
 
-        const uint64_t delta_units = delta_milliseconds * k_transport_cc_delta_unit_per_millisecond;
+            status.delta_units = static_cast<int16_t>(*delta_units);
+        }
+        else if (delta_units_fits_large_delta(*delta_units))
+        {
+            status.status = k_transport_cc_status_large_delta;
 
-        if (delta_units > static_cast<uint64_t>(std::numeric_limits<uint8_t>::max()))
+            status.delta_units = static_cast<int16_t>(*delta_units);
+        }
+        else
         {
             break;
         }
-
-        plan.small_deltas.push_back(static_cast<uint8_t>(delta_units));
 
         previous_received_time_milliseconds = status.arrival_time_milliseconds;
 
@@ -228,27 +276,98 @@ std::expected<feedback_build_plan, std::string> make_feedback_build_plan(
     return plan;
 }
 
+std::size_t count_same_status_run(const std::vector<feedback_status_entry>& statuses, std::size_t start)
+{
+    const uint16_t status = statuses[start].status;
+
+    std::size_t run_length = 1;
+
+    while (start + run_length < statuses.size() && statuses[start + run_length].status == status && run_length < k_transport_cc_run_length_max)
+    {
+        run_length += 1;
+    }
+
+    return run_length;
+}
+
+void append_run_length_status_chunk(std::vector<uint8_t>& packet, uint16_t status, std::size_t run_length)
+{
+    const uint16_t chunk = static_cast<uint16_t>(((status & 0x03U) << 13U) | static_cast<uint16_t>(run_length & k_transport_cc_run_length_max));
+
+    append_u16(packet, chunk);
+}
+
+std::size_t append_two_bit_status_vector_chunk(std::vector<uint8_t>& packet, const std::vector<feedback_status_entry>& statuses, std::size_t start)
+{
+    const std::size_t count = std::min(k_transport_cc_two_bit_vector_capacity, statuses.size() - start);
+
+    uint16_t chunk = k_transport_cc_two_bit_vector_prefix;
+
+    for (std::size_t index = 0; index < count; ++index)
+    {
+        const uint16_t symbol = static_cast<uint16_t>(statuses[start + index].status & 0x03U);
+
+        const unsigned int shift = static_cast<unsigned int>(12 - static_cast<int>(index * 2U));
+
+        chunk = static_cast<uint16_t>(chunk | static_cast<uint16_t>(symbol << shift));
+    }
+
+    append_u16(packet, chunk);
+
+    return count;
+}
+
 void append_status_chunks(std::vector<uint8_t>& packet, const std::vector<feedback_status_entry>& statuses)
 {
     std::size_t index = 0;
 
     while (index < statuses.size())
     {
-        const uint16_t status = statuses[index].status;
+        const std::size_t run_length = count_same_status_run(statuses, index);
 
-        std::size_t run_length = 1;
-
-        while (index + run_length < statuses.size() && statuses[index + run_length].status == status && run_length < 0x1fffU)
+        if (run_length >= 3)
         {
-            run_length += 1;
+            append_run_length_status_chunk(packet, statuses[index].status, run_length);
+
+            index += run_length;
+
+            continue;
         }
 
-        const uint16_t chunk = static_cast<uint16_t>(((status & 0x03U) << 13U) | static_cast<uint16_t>(run_length & 0x1fffU));
-
-        append_u16(packet, chunk);
-
-        index += run_length;
+        index += append_two_bit_status_vector_chunk(packet, statuses, index);
     }
+}
+
+std::expected<void, std::string> append_recv_deltas(std::vector<uint8_t>& packet, const std::vector<feedback_status_entry>& statuses)
+{
+    for (const auto& status : statuses)
+    {
+        switch (status.status)
+        {
+            case k_transport_cc_status_not_received:
+                break;
+
+            case k_transport_cc_status_small_delta:
+                if (status.delta_units < 0 || status.delta_units > static_cast<int16_t>(std::numeric_limits<uint8_t>::max()))
+                {
+                    return make_error("transport cc feedback small delta is out of range");
+                }
+
+                append_u8(packet, static_cast<uint8_t>(status.delta_units));
+
+                break;
+
+            case k_transport_cc_status_large_delta:
+                append_i16(packet, status.delta_units);
+
+                break;
+
+            default:
+                return make_error("transport cc feedback status is unsupported");
+        }
+    }
+
+    return {};
 }
 
 void append_padding_to_32bit_alignment(std::vector<uint8_t>& packet)
@@ -281,7 +400,7 @@ std::expected<std::vector<uint8_t>, std::string> write_transport_cc_feedback_pac
 
     std::vector<uint8_t> packet;
 
-    packet.reserve(64 + plan.statuses.size() + plan.small_deltas.size());
+    packet.reserve(64 + plan.statuses.size() * 3U);
 
     append_u8(packet, static_cast<uint8_t>((k_rtcp_version << 6U) | k_rtcp_transport_cc_feedback_format));
 
@@ -303,9 +422,10 @@ std::expected<std::vector<uint8_t>, std::string> write_transport_cc_feedback_pac
 
     append_status_chunks(packet, plan.statuses);
 
-    for (uint8_t delta : plan.small_deltas)
+    auto delta_result = append_recv_deltas(packet, plan.statuses);
+    if (!delta_result)
     {
-        append_u8(packet, delta);
+        return std::unexpected(delta_result.error());
     }
 
     append_padding_to_32bit_alignment(packet);
@@ -432,7 +552,7 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_re
 
     for (const auto& observed_packet : source.packets)
     {
-        if (packet_sequence_equals(observed_packet, packet.transport_sequence_number))
+        if (observed_packet.transport_sequence_number == packet.transport_sequence_number)
         {
             return {};
         }
@@ -456,8 +576,22 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_re
 
 std::expected<rtcp_transport_cc_feedback_packet, std::string> rtcp_transport_cc_feedback_service::make_feedback_packet(source_state& source)
 {
-    auto plan = make_feedback_build_plan(source.packets, config_.max_packets_per_feedback);
+    std::vector<feedback_observed_packet> feedback_packets;
 
+    feedback_packets.reserve(source.packets.size());
+
+    for (const auto& packet : source.packets)
+    {
+        feedback_observed_packet feedback_packet;
+
+        feedback_packet.transport_sequence_number = packet.transport_sequence_number;
+
+        feedback_packet.arrival_time_milliseconds = packet.arrival_time_milliseconds;
+
+        feedback_packets.push_back(feedback_packet);
+    }
+
+    auto plan = make_feedback_build_plan(feedback_packets, config_.max_packets_per_feedback);
     if (!plan)
     {
         return std::unexpected(plan.error());
