@@ -509,6 +509,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                       const std::optional<media_ssrc_mapping>& mapping);
 
     [[nodiscard]]
+    std::optional<media_ssrc_mapping> find_primary_feedback_ssrc_mapping(const media_route_result& route,
+                                                                         const media_peer_info& target_peer,
+                                                                         uint32_t subscriber_ssrc,
+                                                                         std::string_view feedback_name,
+                                                                         bool allow_rtx_repair_target) const;
+
+    [[nodiscard]]
     std::optional<std::vector<uint8_t>> make_forward_rtcp_feedback_packet(const srtp_packet_process_result& packet,
                                                                           const media_route_result& route,
                                                                           const std::vector<rtcp_feedback_route_event>& feedback_events,
