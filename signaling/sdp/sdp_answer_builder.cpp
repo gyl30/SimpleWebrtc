@@ -768,6 +768,23 @@ void append_codec_attributes(media_description& answer_media, const std::vector<
         }
     }
 }
+void append_media_timing_attributes(media_description& answer_media, const media_summary& media)
+{
+    if (media.kind != "audio")
+    {
+        return;
+    }
+
+    if (media.ptime.has_value())
+    {
+        push_attribute(answer_media.attributes, "ptime", std::to_string(*media.ptime));
+    }
+
+    if (media.maxptime.has_value())
+    {
+        push_attribute(answer_media.attributes, "maxptime", std::to_string(*media.maxptime));
+    }
+}
 
 void append_ice_candidate_attributes(media_description& answer_media, const sdp_answer_options& options)
 {
@@ -910,6 +927,8 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
     push_property_attribute(answer_media.attributes, k_attribute_rtcp_mux);
 
     append_codec_attributes(answer_media, codecs);
+
+    append_media_timing_attributes(answer_media, media);
 
     append_ice_candidate_attributes(answer_media, options);
 

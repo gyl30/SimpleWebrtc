@@ -550,6 +550,53 @@ std::expected<void, std::string> parse_header_extensions(media_summary& summary,
 
     return {};
 }
+std::expected<void, std::string> parse_media_timing_attributes(media_summary& summary, const media_description& media)
+{
+    const auto ptime_attributes = media.find_attributes("ptime");
+
+    if (ptime_attributes.size() > 1)
+    {
+        return make_error("media has multiple ptime attributes");
+    }
+
+    if (!ptime_attributes.empty())
+    {
+        const std::optional<uint32_t> ptime = parse_u32_text(ptime_attributes.front()->value);
+
+        if (!ptime.has_value() || *ptime == 0 || *ptime > 1000)
+        {
+            return make_error("media ptime is invalid");
+        }
+
+        summary.ptime = *ptime;
+    }
+
+    const auto maxptime_attributes = media.find_attributes("maxptime");
+
+    if (maxptime_attributes.size() > 1)
+    {
+        return make_error("media has multiple maxptime attributes");
+    }
+
+    if (!maxptime_attributes.empty())
+    {
+        const std::optional<uint32_t> maxptime = parse_u32_text(maxptime_attributes.front()->value);
+
+        if (!maxptime.has_value() || *maxptime == 0 || *maxptime > 1000)
+        {
+            return make_error("media maxptime is invalid");
+        }
+
+        summary.maxptime = *maxptime;
+    }
+
+    if (summary.ptime.has_value() && summary.maxptime.has_value() && *summary.ptime > *summary.maxptime)
+    {
+        return make_error("media ptime is greater than maxptime");
+    }
+
+    return {};
+}
 
 std::expected<media_summary, std::string> parse_media_summary(const session_description& description, const media_description& media)
 {
@@ -625,6 +672,13 @@ std::expected<media_summary, std::string> parse_media_summary(const session_desc
     if (!header_extension_result)
     {
         return make_error(header_extension_result.error());
+    }
+
+    auto media_timing_result = parse_media_timing_attributes(summary, media);
+
+    if (!media_timing_result)
+    {
+        return make_error(media_timing_result.error());
     }
 
     auto ssrc_group_result = parse_ssrc_groups(summary, media);

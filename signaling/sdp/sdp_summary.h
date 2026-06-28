@@ -37,12 +37,14 @@ struct media_summary
     media_direction direction = media_direction::unknown;
     bool rtcp_mux = false;
 
+    std::optional<uint32_t> ptime;
+    std::optional<uint32_t> maxptime;
+
     std::vector<uint16_t> payload_types;
     std::vector<codec_info> codecs;
     std::vector<rtp_header_extension> header_extensions;
     std::vector<ssrc_group_summary> ssrc_groups;
 };
-
 struct webrtc_offer_summary
 {
     std::string ice_ufrag;
