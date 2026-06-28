@@ -1378,6 +1378,7 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       dtls_timeout_timer_(io_context),
       ice_consent_timer_(io_context),
       rtcp_report_timer_(io_context),
+      rtcp_transport_cc_feedback_timer_(io_context),
       endpoint_idle_cleanup_timer_(io_context),
       pending_session_cleanup_timer_(io_context),
       bind_host_(std::move(bind_host)),
@@ -1387,6 +1388,7 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       track_resolver_(std::make_shared<media_track_resolver>()),
       ssrc_mapper_(std::make_shared<media_ssrc_mapper>()),
       rtcp_report_service_(make_rtcp_report_service_from_env()),
+      rtcp_transport_cc_feedback_service_(std::make_shared<rtcp_transport_cc_feedback_service>()),
       endpoint_idle_timeout_milliseconds_(make_endpoint_idle_timeout_milliseconds_from_env()),
       pending_session_timeout_milliseconds_(make_pending_session_timeout_milliseconds_from_env())
 {
@@ -1422,6 +1424,10 @@ ice_udp_server_result ice_udp_server::start()
     if (rtcp_report_service_ == nullptr)
     {
         rtcp_report_service_ = make_rtcp_report_service_from_env();
+    }
+    if (rtcp_transport_cc_feedback_service_ == nullptr)
+    {
+        rtcp_transport_cc_feedback_service_ = std::make_shared<rtcp_transport_cc_feedback_service>();
     }
 
     register_session_removed_callback();
@@ -1496,6 +1502,8 @@ ice_udp_server_result ice_udp_server::start()
 
     schedule_rtcp_report();
 
+    schedule_rtcp_transport_cc_feedback();
+
     schedule_endpoint_idle_cleanup();
 
     schedule_pending_session_cleanup();
@@ -1525,6 +1533,8 @@ void ice_udp_server::stop()
     ice_consent_timer_.cancel();
 
     rtcp_report_timer_.cancel();
+
+    rtcp_transport_cc_feedback_timer_.cancel();
 
     endpoint_idle_cleanup_timer_.cancel();
 
@@ -1566,6 +1576,8 @@ void ice_udp_server::stop()
     ssrc_mapper_ = std::make_shared<media_ssrc_mapper>();
 
     rtcp_report_service_ = make_rtcp_report_service_from_env();
+
+    rtcp_transport_cc_feedback_service_ = std::make_shared<rtcp_transport_cc_feedback_service>();
 
     last_empty_rtcp_report_log_milliseconds_ = 0;
 
@@ -1654,6 +1666,10 @@ void ice_udp_server::forget_session(std::string_view session_id)
     if (rtcp_report_service_ != nullptr)
     {
         rtcp_report_service_->forget_session(session_id);
+    }
+    if (rtcp_transport_cc_feedback_service_ != nullptr)
+    {
+        rtcp_transport_cc_feedback_service_->forget_session(session_id);
     }
     if (rtx_sequence_allocator_ != nullptr)
     {
@@ -3650,6 +3666,148 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
         rtcp_report_service_runtime_snapshot_to_string(snapshot));
 }
 
+void ice_udp_server::schedule_rtcp_transport_cc_feedback()
+{
+    if (!started_)
+    {
+        return;
+    }
+
+    rtcp_transport_cc_feedback_timer_.cancel();
+
+    rtcp_transport_cc_feedback_timer_.expires_after(std::chrono::milliseconds(100));
+
+    auto self = shared_from_this();
+
+    rtcp_transport_cc_feedback_timer_.async_wait([this, self](boost::system::error_code ec) { on_rtcp_transport_cc_feedback_timer(ec); });
+}
+
+void ice_udp_server::on_rtcp_transport_cc_feedback_timer(boost::system::error_code ec)
+{
+    if (ec == boost::asio::error::operation_aborted)
+    {
+        return;
+    }
+
+    if (ec)
+    {
+        WEBRTC_LOG_WARN("rtcp transport cc timer failed: {}", ec.message());
+
+        schedule_rtcp_transport_cc_feedback();
+
+        return;
+    }
+
+    if (!started_)
+    {
+        return;
+    }
+
+    send_rtcp_transport_cc_feedback(now_milliseconds());
+
+    schedule_rtcp_transport_cc_feedback();
+}
+
+void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milliseconds)
+{
+    if (rtcp_transport_cc_feedback_service_ == nullptr || srtp_transport_ == nullptr)
+    {
+        return;
+    }
+
+    rtcp_transport_cc_feedback_generation generation = rtcp_transport_cc_feedback_service_->generate_due_feedback(current_time_milliseconds);
+
+    if (!generation.errors.empty())
+    {
+        for (const auto& error : generation.errors)
+        {
+            WEBRTC_LOG_DEBUG("rtcp transport cc generation error={}", error);
+        }
+    }
+
+    if (generation.packets.empty())
+    {
+        return;
+    }
+
+    std::size_t sent_count = 0;
+    std::size_t endpoint_not_found_count = 0;
+    std::size_t protect_failed_count = 0;
+    std::size_t protect_ignored_count = 0;
+    std::size_t current_session_gate_skipped_count = 0;
+
+    for (const auto& feedback_packet : generation.packets)
+    {
+        const current_session_endpoint_state current_session = validate_current_session_endpoint(
+            feedback_packet.remote_endpoint, feedback_packet.session_id, feedback_packet.stream_id, "rtcp transport cc feedback");
+
+        if (!current_session.allowed)
+        {
+            current_session_gate_skipped_count += 1;
+
+            rtcp_transport_cc_feedback_service_->forget_session(feedback_packet.session_id);
+
+            continue;
+        }
+
+        auto remote_endpoint = find_remote_endpoint(feedback_packet.remote_endpoint);
+
+        if (!remote_endpoint.has_value())
+        {
+            endpoint_not_found_count += 1;
+
+            rtcp_transport_cc_feedback_service_->forget_peer(feedback_packet.remote_endpoint);
+
+            continue;
+        }
+
+        auto protected_packet =
+            srtp_transport_->protect_outbound_packet(std::span<const uint8_t>(feedback_packet.packet.data(), feedback_packet.packet.size()),
+                                                     feedback_packet.remote_endpoint,
+                                                     srtp_packet_kind::rtcp);
+
+        if (!protected_packet)
+        {
+            protect_failed_count += 1;
+
+            WEBRTC_LOG_DEBUG("rtcp transport cc protect failed stream={} session={} remote={} media_ssrc={} base_seq={} count={} error={}",
+                             feedback_packet.stream_id,
+                             feedback_packet.session_id,
+                             feedback_packet.remote_endpoint,
+                             feedback_packet.media_ssrc,
+                             feedback_packet.base_sequence_number,
+                             feedback_packet.packet_status_count,
+                             protected_packet.error());
+
+            continue;
+        }
+
+        if (protected_packet->state != srtp_packet_process_state::protected_packet || protected_packet->protected_packet.empty())
+        {
+            protect_ignored_count += 1;
+
+            continue;
+        }
+
+        send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
+
+        sent_count += 1;
+    }
+
+    WEBRTC_LOG_DEBUG(
+        "rtcp transport cc feedback generation sources={} pending={} packets={} sent={} endpoint_not_found={} protect_failed={} protect_ignored={} "
+        "current_session_gate_skipped={} stale_expired={}",
+        generation.source_count,
+        generation.pending_packet_count,
+        generation.packets.size(),
+        sent_count,
+        endpoint_not_found_count,
+        protect_failed_count,
+        protect_ignored_count,
+        current_session_gate_skipped_count,
+        generation.stale_sources_expired);
+}
+
 void ice_udp_server::reset_rtcp_report_runtime_counters()
 {
     rtcp_report_inbound_rtcp_observe_attempts_total_.store(0, std::memory_order_relaxed);
@@ -4443,13 +4601,45 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
 
         return;
     }
-    auto header = parse_rtp_packet_header(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
 
+    auto header = parse_rtp_packet_header(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
     if (!header)
     {
         WEBRTC_LOG_DEBUG("rtcp stats inbound rtp parse skipped remote={} error={}", peer.remote_endpoint, header.error());
-
         return;
+    }
+
+    if (peer.role == media_peer_role::publisher && rtcp_transport_cc_feedback_service_ != nullptr && track_resolution.has_value() &&
+        track_resolution->resolved && track_resolution->transport_wide_sequence_number.has_value())
+    {
+        rtcp_transport_cc_observed_packet transport_cc_packet;
+
+        transport_cc_packet.stream_id = peer.stream_id;
+
+        transport_cc_packet.session_id = peer.session_id;
+
+        transport_cc_packet.remote_endpoint = peer.remote_endpoint;
+
+        transport_cc_packet.sender_ssrc = make_rtcp_report_local_ssrc(peer, header->ssrc);
+
+        transport_cc_packet.media_ssrc = header->ssrc;
+
+        transport_cc_packet.transport_sequence_number = *track_resolution->transport_wide_sequence_number;
+
+        transport_cc_packet.arrival_time_milliseconds = now_milliseconds();
+
+        auto transport_cc_observe_result = rtcp_transport_cc_feedback_service_->observe_received_packet(transport_cc_packet);
+
+        if (!transport_cc_observe_result)
+        {
+            WEBRTC_LOG_DEBUG("rtcp transport cc observe skipped stream={} session={} remote={} ssrc={} twcc={} error={}",
+                             peer.stream_id,
+                             peer.session_id,
+                             peer.remote_endpoint,
+                             header->ssrc,
+                             *track_resolution->transport_wide_sequence_number,
+                             transport_cc_observe_result.error());
+        }
     }
 
     auto publisher = registry_->find_publisher_by_session_id(peer.session_id);
@@ -7029,6 +7219,10 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         rtcp_report_service_->forget_stream(stream_id);
     }
 
+    if (rtcp_transport_cc_feedback_service_ != nullptr)
+    {
+        rtcp_transport_cc_feedback_service_->forget_stream(stream_id);
+    }
     if (ssrc_mapper_ != nullptr)
     {
         ssrc_mapper_->forget_stream(stream_id);
@@ -7565,6 +7759,7 @@ void ice_udp_server::forget_peer_transport_state(std::string_view remote_address
     bool router_forgot = false;
     bool track_forgot = false;
     bool rtcp_forgot = false;
+    bool transport_cc_forgot = false;
 
     if (dtls_transport_ != nullptr)
     {
@@ -7601,13 +7796,21 @@ void ice_udp_server::forget_peer_transport_state(std::string_view remote_address
         rtcp_forgot = true;
     }
 
-    WEBRTC_LOG_INFO("ice udp peer transport state forgotten remote={} dtls={} srtp={} router={} track={} rtcp={}",
+    if (rtcp_transport_cc_feedback_service_ != nullptr)
+    {
+        rtcp_transport_cc_feedback_service_->forget_peer(remote_address);
+
+        transport_cc_forgot = true;
+    }
+
+    WEBRTC_LOG_INFO("ice udp peer transport state forgotten remote={} dtls={} srtp={} router={} track={} rtcp={} transport_cc={}",
                     remote_address,
                     dtls_forgot ? 1 : 0,
                     srtp_forgot ? 1 : 0,
                     router_forgot ? 1 : 0,
                     track_forgot ? 1 : 0,
-                    rtcp_forgot ? 1 : 0);
+                    rtcp_forgot ? 1 : 0,
+                    transport_cc_forgot ? 1 : 0);
 }
 
 void ice_udp_server::erase_candidate_pairs_for_session_locked(std::string_view session_id)

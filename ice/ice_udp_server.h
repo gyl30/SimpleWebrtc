@@ -26,6 +26,7 @@
 #include "media/media_track_resolver.h"
 #include "media/rtcp_feedback_router.h"
 #include "media/rtcp_report_service.h"
+#include "media/rtcp_transport_cc_feedback_service.h"
 #include "media/rtp_packet_cache.h"
 #include "media/nack_retransmit_throttle.h"
 #include "media/rtx_sequence_number_allocator.h"
@@ -218,7 +219,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void on_rtcp_report_timer(boost::system::error_code ec);
 
-    void send_rtcp_reports(uint64_t now_milliseconds);
+    void send_rtcp_reports(uint64_t current_time_milliseconds);
+
+    void schedule_rtcp_transport_cc_feedback();
+
+    void on_rtcp_transport_cc_feedback_timer(boost::system::error_code ec);
+
+    void send_rtcp_transport_cc_feedback(uint64_t current_time_milliseconds);
 
     void reset_rtcp_report_runtime_counters();
 
@@ -532,6 +539,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     boost::asio::steady_timer rtcp_report_timer_;
 
+    boost::asio::steady_timer rtcp_transport_cc_feedback_timer_;
+
     boost::asio::steady_timer endpoint_idle_cleanup_timer_;
 
     boost::asio::steady_timer pending_session_cleanup_timer_;
@@ -553,6 +562,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::shared_ptr<media_ssrc_mapper> ssrc_mapper_;
 
     std::shared_ptr<rtcp_report_service> rtcp_report_service_;
+
+    std::shared_ptr<rtcp_transport_cc_feedback_service> rtcp_transport_cc_feedback_service_;
 
     std::shared_ptr<rtp_packet_cache> rtp_packet_cache_;
 

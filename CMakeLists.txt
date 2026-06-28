@@ -218,6 +218,7 @@ set(WEBRTC_SOURCES
     media/media_ssrc_mapper.cpp
     media/rtcp_report_service.cpp
     media/rtcp_feedback_router.cpp
+    media/rtcp_transport_cc_feedback_service.cpp
     media/rtp_packet_cache.cpp
     media/rtx_sequence_number_allocator.cpp
     media/rtx_retransmission_index.cpp
