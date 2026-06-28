@@ -131,6 +131,200 @@ std::optional<std::string> find_fmtp_parameter(std::string_view fmtp, std::strin
     return std::nullopt;
 }
 
+std::expected<std::optional<std::string>, std::string> find_unique_fmtp_parameter(std::string_view fmtp,
+                                                                                  std::string_view key,
+                                                                                  std::string_view codec_name)
+{
+    std::optional<std::string> value;
+
+    std::size_t start = 0;
+
+    while (start <= fmtp.size())
+    {
+        const std::size_t separator = fmtp.find(';', start);
+
+        const std::string_view part = separator == std::string_view::npos ? fmtp.substr(start) : fmtp.substr(start, separator - start);
+
+        const std::string_view item = trim(part);
+
+        const std::size_t equal_position = item.find('=');
+
+        if (equal_position != std::string_view::npos)
+        {
+            const std::string_view item_key = trim(item.substr(0, equal_position));
+
+            const std::string_view item_value = trim(item.substr(equal_position + 1));
+
+            if (equals_ignore_case(item_key, key))
+            {
+                if (value.has_value())
+                {
+                    std::string message;
+
+                    message.append(codec_name);
+
+                    message.append(" fmtp ");
+
+                    message.append(key);
+
+                    message.append(" is duplicated");
+
+                    return make_error(message);
+                }
+
+                value = std::string(item_value);
+            }
+        }
+
+        if (separator == std::string_view::npos)
+        {
+            break;
+        }
+
+        start = separator + 1;
+    }
+
+    return value;
+}
+
+bool is_hex_digit_ascii(char value)
+{
+    const auto ch = static_cast<unsigned char>(value);
+
+    return std::isdigit(ch) != 0 || (ch >= static_cast<unsigned char>('a') && ch <= static_cast<unsigned char>('f')) ||
+           (ch >= static_cast<unsigned char>('A') && ch <= static_cast<unsigned char>('F'));
+}
+
+std::expected<std::string, std::string> normalize_h264_profile_level_id(std::string_view value)
+{
+    value = trim(value);
+
+    if (value.size() != 6)
+    {
+        return make_error("h264 fmtp profile-level-id must be 6 hex characters");
+    }
+
+    for (char ch : value)
+    {
+        if (!is_hex_digit_ascii(ch))
+        {
+            return make_error("h264 fmtp profile-level-id contains non-hex character");
+        }
+    }
+
+    return to_lower_ascii(value);
+}
+
+void append_normalized_h264_fmtp_parameter(std::string& result, std::string_view key, std::string_view value)
+{
+    if (!result.empty())
+    {
+        result.append(";");
+    }
+
+    result.append(key);
+
+    result.append("=");
+
+    result.append(value);
+}
+
+std::expected<std::string, std::string> normalize_h264_fmtp(std::string_view fmtp)
+{
+    auto packetization_mode = find_unique_fmtp_parameter(fmtp, "packetization-mode", "h264");
+
+    if (!packetization_mode)
+    {
+        return std::unexpected(packetization_mode.error());
+    }
+
+    if (!packetization_mode->has_value())
+    {
+        return make_error("h264 fmtp packetization-mode is missing");
+    }
+
+    if (**packetization_mode != "1")
+    {
+        return make_error("h264 fmtp packetization-mode must be 1");
+    }
+
+    auto level_asymmetry_allowed = find_unique_fmtp_parameter(fmtp, "level-asymmetry-allowed", "h264");
+
+    if (!level_asymmetry_allowed)
+    {
+        return std::unexpected(level_asymmetry_allowed.error());
+    }
+
+    auto profile_level_id = find_unique_fmtp_parameter(fmtp, "profile-level-id", "h264");
+
+    if (!profile_level_id)
+    {
+        return std::unexpected(profile_level_id.error());
+    }
+
+    std::string normalized;
+
+    if (level_asymmetry_allowed->has_value())
+    {
+        if (**level_asymmetry_allowed != "0" && **level_asymmetry_allowed != "1")
+        {
+            return make_error("h264 fmtp level-asymmetry-allowed must be 0 or 1");
+        }
+
+        append_normalized_h264_fmtp_parameter(normalized, "level-asymmetry-allowed", **level_asymmetry_allowed);
+    }
+
+    append_normalized_h264_fmtp_parameter(normalized, "packetization-mode", "1");
+
+    if (profile_level_id->has_value())
+    {
+        auto normalized_profile_level_id = normalize_h264_profile_level_id(**profile_level_id);
+
+        if (!normalized_profile_level_id)
+        {
+            return std::unexpected(normalized_profile_level_id.error());
+        }
+
+        append_normalized_h264_fmtp_parameter(normalized, "profile-level-id", *normalized_profile_level_id);
+    }
+
+    return normalized;
+}
+
+struct h264_fmtp_compat_info
+{
+    std::optional<std::string> profile_level_id;
+    std::optional<std::string> profile_id;
+    bool level_asymmetry_allowed = false;
+};
+
+std::expected<h264_fmtp_compat_info, std::string> make_h264_fmtp_compat_info(std::string_view fmtp)
+{
+    auto normalized_fmtp = normalize_h264_fmtp(fmtp);
+
+    if (!normalized_fmtp)
+    {
+        return std::unexpected(normalized_fmtp.error());
+    }
+
+    h264_fmtp_compat_info info;
+
+    auto level_asymmetry_allowed = find_fmtp_parameter(*normalized_fmtp, "level-asymmetry-allowed");
+
+    info.level_asymmetry_allowed = level_asymmetry_allowed.has_value() && *level_asymmetry_allowed == "1";
+
+    auto profile_level_id = find_fmtp_parameter(*normalized_fmtp, "profile-level-id");
+
+    if (profile_level_id.has_value())
+    {
+        info.profile_level_id = *profile_level_id;
+
+        info.profile_id = profile_level_id->substr(0, 4);
+    }
+
+    return info;
+}
+
 bool is_supported_h264_packetization_mode(const codec_info& codec)
 {
     const auto packetization_mode = find_fmtp_parameter(codec.fmtp, "packetization-mode");
@@ -523,6 +717,20 @@ std::optional<codec_info> normalize_supported_codec(const media_summary& media, 
         normalized_codec.fmtp = std::move(*normalized_fmtp);
     }
 
+    if (media.kind == "video" && is_h264_codec(codec))
+    {
+        auto normalized_fmtp = normalize_h264_fmtp(codec.fmtp);
+
+        if (!normalized_fmtp)
+        {
+            return std::nullopt;
+        }
+
+        normalized_codec.name = "H264";
+
+        normalized_codec.fmtp = std::move(*normalized_fmtp);
+    }
+
     return normalized_codec;
 }
 
@@ -543,26 +751,36 @@ bool codec_encoding_parameters_are_compatible(std::string_view publisher_encodin
 
 bool h264_codecs_are_compatible(const codec_info& publisher_codec, const codec_info& subscriber_codec)
 {
-    const auto publisher_packetization_mode = find_fmtp_parameter(publisher_codec.fmtp, "packetization-mode");
+    auto publisher_info = make_h264_fmtp_compat_info(publisher_codec.fmtp);
 
-    const auto subscriber_packetization_mode = find_fmtp_parameter(subscriber_codec.fmtp, "packetization-mode");
-
-    if (publisher_packetization_mode != subscriber_packetization_mode)
+    if (!publisher_info)
     {
         return false;
     }
 
-    const auto publisher_profile_level_id = find_fmtp_parameter(publisher_codec.fmtp, "profile-level-id");
+    auto subscriber_info = make_h264_fmtp_compat_info(subscriber_codec.fmtp);
 
-    const auto subscriber_profile_level_id = find_fmtp_parameter(subscriber_codec.fmtp, "profile-level-id");
-
-    if (publisher_profile_level_id.has_value() && subscriber_profile_level_id.has_value() &&
-        !equals_ignore_case(*publisher_profile_level_id, *subscriber_profile_level_id))
+    if (!subscriber_info)
     {
         return false;
     }
 
-    return true;
+    if (!publisher_info->profile_level_id.has_value() || !subscriber_info->profile_level_id.has_value())
+    {
+        return true;
+    }
+
+    if (publisher_info->profile_id != subscriber_info->profile_id)
+    {
+        return false;
+    }
+
+    if (publisher_info->profile_level_id == subscriber_info->profile_level_id)
+    {
+        return true;
+    }
+
+    return publisher_info->level_asymmetry_allowed && subscriber_info->level_asymmetry_allowed;
 }
 
 bool codecs_are_compatible(const codec_info& publisher_codec, const codec_info& subscriber_codec)
@@ -599,12 +817,14 @@ bool has_compatible_publisher_codec(const media_summary& publisher_media, const 
             continue;
         }
 
-        if (!is_supported_codec(publisher_media, publisher_codec))
+        std::optional<codec_info> normalized_publisher_codec = normalize_supported_codec(publisher_media, publisher_codec);
+
+        if (!normalized_publisher_codec.has_value())
         {
             continue;
         }
 
-        if (!codecs_are_compatible(publisher_codec, subscriber_codec))
+        if (!codecs_are_compatible(*normalized_publisher_codec, subscriber_codec))
         {
             continue;
         }
