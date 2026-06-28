@@ -67,6 +67,9 @@ struct lifecycle_debug_snapshot
     uint64_t rtcp_report_source_count = 0;
     uint64_t rtcp_report_stats_source_count = 0;
 
+    uint64_t rtcp_transport_cc_source_count = 0;
+    uint64_t rtcp_transport_cc_pending_packet_count = 0;
+
     uint64_t rtp_cache_packet_count = 0;
     uint64_t rtx_retransmission_index_count = 0;
     uint64_t nack_retransmit_throttle_count = 0;
@@ -86,10 +89,10 @@ REFLECT_STRUCT(webrtc::lifecycle_debug_session_entry,
 
 REFLECT_STRUCT(webrtc::lifecycle_debug_endpoint_entry,
                (endpoint)(session_id)(has_endpoint)(has_forward_session_index)(has_reverse_endpoint_index)(has_last_seen)(last_seen_milliseconds));
-REFLECT_STRUCT(
-    webrtc::lifecycle_debug_snapshot,
-    (
-        registry_stream_count)(registry_publisher_count)(registry_subscriber_count)(registry_session_count)(registry_pending_session_count)(endpoint_count)(endpoint_session_index_count)(endpoint_reverse_index_count)(endpoint_last_seen_count)(candidate_pair_count)(selected_candidate_pair_count)(payload_type_mapping_count)(keyframe_request_state_count)(dtls_peer_count)(srtp_peer_count)(media_router_peer_count)(media_router_stream_count)(media_router_active_publisher_count)(media_router_active_subscriber_count)(track_binding_count)(ssrc_mapping_count)(rtcp_report_source_count)(rtcp_report_stats_source_count)(rtp_cache_packet_count)(rtx_retransmission_index_count)(nack_retransmit_throttle_count)(idle_clean)(consistent)(inconsistency_count)(inconsistencies)(sessions)(endpoints)(residuals));
+
+REFLECT_STRUCT(webrtc::lifecycle_debug_snapshot,
+               (registry_stream_count)(registry_publisher_count)(registry_subscriber_count)(registry_session_count)(registry_pending_session_count)(endpoint_count)(endpoint_session_index_count)(endpoint_reverse_index_count)(endpoint_last_seen_count)(candidate_pair_count)(selected_candidate_pair_count)(payload_type_mapping_count)(keyframe_request_state_count)(dtls_peer_count)(srtp_peer_count)(media_router_peer_count)(media_router_stream_count)(media_router_active_publisher_count)(media_router_active_subscriber_count)(track_binding_count)(ssrc_mapping_count)(rtcp_report_source_count)(rtcp_report_stats_source_count)(rtcp_transport_cc_source_count)(rtcp_transport_cc_pending_packet_count)(rtp_cache_packet_count)(rtx_retransmission_index_count)(nack_retransmit_throttle_count)(idle_clean)(consistent)(inconsistency_count)(inconsistencies)(sessions)(endpoints)(residuals));
+
 inline std::string lifecycle_debug_snapshot_to_json(const lifecycle_debug_snapshot& snapshot) { return serialize_struct(snapshot); }
 }    // namespace webrtc
 

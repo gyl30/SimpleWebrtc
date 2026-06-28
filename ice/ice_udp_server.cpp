@@ -286,8 +286,9 @@ bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
            snapshot.keyframe_request_state_count == 0 && snapshot.dtls_peer_count == 0 && snapshot.srtp_peer_count == 0 &&
            snapshot.media_router_peer_count == 0 && snapshot.media_router_stream_count == 0 && snapshot.media_router_active_publisher_count == 0 &&
            snapshot.media_router_active_subscriber_count == 0 && snapshot.track_binding_count == 0 && snapshot.ssrc_mapping_count == 0 &&
-           snapshot.rtcp_report_source_count == 0 && snapshot.rtp_cache_packet_count == 0 && snapshot.rtx_retransmission_index_count == 0 &&
-           snapshot.nack_retransmit_throttle_count == 0;
+           snapshot.rtcp_report_source_count == 0 && snapshot.rtcp_transport_cc_source_count == 0 &&
+           snapshot.rtcp_transport_cc_pending_packet_count == 0 && snapshot.rtp_cache_packet_count == 0 &&
+           snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0;
 }
 
 uint16_t read_network_u16(std::span<const uint8_t> data, std::size_t offset)
@@ -2271,6 +2272,12 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.rtcp_report_stats_source_count = to_debug_count(rtcp_report_service_->stats_source_count());
     }
 
+    if (rtcp_transport_cc_feedback_service_ != nullptr)
+    {
+        snapshot.rtcp_transport_cc_source_count = to_debug_count(rtcp_transport_cc_feedback_service_->source_count());
+
+        snapshot.rtcp_transport_cc_pending_packet_count = to_debug_count(rtcp_transport_cc_feedback_service_->pending_packet_count());
+    }
     if (rtp_packet_cache_ != nullptr)
     {
         snapshot.rtp_cache_packet_count = to_debug_count(rtp_packet_cache_->size());
@@ -2379,6 +2386,17 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         if (snapshot.rtcp_report_source_count != 0)
         {
             add_lifecycle_residual(snapshot, "rtcp report source remains count=" + std::to_string(snapshot.rtcp_report_source_count));
+        }
+
+        if (snapshot.rtcp_transport_cc_source_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "rtcp transport cc source remains count=" + std::to_string(snapshot.rtcp_transport_cc_source_count));
+        }
+
+        if (snapshot.rtcp_transport_cc_pending_packet_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot, "rtcp transport cc pending packet remains count=" + std::to_string(snapshot.rtcp_transport_cc_pending_packet_count));
         }
 
         if (snapshot.rtp_cache_packet_count != 0)
