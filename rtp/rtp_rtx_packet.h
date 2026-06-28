@@ -9,14 +9,21 @@
 
 namespace webrtc
 {
+struct rtp_rtx_header_extension_id_rewrite
+{
+    uint8_t source_id = 0;
+    uint8_t target_id = 0;
+};
+
 struct rtp_rtx_packet_options
 {
     uint8_t payload_type = 0;
     uint32_t ssrc = 0;
     uint16_t sequence_number = 0;
     uint32_t timestamp = 0;
-};
 
+    std::vector<rtp_rtx_header_extension_id_rewrite> header_extension_id_rewrites;
+};
 using rtp_rtx_packet_result = std::expected<std::vector<uint8_t>, std::string>;
 
 [[nodiscard]]

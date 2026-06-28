@@ -100,6 +100,7 @@ struct ice_username_parts
 };
 
 using optional_mid_rewrite_result = std::expected<std::optional<rtp_header_extension_rewrite>, std::string>;
+using optional_rtx_header_extension_id_rewrite_result = std::expected<std::optional<rtp_rtx_header_extension_id_rewrite>, std::string>;
 
 void append_pli_u16(std::vector<uint8_t>& packet, uint16_t value)
 {
@@ -982,6 +983,73 @@ optional_mid_rewrite_result make_mid_header_extension_rewrite(const media_payloa
     rewrite.payload = string_to_bytes(mapping.subscriber_mid);
 
     return std::optional<rtp_header_extension_rewrite>(std::move(rewrite));
+}
+
+optional_rtx_header_extension_id_rewrite_result make_rtx_repaired_rid_header_extension_id_rewrite(const media_payload_type_mapping& mapping,
+                                                                                                  const sdp::webrtc_offer_summary& publisher_offer,
+                                                                                                  const sdp::webrtc_offer_summary& subscriber_offer,
+                                                                                                  std::span<const uint8_t> plain_packet)
+{
+    const sdp::media_summary* publisher_media = find_media_summary_by_mid(publisher_offer, mapping.publisher_mid);
+
+    if (publisher_media == nullptr)
+    {
+        return make_error("rtx repaired-rid rewrite publisher media not found");
+    }
+
+    const sdp::media_summary* subscriber_media = find_media_summary_by_mid(subscriber_offer, mapping.subscriber_mid);
+
+    if (subscriber_media == nullptr)
+    {
+        return make_error("rtx repaired-rid rewrite subscriber media not found");
+    }
+
+    const std::optional<uint8_t> publisher_rid_extension_id =
+        find_rtp_header_extension_id(*publisher_media, sdp::k_rtp_header_extension_sdes_rtp_stream_id_uri);
+
+    if (!publisher_rid_extension_id.has_value())
+    {
+        return std::optional<rtp_rtx_header_extension_id_rewrite>{};
+    }
+
+    auto header = parse_rtp_packet_header(plain_packet);
+
+    if (!header)
+    {
+        std::string message = "rtx repaired-rid rewrite parse failed: ";
+
+        message.append(header.error());
+
+        return std::unexpected(std::move(message));
+    }
+
+    const auto existing_rid_payload = find_rtp_header_extension(plain_packet, *header, *publisher_rid_extension_id);
+
+    if (!existing_rid_payload.has_value())
+    {
+        return std::optional<rtp_rtx_header_extension_id_rewrite>{};
+    }
+
+    const std::optional<uint8_t> subscriber_repaired_rid_extension_id =
+        find_rtp_header_extension_id(*subscriber_media, sdp::k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri);
+
+    if (!subscriber_repaired_rid_extension_id.has_value())
+    {
+        return make_error("rtx repaired-rid extension is missing in subscriber media");
+    }
+
+    if (*publisher_rid_extension_id == *subscriber_repaired_rid_extension_id)
+    {
+        return make_error("rtx repaired-rid extension id overlaps publisher rid extension id");
+    }
+
+    rtp_rtx_header_extension_id_rewrite rewrite;
+
+    rewrite.source_id = *publisher_rid_extension_id;
+
+    rewrite.target_id = *subscriber_repaired_rid_extension_id;
+
+    return std::optional<rtp_rtx_header_extension_id_rewrite>(rewrite);
 }
 
 void log_rtcp_feedback_route_event(const rtcp_feedback_route_event& event)
@@ -5378,8 +5446,43 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
 
     options.timestamp = cached_packet.timestamp;
 
-    auto rtx_packet = make_rtp_rtx_packet(std::span<const uint8_t>(cached_packet.plain_packet.data(), cached_packet.plain_packet.size()), options);
+    bool repaired_rid_rewrite_applied = false;
 
+    if (registry_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(primary_ssrc_mapping.publisher_session_id);
+
+        auto subscriber = registry_->find_subscriber_by_session_id(primary_ssrc_mapping.subscriber_session_id);
+
+        if (publisher != nullptr && subscriber != nullptr)
+        {
+            auto repaired_rid_rewrite = make_rtx_repaired_rid_header_extension_id_rewrite(
+                *rtx_payload_type_mapping,
+                publisher->remote_offer_summary(),
+                subscriber->remote_offer_summary(),
+                std::span<const uint8_t>(cached_packet.plain_packet.data(), cached_packet.plain_packet.size()));
+
+            if (!repaired_rid_rewrite)
+            {
+                WEBRTC_LOG_WARN("rtx retransmit repaired-rid rewrite failed stream={} subscriber={} sequence={} error={}",
+                                event.source.stream_id,
+                                event.source.remote_endpoint,
+                                cached_packet.sequence_number,
+                                repaired_rid_rewrite.error());
+
+                return std::nullopt;
+            }
+
+            if (repaired_rid_rewrite->has_value())
+            {
+                options.header_extension_id_rewrites.push_back(**repaired_rid_rewrite);
+
+                repaired_rid_rewrite_applied = true;
+            }
+        }
+    }
+
+    auto rtx_packet = make_rtp_rtx_packet(std::span<const uint8_t>(cached_packet.plain_packet.data(), cached_packet.plain_packet.size()), options);
     if (!rtx_packet)
     {
         WEBRTC_LOG_WARN("rtx retransmit packet build failed stream={} subscriber={} primary_ssrc={} rtx_ssrc={} sequence={} error={}",
@@ -5451,7 +5554,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
 
     WEBRTC_LOG_DEBUG(
         "rtx retransmit packet built stream={} subscriber={} primary_ssrc={} subscriber_primary_ssrc={} rtx_ssrc={} primary_sequence={} "
-        "rtx_sequence={} primary_pt={} rtx_pt={} size={}",
+        "rtx_sequence={} primary_pt={} rtx_pt={} repaired_rid_rewrite={} size={}",
         event.source.stream_id,
         event.source.remote_endpoint,
         primary_ssrc_mapping.publisher_ssrc,
@@ -5461,8 +5564,8 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
         rtx_sequence_number,
         static_cast<unsigned int>(cached_packet.payload_type),
         rtx_payload_type_mapping->subscriber_payload_type,
+        repaired_rid_rewrite_applied ? 1 : 0,
         rtx_packet->size());
-
     return rtx_packet.value();
 }
 
