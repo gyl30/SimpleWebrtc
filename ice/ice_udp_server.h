@@ -27,6 +27,7 @@
 #include "media/rtcp_feedback_router.h"
 #include "media/rtcp_report_service.h"
 #include "media/rtp_packet_cache.h"
+#include "media/nack_retransmit_throttle.h"
 #include "media/rtx_sequence_number_allocator.h"
 #include "media/rtx_retransmission_index.h"
 #include "session/stream_registry.h"
@@ -551,6 +552,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::shared_ptr<rtx_sequence_number_allocator> rtx_sequence_allocator_;
 
     std::shared_ptr<rtx_retransmission_index> rtx_retransmission_index_;
+    std::shared_ptr<nack_retransmit_throttle> nack_retransmit_throttle_;
 
     udp::endpoint remote_endpoint_;
 

@@ -1494,7 +1494,10 @@ void ice_udp_server::stop()
     {
         rtx_retransmission_index_->clear();
     }
-
+    if (nack_retransmit_throttle_ != nullptr)
+    {
+        nack_retransmit_throttle_->clear();
+    }
     if (media_router_ != nullptr)
     {
         media_router_->clear();
@@ -1570,6 +1573,10 @@ void ice_udp_server::forget_session(std::string_view session_id)
     if (rtx_retransmission_index_ != nullptr)
     {
         rtx_retransmission_index_->forget_session(session_id);
+    }
+    if (nack_retransmit_throttle_ != nullptr)
+    {
+        nack_retransmit_throttle_->forget_session(session_id);
     }
 
     if (endpoint_removed)
@@ -2553,7 +2560,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
 ice_udp_server_result ice_udp_server::init_dtls_transport()
 {
     if (dtls_transport_ != nullptr && srtp_transport_ != nullptr && rtp_packet_cache_ != nullptr && rtx_sequence_allocator_ != nullptr &&
-        rtx_retransmission_index_ != nullptr)
+        rtx_retransmission_index_ != nullptr && nack_retransmit_throttle_ != nullptr)
     {
         return {};
     }
@@ -2601,6 +2608,7 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
     rtx_sequence_allocator_ = std::make_shared<rtx_sequence_number_allocator>();
 
     rtx_retransmission_index_ = std::make_shared<rtx_retransmission_index>();
+    nack_retransmit_throttle_ = std::make_shared<nack_retransmit_throttle>();
 
     WEBRTC_LOG_INFO("dtls transport initialized handshake_timeout_ms={}", transport_config.handshake_timeout.count());
 
@@ -2609,6 +2617,7 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
     WEBRTC_LOG_INFO("rtp packet cache initialized max_packets={}", cache_config.max_packets);
 
     WEBRTC_LOG_INFO("rtx sequence allocator initialized");
+    WEBRTC_LOG_INFO("nack retransmit throttle initialized");
     return {};
 }
 
@@ -6378,10 +6387,47 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
     std::size_t failed_count = 0;
     std::size_t rtx_sent_count = 0;
     std::size_t primary_fallback_sent_count = 0;
+    std::size_t throttled_count = 0;
 
     for (const nack_retransmit_sequence& requested_sequence : retransmit_resolution->sequences)
     {
         const uint16_t sequence_number = requested_sequence.cache_sequence_number;
+
+        if (nack_retransmit_throttle_ == nullptr)
+        {
+            nack_retransmit_throttle_ = std::make_shared<nack_retransmit_throttle>();
+        }
+
+        const uint64_t throttle_check_time_milliseconds = now_milliseconds();
+
+        const nack_retransmit_throttle_decision throttle_decision = nack_retransmit_throttle_->check(event.source.stream_id,
+                                                                                                     event.source.session_id,
+                                                                                                     feedback_media_ssrc,
+                                                                                                     cache_media_ssrc,
+                                                                                                     requested_sequence.feedback_sequence_number,
+                                                                                                     requested_sequence.cache_sequence_number,
+                                                                                                     requested_sequence.rtx_feedback,
+                                                                                                     throttle_check_time_milliseconds);
+
+        if (!throttle_decision.allowed)
+        {
+            throttled_count += 1;
+
+            WEBRTC_LOG_DEBUG(
+                "rtp nack retransmit throttled stream={} subscriber={} feedback_ssrc={} cache_ssrc={} feedback_sequence={} cache_sequence={} "
+                "rtx_feedback={} elapsed_ms={} wait_ms={}",
+                event.source.stream_id,
+                event.source.remote_endpoint,
+                feedback_media_ssrc,
+                cache_media_ssrc,
+                requested_sequence.feedback_sequence_number,
+                requested_sequence.cache_sequence_number,
+                requested_sequence.rtx_feedback ? 1 : 0,
+                throttle_decision.elapsed_milliseconds,
+                throttle_decision.wait_milliseconds);
+
+            continue;
+        }
 
         auto cached = rtp_packet_cache_->find(event.source.stream_id, cache_media_ssrc, sequence_number);
         if (!cached)
@@ -6460,8 +6506,19 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
 
         send_response(std::move(protected_packet->protected_packet), *target_endpoint);
 
-        sent_count += 1;
+        if (nack_retransmit_throttle_ != nullptr)
+        {
+            nack_retransmit_throttle_->remember_sent(event.source.stream_id,
+                                                     event.source.session_id,
+                                                     feedback_media_ssrc,
+                                                     cache_media_ssrc,
+                                                     requested_sequence.feedback_sequence_number,
+                                                     requested_sequence.cache_sequence_number,
+                                                     requested_sequence.rtx_feedback,
+                                                     now_milliseconds());
+        }
 
+        sent_count += 1;
         if (retransmit_is_rtx)
         {
             rtx_sent_count += 1;
@@ -6486,14 +6543,15 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
 
     const bool has_hard_error = failed_count != 0 || ignored_count != 0 || nack_sequences.truncated;
 
-    const bool has_soft_event = miss_count != 0 || nack_sequences.duplicate_count != 0;
+    const bool has_soft_event = miss_count != 0 || throttled_count != 0 || nack_sequences.duplicate_count != 0;
 
     if (has_hard_error)
     {
         WEBRTC_LOG_WARN(
             "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} rtx_feedback={} nack_items={} "
             "raw_requested={} requested={} cache_requested={} max={} "
-            "duplicate={} truncated={} rtx_index_miss={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
+            "duplicate={} truncated={} rtx_index_miss={} throttled={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} "
+            "failed={}",
             event.source.stream_id,
             event.source.remote_endpoint,
             feedback_media_ssrc,
@@ -6508,6 +6566,7 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
             nack_sequences.duplicate_count,
             nack_sequences.truncated ? 1 : 0,
             retransmit_resolution->rtx_sequence_index_miss_count,
+            throttled_count,
             hit_count,
             miss_count,
             sent_count,
@@ -6522,7 +6581,8 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         WEBRTC_LOG_INFO(
             "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} rtx_feedback={} nack_items={} "
             "raw_requested={} requested={} cache_requested={} max={} "
-            "duplicate={} truncated={} rtx_index_miss={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
+            "duplicate={} truncated={} rtx_index_miss={} throttled={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} "
+            "failed={}",
             event.source.stream_id,
             event.source.remote_endpoint,
             feedback_media_ssrc,
@@ -6537,6 +6597,7 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
             nack_sequences.duplicate_count,
             nack_sequences.truncated ? 1 : 0,
             retransmit_resolution->rtx_sequence_index_miss_count,
+            throttled_count,
             hit_count,
             miss_count,
             sent_count,
@@ -6549,7 +6610,8 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
     WEBRTC_LOG_DEBUG(
         "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} rtx_feedback={} nack_items={} "
         "raw_requested={} requested={} cache_requested={} max={} "
-        "duplicate={} truncated={} rtx_index_miss={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
+        "duplicate={} truncated={} rtx_index_miss={} throttled={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} "
+        "failed={}",
         event.source.stream_id,
         event.source.remote_endpoint,
         feedback_media_ssrc,
@@ -6564,6 +6626,7 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         nack_sequences.duplicate_count,
         nack_sequences.truncated ? 1 : 0,
         retransmit_resolution->rtx_sequence_index_miss_count,
+        throttled_count,
         hit_count,
         miss_count,
         sent_count,
@@ -6616,6 +6679,11 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
     if (rtx_retransmission_index_ != nullptr)
     {
         rtx_retransmission_index_->forget_stream(stream_id);
+    }
+
+    if (nack_retransmit_throttle_ != nullptr)
+    {
+        nack_retransmit_throttle_->forget_stream(stream_id);
     }
 
     std::size_t media_router_stream_count_before = 0;
