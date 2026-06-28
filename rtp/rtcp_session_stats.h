@@ -21,6 +21,10 @@ struct rtcp_received_rtp_packet
     std::string session_id;
     std::string remote_endpoint;
 
+    std::string mid;
+    std::optional<std::string> rid;
+    std::optional<std::string> repaired_rid;
+
     uint32_t ssrc = 0;
     uint16_t sequence_number = 0;
     uint32_t rtp_timestamp = 0;
@@ -35,6 +39,10 @@ struct rtcp_sent_rtp_packet
     std::string stream_id;
     std::string session_id;
     std::string remote_endpoint;
+
+    std::string mid;
+    std::optional<std::string> rid;
+    std::optional<std::string> repaired_rid;
 
     uint32_t ssrc = 0;
     uint32_t rtp_timestamp = 0;
@@ -147,6 +155,14 @@ class rtcp_session_stats
                                                       std::size_t max_report_blocks);
 
     [[nodiscard]]
+    std::vector<rtcp_report_block> make_report_blocks(std::string_view session_id,
+                                                      std::string_view remote_endpoint,
+                                                      std::string_view mid,
+                                                      const std::optional<std::string>& rid,
+                                                      const std::optional<std::string>& repaired_rid,
+                                                      uint64_t now_milliseconds,
+                                                      std::size_t max_report_blocks);
+    [[nodiscard]]
     rtcp_sender_info_result make_sender_info(std::string_view session_id,
                                              std::string_view remote_endpoint,
                                              uint32_t ssrc,
@@ -183,6 +199,10 @@ class rtcp_session_stats
         std::string stream_id;
         std::string session_id;
         std::string remote_endpoint;
+
+        std::string mid;
+        std::optional<std::string> rid;
+        std::optional<std::string> repaired_rid;
 
         uint32_t ssrc = 0;
         uint32_t clock_rate = 0;

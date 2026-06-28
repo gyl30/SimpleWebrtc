@@ -886,14 +886,18 @@ rtcp_report_generation_request rtcp_report_service::make_generation_request(cons
 
     request.session_id = source.session_id;
 
-    request.remote_endpoint = source.remote_endpoint;
-
-    request.local_ssrc = source.local_ssrc;
-
     request.cname = source.cname;
 
     request.now_milliseconds = now_milliseconds;
+    request.remote_endpoint = source.remote_endpoint;
 
+    request.mid = source.mid;
+
+    request.rid = source.rid;
+
+    request.repaired_rid = source.repaired_rid;
+
+    request.local_ssrc = source.local_ssrc;
     request.max_report_blocks = source.max_report_blocks == 0 ? config_.max_report_blocks : source.max_report_blocks;
 
     if (request.max_report_blocks == 0)

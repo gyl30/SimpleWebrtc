@@ -98,6 +98,15 @@ uint8_t make_fraction_lost(uint32_t expected_interval, uint64_t received_interva
 
     return static_cast<uint8_t>(fraction);
 }
+bool optional_string_filter_matches(const std::optional<std::string>& expected, const std::optional<std::string>& actual)
+{
+    if (!expected.has_value())
+    {
+        return true;
+    }
+
+    return actual.has_value() && *actual == *expected;
+}
 }    // namespace
 
 rtcp_session_stats_result rtcp_session_stats::observe_received_rtp(const rtcp_received_rtp_packet& packet)
@@ -126,8 +135,22 @@ rtcp_session_stats_result rtcp_session_stats::observe_received_rtp(const rtcp_re
         state.ssrc = packet.ssrc;
     }
 
-    state.clock_rate = packet.clock_rate;
+    if (!packet.mid.empty())
+    {
+        state.mid = packet.mid;
+    }
 
+    if (packet.rid.has_value())
+    {
+        state.rid = packet.rid;
+    }
+
+    if (packet.repaired_rid.has_value())
+    {
+        state.repaired_rid = packet.repaired_rid;
+    }
+
+    state.clock_rate = packet.clock_rate;
     const bool accepted = update_sequence_state(state, packet.sequence_number);
 
     if (!accepted)
@@ -170,8 +193,22 @@ rtcp_session_stats_result rtcp_session_stats::observe_sent_rtp(const rtcp_sent_r
         state.ssrc = packet.ssrc;
     }
 
-    state.sender_packet_count += 1;
+    if (!packet.mid.empty())
+    {
+        state.mid = packet.mid;
+    }
 
+    if (packet.rid.has_value())
+    {
+        state.rid = packet.rid;
+    }
+
+    if (packet.repaired_rid.has_value())
+    {
+        state.repaired_rid = packet.repaired_rid;
+    }
+
+    state.sender_packet_count += 1;
     state.sender_octet_count += static_cast<uint64_t>(packet.payload_size);
 
     state.last_sent_rtp_timestamp = packet.rtp_timestamp;
@@ -257,6 +294,17 @@ std::vector<rtcp_report_block> rtcp_session_stats::make_report_blocks(std::strin
                                                                       uint64_t now_milliseconds,
                                                                       std::size_t max_report_blocks)
 {
+    return make_report_blocks(session_id, remote_endpoint, std::string_view{}, std::nullopt, std::nullopt, now_milliseconds, max_report_blocks);
+}
+
+std::vector<rtcp_report_block> rtcp_session_stats::make_report_blocks(std::string_view session_id,
+                                                                      std::string_view remote_endpoint,
+                                                                      std::string_view mid,
+                                                                      const std::optional<std::string>& rid,
+                                                                      const std::optional<std::string>& repaired_rid,
+                                                                      uint64_t now_milliseconds,
+                                                                      std::size_t max_report_blocks)
+{
     std::vector<rtcp_report_block> blocks;
 
     if (session_id.empty() || remote_endpoint.empty() || max_report_blocks == 0)
@@ -277,6 +325,21 @@ std::vector<rtcp_report_block> rtcp_session_stats::make_report_blocks(std::strin
             continue;
         }
 
+        if (!mid.empty() && state.mid != mid)
+        {
+            continue;
+        }
+
+        if (!optional_string_filter_matches(rid, state.rid))
+        {
+            continue;
+        }
+
+        if (!optional_string_filter_matches(repaired_rid, state.repaired_rid))
+        {
+            continue;
+        }
+
         rtcp_session_report_snapshot snapshot = make_snapshot_from_state(state, now_milliseconds, true, &state);
 
         blocks.push_back(snapshot.report_block);
@@ -289,7 +352,6 @@ std::vector<rtcp_report_block> rtcp_session_stats::make_report_blocks(std::strin
 
     return blocks;
 }
-
 rtcp_sender_info_result rtcp_session_stats::make_sender_info(std::string_view session_id,
                                                              std::string_view remote_endpoint,
                                                              uint32_t ssrc,

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -18,8 +19,11 @@ struct rtcp_report_generation_request
     std::string session_id;
     std::string remote_endpoint;
 
-    uint32_t local_ssrc = 0;
+    std::string mid;
+    std::optional<std::string> rid;
+    std::optional<std::string> repaired_rid;
 
+    uint32_t local_ssrc = 0;
     std::string cname;
 
     uint64_t now_milliseconds = 0;

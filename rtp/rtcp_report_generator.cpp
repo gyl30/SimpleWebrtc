@@ -166,9 +166,8 @@ rtcp_report_generation_result_type generate_rtcp_report(rtcp_session_stats& stat
 
     const std::size_t max_report_blocks = request.max_report_blocks == 0 ? k_max_rtcp_report_blocks : request.max_report_blocks;
 
-    std::vector<rtcp_report_block> report_blocks =
-        stats.make_report_blocks(request.session_id, request.remote_endpoint, request.now_milliseconds, max_report_blocks);
-
+    std::vector<rtcp_report_block> report_blocks = stats.make_report_blocks(
+        request.session_id, request.remote_endpoint, request.mid, request.rid, request.repaired_rid, request.now_milliseconds, max_report_blocks);
     if (!sender_report)
     {
         rtcp_report_write_options options = make_receiver_report_options(request, std::move(report_blocks));

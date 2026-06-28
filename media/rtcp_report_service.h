@@ -7,6 +7,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -83,8 +84,11 @@ struct rtcp_report_source_config
     std::string session_id;
     std::string remote_endpoint;
 
-    uint32_t local_ssrc = 0;
+    std::string mid;
+    std::optional<std::string> rid;
+    std::optional<std::string> repaired_rid;
 
+    uint32_t local_ssrc = 0;
     std::string cname;
 
     bool sender_report_enabled = false;

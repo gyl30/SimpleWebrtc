@@ -4371,12 +4371,17 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
     }
 
     std::string mid;
+    std::optional<std::string> rid;
+    std::optional<std::string> repaired_rid;
 
     if (track_resolution.has_value() && track_resolution->resolved)
     {
         mid = track_resolution->mid;
-    }
 
+        rid = track_resolution->rid;
+
+        repaired_rid = track_resolution->repaired_rid;
+    }
     if (media_offer_payload_type_is_rtx(publisher->remote_offer_summary(), mid, header->payload_type))
     {
         WEBRTC_LOG_DEBUG("rtcp stats inbound rtp skipped rtx payload type stream={} session={} remote={} ssrc={} payload_type={} mid={}",
@@ -4426,6 +4431,12 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
 
     observed_packet.remote_endpoint = peer.remote_endpoint;
 
+    observed_packet.mid = mid;
+
+    observed_packet.rid = rid;
+
+    observed_packet.repaired_rid = repaired_rid;
+
     observed_packet.ssrc = header->ssrc;
 
     observed_packet.sequence_number = header->sequence_number;
@@ -4462,8 +4473,13 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
 
     source.remote_endpoint = peer.remote_endpoint;
 
-    source.local_ssrc = local_ssrc;
+    source.mid = mid;
 
+    source.rid = rid;
+
+    source.repaired_rid = repaired_rid;
+
+    source.local_ssrc = local_ssrc;
     source.cname = make_rtcp_cname(peer.session_id, local_ssrc);
 
     source.sender_report_enabled = false;
@@ -4826,6 +4842,12 @@ void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_pe
         return;
     }
 
+    std::string mid;
+
+    if (mapping.has_value())
+    {
+        mid = mapping->subscriber_mid;
+    }
     rtcp_sent_rtp_packet observed_packet;
 
     observed_packet.stream_id = target_peer.stream_id;
@@ -4834,8 +4856,9 @@ void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_pe
 
     observed_packet.remote_endpoint = target_peer.remote_endpoint;
 
-    observed_packet.ssrc = header->ssrc;
+    observed_packet.mid = mid;
 
+    observed_packet.ssrc = header->ssrc;
     observed_packet.rtp_timestamp = header->timestamp;
 
     observed_packet.payload_size = *payload_size;
@@ -4863,7 +4886,7 @@ void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_pe
     source.session_id = target_peer.session_id;
 
     source.remote_endpoint = target_peer.remote_endpoint;
-
+    source.mid = mid;
     source.local_ssrc = header->ssrc;
 
     source.cname = make_rtcp_cname(target_peer.session_id, header->ssrc);
