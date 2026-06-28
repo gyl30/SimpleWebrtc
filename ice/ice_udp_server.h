@@ -280,6 +280,17 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     std::optional<media_ssrc_mapping> get_or_create_rtx_ssrc_mapping(const media_ssrc_mapping& primary_mapping,
                                                                      const media_payload_type_mapping& rtx_payload_type_mapping);
+    enum class retransmit_plain_packet_kind
+    {
+        primary,
+        rtx,
+    };
+
+    struct retransmit_plain_packet_result
+    {
+        std::vector<uint8_t> packet;
+        retransmit_plain_packet_kind kind = retransmit_plain_packet_kind::primary;
+    };
 
     [[nodiscard]]
     std::optional<std::vector<uint8_t>> make_rtx_retransmit_plain_packet(const rtcp_feedback_route_event& event,
@@ -288,10 +299,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                          const media_payload_type_mapping& primary_payload_type_mapping);
 
     [[nodiscard]]
-    std::optional<std::vector<uint8_t>> make_retransmit_plain_packet(const rtcp_feedback_route_event& event,
-                                                                     const rtp_packet_cache_entry& cached_packet,
-                                                                     const std::optional<media_ssrc_mapping>& ssrc_mapping);
-
+    std::optional<retransmit_plain_packet_result> make_retransmit_plain_packet(const rtcp_feedback_route_event& event,
+                                                                               const rtp_packet_cache_entry& cached_packet,
+                                                                               const std::optional<media_ssrc_mapping>& ssrc_mapping);
     void cache_inbound_rtp_packet(const srtp_packet_process_result& packet,
                                   const media_route_result& route,
                                   const std::optional<media_track_resolution>& track_resolution);

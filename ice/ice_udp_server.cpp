@@ -5647,13 +5647,34 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
     return std::move(rewrite_result->packet);
 }
 
-std::optional<std::vector<uint8_t>> ice_udp_server::make_retransmit_plain_packet(const rtcp_feedback_route_event& event,
-                                                                                 const rtp_packet_cache_entry& cached_packet,
-                                                                                 const std::optional<media_ssrc_mapping>& ssrc_mapping)
+std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::make_retransmit_plain_packet(
+    const rtcp_feedback_route_event& event, const rtp_packet_cache_entry& cached_packet, const std::optional<media_ssrc_mapping>& ssrc_mapping)
 {
     std::vector<uint8_t> original_packet;
 
     original_packet.assign(cached_packet.plain_packet.begin(), cached_packet.plain_packet.end());
+
+    const auto make_primary_result = [](std::vector<uint8_t> packet)
+    {
+        retransmit_plain_packet_result result;
+
+        result.packet = std::move(packet);
+
+        result.kind = retransmit_plain_packet_kind::primary;
+
+        return result;
+    };
+
+    const auto make_rtx_result = [](std::vector<uint8_t> packet)
+    {
+        retransmit_plain_packet_result result;
+
+        result.packet = std::move(packet);
+
+        result.kind = retransmit_plain_packet_kind::rtx;
+
+        return result;
+    };
 
     if (!ssrc_mapping.has_value())
     {
@@ -5663,7 +5684,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_retransmit_plain_packet
                         cached_packet.ssrc,
                         cached_packet.sequence_number);
 
-        return std::nullopt;
+        return make_primary_result(std::move(original_packet));
     }
 
     rtp_packet_rewrite_options options;
@@ -5709,7 +5730,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_retransmit_plain_packet
 
         if (rtx_packet.has_value())
         {
-            return rtx_packet;
+            return make_rtx_result(std::move(*rtx_packet));
         }
     }
 
@@ -5776,7 +5797,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_retransmit_plain_packet
 
     if (!rewrite_required)
     {
-        return original_packet;
+        return make_primary_result(std::move(original_packet));
     }
 
     auto rewrite_result = rewrite_rtp_packet(std::span<const uint8_t>(cached_packet.plain_packet.data(), cached_packet.plain_packet.size()), options);
@@ -5794,7 +5815,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_retransmit_plain_packet
         return std::nullopt;
     }
 
-    return std::move(rewrite_result->packet);
+    return make_primary_result(std::move(rewrite_result->packet));
 }
 
 void ice_udp_server::cache_inbound_rtp_packet(const srtp_packet_process_result& packet,
@@ -6013,6 +6034,8 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
     std::size_t sent_count = 0;
     std::size_t ignored_count = 0;
     std::size_t failed_count = 0;
+    std::size_t rtx_sent_count = 0;
+    std::size_t primary_fallback_sent_count = 0;
 
     for (uint16_t sequence_number : sequence_numbers)
     {
@@ -6027,40 +6050,21 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
 
         hit_count += 1;
 
-        std::optional<std::vector<uint8_t>> retransmit_plain_packet = make_retransmit_plain_packet(event, *cached, ssrc_mapping);
+        auto retransmit_plain_packet = make_retransmit_plain_packet(event, *cached, ssrc_mapping);
 
         if (!retransmit_plain_packet.has_value())
         {
             failed_count += 1;
 
-            WEBRTC_LOG_WARN("rtp nack retransmit skipped rewrite failed stream={} subscriber={} feedback_ssrc={} cache_ssrc={} sequence={}",
-                            event.source.stream_id,
-                            event.source.remote_endpoint,
-                            feedback_media_ssrc,
-                            cache_media_ssrc,
-                            sequence_number);
-
             continue;
         }
 
-        if (retransmit_plain_packet->empty())
-        {
-            failed_count += 1;
+        const bool retransmit_is_rtx = retransmit_plain_packet->kind == retransmit_plain_packet_kind::rtx;
 
-            WEBRTC_LOG_WARN("rtp nack retransmit skipped empty rewritten packet stream={} subscriber={} feedback_ssrc={} cache_ssrc={} sequence={}",
-                            event.source.stream_id,
-                            event.source.remote_endpoint,
-                            feedback_media_ssrc,
-                            cache_media_ssrc,
-                            sequence_number);
-
-            continue;
-        }
-
-        auto protected_packet =
-            srtp_transport_->protect_outbound_packet(std::span<const uint8_t>(retransmit_plain_packet->data(), retransmit_plain_packet->size()),
-                                                     event.source.remote_endpoint,
-                                                     srtp_packet_kind::rtp);
+        auto protected_packet = srtp_transport_->protect_outbound_packet(
+            std::span<const uint8_t>(retransmit_plain_packet->packet.data(), retransmit_plain_packet->packet.size()),
+            event.source.remote_endpoint,
+            srtp_packet_kind::rtp);
         if (!protected_packet)
         {
             failed_count += 1;
@@ -6091,23 +6095,46 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
             continue;
         }
 
-        const std::span<const uint8_t> retransmit_span(retransmit_plain_packet->data(), retransmit_plain_packet->size());
+        const std::span<const uint8_t> retransmit_span(retransmit_plain_packet->packet.data(), retransmit_plain_packet->packet.size());
 
-        const std::optional<media_ssrc_mapping> outbound_mapping = find_outbound_ssrc_mapping(event.source, retransmit_span);
+        if (!retransmit_is_rtx)
+        {
+            const std::optional<media_ssrc_mapping> outbound_mapping = find_outbound_ssrc_mapping(event.source, retransmit_span);
 
-        observe_outbound_rtp_stats(event.source, retransmit_span, outbound_mapping);
+            observe_outbound_rtp_stats(event.source, retransmit_span, outbound_mapping);
 
-        observe_outbound_track_stats(event.source, retransmit_span, outbound_mapping);
+            observe_outbound_track_stats(event.source, retransmit_span, outbound_mapping);
+        }
+        else
+        {
+            WEBRTC_LOG_DEBUG("rtx retransmit outbound stats skipped stream={} subscriber={} feedback_ssrc={} cache_ssrc={} sequence={}",
+                             event.source.stream_id,
+                             event.source.remote_endpoint,
+                             feedback_media_ssrc,
+                             cache_media_ssrc,
+                             sequence_number);
+        }
 
         send_response(std::move(protected_packet->protected_packet), *target_endpoint);
+
         sent_count += 1;
 
-        WEBRTC_LOG_DEBUG("rtp nack retransmit send stream={} subscriber={} feedback_ssrc={} cache_ssrc={} sequence={}",
+        if (retransmit_is_rtx)
+        {
+            rtx_sent_count += 1;
+        }
+        else
+        {
+            primary_fallback_sent_count += 1;
+        }
+
+        WEBRTC_LOG_DEBUG("rtp nack retransmit send stream={} subscriber={} feedback_ssrc={} cache_ssrc={} sequence={} mode={}",
                          event.source.stream_id,
                          event.source.remote_endpoint,
                          feedback_media_ssrc,
                          cache_media_ssrc,
-                         sequence_number);
+                         sequence_number,
+                         retransmit_is_rtx ? "rtx" : "primary");
     }
 
     const bool has_hard_error = failed_count != 0 || ignored_count != 0 || nack_sequences.truncated;
@@ -6119,7 +6146,7 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         WEBRTC_LOG_WARN(
             "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} nack_items={} raw_requested={} "
             "requested={} max={} "
-            "duplicate={} truncated={} hit={} miss={} sent={} ignored={} failed={}",
+            "duplicate={} truncated={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
             event.source.stream_id,
             event.source.remote_endpoint,
             feedback_media_ssrc,
@@ -6134,6 +6161,8 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
             hit_count,
             miss_count,
             sent_count,
+            rtx_sent_count,
+            primary_fallback_sent_count,
             ignored_count,
             failed_count);
     }
@@ -6143,7 +6172,7 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         WEBRTC_LOG_INFO(
             "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} nack_items={} raw_requested={} "
             "requested={} max={} "
-            "duplicate={} truncated={} hit={} miss={} sent={} ignored={} failed={}",
+            "duplicate={} truncated={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
             event.source.stream_id,
             event.source.remote_endpoint,
             feedback_media_ssrc,
@@ -6158,6 +6187,8 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
             hit_count,
             miss_count,
             sent_count,
+            rtx_sent_count,
+            primary_fallback_sent_count,
             ignored_count,
             failed_count);
     }
@@ -6165,7 +6196,7 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
     WEBRTC_LOG_DEBUG(
         "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} nack_items={} raw_requested={} "
         "requested={} max={} "
-        "duplicate={} truncated={} hit={} miss={} sent={} ignored={} failed={}",
+        "duplicate={} truncated={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
         event.source.stream_id,
         event.source.remote_endpoint,
         feedback_media_ssrc,
@@ -6180,6 +6211,8 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         hit_count,
         miss_count,
         sent_count,
+        rtx_sent_count,
+        primary_fallback_sent_count,
         ignored_count,
         failed_count);
 }
