@@ -30,7 +30,156 @@ bool contains_mid(const std::vector<std::string>& mids, std::string_view mid)
 
     return false;
 }
+std::vector<std::string> split_space_separated_tokens(std::string_view value)
+{
+    std::vector<std::string> tokens;
 
+    std::size_t position = 0;
+
+    while (position < value.size())
+    {
+        position = value.find_first_not_of(" \t", position);
+
+        if (position == std::string_view::npos)
+        {
+            break;
+        }
+
+        const std::size_t end = value.find_first_of(" \t", position);
+
+        if (end == std::string_view::npos)
+        {
+            tokens.emplace_back(value.substr(position));
+
+            break;
+        }
+
+        tokens.emplace_back(value.substr(position, end - position));
+
+        position = end + 1;
+    }
+
+    return tokens;
+}
+
+std::expected<std::vector<std::string>, std::string> collect_answer_bundle_mids(const sdp::session_description& answer_description)
+{
+    const auto group_attributes = answer_description.find_attributes(sdp::k_attribute_group);
+
+    std::optional<std::vector<std::string>> bundle_mids;
+
+    for (const auto* attribute : group_attributes)
+    {
+        if (attribute == nullptr)
+        {
+            continue;
+        }
+
+        const std::vector<std::string> tokens = split_space_separated_tokens(attribute->value);
+
+        if (tokens.empty())
+        {
+            return make_error("answer group attribute is empty");
+        }
+
+        if (tokens.front() != "BUNDLE")
+        {
+            continue;
+        }
+
+        if (bundle_mids.has_value())
+        {
+            return make_error("answer has multiple bundle groups");
+        }
+
+        if (tokens.size() == 1)
+        {
+            return make_error("answer bundle group has no mids");
+        }
+
+        std::vector<std::string> current_bundle_mids;
+
+        current_bundle_mids.reserve(tokens.size() - 1);
+
+        for (std::size_t index = 1; index < tokens.size(); ++index)
+        {
+            const std::string& mid = tokens[index];
+
+            if (mid.empty())
+            {
+                return make_error("answer bundle mid is empty");
+            }
+
+            if (contains_mid(current_bundle_mids, mid))
+            {
+                std::string message = "answer bundle mid duplicated mid=";
+
+                message.append(mid);
+
+                return std::unexpected(std::move(message));
+            }
+
+            current_bundle_mids.push_back(mid);
+        }
+
+        bundle_mids = std::move(current_bundle_mids);
+    }
+
+    if (!bundle_mids.has_value())
+    {
+        return make_error("answer bundle group is missing");
+    }
+
+    return *bundle_mids;
+}
+
+std::expected<void, std::string> validate_answer_bundle_mids(const std::vector<std::string>& accepted_mids,
+                                                             const std::vector<std::string>& bundle_mids)
+{
+    if (accepted_mids.empty())
+    {
+        return make_error("answer accepted mids is empty");
+    }
+
+    if (bundle_mids.empty())
+    {
+        return make_error("answer bundle mids is empty");
+    }
+
+    if (accepted_mids.size() != bundle_mids.size())
+    {
+        return make_error("answer bundle mids and accepted mids size mismatch");
+    }
+
+    for (std::size_t index = 0; index < bundle_mids.size(); ++index)
+    {
+        const std::string& bundle_mid = bundle_mids[index];
+
+        if (!contains_mid(accepted_mids, bundle_mid))
+        {
+            std::string message = "answer bundle mid is not accepted mid=";
+
+            message.append(bundle_mid);
+
+            return std::unexpected(std::move(message));
+        }
+
+        if (accepted_mids[index] != bundle_mid)
+        {
+            std::string message = "answer bundle mid order mismatch expected=";
+
+            message.append(accepted_mids[index]);
+
+            message.append(" actual=");
+
+            message.append(bundle_mid);
+
+            return std::unexpected(std::move(message));
+        }
+    }
+
+    return {};
+}
 std::expected<void, std::string> observe_answer_media_direction(const sdp::media_description& media,
                                                                 std::string_view attribute_name,
                                                                 sdp::media_direction direction_value,
@@ -124,22 +273,11 @@ std::expected<bool, std::string> answer_media_is_accepted(const sdp::media_descr
     return true;
 }
 
-std::expected<std::vector<std::string>, std::string> collect_accepted_answer_mids(std::string_view answer_sdp)
+std::expected<std::vector<std::string>, std::string> collect_accepted_answer_mids(const sdp::session_description& answer_description)
 {
-    auto answer_description = sdp::parse_session_description(answer_sdp);
-
-    if (!answer_description)
-    {
-        std::string message = "accepted media parse answer failed: ";
-
-        message.append(answer_description.error());
-
-        return std::unexpected(std::move(message));
-    }
-
     std::vector<std::string> accepted_mids;
 
-    for (const auto& media : answer_description->media_descriptions)
+    for (const auto& media : answer_description.media_descriptions)
     {
         auto accepted_result = answer_media_is_accepted(media);
 
@@ -419,11 +557,31 @@ std::expected<void, std::string> validate_runtime_offer_filter_result(const sdp:
         }
     }
 
-    for (const auto& bundle_mid : result.offer_summary.bundle_mids)
+    if (result.offer_summary.bundle_mids.size() != result.accepted_mids.size())
     {
+        return make_error("runtime offer filter bundle mids and accepted mids size mismatch");
+    }
+
+    for (std::size_t index = 0; index < result.offer_summary.bundle_mids.size(); ++index)
+    {
+        const std::string& bundle_mid = result.offer_summary.bundle_mids[index];
+
         if (!contains_mid(result.accepted_mids, bundle_mid))
         {
             std::string message = "runtime offer filter bundle mid is not accepted mid=";
+
+            message.append(bundle_mid);
+
+            return std::unexpected(std::move(message));
+        }
+
+        if (bundle_mid != result.accepted_mids[index])
+        {
+            std::string message = "runtime offer filter bundle mid order mismatch expected=";
+
+            message.append(result.accepted_mids[index]);
+
+            message.append(" actual=");
 
             message.append(bundle_mid);
 
@@ -437,13 +595,37 @@ std::expected<void, std::string> validate_runtime_offer_filter_result(const sdp:
 
 runtime_offer_filter_result_type make_runtime_offer_filter_result(const sdp::webrtc_offer_summary& original_offer, std::string_view answer_sdp)
 {
-    auto accepted_mids = collect_accepted_answer_mids(answer_sdp);
+    auto answer_description = sdp::parse_session_description(answer_sdp);
+
+    if (!answer_description)
+    {
+        std::string message = "runtime offer filter parse answer failed: ";
+
+        message.append(answer_description.error());
+
+        return std::unexpected(std::move(message));
+    }
+
+    auto accepted_mids = collect_accepted_answer_mids(*answer_description);
 
     if (!accepted_mids)
     {
         return std::unexpected(accepted_mids.error());
     }
 
+    auto bundle_mids = collect_answer_bundle_mids(*answer_description);
+
+    if (!bundle_mids)
+    {
+        return std::unexpected(bundle_mids.error());
+    }
+
+    auto bundle_validation_result = validate_answer_bundle_mids(*accepted_mids, *bundle_mids);
+
+    if (!bundle_validation_result)
+    {
+        return std::unexpected(bundle_validation_result.error());
+    }
     auto runtime_offer_summary = make_runtime_offer_summary_from_mids(original_offer, *accepted_mids);
 
     if (!runtime_offer_summary)
