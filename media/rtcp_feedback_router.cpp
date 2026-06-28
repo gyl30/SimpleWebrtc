@@ -85,6 +85,10 @@ std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const sr
         return std::nullopt;
     }
 
+    if (packet.rtcp_has_transport_cc)
+    {
+        return std::nullopt;
+    }
     rtcp_feedback_route_event event;
     event.valid = true;
     event.event_type = choose_feedback_event_type(packet);
@@ -132,6 +136,10 @@ std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const rt
         return std::nullopt;
     }
 
+    if (block.has_transport_cc)
+    {
+        return std::nullopt;
+    }
     rtcp_feedback_route_event event;
 
     event.valid = true;

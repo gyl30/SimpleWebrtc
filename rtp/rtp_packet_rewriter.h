@@ -17,6 +17,12 @@ struct rtp_header_extension_rewrite
     std::vector<uint8_t> payload;
 };
 
+struct rtp_header_extension_id_rewrite
+{
+    uint8_t source_id = 0;
+    uint8_t target_id = 0;
+};
+
 struct rtp_packet_rewrite_options
 {
     std::optional<uint8_t> payload_type;
@@ -25,8 +31,8 @@ struct rtp_packet_rewrite_options
     std::optional<uint32_t> timestamp;
 
     std::vector<rtp_header_extension_rewrite> header_extensions;
+    std::vector<rtp_header_extension_id_rewrite> header_extension_id_rewrites;
 };
-
 struct rtp_packet_rewrite_result
 {
     std::vector<uint8_t> packet;
