@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "signaling/sdp/h264_fmtp_compat.h"
+#include "signaling/sdp/sdp_summary.h"
 
 namespace webrtc
 {
@@ -618,6 +619,242 @@ bool h264_codecs_are_compatible(const sdp::codec_info& publisher_codec, const sd
 
     return compatibility->compatible;
 }
+
+constexpr std::string_view k_rtp_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
+
+constexpr std::string_view k_rtp_stream_id_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id";
+
+constexpr std::string_view k_repaired_rtp_stream_id_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id";
+
+std::unexpected<std::string> make_payload_mapping_error(std::string_view message) { return std::unexpected(std::string(message)); }
+
+const sdp::rtp_header_extension* find_header_extension_by_uri(const sdp::media_summary& media, std::string_view uri)
+{
+    if (uri.empty())
+    {
+        return nullptr;
+    }
+
+    for (const auto& extension : media.header_extensions)
+    {
+        if (extension.uri == uri)
+        {
+            return &extension;
+        }
+    }
+
+    return nullptr;
+}
+
+const sdp::rtp_header_extension* find_header_extension_by_id(const sdp::media_summary& media, int32_t id)
+{
+    if (id <= 0)
+    {
+        return nullptr;
+    }
+
+    for (const auto& extension : media.header_extensions)
+    {
+        if (extension.id == id)
+        {
+            return &extension;
+        }
+    }
+
+    return nullptr;
+}
+
+std::expected<void, std::string> validate_media_summary_for_payload_mapping(const sdp::media_summary& media)
+{
+    auto result = sdp::validate_media_summary_identity(media);
+
+    if (!result)
+    {
+        return std::unexpected(result.error());
+    }
+
+    return {};
+}
+
+std::expected<void, std::string> validate_forwarded_header_extension_collision(const sdp::media_summary& publisher_media,
+                                                                               const sdp::media_summary& subscriber_media,
+                                                                               std::string_view uri)
+{
+    const sdp::rtp_header_extension* publisher_extension = find_header_extension_by_uri(publisher_media, uri);
+
+    if (publisher_extension == nullptr)
+    {
+        return {};
+    }
+
+    const sdp::rtp_header_extension* subscriber_same_uri_extension = find_header_extension_by_uri(subscriber_media, uri);
+
+    if (subscriber_same_uri_extension != nullptr && subscriber_same_uri_extension->id == publisher_extension->id)
+    {
+        return {};
+    }
+
+    const sdp::rtp_header_extension* subscriber_extension_with_same_id = find_header_extension_by_id(subscriber_media, publisher_extension->id);
+
+    if (subscriber_extension_with_same_id == nullptr)
+    {
+        return {};
+    }
+
+    if (subscriber_extension_with_same_id->uri == uri)
+    {
+        return {};
+    }
+
+    std::string message = "payload mapping rejected because forwarded header extension id conflicts uri=";
+
+    message.append(std::string(uri));
+
+    message.append(" subscriber_uri=");
+
+    message.append(subscriber_extension_with_same_id->uri);
+
+    return std::unexpected(std::move(message));
+}
+
+std::expected<void, std::string> validate_forwarded_rid_extension_compatibility(const sdp::media_summary& publisher_media,
+                                                                                const sdp::media_summary& subscriber_media)
+{
+    const sdp::rtp_header_extension* publisher_rid_extension = find_header_extension_by_uri(publisher_media, k_rtp_stream_id_extension_uri);
+
+    if (publisher_rid_extension == nullptr)
+    {
+        return {};
+    }
+
+    auto collision_result = validate_forwarded_header_extension_collision(publisher_media, subscriber_media, k_rtp_stream_id_extension_uri);
+
+    if (!collision_result)
+    {
+        return std::unexpected(collision_result.error());
+    }
+
+    const sdp::rtp_header_extension* subscriber_rid_extension = find_header_extension_by_uri(subscriber_media, k_rtp_stream_id_extension_uri);
+
+    if (subscriber_rid_extension == nullptr)
+    {
+        return {};
+    }
+
+    if (publisher_rid_extension->id != subscriber_rid_extension->id)
+    {
+        return make_payload_mapping_error("payload mapping rejected because rid extmap id rewrite is not enabled");
+    }
+
+    return {};
+}
+
+std::expected<void, std::string> validate_repaired_rid_extension_compatibility(const sdp::media_summary& publisher_media,
+                                                                               const sdp::media_summary& subscriber_media,
+                                                                               bool rtx_mapping)
+{
+    const sdp::rtp_header_extension* publisher_repaired_rid_extension =
+        find_header_extension_by_uri(publisher_media, k_repaired_rtp_stream_id_extension_uri);
+
+    const sdp::rtp_header_extension* subscriber_repaired_rid_extension =
+        find_header_extension_by_uri(subscriber_media, k_repaired_rtp_stream_id_extension_uri);
+
+    const bool publisher_has_repaired_rid = publisher_repaired_rid_extension != nullptr;
+
+    const bool subscriber_has_repaired_rid = subscriber_repaired_rid_extension != nullptr;
+
+    if (!publisher_has_repaired_rid && !subscriber_has_repaired_rid)
+    {
+        return {};
+    }
+
+    if (!rtx_mapping)
+    {
+        auto collision_result =
+            validate_forwarded_header_extension_collision(publisher_media, subscriber_media, k_repaired_rtp_stream_id_extension_uri);
+
+        if (!collision_result)
+        {
+            return std::unexpected(collision_result.error());
+        }
+
+        return {};
+    }
+
+    if (!publisher_has_repaired_rid || !subscriber_has_repaired_rid)
+    {
+        return make_payload_mapping_error("payload mapping rejected because repaired-rid extmap is not supported by both peers");
+    }
+
+    if (!sdp::media_has_rtx_codec(publisher_media) || !sdp::media_has_rtx_codec(subscriber_media))
+    {
+        return make_payload_mapping_error("payload mapping rejected because repaired-rid requires rtx codec on both peers");
+    }
+
+    if (!sdp::media_has_rtp_header_extension_uri(publisher_media, k_rtp_stream_id_extension_uri) ||
+        !sdp::media_has_rtp_header_extension_uri(subscriber_media, k_rtp_stream_id_extension_uri))
+    {
+        return make_payload_mapping_error("payload mapping rejected because repaired-rid requires rid extmap on both peers");
+    }
+
+    if (publisher_repaired_rid_extension->id != subscriber_repaired_rid_extension->id)
+    {
+        return make_payload_mapping_error("payload mapping rejected because repaired-rid extmap id rewrite is not enabled");
+    }
+
+    return {};
+}
+
+std::expected<void, std::string> validate_payload_mapping_identity_compatibility(const sdp::media_summary& publisher_media,
+                                                                                 const sdp::media_summary& subscriber_media,
+                                                                                 const sdp::codec_info& publisher_codec,
+                                                                                 const sdp::codec_info& subscriber_codec)
+{
+    auto publisher_identity_result = validate_media_summary_for_payload_mapping(publisher_media);
+
+    if (!publisher_identity_result)
+    {
+        return std::unexpected(publisher_identity_result.error());
+    }
+
+    auto subscriber_identity_result = validate_media_summary_for_payload_mapping(subscriber_media);
+
+    if (!subscriber_identity_result)
+    {
+        return std::unexpected(subscriber_identity_result.error());
+    }
+
+    if (publisher_media.kind != subscriber_media.kind)
+    {
+        return make_payload_mapping_error("payload mapping rejected because media kind mismatched");
+    }
+
+    const bool publisher_codec_is_rtx = codec_is_rtx(publisher_codec);
+
+    const bool subscriber_codec_is_rtx = codec_is_rtx(subscriber_codec);
+
+    if (publisher_codec_is_rtx != subscriber_codec_is_rtx)
+    {
+        return make_payload_mapping_error("payload mapping rejected because rtx codec pairing mismatched");
+    }
+
+    auto rid_result = validate_forwarded_rid_extension_compatibility(publisher_media, subscriber_media);
+
+    if (!rid_result)
+    {
+        return std::unexpected(rid_result.error());
+    }
+
+    auto repaired_rid_result =
+        validate_repaired_rid_extension_compatibility(publisher_media, subscriber_media, publisher_codec_is_rtx && subscriber_codec_is_rtx);
+
+    if (!repaired_rid_result)
+    {
+        return std::unexpected(repaired_rid_result.error());
+    }
+
+    return {};
+}
 bool codec_encoding_parameters_are_compatible(std::string_view publisher_encoding_parameters, std::string_view subscriber_encoding_parameters)
 {
     if (publisher_encoding_parameters.empty() || subscriber_encoding_parameters.empty())
@@ -730,6 +967,11 @@ void append_media_mappings(media_payload_type_mapping_table& table,
             continue;
         }
 
+        auto identity_result = validate_payload_mapping_identity_compatibility(publisher_media, subscriber_media, publisher_codec, *subscriber_codec);
+        if (!identity_result)
+        {
+            continue;
+        }
         media_payload_type_mapping mapping;
 
         mapping.stream_id = table.stream_id;

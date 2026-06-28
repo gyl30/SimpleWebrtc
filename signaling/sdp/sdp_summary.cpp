@@ -1,11 +1,14 @@
 #include "signaling/sdp/sdp_summary.h"
 
+#include <algorithm>
 #include <charconv>
+#include <cctype>
 #include <expected>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
-#include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -598,6 +601,256 @@ std::expected<void, std::string> parse_media_timing_attributes(media_summary& su
     return {};
 }
 
+std::string lower_ascii_copy(std::string_view value)
+{
+    std::string result;
+
+    result.reserve(value.size());
+
+    for (unsigned char ch : value)
+    {
+        result.push_back(static_cast<char>(std::tolower(ch)));
+    }
+
+    return result;
+}
+
+std::vector<std::string> split_sdp_tokens(std::string_view value)
+{
+    std::vector<std::string> tokens;
+
+    std::size_t offset = 0;
+
+    while (offset < value.size())
+    {
+        while (offset < value.size() && std::isspace(static_cast<unsigned char>(value[offset])) != 0)
+        {
+            offset += 1;
+        }
+
+        if (offset >= value.size())
+        {
+            break;
+        }
+
+        const std::size_t begin = offset;
+
+        while (offset < value.size() && std::isspace(static_cast<unsigned char>(value[offset])) == 0)
+        {
+            offset += 1;
+        }
+
+        tokens.push_back(std::string(value.substr(begin, offset - begin)));
+    }
+
+    return tokens;
+}
+
+std::expected<rid_summary, std::string> parse_rid_summary(std::string_view value)
+{
+    const std::vector<std::string> tokens = split_sdp_tokens(value);
+
+    if (tokens.size() < 2)
+    {
+        return make_error("rid attribute is incomplete");
+    }
+
+    rid_summary result;
+
+    result.id = tokens[0];
+
+    result.direction = lower_ascii_copy(tokens[1]);
+
+    if (result.id.empty())
+    {
+        return make_error("rid id is empty");
+    }
+
+    if (result.direction != "send" && result.direction != "recv")
+    {
+        return make_error("rid direction is invalid");
+    }
+
+    return result;
+}
+
+std::expected<std::vector<rid_summary>, std::string> parse_rid_summaries(const media_description& media)
+{
+    std::vector<rid_summary> rids;
+
+    std::set<std::string> ids;
+
+    for (const auto& attribute : media.attributes)
+    {
+        if (attribute.key != "rid")
+        {
+            continue;
+        }
+
+        auto rid = parse_rid_summary(attribute.value);
+
+        if (!rid)
+        {
+            return std::unexpected(rid.error());
+        }
+
+        if (!ids.insert(rid->id).second)
+        {
+            return make_error("rid id is duplicated");
+        }
+
+        rids.push_back(std::move(*rid));
+    }
+
+    return rids;
+}
+
+std::vector<std::string> parse_simulcast_rid_list(std::string_view value)
+{
+    std::vector<std::string> rids;
+
+    std::string current;
+
+    for (char ch : value)
+    {
+        if (ch == ';' || ch == ',')
+        {
+            if (!current.empty())
+            {
+                rids.push_back(current);
+
+                current.clear();
+            }
+
+            continue;
+        }
+
+        if (ch == '~')
+        {
+            continue;
+        }
+
+        current.push_back(ch);
+    }
+
+    if (!current.empty())
+    {
+        rids.push_back(current);
+    }
+
+    return rids;
+}
+
+std::expected<std::optional<simulcast_summary>, std::string> parse_simulcast_summary(const media_description& media)
+{
+    std::optional<simulcast_summary> result;
+
+    for (const auto& attribute : media.attributes)
+    {
+        if (attribute.key != "simulcast")
+        {
+            continue;
+        }
+
+        if (result.has_value())
+        {
+            return make_error("simulcast attribute is duplicated");
+        }
+
+        const std::vector<std::string> tokens = split_sdp_tokens(attribute.value);
+
+        if (tokens.size() < 2 || (tokens.size() % 2U) != 0)
+        {
+            return make_error("simulcast attribute is invalid");
+        }
+
+        simulcast_summary summary;
+
+        for (std::size_t index = 0; index < tokens.size(); index += 2)
+        {
+            const std::string direction = lower_ascii_copy(tokens[index]);
+
+            const std::vector<std::string> rids = parse_simulcast_rid_list(tokens[index + 1]);
+
+            if (direction == "send")
+            {
+                summary.send_rids.insert(summary.send_rids.end(), rids.begin(), rids.end());
+
+                continue;
+            }
+
+            if (direction == "recv")
+            {
+                summary.recv_rids.insert(summary.recv_rids.end(), rids.begin(), rids.end());
+
+                continue;
+            }
+
+            return make_error("simulcast direction is invalid");
+        }
+
+        result = std::move(summary);
+    }
+
+    return result;
+}
+
+std::expected<msid_summary, std::string> parse_msid_summary(std::string_view value)
+{
+    const std::vector<std::string> tokens = split_sdp_tokens(value);
+
+    if (tokens.empty())
+    {
+        return make_error("msid attribute is empty");
+    }
+
+    if (tokens[0] == "-")
+    {
+        return make_error("msid stream id is invalid");
+    }
+
+    msid_summary result;
+
+    result.stream_id = tokens[0];
+
+    if (tokens.size() >= 2)
+    {
+        result.track_id = tokens[1];
+    }
+
+    return result;
+}
+
+std::expected<std::vector<msid_summary>, std::string> parse_msid_summaries(const media_description& media)
+{
+    std::vector<msid_summary> msids;
+
+    std::set<std::string> values;
+
+    for (const auto& attribute : media.attributes)
+    {
+        if (attribute.key != "msid")
+        {
+            continue;
+        }
+
+        if (!values.insert(attribute.value).second)
+        {
+            return make_error("msid attribute is duplicated");
+        }
+
+        auto msid = parse_msid_summary(attribute.value);
+
+        if (!msid)
+        {
+            return std::unexpected(msid.error());
+        }
+
+        msids.push_back(std::move(*msid));
+    }
+
+    return msids;
+}
 std::expected<media_summary, std::string> parse_media_summary(const session_description& description, const media_description& media)
 {
     media_summary summary;
@@ -688,6 +941,39 @@ std::expected<media_summary, std::string> parse_media_summary(const session_desc
         return make_error(ssrc_group_result.error());
     }
 
+    auto rid_result = parse_rid_summaries(media);
+
+    if (!rid_result)
+    {
+        return std::unexpected(rid_result.error());
+    }
+
+    summary.rids = std::move(*rid_result);
+
+    auto simulcast_result = parse_simulcast_summary(media);
+
+    if (!simulcast_result)
+    {
+        return std::unexpected(simulcast_result.error());
+    }
+
+    summary.simulcast = std::move(*simulcast_result);
+
+    auto msid_result = parse_msid_summaries(media);
+
+    if (!msid_result)
+    {
+        return std::unexpected(msid_result.error());
+    }
+
+    summary.msids = std::move(*msid_result);
+
+    auto identity_result = validate_media_summary_identity(summary);
+
+    if (!identity_result)
+    {
+        return std::unexpected(identity_result.error());
+    }
     return summary;
 }
 
@@ -857,4 +1143,215 @@ std::optional<uint32_t> find_rtx_repair_ssrc(const media_summary& media, uint32_
 }
 
 bool media_ssrc_is_rtx_repair(const media_summary& media, uint32_t ssrc) { return find_rtx_primary_ssrc(media, ssrc).has_value(); }
+
+bool media_has_rtp_header_extension_uri(const media_summary& media, std::string_view uri)
+{
+    if (uri.empty())
+    {
+        return false;
+    }
+
+    for (const auto& extension : media.header_extensions)
+    {
+        if (extension.uri == uri)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool media_has_rtx_codec(const media_summary& media)
+{
+    for (const auto& codec : media.codecs)
+    {
+        if (equals_ignore_case_ascii(codec.name, "rtx"))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool media_has_rid(const media_summary& media, std::string_view rid)
+{
+    if (rid.empty())
+    {
+        return false;
+    }
+
+    for (const auto& current_rid : media.rids)
+    {
+        if (current_rid.id == rid)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::expected<void, std::string> validate_media_summary_identity(const media_summary& media)
+{
+    if (media.mid.empty())
+    {
+        return make_error("media summary mid is empty");
+    }
+
+    std::unordered_set<int32_t> extension_ids;
+    std::unordered_set<std::string> extension_uris;
+
+    for (const auto& extension : media.header_extensions)
+    {
+        if (extension.id <= 0 || extension.id > 255)
+        {
+            return make_error("media summary extmap id is out of range");
+        }
+
+        if (!extension_ids.insert(extension.id).second)
+        {
+            return make_error("media summary extmap id is duplicated");
+        }
+
+        if (!extension_uris.insert(extension.uri).second)
+        {
+            return make_error("media summary extmap uri is duplicated");
+        }
+    }
+
+    const bool has_rid_extension = media_has_rtp_header_extension_uri(media, k_rtp_header_extension_sdes_rtp_stream_id_uri);
+
+    const bool has_repaired_rid_extension = media_has_rtp_header_extension_uri(media, k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri);
+
+    if (has_repaired_rid_extension && !has_rid_extension)
+    {
+        return make_error("media summary repaired-rid extmap requires rid extmap");
+    }
+
+    if (has_repaired_rid_extension && !media_has_rtx_codec(media))
+    {
+        return make_error("media summary repaired-rid extmap requires rtx codec");
+    }
+
+    if (media.simulcast.has_value())
+    {
+        for (const auto& rid : media.simulcast->send_rids)
+        {
+            if (!media_has_rid(media, rid))
+            {
+                return make_error("media summary simulcast send references unknown rid");
+            }
+        }
+
+        for (const auto& rid : media.simulcast->recv_rids)
+        {
+            if (!media_has_rid(media, rid))
+            {
+                return make_error("media summary simulcast recv references unknown rid");
+            }
+        }
+    }
+
+    std::set<std::string> msid_values;
+
+    for (const auto& msid : media.msids)
+    {
+        if (msid.stream_id.empty() || msid.stream_id == "-")
+        {
+            return make_error("media summary msid stream id is invalid");
+        }
+
+        std::string value = msid.stream_id;
+
+        value.push_back('\n');
+
+        value.append(msid.track_id);
+
+        if (!msid_values.insert(value).second)
+        {
+            return make_error("media summary msid is duplicated");
+        }
+    }
+
+    return {};
+}
+
+std::expected<void, std::string> validate_rtp_track_identity(const media_summary& media,
+                                                             const std::optional<std::string>& rid,
+                                                             const std::optional<std::string>& repaired_rid,
+                                                             uint8_t payload_type,
+                                                             uint32_t ssrc)
+{
+    const uint16_t expected_payload_type = static_cast<uint16_t>(payload_type);
+
+    bool payload_type_found = false;
+
+    for (uint16_t media_payload_type : media.payload_types)
+    {
+        if (media_payload_type == expected_payload_type)
+        {
+            payload_type_found = true;
+
+            break;
+        }
+    }
+
+    if (!payload_type_found)
+    {
+        for (const auto& codec : media.codecs)
+        {
+            if (codec.payload_type == expected_payload_type)
+            {
+                payload_type_found = true;
+
+                break;
+            }
+        }
+    }
+
+    if (!payload_type_found)
+    {
+        return make_error("rtp track payload type is not in media summary");
+    }
+
+    if (rid.has_value())
+    {
+        if (!media_has_rtp_header_extension_uri(media, k_rtp_header_extension_sdes_rtp_stream_id_uri))
+        {
+            return make_error("rtp track rid is present but rid extmap is missing");
+        }
+
+        if (!media_has_rid(media, *rid))
+        {
+            return make_error("rtp track rid was not offered");
+        }
+    }
+
+    if (repaired_rid.has_value())
+    {
+        if (!media_has_rtp_header_extension_uri(media, k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri))
+        {
+            return make_error("rtp track repaired-rid is present but repaired-rid extmap is missing");
+        }
+
+        if (!media_has_rtx_codec(media))
+        {
+            return make_error("rtp track repaired-rid is present but rtx codec is missing");
+        }
+
+        if (!media_has_rid(media, *repaired_rid))
+        {
+            return make_error("rtp track repaired-rid was not offered as rid");
+        }
+    }
+
+    if (ssrc != 0 && media_ssrc_is_rtx_repair(media, ssrc) && !media_has_rtx_codec(media))
+    {
+        return make_error("rtp track repair ssrc is present but rtx codec is missing");
+    }
+
+    return {};
+}
 }    // namespace webrtc::sdp

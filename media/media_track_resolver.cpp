@@ -344,6 +344,38 @@ void fill_resolution_from_values(media_track_resolution& resolution, const rtp_h
 
     resolution.voice_activity = values.voice_activity;
 }
+
+std::optional<media_track_resolution> make_identity_rejected_resolution(media_track_resolution resolution, std::string_view error)
+{
+    resolution.resolved = false;
+
+    resolution.newly_bound = false;
+
+    resolution.state = media_track_resolution_state::unresolved;
+
+    resolution.error = std::string(error);
+
+    return resolution;
+}
+
+std::optional<media_track_resolution> validate_resolved_track_identity(const sdp::media_summary& media,
+                                                                       const rtp_header_extension_values& values,
+                                                                       const rtp_packet_header& header,
+                                                                       media_track_resolution resolution)
+{
+    auto identity_result = sdp::validate_rtp_track_identity(media, values.rid, values.repaired_rid, header.payload_type, header.ssrc);
+
+    if (identity_result)
+    {
+        return std::nullopt;
+    }
+
+    std::string message = "media track identity rejected: ";
+
+    message.append(identity_result.error());
+
+    return make_identity_rejected_resolution(std::move(resolution), message);
+}
 void fill_binding_from_values(media_track_resolver::media_track_binding& binding, const rtp_header_extension_values& values)
 {
     if (values.rid.has_value())
@@ -489,7 +521,14 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
                     updated_binding.packet_count += 1;
 
                     remember_binding_locked(updated_binding);
+                    auto identity_rejection = validate_resolved_track_identity(*media, values, *header, resolution);
 
+                    if (identity_rejection.has_value())
+                    {
+                        erase_binding_by_peer_ssrc_locked(remote_endpoint, header->ssrc);
+
+                        return *identity_rejection;
+                    }
                     return resolution;
                 }
             }
@@ -624,6 +663,17 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
     {
         const rtp_header_extension_values values = parse_optional_extension_values(plain_packet, *header, *single_media);
 
+        fill_resolution_from_media(resolution, *single_media);
+
+        fill_resolution_from_values(resolution, values);
+
+        auto identity_rejection = validate_resolved_track_identity(*single_media, values, *header, resolution);
+
+        if (identity_rejection.has_value())
+        {
+            return *identity_rejection;
+        }
+
         media_track_binding binding;
 
         binding.remote_endpoint = std::string(remote_endpoint);
@@ -655,10 +705,6 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
         resolution.resolved = true;
         resolution.newly_bound = true;
-
-        fill_resolution_from_media(resolution, *single_media);
-
-        fill_resolution_from_values(resolution, values);
 
         WEBRTC_LOG_INFO(
             "media track bound by mid remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={} rtx={} rtx_primary_ssrc={} "
