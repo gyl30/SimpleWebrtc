@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <optional>
 
 #include <boost/beast/http.hpp>
 
@@ -222,8 +223,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         return json_error_response(request, 404, "publisher not found");
     }
 
-    auto generated_answer = answer_factory_->build_whep_answer(stream_id, *offer_summary);
-
+    auto generated_answer = answer_factory_->build_whep_answer(stream_id, *offer_summary, publisher->remote_offer_summary());
     if (!generated_answer)
     {
         WEBRTC_LOG_WARN("WHEP build SDP answer failed stream={} error={}", stream_id, generated_answer.error());

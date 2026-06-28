@@ -286,7 +286,8 @@ bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
            snapshot.keyframe_request_state_count == 0 && snapshot.dtls_peer_count == 0 && snapshot.srtp_peer_count == 0 &&
            snapshot.media_router_peer_count == 0 && snapshot.media_router_stream_count == 0 && snapshot.media_router_active_publisher_count == 0 &&
            snapshot.media_router_active_subscriber_count == 0 && snapshot.track_binding_count == 0 && snapshot.ssrc_mapping_count == 0 &&
-           snapshot.rtcp_report_source_count == 0 && snapshot.rtp_cache_packet_count == 0 && snapshot.rtx_retransmission_index_count == 0;
+           snapshot.rtcp_report_source_count == 0 && snapshot.rtp_cache_packet_count == 0 && snapshot.rtx_retransmission_index_count == 0 &&
+           snapshot.nack_retransmit_throttle_count == 0;
 }
 
 uint16_t read_network_u16(std::span<const uint8_t> data, std::size_t offset)
@@ -2173,6 +2174,10 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
     {
         snapshot.rtx_retransmission_index_count = to_debug_count(rtx_retransmission_index_->size());
     }
+    if (nack_retransmit_throttle_ != nullptr)
+    {
+        snapshot.nack_retransmit_throttle_count = to_debug_count(nack_retransmit_throttle_->size());
+    }
     if (snapshot.endpoint_session_index_count != snapshot.endpoint_reverse_index_count)
     {
         add_lifecycle_inconsistency(snapshot, "endpoint session index count does not match reverse index count");
@@ -2279,6 +2284,11 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot, "rtx retransmission index remains count=" + std::to_string(snapshot.rtx_retransmission_index_count));
         }
+
+        if (snapshot.nack_retransmit_throttle_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "nack retransmit throttle remains count=" + std::to_string(snapshot.nack_retransmit_throttle_count));
+        }
     }
     snapshot.idle_clean = snapshot.registry_session_count == 0 && lifecycle_runtime_state_is_empty(snapshot);
 
@@ -2317,7 +2327,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
             "endpoints={} endpoint_index={} endpoint_reverse_index={} dtls_peers={} srtp_peers={} media_router_peers={} media_router_streams={} "
             "track_bindings={} "
             "ssrc_mappings={} payload_type_mappings={} keyframe_states={} rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} "
-            "rtx_retransmission_index={} idle_clean={} consistent={} inconsistencies={}",
+            "rtx_retransmission_index={} nack_retransmit_throttle={} idle_clean={} consistent={} inconsistencies={}",
             reason,
             stream_id,
             session_id,
@@ -2339,6 +2349,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
             snapshot.rtcp_report_stats_source_count,
             snapshot.rtp_cache_packet_count,
             snapshot.rtx_retransmission_index_count,
+            snapshot.nack_retransmit_throttle_count,
             snapshot.idle_clean ? 1 : 0,
             snapshot.consistent ? 1 : 0,
             snapshot.inconsistency_count);
@@ -2350,7 +2361,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
         "lifecycle snapshot clean reason={} stream={} session={} registry_sessions={} registry_publishers={} registry_subscribers={} endpoints={} "
         "dtls_peers={} srtp_peers={} media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} payload_type_mappings={} "
         "keyframe_states={} "
-        "rtcp_report_sources={} rtp_cache_packets={} rtx_retransmission_index={} idle_clean={} consistent={}",
+        "rtcp_report_sources={} rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={}  idle_clean={} consistent={}",
         reason,
         stream_id,
         session_id,
@@ -2369,6 +2380,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
         snapshot.rtcp_report_source_count,
         snapshot.rtp_cache_packet_count,
         snapshot.rtx_retransmission_index_count,
+        snapshot.nack_retransmit_throttle_count,
         snapshot.idle_clean ? 1 : 0,
         snapshot.consistent ? 1 : 0);
 }
@@ -2526,7 +2538,8 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
         "lifecycle convergence residual generation={} delay_ms={} reason={} stream={} session={} endpoints={} endpoint_index={} "
         "endpoint_reverse_index={} endpoint_last_seen={} candidate_pairs={} selected_candidate_pairs={} dtls_peers={} srtp_peers={} "
         "media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} payload_type_mappings={} keyframe_states={} "
-        "rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} retired_endpoints={} retired_ice_credentials={} idle_clean={} "
+        "rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={} "
+        "retired_endpoints={} retired_ice_credentials={} idle_clean={} "
         "consistent={} inconsistencies={}",
         generation,
         delay_milliseconds,
@@ -2550,6 +2563,8 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
         snapshot.rtcp_report_source_count,
         snapshot.rtcp_report_stats_source_count,
         snapshot.rtp_cache_packet_count,
+        snapshot.rtx_retransmission_index_count,
+        snapshot.nack_retransmit_throttle_count,
         retired_endpoint_count,
         retired_ice_credential_count,
         snapshot.idle_clean ? 1 : 0,

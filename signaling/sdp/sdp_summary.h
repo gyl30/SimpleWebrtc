@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <optional>
 #include <vector>
 
 #include "signaling/sdp/sdp_types.h"

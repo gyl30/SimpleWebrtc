@@ -711,17 +711,19 @@ codec_negotiation_result negotiate_codecs(const media_summary& subscriber_media,
             continue;
         }
 
-        if (!is_supported_codec(subscriber_media, subscriber_codec))
+        std::optional<codec_info> normalized_codec = normalize_supported_codec(subscriber_media, subscriber_codec);
+
+        if (!normalized_codec.has_value())
         {
             continue;
         }
 
-        if (!has_compatible_publisher_codec(publisher_media, subscriber_codec))
+        if (!has_compatible_publisher_codec(publisher_media, *normalized_codec))
         {
             continue;
         }
 
-        selected_codecs.push_back(subscriber_codec);
+        selected_codecs.push_back(std::move(*normalized_codec));
     }
 
     if (selected_codecs.empty())
