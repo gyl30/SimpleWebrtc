@@ -219,6 +219,7 @@ set(WEBRTC_SOURCES
     media/rtcp_feedback_router.cpp
     media/rtp_packet_cache.cpp
     media/rtx_sequence_number_allocator.cpp
+    media/rtx_retransmission_index.cpp
     media/media_router_stats_json.cpp
     media/media_router_stats_prometheus.cpp
     ice/ice_udp_server.cpp

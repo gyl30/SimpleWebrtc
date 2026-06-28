@@ -28,6 +28,7 @@
 #include "media/rtcp_report_service.h"
 #include "media/rtp_packet_cache.h"
 #include "media/rtx_sequence_number_allocator.h"
+#include "media/rtx_retransmission_index.h"
 #include "session/stream_registry.h"
 #include "srtp/srtp_transport.h"
 
@@ -280,6 +281,27 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     std::optional<media_ssrc_mapping> get_or_create_rtx_ssrc_mapping(const media_ssrc_mapping& primary_mapping,
                                                                      const media_payload_type_mapping& rtx_payload_type_mapping);
+    struct nack_retransmit_sequence
+    {
+        uint16_t feedback_sequence_number = 0;
+        uint16_t cache_sequence_number = 0;
+        bool rtx_feedback = false;
+    };
+
+    struct nack_retransmit_resolution
+    {
+        std::optional<media_ssrc_mapping> ssrc_mapping;
+
+        uint32_t feedback_media_ssrc = 0;
+        uint32_t cache_media_ssrc = 0;
+
+        bool primary_video = false;
+        bool rtx_feedback = false;
+
+        std::size_t rtx_sequence_index_miss_count = 0;
+
+        std::vector<nack_retransmit_sequence> sequences;
+    };
     enum class retransmit_plain_packet_kind
     {
         primary,
@@ -302,6 +324,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::optional<retransmit_plain_packet_result> make_retransmit_plain_packet(const rtcp_feedback_route_event& event,
                                                                                const rtp_packet_cache_entry& cached_packet,
                                                                                const std::optional<media_ssrc_mapping>& ssrc_mapping);
+
+    [[nodiscard]]
+    std::optional<nack_retransmit_resolution> resolve_nack_retransmit_resolution(const rtcp_feedback_route_event& event,
+                                                                                 uint32_t feedback_media_ssrc,
+                                                                                 const std::vector<uint16_t>& feedback_sequence_numbers) const;
     void cache_inbound_rtp_packet(const srtp_packet_process_result& packet,
                                   const media_route_result& route,
                                   const std::optional<media_track_resolution>& track_resolution);
@@ -522,6 +549,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::shared_ptr<rtp_packet_cache> rtp_packet_cache_;
 
     std::shared_ptr<rtx_sequence_number_allocator> rtx_sequence_allocator_;
+
+    std::shared_ptr<rtx_retransmission_index> rtx_retransmission_index_;
 
     udp::endpoint remote_endpoint_;
 

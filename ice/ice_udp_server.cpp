@@ -1489,6 +1489,12 @@ void ice_udp_server::stop()
     {
         rtx_sequence_allocator_->clear();
     }
+
+    if (rtx_retransmission_index_ != nullptr)
+    {
+        rtx_retransmission_index_->clear();
+    }
+
     if (media_router_ != nullptr)
     {
         media_router_->clear();
@@ -1559,6 +1565,11 @@ void ice_udp_server::forget_session(std::string_view session_id)
     if (rtx_sequence_allocator_ != nullptr)
     {
         rtx_sequence_allocator_->forget_session(session_id);
+    }
+
+    if (rtx_retransmission_index_ != nullptr)
+    {
+        rtx_retransmission_index_->forget_session(session_id);
     }
 
     if (endpoint_removed)
@@ -2532,7 +2543,8 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
 
 ice_udp_server_result ice_udp_server::init_dtls_transport()
 {
-    if (dtls_transport_ != nullptr && srtp_transport_ != nullptr && rtp_packet_cache_ != nullptr && rtx_sequence_allocator_ != nullptr)
+    if (dtls_transport_ != nullptr && srtp_transport_ != nullptr && rtp_packet_cache_ != nullptr && rtx_sequence_allocator_ != nullptr &&
+        rtx_retransmission_index_ != nullptr)
     {
         return {};
     }
@@ -2578,6 +2590,8 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
     rtp_packet_cache_ = std::make_shared<rtp_packet_cache>(cache_config);
 
     rtx_sequence_allocator_ = std::make_shared<rtx_sequence_number_allocator>();
+
+    rtx_retransmission_index_ = std::make_shared<rtx_retransmission_index>();
 
     WEBRTC_LOG_INFO("dtls transport initialized handshake_timeout_ms={}", transport_config.handshake_timeout.count());
 
@@ -5551,6 +5565,17 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
             rtx_packet = std::move(rewrite_result->packet);
         }
     }
+    if (rtx_retransmission_index_ != nullptr)
+    {
+        rtx_retransmission_index_->remember(primary_ssrc_mapping.stream_id,
+                                            primary_ssrc_mapping.subscriber_session_id,
+                                            rtx_ssrc_mapping->subscriber_ssrc,
+                                            rtx_sequence_number,
+                                            primary_ssrc_mapping.publisher_ssrc,
+                                            primary_ssrc_mapping.subscriber_ssrc,
+                                            cached_packet.sequence_number,
+                                            now_milliseconds());
+    }
 
     WEBRTC_LOG_DEBUG(
         "rtx retransmit packet built stream={} subscriber={} primary_ssrc={} subscriber_primary_ssrc={} rtx_ssrc={} primary_sequence={} "
@@ -6037,6 +6062,200 @@ void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event&
     }
 }
 
+std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolve_nack_retransmit_resolution(
+    const rtcp_feedback_route_event& event, uint32_t feedback_media_ssrc, const std::vector<uint16_t>& feedback_sequence_numbers) const
+{
+    if (ssrc_mapper_ == nullptr)
+    {
+        WEBRTC_LOG_WARN("rtp nack retransmit skipped ssrc mapper is null stream={} subscriber={} feedback_ssrc={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        feedback_media_ssrc);
+
+        return std::nullopt;
+    }
+
+    std::optional<media_ssrc_mapping> feedback_mapping = ssrc_mapper_->find_by_subscriber_ssrc(event.source.session_id, feedback_media_ssrc);
+
+    if (!feedback_mapping.has_value())
+    {
+        WEBRTC_LOG_WARN("rtp nack retransmit skipped mapping not found stream={} subscriber={} feedback_ssrc={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        feedback_media_ssrc);
+
+        return std::nullopt;
+    }
+
+    nack_retransmit_resolution resolution;
+
+    resolution.feedback_media_ssrc = feedback_media_ssrc;
+
+    if (media_ssrc_mapping_is_primary_video(*feedback_mapping))
+    {
+        resolution.ssrc_mapping = feedback_mapping;
+
+        resolution.cache_media_ssrc = feedback_mapping->publisher_ssrc;
+
+        resolution.primary_video = true;
+        resolution.rtx_feedback = false;
+
+        resolution.sequences.reserve(feedback_sequence_numbers.size());
+
+        for (uint16_t sequence_number : feedback_sequence_numbers)
+        {
+            nack_retransmit_sequence sequence;
+
+            sequence.feedback_sequence_number = sequence_number;
+
+            sequence.cache_sequence_number = sequence_number;
+
+            sequence.rtx_feedback = false;
+
+            resolution.sequences.push_back(sequence);
+        }
+
+        return resolution;
+    }
+
+    if (!media_ssrc_mapping_is_rtx(*feedback_mapping))
+    {
+        WEBRTC_LOG_WARN(
+            "rtp nack retransmit skipped non primary video mapping stream={} subscriber={} feedback_ssrc={} publisher_ssrc={} subscriber_ssrc={} "
+            "kind={} rtx={}",
+            event.source.stream_id,
+            event.source.remote_endpoint,
+            feedback_media_ssrc,
+            feedback_mapping->publisher_ssrc,
+            feedback_mapping->subscriber_ssrc,
+            feedback_mapping->kind,
+            media_ssrc_mapping_is_rtx(*feedback_mapping) ? 1 : 0);
+
+        return std::nullopt;
+    }
+
+    if (rtx_retransmission_index_ == nullptr)
+    {
+        WEBRTC_LOG_WARN("rtp nack retransmit skipped rtx index unavailable stream={} subscriber={} feedback_ssrc={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        feedback_media_ssrc);
+
+        return std::nullopt;
+    }
+
+    if (feedback_mapping->publisher_rtx_primary_ssrc == 0)
+    {
+        WEBRTC_LOG_WARN("rtp nack retransmit skipped rtx primary ssrc missing stream={} subscriber={} feedback_ssrc={} rtx_publisher_ssrc={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        feedback_media_ssrc,
+                        feedback_mapping->publisher_ssrc);
+
+        return std::nullopt;
+    }
+
+    std::optional<media_ssrc_mapping> primary_mapping = ssrc_mapper_->find_by_publisher_ssrc(feedback_mapping->stream_id,
+                                                                                             feedback_mapping->publisher_session_id,
+                                                                                             feedback_mapping->subscriber_session_id,
+                                                                                             feedback_mapping->publisher_mid,
+                                                                                             feedback_mapping->publisher_rtx_primary_ssrc);
+
+    if (!primary_mapping.has_value())
+    {
+        WEBRTC_LOG_WARN(
+            "rtp nack retransmit skipped rtx primary mapping not found stream={} subscriber={} feedback_ssrc={} publisher_primary_ssrc={}",
+            event.source.stream_id,
+            event.source.remote_endpoint,
+            feedback_media_ssrc,
+            feedback_mapping->publisher_rtx_primary_ssrc);
+
+        return std::nullopt;
+    }
+
+    if (!media_ssrc_mapping_is_primary_video(*primary_mapping))
+    {
+        WEBRTC_LOG_WARN(
+            "rtp nack retransmit skipped rtx primary mapping is not primary video stream={} subscriber={} feedback_ssrc={} publisher_primary_ssrc={} "
+            "kind={} rtx={}",
+            event.source.stream_id,
+            event.source.remote_endpoint,
+            feedback_media_ssrc,
+            primary_mapping->publisher_ssrc,
+            primary_mapping->kind,
+            media_ssrc_mapping_is_rtx(*primary_mapping) ? 1 : 0);
+
+        return std::nullopt;
+    }
+
+    resolution.ssrc_mapping = primary_mapping;
+
+    resolution.cache_media_ssrc = primary_mapping->publisher_ssrc;
+
+    resolution.primary_video = true;
+    resolution.rtx_feedback = true;
+
+    resolution.sequences.reserve(feedback_sequence_numbers.size());
+
+    for (uint16_t rtx_sequence_number : feedback_sequence_numbers)
+    {
+        const std::optional<rtx_retransmission_mapping> indexed =
+            rtx_retransmission_index_->find(event.source.stream_id, event.source.session_id, feedback_media_ssrc, rtx_sequence_number);
+
+        if (!indexed.has_value())
+        {
+            resolution.rtx_sequence_index_miss_count += 1;
+
+            WEBRTC_LOG_DEBUG("rtp nack retransmit rtx sequence mapping not found stream={} subscriber={} rtx_ssrc={} rtx_sequence={}",
+                             event.source.stream_id,
+                             event.source.remote_endpoint,
+                             feedback_media_ssrc,
+                             rtx_sequence_number);
+
+            continue;
+        }
+
+        if (indexed->publisher_primary_ssrc != primary_mapping->publisher_ssrc)
+        {
+            resolution.rtx_sequence_index_miss_count += 1;
+
+            WEBRTC_LOG_WARN(
+                "rtp nack retransmit rtx sequence mapping primary ssrc mismatch stream={} subscriber={} rtx_ssrc={} rtx_sequence={} "
+                "indexed_primary_ssrc={} mapping_primary_ssrc={}",
+                event.source.stream_id,
+                event.source.remote_endpoint,
+                feedback_media_ssrc,
+                rtx_sequence_number,
+                indexed->publisher_primary_ssrc,
+                primary_mapping->publisher_ssrc);
+
+            continue;
+        }
+
+        nack_retransmit_sequence sequence;
+
+        sequence.feedback_sequence_number = rtx_sequence_number;
+
+        sequence.cache_sequence_number = indexed->primary_sequence_number;
+
+        sequence.rtx_feedback = true;
+
+        resolution.sequences.push_back(sequence);
+    }
+
+    WEBRTC_LOG_DEBUG(
+        "rtp nack retransmit rtx feedback resolved stream={} subscriber={} rtx_ssrc={} primary_ssrc={} requested={} mapped={} index_miss={}",
+        event.source.stream_id,
+        event.source.remote_endpoint,
+        feedback_media_ssrc,
+        resolution.cache_media_ssrc,
+        feedback_sequence_numbers.size(),
+        resolution.sequences.size(),
+        resolution.rtx_sequence_index_miss_count);
+
+    return resolution;
+}
+
 void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_event& event)
 {
     if (event.source.role != media_peer_role::subscriber)
@@ -6063,47 +6282,6 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         return;
     }
 
-    if (ssrc_mapper_ == nullptr)
-    {
-        WEBRTC_LOG_WARN("rtp nack retransmit skipped ssrc mapper is null stream={} subscriber={} feedback_ssrc={}",
-                        event.source.stream_id,
-                        event.source.remote_endpoint,
-                        feedback_media_ssrc);
-
-        return;
-    }
-
-    std::optional<media_ssrc_mapping> ssrc_mapping = ssrc_mapper_->find_by_subscriber_ssrc(event.source.session_id, feedback_media_ssrc);
-
-    if (!ssrc_mapping.has_value())
-    {
-        WEBRTC_LOG_WARN("rtp nack retransmit skipped mapping not found stream={} subscriber={} feedback_ssrc={}",
-                        event.source.stream_id,
-                        event.source.remote_endpoint,
-                        feedback_media_ssrc);
-
-        return;
-    }
-
-    const bool nack_mapping_is_primary_video = media_ssrc_mapping_is_primary_video(*ssrc_mapping);
-
-    if (!nack_mapping_is_primary_video)
-    {
-        WEBRTC_LOG_WARN(
-            "rtp nack retransmit skipped non primary video mapping stream={} subscriber={} feedback_ssrc={} publisher_ssrc={} subscriber_ssrc={} "
-            "kind={} rtx={}",
-            event.source.stream_id,
-            event.source.remote_endpoint,
-            feedback_media_ssrc,
-            ssrc_mapping->publisher_ssrc,
-            ssrc_mapping->subscriber_ssrc,
-            ssrc_mapping->kind,
-            media_ssrc_mapping_is_rtx(*ssrc_mapping) ? 1 : 0);
-
-        return;
-    }
-
-    const uint32_t cache_media_ssrc = ssrc_mapping->publisher_ssrc;
     auto target_endpoint = find_remote_endpoint(event.source.remote_endpoint);
 
     if (!target_endpoint)
@@ -6117,6 +6295,20 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
     const nack_sequence_expansion nack_sequences = expand_nack_sequences(event.nack_items, k_max_nack_retransmit_sequences);
 
     const std::vector<uint16_t>& sequence_numbers = nack_sequences.sequence_numbers;
+
+    std::optional<nack_retransmit_resolution> retransmit_resolution =
+        resolve_nack_retransmit_resolution(event, feedback_media_ssrc, sequence_numbers);
+
+    if (!retransmit_resolution.has_value())
+    {
+        return;
+    }
+
+    const std::optional<media_ssrc_mapping>& ssrc_mapping = retransmit_resolution->ssrc_mapping;
+
+    const uint32_t cache_media_ssrc = retransmit_resolution->cache_media_ssrc;
+
+    const bool nack_mapping_is_primary_video = retransmit_resolution->primary_video;
 
     if (nack_sequences.truncated || nack_sequences.duplicate_count != 0)
     {
@@ -6133,17 +6325,18 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
     }
 
     std::size_t hit_count = 0;
-    std::size_t miss_count = 0;
+    std::size_t miss_count = retransmit_resolution->rtx_sequence_index_miss_count;
     std::size_t sent_count = 0;
     std::size_t ignored_count = 0;
     std::size_t failed_count = 0;
     std::size_t rtx_sent_count = 0;
     std::size_t primary_fallback_sent_count = 0;
 
-    for (uint16_t sequence_number : sequence_numbers)
+    for (const nack_retransmit_sequence& requested_sequence : retransmit_resolution->sequences)
     {
-        auto cached = rtp_packet_cache_->find(event.source.stream_id, cache_media_ssrc, sequence_number);
+        const uint16_t sequence_number = requested_sequence.cache_sequence_number;
 
+        auto cached = rtp_packet_cache_->find(event.source.stream_id, cache_media_ssrc, sequence_number);
         if (!cached)
         {
             miss_count += 1;
@@ -6231,13 +6424,17 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
             primary_fallback_sent_count += 1;
         }
 
-        WEBRTC_LOG_DEBUG("rtp nack retransmit send stream={} subscriber={} feedback_ssrc={} cache_ssrc={} sequence={} mode={}",
-                         event.source.stream_id,
-                         event.source.remote_endpoint,
-                         feedback_media_ssrc,
-                         cache_media_ssrc,
-                         sequence_number,
-                         retransmit_is_rtx ? "rtx" : "primary");
+        WEBRTC_LOG_DEBUG(
+            "rtp nack retransmit send stream={} subscriber={} feedback_ssrc={} cache_ssrc={} feedback_sequence={} cache_sequence={} rtx_feedback={} "
+            "mode={}",
+            event.source.stream_id,
+            event.source.remote_endpoint,
+            feedback_media_ssrc,
+            cache_media_ssrc,
+            requested_sequence.feedback_sequence_number,
+            requested_sequence.cache_sequence_number,
+            requested_sequence.rtx_feedback ? 1 : 0,
+            retransmit_is_rtx ? "rtx" : "primary");
     }
 
     const bool has_hard_error = failed_count != 0 || ignored_count != 0 || nack_sequences.truncated;
@@ -6247,20 +6444,23 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
     if (has_hard_error)
     {
         WEBRTC_LOG_WARN(
-            "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} nack_items={} raw_requested={} "
-            "requested={} max={} "
-            "duplicate={} truncated={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
+            "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} rtx_feedback={} nack_items={} "
+            "raw_requested={} requested={} cache_requested={} max={} "
+            "duplicate={} truncated={} rtx_index_miss={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
             event.source.stream_id,
             event.source.remote_endpoint,
             feedback_media_ssrc,
             cache_media_ssrc,
             nack_mapping_is_primary_video ? 1 : 0,
+            retransmit_resolution->rtx_feedback ? 1 : 0,
             event.nack_items.size(),
             nack_sequences.raw_sequence_count,
             sequence_numbers.size(),
+            retransmit_resolution->sequences.size(),
             k_max_nack_retransmit_sequences,
             nack_sequences.duplicate_count,
             nack_sequences.truncated ? 1 : 0,
+            retransmit_resolution->rtx_sequence_index_miss_count,
             hit_count,
             miss_count,
             sent_count,
@@ -6273,20 +6473,23 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
     if (has_soft_event)
     {
         WEBRTC_LOG_INFO(
-            "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} nack_items={} raw_requested={} "
-            "requested={} max={} "
-            "duplicate={} truncated={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
+            "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} rtx_feedback={} nack_items={} "
+            "raw_requested={} requested={} cache_requested={} max={} "
+            "duplicate={} truncated={} rtx_index_miss={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
             event.source.stream_id,
             event.source.remote_endpoint,
             feedback_media_ssrc,
             cache_media_ssrc,
             nack_mapping_is_primary_video ? 1 : 0,
+            retransmit_resolution->rtx_feedback ? 1 : 0,
             event.nack_items.size(),
             nack_sequences.raw_sequence_count,
             sequence_numbers.size(),
+            retransmit_resolution->sequences.size(),
             k_max_nack_retransmit_sequences,
             nack_sequences.duplicate_count,
             nack_sequences.truncated ? 1 : 0,
+            retransmit_resolution->rtx_sequence_index_miss_count,
             hit_count,
             miss_count,
             sent_count,
@@ -6297,20 +6500,23 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
     }
 
     WEBRTC_LOG_DEBUG(
-        "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} nack_items={} raw_requested={} "
-        "requested={} max={} "
-        "duplicate={} truncated={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
+        "rtp nack retransmit summary stream={} subscriber={} feedback_ssrc={} cache_ssrc={} primary_video={} rtx_feedback={} nack_items={} "
+        "raw_requested={} requested={} cache_requested={} max={} "
+        "duplicate={} truncated={} rtx_index_miss={} hit={} miss={} sent={} rtx_sent={} primary_fallback_sent={} ignored={} failed={}",
         event.source.stream_id,
         event.source.remote_endpoint,
         feedback_media_ssrc,
         cache_media_ssrc,
         nack_mapping_is_primary_video ? 1 : 0,
+        retransmit_resolution->rtx_feedback ? 1 : 0,
         event.nack_items.size(),
         nack_sequences.raw_sequence_count,
         sequence_numbers.size(),
+        retransmit_resolution->sequences.size(),
         k_max_nack_retransmit_sequences,
         nack_sequences.duplicate_count,
         nack_sequences.truncated ? 1 : 0,
+        retransmit_resolution->rtx_sequence_index_miss_count,
         hit_count,
         miss_count,
         sent_count,
@@ -6358,6 +6564,11 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
     if (rtx_sequence_allocator_ != nullptr)
     {
         rtx_sequence_allocator_->forget_stream(stream_id);
+    }
+
+    if (rtx_retransmission_index_ != nullptr)
+    {
+        rtx_retransmission_index_->forget_stream(stream_id);
     }
 
     std::size_t media_router_stream_count_before = 0;
