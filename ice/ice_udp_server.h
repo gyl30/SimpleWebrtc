@@ -30,6 +30,7 @@
 #include "media/rtp_packet_cache.h"
 #include "media/nack_retransmit_throttle.h"
 #include "media/rtx_sequence_number_allocator.h"
+#include "media/media_identity_authority.h"
 #include "media/rtx_retransmission_index.h"
 #include "session/stream_registry.h"
 #include "srtp/srtp_transport.h"
@@ -239,6 +240,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     std::optional<media_track_resolution> resolve_media_track(const media_peer_info& peer, const srtp_packet_process_result& packet);
+
+    [[nodiscard]]
+    bool publisher_rtp_identity_is_allowed(const media_route_result& route,
+                                           const srtp_packet_process_result& packet,
+                                           const std::optional<media_track_resolution>& track_resolution) const;
+
+    [[nodiscard]]
+    bool remember_media_identity_forward_mapping(const media_ssrc_mapping& ssrc_mapping, const media_payload_type_mapping& payload_type_mapping);
 
     void observe_inbound_rtp_stats(const media_peer_info& peer,
                                    const srtp_packet_process_result& packet,
@@ -560,6 +569,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::shared_ptr<media_track_resolver> track_resolver_;
 
     std::shared_ptr<media_ssrc_mapper> ssrc_mapper_;
+
+    std::shared_ptr<media_identity_authority> identity_authority_;
 
     std::shared_ptr<rtcp_report_service> rtcp_report_service_;
 

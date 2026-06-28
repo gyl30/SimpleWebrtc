@@ -226,6 +226,7 @@ set(WEBRTC_SOURCES
     media/nack_retransmit_throttle.cpp
     media/media_router_stats_json.cpp
     media/media_router_stats_prometheus.cpp
+    media/media_identity_authority.cpp
     ice/ice_udp_server.cpp
     signaling/webrtc_answer_factory.cpp)
 

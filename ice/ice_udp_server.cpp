@@ -1388,6 +1388,7 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       media_router_(std::move(media_router)),
       track_resolver_(std::make_shared<media_track_resolver>()),
       ssrc_mapper_(std::make_shared<media_ssrc_mapper>()),
+      identity_authority_(std::make_shared<media_identity_authority>()),
       rtcp_report_service_(make_rtcp_report_service_from_env()),
       rtcp_transport_cc_feedback_service_(std::make_shared<rtcp_transport_cc_feedback_service>()),
       endpoint_idle_timeout_milliseconds_(make_endpoint_idle_timeout_milliseconds_from_env()),
@@ -1420,6 +1421,10 @@ ice_udp_server_result ice_udp_server::start()
     if (ssrc_mapper_ == nullptr)
     {
         ssrc_mapper_ = std::make_shared<media_ssrc_mapper>();
+    }
+    if (identity_authority_ == nullptr)
+    {
+        identity_authority_ = std::make_shared<media_identity_authority>();
     }
 
     if (rtcp_report_service_ == nullptr)
@@ -1662,6 +1667,10 @@ void ice_udp_server::forget_session(std::string_view session_id)
     if (ssrc_mapper_ != nullptr)
     {
         ssrc_mapper_->forget_session(session_id);
+    }
+    if (identity_authority_ != nullptr)
+    {
+        identity_authority_->forget_session(session_id);
     }
 
     if (rtcp_report_service_ != nullptr)
@@ -4482,6 +4491,10 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
                      route.source.session_id,
                      route.target_endpoints.size());
 
+    if (!publisher_rtp_identity_is_allowed(route, *result, track_resolution))
+    {
+        return;
+    }
     cache_inbound_rtp_packet(*result, route, track_resolution);
 
     if (result->kind == srtp_packet_kind::rtcp && result->rtcp_has_bye)
@@ -4568,6 +4581,31 @@ std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const 
         return *resolution;
     }
 
+    if (identity_authority_ != nullptr)
+    {
+        auto identity_result = identity_authority_->remember_track_resolution(*resolution, resolution->rtx);
+
+        if (!identity_result)
+        {
+            WEBRTC_LOG_WARN("media identity track rejected remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={} rtx={} error={}",
+                            peer.remote_endpoint,
+                            peer.stream_id,
+                            peer.session_id,
+                            resolution->mid,
+                            resolution->kind,
+                            resolution->ssrc,
+                            static_cast<unsigned int>(resolution->payload_type),
+                            resolution->rtx ? 1 : 0,
+                            identity_result.error());
+
+            resolution->resolved = false;
+            resolution->newly_bound = false;
+            resolution->state = media_track_resolution_state::unresolved;
+            resolution->error = identity_result.error();
+
+            return *resolution;
+        }
+    }
     if (resolution->newly_bound)
     {
         WEBRTC_LOG_INFO(
@@ -4585,6 +4623,69 @@ std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const 
     }
 
     return *resolution;
+}
+
+bool ice_udp_server::publisher_rtp_identity_is_allowed(const media_route_result& route,
+                                                       const srtp_packet_process_result& packet,
+                                                       const std::optional<media_track_resolution>& track_resolution) const
+{
+    if (packet.kind != srtp_packet_kind::rtp)
+    {
+        return true;
+    }
+
+    if (route.source.role != media_peer_role::publisher)
+    {
+        return true;
+    }
+
+    if (track_resolution.has_value() && track_resolution->resolved)
+    {
+        return true;
+    }
+
+    WEBRTC_LOG_DEBUG("publisher rtp dropped unresolved identity stream={} session={} remote={} ssrc={} sequence={} payload_type={}",
+                     route.source.stream_id,
+                     route.source.session_id,
+                     route.source.remote_endpoint,
+                     packet.ssrc,
+                     packet.sequence_number,
+                     static_cast<unsigned int>(packet.payload_type));
+
+    return false;
+}
+
+bool ice_udp_server::remember_media_identity_forward_mapping(const media_ssrc_mapping& ssrc_mapping,
+                                                             const media_payload_type_mapping& payload_type_mapping)
+{
+    if (identity_authority_ == nullptr)
+    {
+        return true;
+    }
+
+    auto identity_result = identity_authority_->remember_forward_mapping(ssrc_mapping, payload_type_mapping);
+
+    if (!identity_result)
+    {
+        WEBRTC_LOG_WARN(
+            "media identity forward mapping rejected stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} "
+            "publisher_ssrc={} subscriber_ssrc={} publisher_pt={} subscriber_pt={} rtx={} error={}",
+            ssrc_mapping.stream_id,
+            ssrc_mapping.publisher_session_id,
+            ssrc_mapping.subscriber_session_id,
+            ssrc_mapping.publisher_mid,
+            ssrc_mapping.subscriber_mid,
+            ssrc_mapping.publisher_ssrc,
+            ssrc_mapping.subscriber_ssrc,
+            payload_type_mapping.publisher_payload_type,
+            payload_type_mapping.subscriber_payload_type,
+            ssrc_mapping.rtx ? 1 : 0,
+            identity_result.error());
+
+        return false;
+    }
+
+    return true;
 }
 
 void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
@@ -6384,6 +6485,25 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
     {
         return original_packet;
     }
+
+    if (ssrc_mapping.has_value() && !payload_type_mapping.has_value())
+    {
+        WEBRTC_LOG_WARN("media forward skipped missing payload mapping stream={} publisher_session={} subscriber_session={} publisher_ssrc={}",
+                        route.source.stream_id,
+                        route.source.session_id,
+                        target_peer.session_id,
+                        ssrc_mapping->publisher_ssrc);
+
+        return std::nullopt;
+    }
+
+    if (ssrc_mapping.has_value() && payload_type_mapping.has_value())
+    {
+        if (!remember_media_identity_forward_mapping(*ssrc_mapping, *payload_type_mapping))
+        {
+            return std::nullopt;
+        }
+    }
     rtp_packet_rewrite_options options;
 
     bool rewrite_required = false;
@@ -6604,6 +6724,10 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
             cached_packet.sequence_number,
             static_cast<unsigned int>(cached_packet.payload_type));
 
+        return std::nullopt;
+    }
+    if (!remember_media_identity_forward_mapping(*ssrc_mapping, *payload_type_mapping))
+    {
         return std::nullopt;
     }
 
@@ -7412,6 +7536,11 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         ssrc_mapper_->forget_stream(stream_id);
     }
 
+    if (identity_authority_ != nullptr)
+    {
+        identity_authority_->forget_stream(stream_id);
+    }
+
     if (track_resolver_ != nullptr)
     {
         track_resolver_->forget_stream(stream_id);
@@ -7971,6 +8100,11 @@ void ice_udp_server::forget_peer_transport_state(std::string_view remote_address
         track_resolver_->forget_peer(remote_address);
 
         track_forgot = true;
+    }
+
+    if (identity_authority_ != nullptr)
+    {
+        identity_authority_->forget_peer(remote_address);
     }
 
     if (rtcp_report_service_ != nullptr)
