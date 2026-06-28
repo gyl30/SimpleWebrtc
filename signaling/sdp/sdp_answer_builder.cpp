@@ -624,6 +624,32 @@ const media_summary* find_matching_publisher_media(const media_summary& subscrib
 
 bool is_answer_media_rejected(const media_description& media) { return media.media_name.port.value == 0; }
 
+bool answer_media_has_inactive_direction(const media_description& media)
+{
+    const auto inactive_attributes = media.find_attributes(k_attribute_inactive);
+
+    return !inactive_attributes.empty();
+}
+
+std::expected<void, std::string> validate_answer_media_rejection_state(const media_description& media)
+{
+    const bool rejected = is_answer_media_rejected(media);
+
+    const bool inactive = answer_media_has_inactive_direction(media);
+
+    if (!rejected && inactive)
+    {
+        return make_error("answer media must not use inactive direction with nonzero port");
+    }
+
+    if (rejected && !inactive)
+    {
+        return make_error("rejected answer media must use inactive direction");
+    }
+
+    return {};
+}
+
 void push_attribute(std::vector<sdp_attribute>& attributes, std::string_view key, std::string_view value)
 {
     attributes.push_back(make_attribute(std::string(key), std::string(value)));
@@ -865,6 +891,16 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
                                                                 const webrtc_offer_summary* whep_subscriber_offer,
                                                                 const webrtc_offer_summary* whep_publisher_offer)
 {
+    auto answer_direction = make_answer_direction(role, media);
+    if (!answer_direction)
+    {
+        return std::unexpected(answer_direction.error());
+    }
+
+    if (*answer_direction == media_direction::inactive)
+    {
+        return make_rejected_answer_media(options, media);
+    }
     std::vector<codec_info> codecs;
 
     if (role == answer_endpoint_role::whep && whep_publisher_offer != nullptr)
@@ -899,20 +935,12 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
         codecs = std::move(*codec_result);
     }
 
-    auto answer_direction = make_answer_direction(role, media);
-
-    if (!answer_direction)
-    {
-        return std::unexpected(answer_direction.error());
-    }
-
     auto answer_direction_text = format_direction(*answer_direction);
 
     if (!answer_direction_text)
     {
         return std::unexpected(answer_direction_text.error());
     }
-
     media_description answer_media;
 
     answer_media.media_name.media = media.kind;
@@ -965,11 +993,17 @@ validation_result append_answer_media_descriptions(session_description& answer,
             return std::unexpected(answer_media.error());
         }
 
+        auto rejection_state_result = validate_answer_media_rejection_state(*answer_media);
+
+        if (!rejection_state_result)
+        {
+            return std::unexpected(rejection_state_result.error());
+        }
+
         if (!is_answer_media_rejected(*answer_media))
         {
             has_accepted_media = true;
         }
-
         answer.media_descriptions.push_back(std::move(*answer_media));
     }
 
