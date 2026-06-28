@@ -344,39 +344,48 @@ validation_result validate_offer_for_answer(const webrtc_offer_summary& offer)
     return {};
 }
 
-bool media_mid_exists(const std::vector<media_summary>& media_values, std::string_view mid)
+std::optional<std::string> find_answer_media_mid(const media_description& media)
 {
-    for (const auto& media : media_values)
+    const std::optional<std::string> mid = media.find_attribute_value(k_attribute_mid);
+
+    if (!mid.has_value() || mid->empty())
     {
-        if (media.mid == mid)
-        {
-            return true;
-        }
+        return std::nullopt;
     }
 
-    return false;
+    return mid;
 }
 
-std::expected<std::string, std::string> make_bundle_group_value(const webrtc_offer_summary& offer)
+std::expected<std::string, std::string> make_bundle_group_value(const session_description& answer)
 {
     std::string value = "BUNDLE";
+
     std::size_t count = 0;
 
-    for (const auto& mid : offer.bundle_mids)
+    for (const auto& media : answer.media_descriptions)
     {
-        if (!media_mid_exists(offer.media, mid))
+        if (media.media_name.port.value == 0)
         {
             continue;
         }
 
+        const std::optional<std::string> mid = find_answer_media_mid(media);
+
+        if (!mid.has_value())
+        {
+            return make_error("accepted answer media is missing mid");
+        }
+
         value.push_back(' ');
-        value.append(mid);
-        ++count;
+
+        value.append(*mid);
+
+        count += 1;
     }
 
     if (count == 0)
     {
-        return make_error("bundle group has no supported media mids");
+        return make_error("bundle group has no accepted media mids");
     }
 
     return value;
@@ -990,15 +999,10 @@ sdp_answer_result build_answer(answer_endpoint_role role,
     }
 
     auto setup_text = format_setup_role(options.local_setup);
+
     if (!setup_text)
     {
         return std::unexpected(setup_text.error());
-    }
-
-    auto bundle_group_value = make_bundle_group_value(offer);
-    if (!bundle_group_value)
-    {
-        return std::unexpected(bundle_group_value.error());
     }
 
     session_description answer;
@@ -1007,9 +1011,6 @@ sdp_answer_result build_answer(answer_endpoint_role role,
     answer.origin = make_origin(options);
     answer.session_name = "-";
     answer.time_descriptions.push_back(make_zero_time_description());
-
-    push_attribute(answer.attributes, k_attribute_group, *bundle_group_value);
-
     if (options.ice_lite)
     {
         push_property_attribute(answer.attributes, "ice-lite");
@@ -1036,6 +1037,13 @@ sdp_answer_result build_answer(answer_endpoint_role role,
         return std::unexpected(media_result.error());
     }
 
+    auto bundle_group_value = make_bundle_group_value(answer);
+    if (!bundle_group_value)
+    {
+        return std::unexpected(bundle_group_value.error());
+    }
+
+    answer.attributes.insert(answer.attributes.begin(), make_attribute(std::string(k_attribute_group), *bundle_group_value));
     return answer;
 }
 
