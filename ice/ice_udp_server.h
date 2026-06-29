@@ -242,7 +242,19 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string publisher_session_id;
         std::unordered_set<std::string> consumed_subscriber_session_ids;
     };
+    struct selected_rid_layer_runtime_state
+    {
+        std::string stream_id;
+        std::string publisher_session_id;
+        std::string subscriber_session_id;
+        std::string mid;
+        std::string rid;
 
+        uint32_t primary_ssrc = 0;
+        uint32_t repair_ssrc = 0;
+
+        uint64_t packet_count = 0;
+    };
     struct extmap_rewrite_runtime_state
     {
         std::string stream_id;
@@ -411,6 +423,22 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                    const media_route_result& route,
                                                                    const std::optional<media_track_resolution>& track_resolution,
                                                                    const media_peer_info& target_peer);
+
+    void remember_selected_rid_layer_for_subscriber(const media_route_result& route,
+                                                    const media_peer_info& target_peer,
+                                                    const media_track_resolution& track_resolution,
+                                                    const media_identity_rid_layer_binding& selected_layer);
+
+    [[nodiscard]]
+    bool consume_selected_rid_keyframe_request_pending_for_subscriber(const srtp_packet_process_result& packet,
+                                                                      const media_route_result& route,
+                                                                      const std::optional<media_track_resolution>& track_resolution,
+                                                                      const media_peer_info& target_peer);
+
+    void forget_selected_rid_layer_states_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_selected_rid_layer_states_for_stream_locked(std::string_view stream_id);
 
     [[nodiscard]]
     bool remember_extmap_header_extension_id_rewrite(std::string_view stream_id,
@@ -683,6 +711,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, uint8_t> fir_sequence_number_by_key_;
     std::unordered_map<std::string, uint32_t> publisher_video_ssrc_by_stream_;
     std::unordered_map<std::string, republish_keyframe_request_state> pending_republish_keyframe_state_by_stream_;
+    std::unordered_map<std::string, selected_rid_layer_runtime_state> selected_rid_layer_state_by_key_;
+    std::unordered_set<std::string> pending_selected_rid_keyframe_request_keys_;
     std::unordered_map<std::string, extmap_rewrite_runtime_state> extmap_rewrite_state_by_key_;
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;

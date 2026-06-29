@@ -162,6 +162,31 @@ std::string make_keyframe_request_key(const media_route_result& route, const med
 
     return key;
 }
+std::string make_selected_rid_layer_key(std::string_view stream_id,
+                                        std::string_view publisher_session_id,
+                                        std::string_view subscriber_session_id,
+                                        std::string_view mid)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + publisher_session_id.size() + subscriber_session_id.size() + mid.size() + 4);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(publisher_session_id);
+
+    key.push_back('|');
+
+    key.append(subscriber_session_id);
+
+    key.push_back('|');
+
+    key.append(mid);
+
+    return key;
+}
 std::string make_extmap_rewrite_runtime_state_key(std::string_view stream_id,
                                                   std::string_view publisher_session_id,
                                                   std::string_view subscriber_session_id,
@@ -2017,6 +2042,7 @@ void ice_udp_server::forget_subscriber_session_runtime_state(std::string_view se
     }
 
     forget_extmap_rewrite_states_for_session(session_id);
+    forget_selected_rid_layer_states_for_session(session_id);
     if (track_resolver_ != nullptr)
     {
         track_resolver_->forget_session(session_id);
@@ -2111,6 +2137,8 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
         erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
         const std::size_t erased_extmap_rewrite_states = erase_extmap_rewrite_states_for_stream_locked(stream_id);
         (void)erased_extmap_rewrite_states;
+        const std::size_t erased_selected_rid_states = erase_selected_rid_layer_states_for_stream_locked(stream_id);
+        (void)erased_selected_rid_states;
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
             if (iterator->first.starts_with(std::string(stream_id) + "|"))
@@ -5096,12 +5124,13 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
     const std::string key = make_keyframe_request_key(route, target_peer, packet.ssrc);
 
     const bool republish_keyframe_request = consume_republish_keyframe_request_pending_for_subscriber(packet, route, track_resolution, target_peer);
+    const bool selected_rid_keyframe_request =
+        consume_selected_rid_keyframe_request_pending_for_subscriber(packet, route, track_resolution, target_peer);
     {
         std::lock_guard lock(endpoint_mutex_);
 
         const auto iterator = keyframe_request_last_time_milliseconds_by_key_.find(key);
-
-        if (republish_keyframe_request)
+        if (republish_keyframe_request || selected_rid_keyframe_request)
         {
             if (iterator != keyframe_request_last_time_milliseconds_by_key_.end())
             {
@@ -6403,83 +6432,99 @@ std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapp
     return std::nullopt;
 }
 
-bool publisher_rtp_rid_is_selected_for_subscriber(const sdp::webrtc_offer_summary& publisher_offer,
-                                                  const std::shared_ptr<media_identity_authority>& identity_authority,
-                                                  const media_route_result& route,
-                                                  const media_peer_info& target_peer,
-                                                  const media_track_resolution& track_resolution)
+std::optional<media_identity_rid_layer_binding> find_selected_rid_layer_for_subscriber(
+    const sdp::webrtc_offer_summary& publisher_offer,
+    const std::shared_ptr<media_identity_authority>& identity_authority,
+    const media_route_result& route,
+    const media_peer_info& target_peer,
+    const media_track_resolution& track_resolution)
 {
     if (identity_authority == nullptr)
     {
-        return true;
+        return std::nullopt;
     }
 
     if (route.source.role != media_peer_role::publisher || target_peer.role != media_peer_role::subscriber)
     {
-        return true;
+        return std::nullopt;
     }
 
     if (!track_resolution.resolved || track_resolution.mid.empty() || track_resolution.kind.empty())
     {
-        return true;
+        return std::nullopt;
     }
 
     if (!is_video_media_kind(track_resolution.kind))
     {
-        return true;
+        return std::nullopt;
     }
 
     const sdp::media_summary* publisher_media = find_offer_media_by_mid(publisher_offer, track_resolution.mid);
 
     if (publisher_media == nullptr)
     {
-        return true;
+        return std::nullopt;
     }
 
     const std::vector<std::string> preferred_rids = make_default_simulcast_rid_preference(*publisher_media);
 
     if (preferred_rids.empty())
     {
+        return std::nullopt;
+    }
+
+    return identity_authority->find_preferred_rid_layer(route.source.stream_id, route.source.session_id, track_resolution.mid, preferred_rids);
+}
+
+std::optional<std::string> resolve_packet_rid_for_selection(const std::shared_ptr<media_identity_authority>& identity_authority,
+                                                            const media_route_result& route,
+                                                            const media_track_resolution& track_resolution)
+{
+    if (!track_resolution.rtx && track_resolution.rid.has_value() && !track_resolution.rid->empty())
+    {
+        return track_resolution.rid;
+    }
+
+    if (track_resolution.rtx && track_resolution.repaired_rid.has_value() && !track_resolution.repaired_rid->empty())
+    {
+        return track_resolution.repaired_rid;
+    }
+
+    if (track_resolution.rtx && identity_authority != nullptr && track_resolution.rtx_primary_ssrc != 0)
+    {
+        auto primary_layer = identity_authority->find_rid_layer_by_primary_ssrc(route.source.session_id, track_resolution.rtx_primary_ssrc);
+
+        if (primary_layer.has_value())
+        {
+            return primary_layer->rid;
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool publisher_rtp_rid_is_selected_for_subscriber(const sdp::webrtc_offer_summary& publisher_offer,
+                                                  const std::shared_ptr<media_identity_authority>& identity_authority,
+                                                  const media_route_result& route,
+                                                  const media_peer_info& target_peer,
+                                                  const media_track_resolution& track_resolution,
+                                                  std::optional<media_identity_rid_layer_binding>& selected_layer)
+{
+    selected_layer = find_selected_rid_layer_for_subscriber(publisher_offer, identity_authority, route, target_peer, track_resolution);
+
+    if (!selected_layer.has_value())
+    {
         return true;
     }
 
-    std::optional<std::string> packet_rid;
-
-    if (track_resolution.rtx)
-    {
-        if (track_resolution.repaired_rid.has_value() && !track_resolution.repaired_rid->empty())
-        {
-            packet_rid = track_resolution.repaired_rid;
-        }
-        else if (track_resolution.rtx_primary_ssrc != 0)
-        {
-            auto primary_layer = identity_authority->find_rid_layer_by_primary_ssrc(route.source.session_id, track_resolution.rtx_primary_ssrc);
-
-            if (primary_layer.has_value())
-            {
-                packet_rid = primary_layer->rid;
-            }
-        }
-    }
-    else if (track_resolution.rid.has_value() && !track_resolution.rid->empty())
-    {
-        packet_rid = track_resolution.rid;
-    }
+    const std::optional<std::string> packet_rid = resolve_packet_rid_for_selection(identity_authority, route, track_resolution);
 
     if (!packet_rid.has_value() || packet_rid->empty())
     {
         return true;
     }
 
-    auto preferred_layer =
-        identity_authority->find_preferred_rid_layer(route.source.stream_id, route.source.session_id, track_resolution.mid, preferred_rids);
-
-    if (!preferred_layer.has_value())
-    {
-        return true;
-    }
-
-    if (preferred_layer->rid == *packet_rid)
+    if (selected_layer->rid == *packet_rid)
     {
         return true;
     }
@@ -6491,7 +6536,7 @@ bool publisher_rtp_rid_is_selected_for_subscriber(const sdp::webrtc_offer_summar
         target_peer.session_id,
         track_resolution.mid,
         *packet_rid,
-        preferred_layer->rid,
+        selected_layer->rid,
         track_resolution.ssrc,
         track_resolution.rtx ? 1 : 0);
 
@@ -7509,10 +7554,17 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
                             target_peer.session_id);
             return std::nullopt;
         }
+        std::optional<media_identity_rid_layer_binding> selected_layer;
+
         if (!publisher_rtp_rid_is_selected_for_subscriber(
-                publisher->remote_offer_summary(), identity_authority_, route, target_peer, *track_resolution))
+                publisher->remote_offer_summary(), identity_authority_, route, target_peer, *track_resolution, selected_layer))
         {
             return std::nullopt;
+        }
+
+        if (selected_layer.has_value())
+        {
+            remember_selected_rid_layer_for_subscriber(route, target_peer, *track_resolution, *selected_layer);
         }
     }
     auto payload_type_mapping = find_payload_type_mapping(route, target_peer, track_resolution);
@@ -8986,6 +9038,8 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
         const std::size_t erased_extmap_rewrite_states = erase_extmap_rewrite_states_for_stream_locked(stream_id);
         (void)erased_extmap_rewrite_states;
+        const std::size_t erased_selected_rid_states = erase_selected_rid_layer_states_for_stream_locked(stream_id);
+        (void)erased_selected_rid_states;
 
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
@@ -9028,6 +9082,184 @@ void ice_udp_server::mark_republish_keyframe_request_pending(std::string_view st
     WEBRTC_LOG_INFO(
         "publisher republish keyframe request pending stream={} publisher_session={} scope=subscribers", stream_id, new_publisher_session_id);
 }
+void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_route_result& route,
+                                                                const media_peer_info& target_peer,
+                                                                const media_track_resolution& track_resolution,
+                                                                const media_identity_rid_layer_binding& selected_layer)
+{
+    if (route.source.stream_id.empty() || route.source.session_id.empty() || target_peer.session_id.empty() || selected_layer.mid.empty() ||
+        selected_layer.rid.empty())
+    {
+        return;
+    }
+
+    const std::string key = make_selected_rid_layer_key(route.source.stream_id, route.source.session_id, target_peer.session_id, selected_layer.mid);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    auto iterator = selected_rid_layer_state_by_key_.find(key);
+
+    if (iterator != selected_rid_layer_state_by_key_.end())
+    {
+        selected_rid_layer_runtime_state& state = iterator->second;
+
+        if (state.rid == selected_layer.rid && state.primary_ssrc == selected_layer.primary_ssrc && state.repair_ssrc == selected_layer.repair_ssrc)
+        {
+            state.packet_count += 1;
+
+            return;
+        }
+
+        state.rid = selected_layer.rid;
+
+        state.primary_ssrc = selected_layer.primary_ssrc;
+
+        state.repair_ssrc = selected_layer.repair_ssrc;
+
+        state.packet_count = 1;
+
+        pending_selected_rid_keyframe_request_keys_.insert(key);
+
+        WEBRTC_LOG_INFO(
+            "simulcast selected rid changed stream={} publisher_session={} subscriber_session={} mid={} selected_rid={} primary_ssrc={} "
+            "repair_ssrc={}",
+            route.source.stream_id,
+            route.source.session_id,
+            target_peer.session_id,
+            selected_layer.mid,
+            selected_layer.rid,
+            selected_layer.primary_ssrc,
+            selected_layer.repair_ssrc);
+
+        return;
+    }
+
+    selected_rid_layer_runtime_state state;
+
+    state.stream_id = route.source.stream_id;
+
+    state.publisher_session_id = route.source.session_id;
+
+    state.subscriber_session_id = target_peer.session_id;
+
+    state.mid = selected_layer.mid;
+
+    state.rid = selected_layer.rid;
+
+    state.primary_ssrc = selected_layer.primary_ssrc;
+
+    state.repair_ssrc = selected_layer.repair_ssrc;
+
+    state.packet_count = 1;
+
+    selected_rid_layer_state_by_key_.emplace(key, std::move(state));
+
+    pending_selected_rid_keyframe_request_keys_.insert(key);
+
+    WEBRTC_LOG_INFO(
+        "simulcast selected rid established stream={} publisher_session={} subscriber_session={} mid={} selected_rid={} primary_ssrc={} "
+        "repair_ssrc={}",
+        route.source.stream_id,
+        route.source.session_id,
+        target_peer.session_id,
+        selected_layer.mid,
+        selected_layer.rid,
+        selected_layer.primary_ssrc,
+        selected_layer.repair_ssrc);
+}
+bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscriber(const srtp_packet_process_result& packet,
+                                                                                  const media_route_result& route,
+                                                                                  const std::optional<media_track_resolution>& track_resolution,
+                                                                                  const media_peer_info& target_peer)
+{
+    if (packet.kind != srtp_packet_kind::rtp)
+    {
+        return false;
+    }
+
+    if (route.action != media_route_action::fanout_to_subscribers)
+    {
+        return false;
+    }
+
+    if (route.source.role != media_peer_role::publisher || target_peer.role != media_peer_role::subscriber)
+    {
+        return false;
+    }
+
+    if (!track_resolution.has_value() || !track_resolution->resolved || !is_video_media_kind(track_resolution->kind))
+    {
+        return false;
+    }
+
+    if (track_resolution->mid.empty() || route.source.stream_id.empty() || route.source.session_id.empty() || target_peer.session_id.empty())
+    {
+        return false;
+    }
+
+    const std::string key =
+        make_selected_rid_layer_key(route.source.stream_id, route.source.session_id, target_peer.session_id, track_resolution->mid);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto pending_iterator = pending_selected_rid_keyframe_request_keys_.find(key);
+
+    if (pending_iterator == pending_selected_rid_keyframe_request_keys_.end())
+    {
+        return false;
+    }
+
+    const auto state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+    if (state_iterator == selected_rid_layer_state_by_key_.end())
+    {
+        pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
+
+        return false;
+    }
+
+    const selected_rid_layer_runtime_state& state = state_iterator->second;
+
+    if (state.rid.empty())
+    {
+        pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
+
+        return false;
+    }
+
+    if (track_resolution->rtx)
+    {
+        if (state.repair_ssrc != 0 && track_resolution->ssrc != state.repair_ssrc)
+        {
+            return false;
+        }
+
+        if (state.repair_ssrc == 0 && track_resolution->rtx_primary_ssrc != state.primary_ssrc)
+        {
+            return false;
+        }
+    }
+    else if (state.primary_ssrc != 0 && track_resolution->ssrc != state.primary_ssrc)
+    {
+        return false;
+    }
+
+    pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
+
+    WEBRTC_LOG_INFO(
+        "simulcast selected rid keyframe request consumed stream={} publisher_session={} subscriber_session={} mid={} selected_rid={} media_ssrc={} "
+        "rtx={}",
+        route.source.stream_id,
+        route.source.session_id,
+        target_peer.session_id,
+        track_resolution->mid,
+        state.rid,
+        packet.ssrc,
+        track_resolution->rtx ? 1 : 0);
+
+    return true;
+}
+
 bool ice_udp_server::remember_extmap_header_extension_id_rewrite(std::string_view stream_id,
                                                                  std::string_view publisher_session_id,
                                                                  std::string_view subscriber_session_id,
@@ -9145,7 +9377,59 @@ std::size_t ice_udp_server::erase_extmap_rewrite_states_for_stream_locked(std::s
 
     return erased_count;
 }
+void ice_udp_server::forget_selected_rid_layer_states_for_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
 
+    std::lock_guard lock(endpoint_mutex_);
+
+    for (auto iterator = selected_rid_layer_state_by_key_.begin(); iterator != selected_rid_layer_state_by_key_.end();)
+    {
+        const selected_rid_layer_runtime_state& state = iterator->second;
+
+        if (state.publisher_session_id == session_id || state.subscriber_session_id == session_id)
+        {
+            pending_selected_rid_keyframe_request_keys_.erase(iterator->first);
+
+            iterator = selected_rid_layer_state_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
+std::size_t ice_udp_server::erase_selected_rid_layer_states_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = selected_rid_layer_state_by_key_.begin(); iterator != selected_rid_layer_state_by_key_.end();)
+    {
+        if (iterator->second.stream_id == stream_id)
+        {
+            pending_selected_rid_keyframe_request_keys_.erase(iterator->first);
+
+            iterator = selected_rid_layer_state_by_key_.erase(iterator);
+
+            erased_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
+}
 bool ice_udp_server::consume_republish_keyframe_request_pending_for_subscriber(const srtp_packet_process_result& packet,
                                                                                const media_route_result& route,
                                                                                const std::optional<media_track_resolution>& track_resolution,
