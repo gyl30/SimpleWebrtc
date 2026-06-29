@@ -45,173 +45,6 @@ media_ssrc_mapping make_ssrc_mapping_from_forward_binding(const media_identity_f
 }
 }    // namespace
 
-media_identity_result media_identity_authority::remember_track_resolution(const media_track_resolution& resolution, bool rtx)
-{
-    if (!resolution.resolved)
-    {
-        return make_error("media identity track resolution is unresolved");
-    }
-
-    media_identity_track_binding binding;
-
-    binding.stream_id = resolution.stream_id;
-
-    binding.session_id = resolution.session_id;
-
-    binding.remote_endpoint = resolution.remote_endpoint;
-
-    binding.mid = resolution.mid;
-
-    binding.kind = resolution.kind;
-
-    binding.rid = resolution.rid;
-
-    binding.repaired_rid = resolution.repaired_rid;
-
-    binding.ssrc = resolution.ssrc;
-
-    binding.payload_type = resolution.payload_type;
-
-    binding.rtx = rtx;
-
-    binding.packet_count = 1;
-
-    auto validation_result = validate_track_binding(binding);
-
-    if (!validation_result)
-    {
-        return std::unexpected(validation_result.error());
-    }
-
-    std::lock_guard lock(mutex_);
-
-    const std::string key = make_peer_ssrc_key(binding.remote_endpoint, binding.ssrc);
-
-    auto iterator = tracks_by_peer_ssrc_.find(key);
-    if (iterator == tracks_by_peer_ssrc_.end())
-    {
-        auto rid_layer_result = remember_rid_layer_binding_locked(resolution, binding);
-        if (!rid_layer_result)
-        {
-            return std::unexpected(rid_layer_result.error());
-        }
-        tracks_by_peer_ssrc_.emplace(key, std::move(binding));
-        return {};
-    }
-
-    if (iterator->second.stream_id != binding.stream_id || iterator->second.session_id != binding.session_id || iterator->second.mid != binding.mid ||
-        iterator->second.kind != binding.kind || iterator->second.payload_type != binding.payload_type || iterator->second.rtx != binding.rtx)
-    {
-        return make_error("media identity track binding conflict");
-    }
-
-    iterator->second.rid = binding.rid;
-    iterator->second.repaired_rid = binding.repaired_rid;
-    iterator->second.packet_count += 1;
-    auto rid_layer_result = remember_rid_layer_binding_locked(resolution, iterator->second);
-    if (!rid_layer_result)
-    {
-        return std::unexpected(rid_layer_result.error());
-    }
-    return {};
-}
-
-media_identity_result media_identity_authority::remember_forward_mapping(const media_ssrc_mapping& ssrc_mapping,
-                                                                         const media_payload_type_mapping& payload_mapping)
-{
-    media_identity_forward_binding binding;
-
-    binding.stream_id = ssrc_mapping.stream_id;
-
-    binding.publisher_session_id = ssrc_mapping.publisher_session_id;
-
-    binding.subscriber_session_id = ssrc_mapping.subscriber_session_id;
-
-    binding.publisher_mid = ssrc_mapping.publisher_mid;
-
-    binding.subscriber_mid = ssrc_mapping.subscriber_mid;
-
-    binding.kind = ssrc_mapping.kind;
-
-    binding.publisher_ssrc = ssrc_mapping.publisher_ssrc;
-
-    binding.subscriber_ssrc = ssrc_mapping.subscriber_ssrc;
-
-    binding.publisher_payload_type = payload_mapping.publisher_payload_type;
-
-    binding.subscriber_payload_type = payload_mapping.subscriber_payload_type;
-
-    binding.rtx = ssrc_mapping.rtx || payload_mapping.rtx;
-
-    binding.publisher_apt_payload_type = payload_mapping.publisher_apt_payload_type;
-
-    binding.subscriber_apt_payload_type = payload_mapping.subscriber_apt_payload_type;
-
-    binding.publisher_rtx_primary_ssrc = ssrc_mapping.publisher_rtx_primary_ssrc;
-
-    binding.publisher_rtx_repair_ssrc = ssrc_mapping.publisher_rtx_repair_ssrc;
-
-    binding.payload_type_rewrite_required = payload_mapping.payload_type_rewrite_required;
-
-    binding.mid_rewrite_required = payload_mapping.mid_rewrite_required;
-
-    binding.ssrc_rewrite_required = media_ssrc_mapping_requires_rewrite(ssrc_mapping);
-
-    auto validation_result = validate_forward_binding(binding);
-
-    if (!validation_result)
-    {
-        return std::unexpected(validation_result.error());
-    }
-
-    if (payload_mapping.stream_id != binding.stream_id || payload_mapping.publisher_mid != binding.publisher_mid ||
-        payload_mapping.subscriber_mid != binding.subscriber_mid || payload_mapping.kind != binding.kind)
-    {
-        return make_error("media identity forward mapping payload identity mismatched");
-    }
-
-    if (ssrc_mapping.rtx != payload_mapping.rtx)
-    {
-        return make_error("media identity forward mapping rtx state mismatched");
-    }
-
-    std::lock_guard lock(mutex_);
-
-    const std::string publisher_key = make_publisher_forward_key(
-        binding.stream_id, binding.publisher_session_id, binding.subscriber_session_id, binding.publisher_mid, binding.publisher_ssrc);
-
-    const std::string subscriber_key = make_subscriber_forward_key(binding.subscriber_session_id, binding.subscriber_ssrc);
-
-    auto subscriber_iterator = publisher_key_by_subscriber_key_.find(subscriber_key);
-
-    if (subscriber_iterator != publisher_key_by_subscriber_key_.end() && subscriber_iterator->second != publisher_key)
-    {
-        return make_error("media identity forward mapping subscriber ssrc conflict");
-    }
-
-    auto publisher_iterator = forwards_by_publisher_key_.find(publisher_key);
-
-    if (publisher_iterator != forwards_by_publisher_key_.end())
-    {
-        if (publisher_iterator->second.subscriber_ssrc != binding.subscriber_ssrc ||
-            publisher_iterator->second.publisher_payload_type != binding.publisher_payload_type ||
-            publisher_iterator->second.subscriber_payload_type != binding.subscriber_payload_type || publisher_iterator->second.rtx != binding.rtx)
-        {
-            return make_error("media identity forward mapping publisher identity conflict");
-        }
-
-        publisher_iterator->second.packet_count += 1;
-
-        return {};
-    }
-
-    forwards_by_publisher_key_.emplace(publisher_key, std::move(binding));
-
-    publisher_key_by_subscriber_key_[subscriber_key] = publisher_key;
-
-    return {};
-}
-
 std::optional<media_identity_track_binding> media_identity_authority::find_track_by_peer_ssrc(std::string_view remote_endpoint, uint32_t ssrc) const
 {
     if (remote_endpoint.empty() || ssrc == 0)
@@ -686,7 +519,254 @@ std::string media_identity_authority::make_session_ssrc_key(std::string_view ses
 
     return key;
 }
+std::string make_track_identity_key(std::string_view stream_id,
+                                    std::string_view session_id,
+                                    std::string_view mid,
+                                    std::string_view kind,
+                                    const std::optional<std::string>& rid,
+                                    const std::optional<std::string>& repaired_rid,
+                                    uint32_t ssrc,
+                                    bool rtx)
+{
+    std::string key;
 
+    key.reserve(stream_id.size() + session_id.size() + mid.size() + kind.size() + 96);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(session_id);
+
+    key.push_back('|');
+
+    key.append(mid);
+
+    key.push_back('|');
+
+    key.append(kind);
+
+    key.push_back('|');
+
+    key.append(rtx ? "rtx" : "media");
+
+    key.push_back('|');
+
+    if (rtx && repaired_rid.has_value() && !repaired_rid->empty())
+    {
+        key.append("repaired-rid:");
+
+        key.append(*repaired_rid);
+    }
+    else if (!rtx && rid.has_value() && !rid->empty())
+    {
+        key.append("rid:");
+
+        key.append(*rid);
+    }
+    else
+    {
+        key.append("ssrc:");
+
+        key.append(std::to_string(ssrc));
+    }
+
+    return key;
+}
+
+std::string make_ssrc_track_identity_key(
+    std::string_view stream_id, std::string_view session_id, std::string_view mid, std::string_view kind, uint32_t ssrc, bool rtx)
+{
+    return make_track_identity_key(stream_id, session_id, mid, kind, std::nullopt, std::nullopt, ssrc, rtx);
+}
+media_identity_result media_identity_authority::remember_forward_mapping(const media_ssrc_mapping& ssrc_mapping,
+                                                                         const media_payload_type_mapping& payload_mapping)
+{
+    media_identity_forward_binding binding;
+
+    binding.stream_id = ssrc_mapping.stream_id;
+
+    binding.publisher_session_id = ssrc_mapping.publisher_session_id;
+
+    binding.subscriber_session_id = ssrc_mapping.subscriber_session_id;
+
+    binding.publisher_mid = ssrc_mapping.publisher_mid;
+
+    binding.subscriber_mid = ssrc_mapping.subscriber_mid;
+
+    binding.kind = ssrc_mapping.kind;
+
+    binding.publisher_ssrc = ssrc_mapping.publisher_ssrc;
+
+    binding.subscriber_ssrc = ssrc_mapping.subscriber_ssrc;
+
+    binding.publisher_payload_type = payload_mapping.publisher_payload_type;
+
+    binding.subscriber_payload_type = payload_mapping.subscriber_payload_type;
+
+    binding.rtx = ssrc_mapping.rtx || payload_mapping.rtx;
+
+    binding.publisher_apt_payload_type = payload_mapping.publisher_apt_payload_type;
+
+    binding.subscriber_apt_payload_type = payload_mapping.subscriber_apt_payload_type;
+
+    binding.publisher_rtx_primary_ssrc = ssrc_mapping.publisher_rtx_primary_ssrc;
+
+    binding.publisher_rtx_repair_ssrc = ssrc_mapping.publisher_rtx_repair_ssrc;
+
+    binding.publisher_track_key = make_ssrc_track_identity_key(
+        binding.stream_id, binding.publisher_session_id, binding.publisher_mid, binding.kind, binding.publisher_ssrc, binding.rtx);
+
+    binding.subscriber_track_key = make_ssrc_track_identity_key(
+        binding.stream_id, binding.subscriber_session_id, binding.subscriber_mid, binding.kind, binding.subscriber_ssrc, binding.rtx);
+
+    binding.payload_type_rewrite_required = payload_mapping.payload_type_rewrite_required;
+
+    binding.mid_rewrite_required = payload_mapping.mid_rewrite_required;
+
+    binding.ssrc_rewrite_required = media_ssrc_mapping_requires_rewrite(ssrc_mapping);
+
+    auto validation_result = validate_forward_binding(binding);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
+    if (payload_mapping.stream_id != binding.stream_id || payload_mapping.publisher_mid != binding.publisher_mid ||
+        payload_mapping.subscriber_mid != binding.subscriber_mid || payload_mapping.kind != binding.kind)
+    {
+        return make_error("media identity forward mapping payload identity mismatched");
+    }
+
+    if (ssrc_mapping.rtx != payload_mapping.rtx)
+    {
+        return make_error("media identity forward mapping rtx state mismatched");
+    }
+
+    std::lock_guard lock(mutex_);
+
+    const std::string publisher_key = make_publisher_forward_key(
+        binding.stream_id, binding.publisher_session_id, binding.subscriber_session_id, binding.publisher_mid, binding.publisher_ssrc);
+
+    const std::string subscriber_key = make_subscriber_forward_key(binding.subscriber_session_id, binding.subscriber_ssrc);
+
+    auto subscriber_iterator = publisher_key_by_subscriber_key_.find(subscriber_key);
+
+    if (subscriber_iterator != publisher_key_by_subscriber_key_.end() && subscriber_iterator->second != publisher_key)
+    {
+        return make_error("media identity forward mapping subscriber ssrc conflict");
+    }
+
+    auto publisher_iterator = forwards_by_publisher_key_.find(publisher_key);
+
+    if (publisher_iterator != forwards_by_publisher_key_.end())
+    {
+        if (publisher_iterator->second.subscriber_ssrc != binding.subscriber_ssrc ||
+            publisher_iterator->second.publisher_payload_type != binding.publisher_payload_type ||
+            publisher_iterator->second.subscriber_payload_type != binding.subscriber_payload_type || publisher_iterator->second.rtx != binding.rtx ||
+            publisher_iterator->second.publisher_track_key != binding.publisher_track_key ||
+            publisher_iterator->second.subscriber_track_key != binding.subscriber_track_key)
+        {
+            return make_error("media identity forward mapping publisher identity conflict");
+        }
+
+        publisher_iterator->second.packet_count += 1;
+
+        return {};
+    }
+
+    forwards_by_publisher_key_.emplace(publisher_key, std::move(binding));
+
+    publisher_key_by_subscriber_key_[subscriber_key] = publisher_key;
+
+    return {};
+}
+
+media_identity_result media_identity_authority::remember_track_resolution(const media_track_resolution& resolution, bool rtx)
+{
+    if (!resolution.resolved)
+    {
+        return make_error("media identity track resolution is unresolved");
+    }
+
+    media_identity_track_binding binding;
+
+    binding.stream_id = resolution.stream_id;
+
+    binding.session_id = resolution.session_id;
+
+    binding.remote_endpoint = resolution.remote_endpoint;
+
+    binding.mid = resolution.mid;
+
+    binding.kind = resolution.kind;
+
+    binding.rid = resolution.rid;
+
+    binding.repaired_rid = resolution.repaired_rid;
+
+    binding.ssrc = resolution.ssrc;
+
+    binding.payload_type = resolution.payload_type;
+
+    binding.rtx = rtx;
+
+    binding.track_key = make_track_identity_key(
+        binding.stream_id, binding.session_id, binding.mid, binding.kind, binding.rid, binding.repaired_rid, binding.ssrc, binding.rtx);
+
+    binding.packet_count = 1;
+
+    auto validation_result = validate_track_binding(binding);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
+    std::lock_guard lock(mutex_);
+
+    const std::string key = make_peer_ssrc_key(binding.remote_endpoint, binding.ssrc);
+
+    auto iterator = tracks_by_peer_ssrc_.find(key);
+
+    if (iterator == tracks_by_peer_ssrc_.end())
+    {
+        auto rid_layer_result = remember_rid_layer_binding_locked(resolution, binding);
+
+        if (!rid_layer_result)
+        {
+            return std::unexpected(rid_layer_result.error());
+        }
+
+        tracks_by_peer_ssrc_.emplace(key, std::move(binding));
+
+        return {};
+    }
+
+    if (iterator->second.stream_id != binding.stream_id || iterator->second.session_id != binding.session_id ||
+        iterator->second.remote_endpoint != binding.remote_endpoint || iterator->second.track_key != binding.track_key ||
+        iterator->second.mid != binding.mid || iterator->second.kind != binding.kind || iterator->second.payload_type != binding.payload_type ||
+        iterator->second.rtx != binding.rtx)
+    {
+        return make_error("media identity track binding conflict");
+    }
+
+    iterator->second.rid = binding.rid;
+
+    iterator->second.repaired_rid = binding.repaired_rid;
+
+    iterator->second.packet_count += 1;
+
+    auto rid_layer_result = remember_rid_layer_binding_locked(resolution, iterator->second);
+
+    if (!rid_layer_result)
+    {
+        return std::unexpected(rid_layer_result.error());
+    }
+
+    return {};
+}
 media_identity_result media_identity_authority::validate_track_binding(const media_identity_track_binding& binding)
 {
     if (binding.stream_id.empty())
@@ -702,6 +782,11 @@ media_identity_result media_identity_authority::validate_track_binding(const med
     if (binding.remote_endpoint.empty())
     {
         return make_error("media identity track remote endpoint is empty");
+    }
+
+    if (binding.track_key.empty())
+    {
+        return make_error("media identity track key is empty");
     }
 
     if (binding.mid.empty())
@@ -752,6 +837,16 @@ media_identity_result media_identity_authority::validate_forward_binding(const m
         return make_error("media identity forward subscriber session id is empty");
     }
 
+    if (binding.publisher_track_key.empty())
+    {
+        return make_error("media identity forward publisher track key is empty");
+    }
+
+    if (binding.subscriber_track_key.empty())
+    {
+        return make_error("media identity forward subscriber track key is empty");
+    }
+
     if (binding.publisher_mid.empty())
     {
         return make_error("media identity forward publisher mid is empty");
@@ -799,6 +894,7 @@ media_identity_result media_identity_authority::validate_forward_binding(const m
 
     return {};
 }
+
 media_identity_result media_identity_authority::validate_rid_layer_binding(const media_identity_rid_layer_binding& binding)
 {
     if (binding.stream_id.empty())
@@ -1057,7 +1153,7 @@ std::string media_identity_track_binding_to_string(const media_identity_track_bi
 {
     std::string result;
 
-    result.reserve(192);
+    result.reserve(256);
 
     result.append("stream=");
 
@@ -1070,6 +1166,10 @@ std::string media_identity_track_binding_to_string(const media_identity_track_bi
     result.append(" remote=");
 
     result.append(binding.remote_endpoint);
+
+    result.append(" track_key=");
+
+    result.append(binding.track_key);
 
     result.append(" mid=");
 
@@ -1161,7 +1261,7 @@ std::string media_identity_forward_binding_to_string(const media_identity_forwar
 {
     std::string result;
 
-    result.reserve(256);
+    result.reserve(384);
 
     result.append("stream=");
 
@@ -1174,6 +1274,14 @@ std::string media_identity_forward_binding_to_string(const media_identity_forwar
     result.append(" subscriber_session=");
 
     result.append(binding.subscriber_session_id);
+
+    result.append(" publisher_track_key=");
+
+    result.append(binding.publisher_track_key);
+
+    result.append(" subscriber_track_key=");
+
+    result.append(binding.subscriber_track_key);
 
     result.append(" publisher_mid=");
 
@@ -1228,4 +1336,5 @@ std::string media_identity_forward_binding_to_string(const media_identity_forwar
 
     return result;
 }
+
 }    // namespace webrtc

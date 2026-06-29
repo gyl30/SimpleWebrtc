@@ -22,6 +22,8 @@ struct media_identity_track_binding
     std::string session_id;
     std::string remote_endpoint;
 
+    std::string track_key;
+
     std::string mid;
     std::string kind;
 
@@ -35,6 +37,7 @@ struct media_identity_track_binding
 
     uint64_t packet_count = 0;
 };
+
 struct media_identity_rid_layer_binding
 {
     std::string stream_id;
@@ -53,12 +56,16 @@ struct media_identity_rid_layer_binding
 
     uint64_t packet_count = 0;
 };
+
 struct media_identity_forward_binding
 {
     std::string stream_id;
 
     std::string publisher_session_id;
     std::string subscriber_session_id;
+
+    std::string publisher_track_key;
+    std::string subscriber_track_key;
 
     std::string publisher_mid;
     std::string subscriber_mid;
@@ -83,7 +90,6 @@ struct media_identity_forward_binding
 
     uint64_t packet_count = 0;
 };
-
 using media_identity_result = std::expected<void, std::string>;
 
 class media_identity_authority
