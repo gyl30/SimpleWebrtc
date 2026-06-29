@@ -284,7 +284,21 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
     }
 
     generated_sdp_answer generated_answer = std::move(*answer);
+    stream_restarted_session restarted_session;
 
+    restarted_session.kind = stream_session_kind::publisher;
+
+    restarted_session.stream_id = session->stream_id();
+
+    restarted_session.session_id = session->session_id();
+
+    restarted_session.old_local_ice_ufrag = session->local_ice().ufrag;
+
+    restarted_session.old_remote_ice_ufrag = session->remote_offer_summary().ice_ufrag;
+
+    restarted_session.new_local_ice_ufrag = generated_answer.local_ice.ufrag;
+
+    restarted_session.new_remote_ice_ufrag = runtime_offer_filter->offer_summary.ice_ufrag;
     session->apply_remote_ice_restart_offer(offer, std::move(runtime_offer_filter->offer_summary));
 
     session->set_accepted_remote_media_mline_indexes(std::move(runtime_offer_filter->accepted_mline_indexes));
@@ -297,17 +311,8 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
 
     if (registry_ != nullptr)
     {
-        stream_restarted_session restarted_session;
-
-        restarted_session.kind = stream_session_kind::publisher;
-
-        restarted_session.stream_id = session->stream_id();
-
-        restarted_session.session_id = session->session_id();
-
         registry_->notify_session_ice_restart(std::move(restarted_session));
     }
-
     WEBRTC_LOG_INFO("WHIP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={}",
                     session->stream_id(),
                     session->session_id(),

@@ -463,6 +463,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     bool retired_endpoint_matches_session(std::string_view remote_address, std::string_view session_id);
     void retire_removed_session_ice_credentials(const stream_removed_session& removed_session, std::string_view reason);
+    void retire_restarted_session_ice_credentials(const stream_restarted_session& restarted_session, std::string_view reason);
+
+    void retire_session_endpoint_for_ice_restart(const stream_restarted_session& restarted_session, std::string_view reason);
 
     void retire_ice_credentials_locked(std::string_view local_ice_ufrag,
                                        std::string_view remote_ice_ufrag,

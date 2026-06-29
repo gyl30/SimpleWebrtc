@@ -49,6 +49,12 @@ struct stream_restarted_session
     stream_session_kind kind = stream_session_kind::publisher;
     std::string stream_id;
     std::string session_id;
+
+    std::string old_local_ice_ufrag;
+    std::string old_remote_ice_ufrag;
+
+    std::string new_local_ice_ufrag;
+    std::string new_remote_ice_ufrag;
 };
 struct stream_session_lifecycle_snapshot
 {

@@ -3210,10 +3210,20 @@ void ice_udp_server::register_session_removed_callback()
                 return;
             }
 
-            WEBRTC_LOG_INFO("ice udp registry ice restart callback kind={} stream={} session={}",
-                            stream_session_kind_to_string(restarted_session.kind),
-                            restarted_session.stream_id,
-                            restarted_session.session_id);
+            WEBRTC_LOG_INFO(
+                "ice udp registry ice restart callback kind={} stream={} session={} old_local_ufrag={} old_remote_ufrag={} new_local_ufrag={} "
+                "new_remote_ufrag={}",
+                stream_session_kind_to_string(restarted_session.kind),
+                restarted_session.stream_id,
+                restarted_session.session_id,
+                restarted_session.old_local_ice_ufrag,
+                restarted_session.old_remote_ice_ufrag,
+                restarted_session.new_local_ice_ufrag,
+                restarted_session.new_remote_ice_ufrag);
+
+            self->retire_restarted_session_ice_credentials(restarted_session, "ice restart callback");
+
+            self->retire_session_endpoint_for_ice_restart(restarted_session, "ice restart callback");
 
             self->forget_session(restarted_session.session_id);
 
@@ -8452,7 +8462,47 @@ void ice_udp_server::retire_removed_session_ice_credentials(const stream_removed
                                   now_milliseconds(),
                                   reason);
 }
+void ice_udp_server::retire_restarted_session_ice_credentials(const stream_restarted_session& restarted_session, std::string_view reason)
+{
+    if (restarted_session.old_local_ice_ufrag.empty())
+    {
+        return;
+    }
 
+    std::lock_guard lock(endpoint_mutex_);
+
+    retire_ice_credentials_locked(restarted_session.old_local_ice_ufrag,
+                                  restarted_session.old_remote_ice_ufrag,
+                                  restarted_session.stream_id,
+                                  restarted_session.session_id,
+                                  now_milliseconds(),
+                                  reason);
+}
+void ice_udp_server::retire_session_endpoint_for_ice_restart(const stream_restarted_session& restarted_session, std::string_view reason)
+{
+    if (restarted_session.session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto iterator = endpoint_address_by_session_id_.find(restarted_session.session_id);
+
+    if (iterator == endpoint_address_by_session_id_.end())
+    {
+        return;
+    }
+
+    /*
+     * ICE restart keeps the same logical session id.
+     * Retire the old endpoint with an empty session id so that:
+     *   - old DTLS/SRTP from the old endpoint is suppressed by remote address
+     *   - new valid STUN for the same logical session can pass verification
+     *     and clear the retired endpoint in accept_retired_endpoint_reuse_after_valid_stun
+     */
+    retire_endpoint_locked(iterator->second, "", now_milliseconds(), reason);
+}
 void ice_udp_server::retire_ice_credentials_locked(std::string_view local_ice_ufrag,
                                                    std::string_view remote_ice_ufrag,
                                                    std::string_view stream_id,
