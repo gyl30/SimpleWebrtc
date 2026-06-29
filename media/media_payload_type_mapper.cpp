@@ -1096,16 +1096,26 @@ std::optional<media_payload_type_mapping> find_media_payload_type_mapping_by_kin
         return std::nullopt;
     }
 
+    std::optional<media_payload_type_mapping> matched_mapping;
+
     for (const auto& mapping : table.mappings)
     {
-        if (mapping.kind == kind && mapping.publisher_payload_type == publisher_payload_type)
+        if (mapping.kind != kind || mapping.publisher_payload_type != publisher_payload_type)
         {
-            return mapping;
+            continue;
         }
+
+        if (matched_mapping.has_value())
+        {
+            return std::nullopt;
+        }
+
+        matched_mapping = mapping;
     }
 
-    return std::nullopt;
+    return matched_mapping;
 }
+
 bool media_payload_type_mapping_is_rtx(const media_payload_type_mapping& mapping) { return mapping.rtx; }
 
 bool media_payload_type_is_rtx(const sdp::media_summary& media, uint16_t payload_type)
