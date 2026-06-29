@@ -134,7 +134,8 @@ bool fingerprints_equal(const sdp::fingerprint_info& left, const sdp::fingerprin
 bool identities_equal(const dtls_peer_identity& left, const dtls_peer_identity& right)
 {
     return left.role == right.role && left.session_id == right.session_id && left.stream_id == right.stream_id &&
-           left.local_ice_ufrag == right.local_ice_ufrag && fingerprints_equal(left.remote_fingerprint, right.remote_fingerprint);
+           left.local_ice_ufrag == right.local_ice_ufrag && left.remote_ice_ufrag == right.remote_ice_ufrag && left.generation == right.generation &&
+           fingerprints_equal(left.remote_fingerprint, right.remote_fingerprint);
 }
 
 std::expected<ssl_ptr, std::string> make_ssl(const std::shared_ptr<dtls_context>& context)
@@ -476,7 +477,6 @@ struct dtls_transport::impl
 
         std::optional<srtp_keying_material> keying_material;
     };
-
     void remember_peer(std::string_view remote_endpoint, dtls_peer_identity identity)
     {
         if (remote_endpoint.empty())
@@ -492,27 +492,42 @@ struct dtls_transport::impl
 
         auto& peer = iterator->second;
 
-        if (!inserted && !identities_equal(peer.identity, identity))
+        if (!inserted && identities_equal(peer.identity, identity))
         {
-            WEBRTC_LOG_INFO("dtls peer identity changed reset transport remote={} old_session={} new_session={}",
-                            remote_endpoint,
-                            peer.identity.session_id,
-                            identity.session_id);
+            return;
+        }
+
+        if (!inserted)
+        {
+            WEBRTC_LOG_INFO(
+                "dtls peer identity changed reset transport remote={} old_session={} new_session={} old_generation={} new_generation={} "
+                "old_local_ufrag={} new_local_ufrag={} old_remote_ufrag={} new_remote_ufrag={}",
+                remote_endpoint,
+                peer.identity.session_id,
+                identity.session_id,
+                peer.identity.generation,
+                identity.generation,
+                peer.identity.local_ice_ufrag,
+                identity.local_ice_ufrag,
+                peer.identity.remote_ice_ufrag,
+                identity.remote_ice_ufrag);
 
             peer = dtls_peer_context{};
         }
 
         peer.identity = std::move(identity);
 
-        WEBRTC_LOG_INFO("dtls remember peer remote={} role={} stream={} session={} local_ufrag={} fingerprint_algorithm={}",
-                        remote_endpoint,
-                        dtls_peer_role_to_string(peer.identity.role),
-                        peer.identity.stream_id,
-                        peer.identity.session_id,
-                        peer.identity.local_ice_ufrag,
-                        peer.identity.remote_fingerprint.algorithm);
+        WEBRTC_LOG_INFO(
+            "dtls remember peer remote={} role={} stream={} session={} generation={} local_ufrag={} remote_ufrag={} fingerprint_algorithm={}",
+            remote_endpoint,
+            dtls_peer_role_to_string(peer.identity.role),
+            peer.identity.stream_id,
+            peer.identity.session_id,
+            peer.identity.generation,
+            peer.identity.local_ice_ufrag,
+            peer.identity.remote_ice_ufrag,
+            peer.identity.remote_fingerprint.algorithm);
     }
-
     dtls_transport_packet_result close_peer(std::string_view remote_endpoint)
     {
         dtls_transport_packet_list packets;

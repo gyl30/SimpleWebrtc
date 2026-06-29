@@ -31,11 +31,14 @@ struct dtls_peer_identity
 
     std::string session_id;
     std::string stream_id;
+
     std::string local_ice_ufrag;
+    std::string remote_ice_ufrag;
+
+    std::string generation;
 
     sdp::fingerprint_info remote_fingerprint;
 };
-
 struct dtls_transport_config
 {
     std::chrono::milliseconds handshake_timeout{std::chrono::seconds(30)};

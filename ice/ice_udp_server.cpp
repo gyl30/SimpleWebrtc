@@ -919,6 +919,18 @@ void forget_transport_peer_if_supported(const std::shared_ptr<transport_type>& t
     }
 }
 
+std::string make_dtls_session_generation_id(std::string_view session_id, std::string_view local_ice_ufrag, std::string_view remote_ice_ufrag)
+{
+    std::string generation;
+    generation.reserve(session_id.size() + local_ice_ufrag.size() + remote_ice_ufrag.size() + 3);
+    generation.append(session_id);
+    generation.push_back('|');
+    generation.append(local_ice_ufrag);
+    generation.push_back('|');
+    generation.append(remote_ice_ufrag);
+    return generation;
+}
+
 dtls_peer_identity make_publisher_dtls_identity(const std::shared_ptr<publisher_session>& session)
 {
     dtls_peer_identity identity;
@@ -930,6 +942,10 @@ dtls_peer_identity make_publisher_dtls_identity(const std::shared_ptr<publisher_
     identity.stream_id = session->stream_id();
 
     identity.local_ice_ufrag = session->local_ice().ufrag;
+
+    identity.remote_ice_ufrag = session->remote_offer_summary().ice_ufrag;
+
+    identity.generation = make_dtls_session_generation_id(identity.session_id, identity.local_ice_ufrag, identity.remote_ice_ufrag);
 
     identity.remote_fingerprint = session->remote_offer_summary().fingerprint;
 
@@ -947,6 +963,10 @@ dtls_peer_identity make_subscriber_dtls_identity(const std::shared_ptr<subscribe
     identity.stream_id = session->stream_id();
 
     identity.local_ice_ufrag = session->local_ice().ufrag;
+
+    identity.remote_ice_ufrag = session->remote_offer_summary().ice_ufrag;
+
+    identity.generation = make_dtls_session_generation_id(identity.session_id, identity.local_ice_ufrag, identity.remote_ice_ufrag);
 
     identity.remote_fingerprint = session->remote_offer_summary().fingerprint;
 
@@ -5313,28 +5333,52 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
 
     if (!current_session.allowed)
     {
-        WEBRTC_LOG_DEBUG("dtls packet ignored by current session gate remote={} session={} size={} reason={}",
-                         remote_address,
-                         current_session.session_id,
-                         data.size(),
-                         current_session.reject_reason);
+        WEBRTC_LOG_WARN("dtls packet ignored by current session gate remote={} session={} size={} reason={}",
+                        remote_address,
+                        current_session.session_id,
+                        data.size(),
+                        current_session.reject_reason);
+
+        forget_peer_transport_state(remote_address);
 
         return;
     }
 
     touch_endpoint_activity(remote_endpoint);
+
     if (dtls_transport_ == nullptr)
     {
-        WEBRTC_LOG_WARN("dtls transport is null remote={} size={}", remote_address, data.size());
+        WEBRTC_LOG_WARN("dtls transport is null remote={} session={} size={}", remote_address, current_session.session_id, data.size());
 
         return;
     }
+
+    std::optional<dtls_peer_identity> expected_identity = current_dtls_identity_for_session(current_session.session_id);
+
+    if (!expected_identity.has_value())
+    {
+        WEBRTC_LOG_WARN("dtls packet ignored because current identity is missing remote={} session={} stream={} size={}",
+                        remote_address,
+                        current_session.session_id,
+                        current_session.stream_id,
+                        data.size());
+
+        forget_peer_transport_state(remote_address);
+
+        return;
+    }
+
+    dtls_transport_->remember_peer(remote_address, std::move(*expected_identity));
 
     auto packets = dtls_transport_->handle_udp_packet(data, remote_address);
 
     if (!packets)
     {
-        WEBRTC_LOG_WARN("dtls packet handle failed remote={} error={}", remote_address, packets.error());
+        WEBRTC_LOG_WARN("dtls packet handle failed remote={} session={} stream={} error={}",
+                        remote_address,
+                        current_session.session_id,
+                        current_session.stream_id,
+                        packets.error());
 
         forget_peer_endpoint(remote_address);
 
@@ -5345,18 +5389,29 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp
 
     for (auto& packet : *packets)
     {
-        WEBRTC_LOG_DEBUG("dtls send packet remote={} size={}", remote_address, packet.size());
+        const current_session_endpoint_state send_session =
+            validate_current_session_endpoint(remote_address, current_session.session_id, current_session.stream_id, "dtls send");
+
+        if (!send_session.allowed)
+        {
+            WEBRTC_LOG_DEBUG("dtls send skipped by current session gate remote={} session={} size={} reason={}",
+                             remote_address,
+                             current_session.session_id,
+                             packet.size(),
+                             send_session.reject_reason);
+
+            forget_peer_transport_state(remote_address);
+
+            break;
+        }
+
+        WEBRTC_LOG_DEBUG("dtls send packet remote={} session={} stream={} size={}",
+                         remote_address,
+                         current_session.session_id,
+                         current_session.stream_id,
+                         packet.size());
 
         send_response(std::move(packet), remote_endpoint);
-    }
-
-    if (dtls_transport_->has_received_close_notify(remote_address))
-    {
-        handle_dtls_close_notify(remote_address);
-
-        schedule_dtls_timeout();
-
-        return;
     }
 
     schedule_dtls_timeout();
@@ -11583,6 +11638,29 @@ ice_udp_server::current_session_endpoint_state ice_udp_server::validate_current_
     return state;
 }
 
+std::optional<dtls_peer_identity> ice_udp_server::current_dtls_identity_for_session(std::string_view session_id) const
+{
+    if (registry_ == nullptr || session_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    auto publisher = registry_->find_publisher_by_session_id(session_id);
+
+    if (publisher != nullptr)
+    {
+        return make_publisher_dtls_identity(publisher);
+    }
+
+    auto subscriber = registry_->find_subscriber_by_session_id(session_id);
+
+    if (subscriber != nullptr)
+    {
+        return make_subscriber_dtls_identity(subscriber);
+    }
+
+    return std::nullopt;
+}
 std::optional<ice_udp_server::udp::endpoint> ice_udp_server::find_remote_endpoint(std::string_view remote_address) const
 {
     std::lock_guard lock(endpoint_mutex_);
