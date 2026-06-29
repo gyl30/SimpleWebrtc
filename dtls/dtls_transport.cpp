@@ -911,6 +911,20 @@ struct dtls_transport::impl
         return peer->keying_material;
     }
 
+    std::optional<dtls_peer_identity> get_peer_identity(std::string_view remote_endpoint) const
+    {
+        std::lock_guard lock(mutex_);
+
+        const auto* peer = find_peer_locked_const(remote_endpoint);
+
+        if (peer == nullptr)
+        {
+            return std::nullopt;
+        }
+
+        return peer->identity;
+    }
+
     bool is_handshake_done(std::string_view remote_endpoint) const
     {
         std::lock_guard lock(mutex_);
@@ -1198,6 +1212,11 @@ std::optional<std::chrono::milliseconds> dtls_transport::next_timeout() const { 
 std::optional<srtp_keying_material> dtls_transport::get_srtp_keying_material(std::string_view remote_endpoint) const
 {
     return impl_->get_srtp_keying_material(remote_endpoint);
+}
+
+std::optional<dtls_peer_identity> dtls_transport::get_peer_identity(std::string_view remote_endpoint) const
+{
+    return impl_->get_peer_identity(remote_endpoint);
 }
 
 bool dtls_transport::is_handshake_done(std::string_view remote_endpoint) const { return impl_->is_handshake_done(remote_endpoint); }

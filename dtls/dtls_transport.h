@@ -92,6 +92,9 @@ class dtls_transport
     [[nodiscard]]
     std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint) const;
 
+    [[nodiscard]]
+    std::optional<dtls_peer_identity> get_peer_identity(std::string_view remote_endpoint) const;
+
     [[nodiscard]] bool is_handshake_done(std::string_view remote_endpoint) const;
 
     [[nodiscard]] bool has_received_close_notify(std::string_view remote_endpoint) const;

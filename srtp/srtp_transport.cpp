@@ -236,6 +236,12 @@ struct srtp_transport::impl
     {
         bool sessions_ready = false;
 
+        std::string session_id;
+        std::string stream_id;
+        std::string local_ice_ufrag;
+        std::string remote_ice_ufrag;
+        std::string generation;
+
         std::optional<srtp_session> inbound_session;
         std::optional<srtp_session> outbound_session;
 
@@ -249,7 +255,31 @@ struct srtp_transport::impl
         uint64_t outbound_rtp_count = 0;
         uint64_t outbound_rtcp_count = 0;
     };
+    static bool peer_identity_matches(const srtp_peer_context& peer, const dtls_peer_identity& identity)
+    {
+        return peer.session_id == identity.session_id && peer.stream_id == identity.stream_id && peer.local_ice_ufrag == identity.local_ice_ufrag &&
+               peer.remote_ice_ufrag == identity.remote_ice_ufrag && peer.generation == identity.generation;
+    }
 
+    static void bind_peer_identity(srtp_peer_context& peer, const dtls_peer_identity& identity)
+    {
+        peer.session_id = identity.session_id;
+
+        peer.stream_id = identity.stream_id;
+
+        peer.local_ice_ufrag = identity.local_ice_ufrag;
+
+        peer.remote_ice_ufrag = identity.remote_ice_ufrag;
+
+        peer.generation = identity.generation;
+    }
+
+    static void reset_peer_for_identity(srtp_peer_context& peer, const dtls_peer_identity& identity)
+    {
+        peer = srtp_peer_context{};
+
+        bind_peer_identity(peer, identity);
+    }
     srtp_transport_result handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)
     {
         const srtp_packet_kind kind = classify_packet(data);
@@ -483,14 +513,53 @@ struct srtp_transport::impl
 
     std::expected<bool, std::string> ensure_sessions_ready_locked(srtp_peer_context& peer, std::string_view remote_endpoint)
     {
-        if (peer.sessions_ready)
+        if (dtls_transport_ == nullptr)
+        {
+            return make_error("dtls transport is null");
+        }
+
+        auto identity = dtls_transport_->get_peer_identity(remote_endpoint);
+
+        if (!identity.has_value())
+        {
+            if (peer.sessions_ready)
+            {
+                WEBRTC_LOG_INFO("srtp sessions reset because dtls identity is missing remote={} old_session={} old_generation={}",
+                                remote_endpoint,
+                                peer.session_id,
+                                peer.generation);
+
+                peer = srtp_peer_context{};
+            }
+
+            return false;
+        }
+
+        if (peer.sessions_ready && peer_identity_matches(peer, *identity))
         {
             return true;
         }
 
-        if (dtls_transport_ == nullptr)
+        if (!peer.generation.empty() && !peer_identity_matches(peer, *identity))
         {
-            return make_error("dtls transport is null");
+            WEBRTC_LOG_INFO(
+                "srtp generation changed reset sessions remote={} old_session={} new_session={} old_generation={} new_generation={} "
+                "old_local_ufrag={} new_local_ufrag={} old_remote_ufrag={} new_remote_ufrag={}",
+                remote_endpoint,
+                peer.session_id,
+                identity->session_id,
+                peer.generation,
+                identity->generation,
+                peer.local_ice_ufrag,
+                identity->local_ice_ufrag,
+                peer.remote_ice_ufrag,
+                identity->remote_ice_ufrag);
+
+            reset_peer_for_identity(peer, *identity);
+        }
+        else if (peer.generation.empty())
+        {
+            bind_peer_identity(peer, *identity);
         }
 
         auto material = dtls_transport_->get_srtp_keying_material(remote_endpoint);
@@ -503,6 +572,18 @@ struct srtp_transport::impl
             }
 
             return make_error("dtls handshake is complete but srtp keying material is empty");
+        }
+
+        auto material_identity = dtls_transport_->get_peer_identity(remote_endpoint);
+
+        if (!material_identity.has_value() || material_identity->generation != peer.generation)
+        {
+            WEBRTC_LOG_DEBUG("srtp session create skipped because dtls generation changed remote={} expected_generation={} current_generation={}",
+                             remote_endpoint,
+                             peer.generation,
+                             material_identity.has_value() ? material_identity->generation : "");
+
+            return false;
         }
 
         auto inbound_config = make_inbound_srtp_session_config(*material);
@@ -524,18 +605,25 @@ struct srtp_transport::impl
         }
 
         peer.inbound_session.emplace(std::move(*inbound));
+
         peer.outbound_session.emplace(std::move(*outbound));
+
         peer.sessions_ready = true;
 
-        WEBRTC_LOG_INFO("srtp sessions created remote={} profile={} inbound={} outbound={}",
-                        remote_endpoint,
-                        srtp_profile_id_to_string(material->profile),
-                        srtp_direction_to_string(srtp_direction::inbound),
-                        srtp_direction_to_string(srtp_direction::outbound));
+        WEBRTC_LOG_INFO(
+            "srtp sessions created remote={} session={} stream={} generation={} profile={} local_ufrag={} remote_ufrag={} inbound={} outbound={}",
+            remote_endpoint,
+            peer.session_id,
+            peer.stream_id,
+            peer.generation,
+            srtp_profile_id_to_string(material->profile),
+            peer.local_ice_ufrag,
+            peer.remote_ice_ufrag,
+            srtp_direction_to_string(srtp_direction::inbound),
+            srtp_direction_to_string(srtp_direction::outbound));
 
         return true;
     }
-
     std::shared_ptr<dtls_transport> dtls_transport_;
     mutable std::mutex mutex_;
     std::unordered_map<std::string, srtp_peer_context> peers_by_endpoint_;
