@@ -65,6 +65,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void stop();
 
     void forget_session(std::string_view session_id);
+    void forget_subscriber_session_runtime_state(std::string_view session_id);
 
     [[nodiscard]]
     uint16_t local_port() const;

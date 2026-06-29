@@ -1615,6 +1615,58 @@ void ice_udp_server::stop()
     }
 }
 
+void ice_udp_server::forget_subscriber_session_runtime_state(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    if (track_resolver_ != nullptr)
+    {
+        track_resolver_->forget_session(session_id);
+    }
+
+    if (ssrc_mapper_ != nullptr)
+    {
+        ssrc_mapper_->forget_session(session_id);
+    }
+
+    if (identity_authority_ != nullptr)
+    {
+        identity_authority_->forget_session(session_id);
+    }
+
+    if (media_router_ != nullptr)
+    {
+        media_router_->forget_session(session_id);
+    }
+
+    if (rtcp_report_service_ != nullptr)
+    {
+        rtcp_report_service_->forget_session(session_id);
+    }
+
+    if (rtcp_transport_cc_feedback_service_ != nullptr)
+    {
+        rtcp_transport_cc_feedback_service_->forget_session(session_id);
+    }
+
+    if (rtx_sequence_allocator_ != nullptr)
+    {
+        rtx_sequence_allocator_->forget_session(session_id);
+    }
+
+    if (rtx_retransmission_index_ != nullptr)
+    {
+        rtx_retransmission_index_->forget_session(session_id);
+    }
+
+    if (nack_retransmit_throttle_ != nullptr)
+    {
+        nack_retransmit_throttle_->forget_session(session_id);
+    }
+}
 void ice_udp_server::forget_session(std::string_view session_id)
 {
     if (session_id.empty())
@@ -1641,7 +1693,10 @@ void ice_udp_server::forget_session(std::string_view session_id)
         else
         {
             remote_address = erased_remote_addresses.front();
-
+            endpoint_address_by_session_id_.erase(remote_address);
+            session_id_by_endpoint_address_.erase(remote_address);
+            endpoints_by_address_.erase(remote_address);
+            endpoint_last_seen_milliseconds_by_address_.erase(remote_address);
             endpoint_removed = true;
         }
 
@@ -1662,44 +1717,7 @@ void ice_udp_server::forget_session(std::string_view session_id)
         WEBRTC_LOG_DEBUG("ice udp session keyframe request states erased session={} count={}", session_id, erased_keyframe_request_state_count);
     }
 
-    if (track_resolver_ != nullptr)
-    {
-        track_resolver_->forget_session(session_id);
-    }
-
-    if (ssrc_mapper_ != nullptr)
-    {
-        ssrc_mapper_->forget_session(session_id);
-    }
-    if (identity_authority_ != nullptr)
-    {
-        identity_authority_->forget_session(session_id);
-    }
-    if (media_router_ != nullptr)
-    {
-        media_router_->forget_session(session_id);
-    }
-    if (rtcp_report_service_ != nullptr)
-    {
-        rtcp_report_service_->forget_session(session_id);
-    }
-    if (rtcp_transport_cc_feedback_service_ != nullptr)
-    {
-        rtcp_transport_cc_feedback_service_->forget_session(session_id);
-    }
-    if (rtx_sequence_allocator_ != nullptr)
-    {
-        rtx_sequence_allocator_->forget_session(session_id);
-    }
-
-    if (rtx_retransmission_index_ != nullptr)
-    {
-        rtx_retransmission_index_->forget_session(session_id);
-    }
-    if (nack_retransmit_throttle_ != nullptr)
-    {
-        nack_retransmit_throttle_->forget_session(session_id);
-    }
+    forget_subscriber_session_runtime_state(session_id);
 
     if (endpoint_removed)
     {
@@ -3178,13 +3196,14 @@ void ice_udp_server::register_session_removed_callback()
                 return;
             }
 
-            WEBRTC_LOG_INFO("ice udp registry removal callback kind={} stream={} session={}",
+            WEBRTC_LOG_INFO("ice udp registry removal callback kind={} stream={} session={} local_ufrag={} remote_ufrag={}",
                             stream_session_kind_to_string(removed_session.kind),
                             removed_session.stream_id,
-                            removed_session.session_id);
+                            removed_session.session_id,
+                            removed_session.local_ice_ufrag,
+                            removed_session.remote_ice_ufrag);
 
             self->retire_removed_session_ice_credentials(removed_session, "registry removal callback");
-
             if (removed_session.kind == stream_session_kind::publisher)
             {
                 self->send_rtcp_bye_for_removed_stream(removed_session.stream_id);
