@@ -1714,14 +1714,11 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
 
     {
         std::lock_guard lock(endpoint_mutex_);
-
         erased_payload_type_mappings = erase_payload_type_mappings_for_stream_locked(stream_id);
-
         erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
-
+        publisher_video_ssrc_by_stream_.erase(std::string(stream_id));
         pending_republish_keyframe_session_by_stream_.erase(std::string(stream_id));
     }
-
     WEBRTC_LOG_INFO(
         "publisher republish runtime state forgotten stream={} old_session={} cache_erased={} remaining_cache_packets={} "
         "payload_type_mappings_erased={} keyframe_states_erased={}",
@@ -3104,6 +3101,44 @@ void ice_udp_server::send_rtcp_bye_to_subscriber(std::string_view stream_id,
         offset = chunk_end;
     }
 }
+void ice_udp_server::remember_publisher_video_ssrc(const media_peer_info& peer,
+                                                   const srtp_packet_process_result& packet,
+                                                   const std::optional<media_track_resolution>& track_resolution)
+{
+    if (peer.role != media_peer_role::publisher)
+    {
+        return;
+    }
+
+    if (packet.kind != srtp_packet_kind::rtp)
+    {
+        return;
+    }
+
+    if (packet.ssrc == 0)
+    {
+        return;
+    }
+
+    if (!track_resolution.has_value() || !track_resolution->resolved)
+    {
+        return;
+    }
+
+    if (track_resolution->rtx)
+    {
+        return;
+    }
+
+    if (!is_video_media_kind(track_resolution->kind))
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    publisher_video_ssrc_by_stream_[peer.stream_id] = packet.ssrc;
+}
 std::vector<uint32_t> ice_udp_server::collect_keyframe_request_media_ssrcs(std::string_view stream_id) const
 {
     std::vector<uint32_t> media_ssrcs;
@@ -3113,32 +3148,41 @@ std::vector<uint32_t> ice_udp_server::collect_keyframe_request_media_ssrcs(std::
         return media_ssrcs;
     }
 
-    if (ssrc_mapper_ == nullptr)
+    if (ssrc_mapper_ != nullptr)
     {
-        return media_ssrcs;
+        const std::vector<media_ssrc_mapping> mappings = ssrc_mapper_->find_by_stream_id(stream_id);
+
+        for (const auto& mapping : mappings)
+        {
+            if (!media_ssrc_mapping_is_primary_video(mapping))
+            {
+                WEBRTC_LOG_DEBUG(
+                    "keyframe request skip non primary video mapping stream={} publisher_session={} subscriber_session={} publisher_ssrc={} "
+                    "subscriber_ssrc={} kind={} rtx={}",
+                    mapping.stream_id,
+                    mapping.publisher_session_id,
+                    mapping.subscriber_session_id,
+                    mapping.publisher_ssrc,
+                    mapping.subscriber_ssrc,
+                    mapping.kind,
+                    media_ssrc_mapping_is_rtx(mapping) ? 1 : 0);
+
+                continue;
+            }
+
+            append_unique_keyframe_media_ssrc(media_ssrcs, mapping.publisher_ssrc);
+        }
     }
 
-    const std::vector<media_ssrc_mapping> mappings = ssrc_mapper_->find_by_stream_id(stream_id);
-
-    for (const auto& mapping : mappings)
     {
-        if (!media_ssrc_mapping_is_primary_video(mapping))
+        std::lock_guard lock(endpoint_mutex_);
+
+        const auto iterator = publisher_video_ssrc_by_stream_.find(std::string(stream_id));
+
+        if (iterator != publisher_video_ssrc_by_stream_.end())
         {
-            WEBRTC_LOG_DEBUG(
-                "keyframe request skip non primary video mapping stream={} publisher_session={} subscriber_session={} publisher_ssrc={} "
-                "subscriber_ssrc={} kind={} rtx={}",
-                mapping.stream_id,
-                mapping.publisher_session_id,
-                mapping.subscriber_session_id,
-                mapping.publisher_ssrc,
-                mapping.subscriber_ssrc,
-                mapping.kind,
-                media_ssrc_mapping_is_rtx(mapping) ? 1 : 0);
-
-            continue;
+            append_unique_keyframe_media_ssrc(media_ssrcs, iterator->second);
         }
-
-        append_unique_keyframe_media_ssrc(media_ssrcs, mapping.publisher_ssrc);
     }
 
     return media_ssrcs;
@@ -4638,6 +4682,8 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
             else
             {
                 media_router_->observe_inbound_track(*peer, *result, *track_resolution);
+
+                remember_publisher_video_ssrc(*peer, *result, track_resolution);
             }
         }
 
@@ -7834,6 +7880,7 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         std::lock_guard lock(endpoint_mutex_);
         erased_payload_type_mappings = erase_payload_type_mappings_for_stream_locked(stream_id);
         erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
+        publisher_video_ssrc_by_stream_.erase(std::string(stream_id));
         pending_republish_keyframe_session_by_stream_.erase(std::string(stream_id));
     }
 

@@ -544,6 +544,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     std::optional<std::string> remote_address_for_session(std::string_view session_id);
 
+    void remember_publisher_video_ssrc(const media_peer_info& peer,
+                                       const srtp_packet_process_result& packet,
+                                       const std::optional<media_track_resolution>& track_resolution);
     [[nodiscard]]
     std::vector<uint32_t> collect_keyframe_request_media_ssrcs(std::string_view stream_id) const;
 
@@ -625,6 +628,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, ice_candidate_pair> candidate_pairs_by_key_;
     std::unordered_map<std::string, media_payload_type_mapping_cache_entry> payload_type_mappings_by_key_;
     std::unordered_map<std::string, uint64_t> keyframe_request_last_time_milliseconds_by_key_;
+    std::unordered_map<std::string, uint32_t> publisher_video_ssrc_by_stream_;
     std::unordered_map<std::string, std::string> pending_republish_keyframe_session_by_stream_;
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
