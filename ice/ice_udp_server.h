@@ -378,6 +378,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                               const std::optional<media_track_resolution>& track_resolution,
                               const std::vector<rtcp_feedback_route_event>& feedback_events);
 
+    void mark_republish_keyframe_request_pending(std::string_view stream_id, std::string_view new_publisher_session_id);
+
+    [[nodiscard]]
+    bool consume_republish_keyframe_request_pending(const srtp_packet_process_result& packet,
+                                                    const media_route_result& route,
+                                                    const std::optional<media_track_resolution>& track_resolution,
+                                                    const media_peer_info& target_peer);
     void maybe_request_keyframe_from_publisher(const srtp_packet_process_result& packet,
                                                const media_route_result& route,
                                                const std::optional<media_track_resolution>& track_resolution,
@@ -612,53 +619,33 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     mutable std::mutex endpoint_mutex_;
 
     std::unordered_map<std::string, udp::endpoint> endpoints_by_address_;
-
     std::unordered_map<std::string, std::string> endpoint_address_by_session_id_;
-
     std::unordered_map<std::string, std::string> session_id_by_endpoint_address_;
-
     std::unordered_map<std::string, uint64_t> endpoint_last_seen_milliseconds_by_address_;
-
     std::unordered_map<std::string, ice_candidate_pair> candidate_pairs_by_key_;
-
     std::unordered_map<std::string, media_payload_type_mapping_cache_entry> payload_type_mappings_by_key_;
-
     std::unordered_map<std::string, uint64_t> keyframe_request_last_time_milliseconds_by_key_;
-
+    std::unordered_map<std::string, std::string> pending_republish_keyframe_session_by_stream_;
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
-
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
 
     bool started_ = false;
-
     bool registry_callback_registered_ = false;
 
     uint64_t last_empty_rtcp_report_log_milliseconds_ = 0;
-
     uint64_t endpoint_idle_timeout_milliseconds_ = 120000;
-
     uint64_t pending_session_timeout_milliseconds_ = 60000;
 
     std::atomic<uint64_t> rtcp_report_inbound_rtcp_observe_attempts_total_{0};
-
     std::atomic<uint64_t> rtcp_report_inbound_rtcp_observe_failed_total_{0};
-
     std::atomic<uint64_t> rtcp_report_inbound_sender_report_sources_total_{0};
-
     std::atomic<uint64_t> rtcp_report_remember_source_attempts_total_{0};
-
     std::atomic<uint64_t> rtcp_report_remember_source_success_total_{0};
-
     std::atomic<uint64_t> rtcp_report_remember_source_failed_total_{0};
-
     std::atomic<uint64_t> rtcp_report_send_attempts_total_{0};
-
     std::atomic<uint64_t> rtcp_report_send_success_total_{0};
-
     std::atomic<uint64_t> rtcp_report_endpoint_not_found_total_{0};
-
     std::atomic<uint64_t> rtcp_report_protect_failed_total_{0};
-
     std::atomic<uint64_t> rtcp_report_protect_ignored_total_{0};
     std::atomic<uint64_t> lifecycle_convergence_check_generation_{0};
 };
