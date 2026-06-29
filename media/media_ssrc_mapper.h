@@ -24,6 +24,9 @@ struct media_ssrc_mapping
     std::string subscriber_mid;
     std::string kind;
 
+    std::optional<std::string> rid;
+    std::optional<std::string> repaired_rid;
+
     bool rtx = false;
     uint32_t publisher_rtx_primary_ssrc = 0;
     uint32_t publisher_rtx_repair_ssrc = 0;
@@ -64,7 +67,9 @@ class media_ssrc_mapper
                                                     uint64_t now_milliseconds,
                                                     bool rtx = false,
                                                     uint32_t publisher_rtx_primary_ssrc = 0,
-                                                    uint32_t publisher_rtx_repair_ssrc = 0);
+                                                    uint32_t publisher_rtx_repair_ssrc = 0,
+                                                    const std::optional<std::string>& rid = std::nullopt,
+                                                    const std::optional<std::string>& repaired_rid = std::nullopt);
     [[nodiscard]]
     std::optional<media_ssrc_mapping> find_by_publisher_ssrc(std::string_view stream_id,
                                                              std::string_view publisher_session_id,

@@ -132,7 +132,9 @@ media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping(std::string_v
                                                                    uint64_t now_milliseconds,
                                                                    bool rtx,
                                                                    uint32_t publisher_rtx_primary_ssrc,
-                                                                   uint32_t publisher_rtx_repair_ssrc)
+                                                                   uint32_t publisher_rtx_repair_ssrc,
+                                                                   const std::optional<std::string>& rid,
+                                                                   const std::optional<std::string>& repaired_rid)
 {
     auto validation_result =
         validate_mapping_input(stream_id, publisher_session_id, subscriber_session_id, publisher_mid, subscriber_mid, publisher_ssrc);
@@ -152,12 +154,15 @@ media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping(std::string_v
     {
         iterator->second.last_used_at_milliseconds = now_milliseconds;
 
+        iterator->second.rid = rid;
+
+        iterator->second.repaired_rid = repaired_rid;
+
         iterator->second.rtx = rtx;
 
         iterator->second.publisher_rtx_primary_ssrc = publisher_rtx_primary_ssrc;
 
         iterator->second.publisher_rtx_repair_ssrc = publisher_rtx_repair_ssrc;
-        iterator->second.last_used_at_milliseconds = now_milliseconds;
 
         iterator->second.packet_count += 1;
 
@@ -177,6 +182,10 @@ media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping(std::string_v
     mapping.subscriber_mid = std::string(subscriber_mid);
 
     mapping.kind = std::string(kind);
+
+    mapping.rid = rid;
+
+    mapping.repaired_rid = repaired_rid;
 
     mapping.rtx = rtx;
 
@@ -461,7 +470,7 @@ std::string media_ssrc_mapping_to_string(const media_ssrc_mapping& mapping)
 {
     std::string result;
 
-    result.reserve(192);
+    result.reserve(256);
 
     result.append("stream=");
     result.append(mapping.stream_id);
@@ -481,6 +490,18 @@ std::string media_ssrc_mapping_to_string(const media_ssrc_mapping& mapping)
     result.append(" kind=");
     result.append(mapping.kind);
 
+    if (mapping.rid.has_value())
+    {
+        result.append(" rid=");
+        result.append(*mapping.rid);
+    }
+
+    if (mapping.repaired_rid.has_value())
+    {
+        result.append(" repaired_rid=");
+        result.append(*mapping.repaired_rid);
+    }
+
     result.append(" rtx=");
     result.append(mapping.rtx ? "1" : "0");
 
@@ -492,6 +513,7 @@ std::string media_ssrc_mapping_to_string(const media_ssrc_mapping& mapping)
         result.append(" publisher_rtx_repair_ssrc=");
         result.append(std::to_string(mapping.publisher_rtx_repair_ssrc));
     }
+
     result.append(" publisher_ssrc=");
     result.append(std::to_string(mapping.publisher_ssrc));
 
@@ -500,6 +522,7 @@ std::string media_ssrc_mapping_to_string(const media_ssrc_mapping& mapping)
 
     return result;
 }
+
 std::vector<media_ssrc_mapping> media_ssrc_mapper::find_by_subscriber_session(std::string_view subscriber_session_id) const
 {
     std::vector<media_ssrc_mapping> mappings;
