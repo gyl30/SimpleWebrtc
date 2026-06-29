@@ -26,7 +26,19 @@ namespace webrtc
 namespace
 {
 namespace http = boost::beast::http;
-
+constexpr std::string_view k_whep_invalid_sdp_offer_error = "whep_invalid_sdp_offer";
+constexpr std::string_view k_whep_invalid_webrtc_offer_error = "whep_invalid_webrtc_offer";
+constexpr std::string_view k_whep_invalid_offer_error = "whep_invalid_offer";
+constexpr std::string_view k_whep_answer_factory_unavailable_error = "whep_answer_factory_unavailable";
+constexpr std::string_view k_whep_publisher_not_found_error = "whep_publisher_not_found";
+constexpr std::string_view k_whep_previous_subscriber_not_found_error = "whep_previous_subscriber_not_found";
+constexpr std::string_view k_whep_reconnect_stream_mismatch_error = "whep_reconnect_stream_mismatch";
+constexpr std::string_view k_whep_precondition_failed_error = "whep_precondition_failed";
+constexpr std::string_view k_whep_sdp_answer_failed_error = "whep_sdp_answer_failed";
+constexpr std::string_view k_whep_runtime_offer_filter_failed_error = "whep_runtime_offer_filter_failed";
+constexpr std::string_view k_whep_create_session_failed_error = "whep_create_session_failed";
+constexpr std::string_view k_whep_session_not_found_error = "whep_session_not_found";
+constexpr std::string_view k_whep_delete_session_failed_error = "whep_delete_session_failed";
 std::string make_prefixed_error(std::string_view prefix, std::string_view error)
 {
     std::string message;
@@ -127,8 +139,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     if (!description)
     {
         WEBRTC_LOG_WARN("WHEP parse SDP offer failed stream={} error={}", stream_id, description.error());
-
-        return json_error_response(request, 400, make_prefixed_error("invalid sdp offer: ", description.error()));
+        return json_error_response(request, 400, k_whep_invalid_sdp_offer_error, make_prefixed_error("invalid sdp offer: ", description.error()));
     }
 
     WEBRTC_LOG_INFO("WHEP parsed SDP offer stream={} media_count={}", stream_id, description->media_descriptions.size());
@@ -138,8 +149,8 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     if (!offer_summary)
     {
         WEBRTC_LOG_WARN("WHEP extract WebRTC offer failed stream={} error={}", stream_id, offer_summary.error());
-
-        return json_error_response(request, 400, make_prefixed_error("invalid webrtc offer: ", offer_summary.error()));
+        return json_error_response(
+            request, 400, k_whep_invalid_webrtc_offer_error, make_prefixed_error("invalid webrtc offer: ", offer_summary.error()));
     }
 
     auto validation_result = sdp::validate_whep_offer(*offer_summary);
@@ -147,8 +158,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     if (!validation_result)
     {
         WEBRTC_LOG_WARN("WHEP validate WebRTC offer failed stream={} error={}", stream_id, validation_result.error());
-
-        return json_error_response(request, 400, make_prefixed_error("invalid whep offer: ", validation_result.error()));
+        return json_error_response(request, 400, k_whep_invalid_offer_error, make_prefixed_error("invalid whep offer: ", validation_result.error()));
     }
 
     WEBRTC_LOG_INFO("WHEP validated WebRTC offer stream={} bundle_mid_count={} media_count={} ice_ufrag_size={}",
@@ -160,8 +170,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     if (answer_factory_ == nullptr)
     {
         WEBRTC_LOG_ERROR("WHEP answer factory is not configured stream={}", stream_id);
-
-        return json_error_response(request, 500, "answer factory is not configured");
+        return json_error_response(request, 500, k_whep_answer_factory_unavailable_error, "answer factory is not configured");
     }
 
     auto publisher = registry_->find_publisher_by_stream_id(stream_id);
@@ -170,7 +179,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     {
         WEBRTC_LOG_WARN("WHEP create subscriber failed stream={} publisher not found", stream_id);
 
-        return json_error_response(request, 404, "publisher not found");
+        return json_error_response(request, 404, k_whep_publisher_not_found_error, "publisher not found");
     }
     const std::optional<std::string> reconnect_session_id = read_whep_reconnect_session_id(request);
 
@@ -182,8 +191,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         if (reconnect_previous_session == nullptr)
         {
             WEBRTC_LOG_WARN("WHEP reconnect failed previous subscriber not found stream={} previous_session={}", stream_id, *reconnect_session_id);
-
-            return json_error_response(request, 404, "previous subscriber session not found");
+            return json_error_response(request, 404, k_whep_previous_subscriber_not_found_error, "previous subscriber session not found");
         }
 
         if (reconnect_previous_session->stream_id() != stream_id)
@@ -192,8 +200,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                             stream_id,
                             reconnect_previous_session->stream_id(),
                             reconnect_previous_session->session_id());
-
-            return json_error_response(request, 409, "previous subscriber session belongs to another stream");
+            return json_error_response(request, 409, k_whep_reconnect_stream_mismatch_error, "previous subscriber session belongs to another stream");
         }
 
         auto precondition = validate_session_if_match(request, *reconnect_previous_session);
@@ -205,15 +212,15 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                             reconnect_previous_session->session_id(),
                             precondition.error());
 
-            return json_error_response(request, 412, precondition.error());
+            return json_error_response(request, 412, k_whep_precondition_failed_error, precondition.error());
         }
     }
     auto generated_answer = answer_factory_->build_whep_answer(stream_id, *offer_summary, publisher->remote_offer_summary());
     if (!generated_answer)
     {
         WEBRTC_LOG_WARN("WHEP build SDP answer failed stream={} error={}", stream_id, generated_answer.error());
-
-        return json_error_response(request, 400, make_prefixed_error("failed to build sdp answer: ", generated_answer.error()));
+        return json_error_response(
+            request, 400, k_whep_sdp_answer_failed_error, make_prefixed_error("failed to build sdp answer: ", generated_answer.error()));
     }
 
     auto runtime_offer_filter = make_runtime_offer_filter_result(*offer_summary, generated_answer->sdp);
@@ -221,8 +228,10 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     if (!runtime_offer_filter)
     {
         WEBRTC_LOG_WARN("WHEP runtime subscriber offer filter failed stream={} error={}", stream_id, runtime_offer_filter.error());
-
-        return json_error_response(request, 400, make_prefixed_error("failed to filter runtime subscriber offer: ", runtime_offer_filter.error()));
+        return json_error_response(request,
+                                   400,
+                                   k_whep_runtime_offer_filter_failed_error,
+                                   make_prefixed_error("failed to filter runtime subscriber offer: ", runtime_offer_filter.error()));
     }
 
     auto session_result = [&]() -> subscriber_session_result
@@ -264,8 +273,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         }
 
         WEBRTC_LOG_ERROR("WHEP create subscriber failed stream={} error={}", stream_id, stream_registry_error_to_string(error));
-
-        return json_error_response(request, 500, "create subscriber session failed");
+        return json_error_response(request, 500, k_whep_create_session_failed_error, "create subscriber session failed");
     }
 
     const auto& session = *session_result;
@@ -296,6 +304,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     return response;
 }
+
 http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
                                                   std::string_view session_id,
                                                   const std::shared_ptr<subscriber_session>& session)
@@ -449,7 +458,8 @@ http_response_ptr whep_handler::patch_session(http_request_t& request, std::stri
         session,
         "WHEP",
         "subscriber session not found",
-        [this, &request](int status, std::string_view message) -> http_response_ptr { return json_error_response(request, status, message); },
+        [this, &request](int status, std::string_view error_code, std::string_view message) -> http_response_ptr
+        { return json_error_response(request, status, error_code, message); },
         [this, &request](const auto& updated_session) -> http_response_ptr
         {
             auto response = create_response(request, 204, "");
@@ -470,7 +480,7 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
 
     if (session == nullptr)
     {
-        return json_error_response(request, 404, "subscriber session not found");
+        return json_error_response(request, 404, k_whep_session_not_found_error, "subscriber session not found");
     }
 
     auto precondition = validate_session_if_match(request, *session);
@@ -492,8 +502,7 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
         }
 
         WEBRTC_LOG_ERROR("WHEP delete subscriber failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
-
-        return json_error_response(request, 500, "delete subscriber session failed");
+        return json_error_response(request, 500, k_whep_delete_session_failed_error, "delete subscriber session failed");
     }
 
     auto response = create_response(request, 204, "");
@@ -510,7 +519,12 @@ http_response_ptr whep_handler::json_response(http_request_t& request, int code,
 
 http_response_ptr whep_handler::json_error_response(http_request_t& request, int code, std::string_view message)
 {
-    return make_json_http_error_response(request, code, "whep_error", message);
+    return json_error_response(request, code, "whep_error", message);
+}
+
+http_response_ptr whep_handler::json_error_response(http_request_t& request, int code, std::string_view error_code, std::string_view message)
+{
+    return make_json_http_error_response(request, code, error_code, message);
 }
 
 http_response_ptr whep_handler::sdp_response(http_request_t& request, int code, std::string_view body)

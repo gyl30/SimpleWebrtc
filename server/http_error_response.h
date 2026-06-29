@@ -7,6 +7,7 @@
 #include <boost/beast/http.hpp>
 
 #include "net/http.h"
+#include "util/reflect.h"
 #include "server/trickle_ice_http.h"
 
 namespace webrtc
@@ -102,23 +103,23 @@ inline void append_trailing_newline(std::string& content)
 }
 }    // namespace http_error_response_detail
 
+struct http_error_response_body
+{
+    std::string error;
+    std::string code;
+};
+
+REFLECT_STRUCT(webrtc::http_error_response_body, (error)(code));    // NOLINT
+
 inline std::string make_http_error_response_body(std::string_view error_code, std::string_view message)
 {
-    std::string body;
+    http_error_response_body response;
 
-    body.reserve(error_code.size() + message.size() + 32);
+    response.error = std::string(message);
 
-    body.append("{\"error\":\"");
+    response.code = http_error_response_detail::normalize_error_code(error_code);
 
-    http_error_response_detail::append_json_escaped_string(body, message);
-
-    body.append("\",\"code\":\"");
-
-    http_error_response_detail::append_json_escaped_string(body, http_error_response_detail::normalize_error_code(error_code));
-
-    body.append("\"}");
-
-    return body;
+    return serialize_struct(response);
 }
 
 inline std::string make_http_error_response_body(std::string_view message) { return make_http_error_response_body("error", message); }

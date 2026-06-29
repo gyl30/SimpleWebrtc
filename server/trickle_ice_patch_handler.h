@@ -586,16 +586,16 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
 
     global_trickle_ice_metrics().record_patch_request(trickle_ice_patch_detail::content_kind_from_request(request));
 
-    auto fail = [&](int status, std::string_view message) -> http_response_ptr
+    auto fail = [&](int status, std::string_view error_code, std::string_view message) -> http_response_ptr
     {
         global_trickle_ice_metrics().record_patch_failed();
 
-        return make_error_response(status, message);
+        return make_error_response(status, error_code, message);
     };
-
     if (!trickle_ice_patch_detail::is_application_json(request) && !trickle_ice_patch_detail::is_application_trickle_ice_sdpfrag(request))
     {
-        return fail(415, "unsupported media type, expected application/json or application/trickle-ice-sdpfrag");
+        return fail(
+            415, "trickle_ice_unsupported_media_type", "unsupported media type, expected application/json or application/trickle-ice-sdpfrag");
     }
 
     if (trickle_ice_patch_body_too_large(request.req.body().size()))
@@ -606,14 +606,14 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
                         request.req.body().size(),
                         k_trickle_ice_max_patch_body_bytes);
 
-        return fail(413, "trickle ice patch body too large");
+        return fail(413, "trickle_ice_body_too_large", "trickle ice patch body too large");
     }
 
     if (session == nullptr)
     {
         global_trickle_ice_metrics().record_session_not_found();
 
-        return fail(404, session_not_found_message);
+        return fail(404, "trickle_ice_session_not_found", session_not_found_message);
     }
 
     auto precondition = validate_session_if_match(request, *session);
@@ -622,7 +622,7 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
     {
         WEBRTC_LOG_WARN("{} trickle ice patch precondition failed session={} error={}", protocol_name, session_id, precondition.error());
 
-        return fail(412, precondition.error());
+        return fail(412, "trickle_ice_precondition_failed", precondition.error());
     }
 
     auto patch_body = trickle_ice_patch_detail::parse_patch_body(request);
@@ -641,7 +641,7 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
 
         message.append(patch_body.error());
 
-        return fail(400, message);
+        return fail(400, "trickle_ice_invalid_candidates", message);
     }
 
     if (trickle_ice_candidate_batch_too_large(patch_body->candidates.size()))
@@ -652,7 +652,7 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
                         patch_body->candidates.size(),
                         k_trickle_ice_max_candidates_per_patch);
 
-        return fail(413, "too many trickle ice candidates in one patch");
+        return fail(413, "trickle_ice_too_many_candidates", "too many trickle ice candidates in one patch");
     }
 
     auto credential_validation = trickle_ice_patch_detail::validate_patch_ice_credentials(*session, *patch_body);
@@ -662,7 +662,7 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
         WEBRTC_LOG_WARN(
             "{} trickle ice sdpfrag credential validation failed session={} error={}", protocol_name, session_id, credential_validation.error());
 
-        return fail(400, credential_validation.error());
+        return fail(400, "trickle_ice_credentials_mismatch", credential_validation.error());
     }
 
     const std::size_t received_count = patch_body->candidates.size();
@@ -740,7 +740,7 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
 
             message.append(add_result.error());
 
-            return fail(400, message);
+            return fail(400, "trickle_ice_candidate_rejected", message);
         }
 
         global_trickle_ice_metrics().record_candidate_accepted(end_of_candidates);

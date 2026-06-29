@@ -29,6 +29,8 @@ class whip_handler
 
     http_response_ptr json_error_response(http_request_t& request, int code, std::string_view message);
 
+    http_response_ptr json_error_response(http_request_t& request, int code, std::string_view error_code, std::string_view message);
+
     http_response_ptr sdp_response(http_request_t& request, int code, std::string_view body);
 
     void add_common_headers(const http_response_ptr& response);

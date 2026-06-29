@@ -28,7 +28,19 @@ namespace webrtc
 namespace
 {
 namespace http = boost::beast::http;
-
+constexpr std::string_view k_whip_invalid_sdp_offer_error = "whip_invalid_sdp_offer";
+constexpr std::string_view k_whip_invalid_webrtc_offer_error = "whip_invalid_webrtc_offer";
+constexpr std::string_view k_whip_invalid_offer_error = "whip_invalid_offer";
+constexpr std::string_view k_whip_answer_factory_unavailable_error = "whip_answer_factory_unavailable";
+constexpr std::string_view k_whip_sdp_answer_failed_error = "whip_sdp_answer_failed";
+constexpr std::string_view k_whip_runtime_offer_filter_failed_error = "whip_runtime_offer_filter_failed";
+constexpr std::string_view k_whip_previous_publisher_not_found_error = "whip_previous_publisher_not_found";
+constexpr std::string_view k_whip_republish_stream_mismatch_error = "whip_republish_stream_mismatch";
+constexpr std::string_view k_whip_precondition_failed_error = "whip_precondition_failed";
+constexpr std::string_view k_whip_stream_already_has_publisher_error = "whip_stream_already_has_publisher";
+constexpr std::string_view k_whip_create_session_failed_error = "whip_create_session_failed";
+constexpr std::string_view k_whip_session_not_found_error = "whip_session_not_found";
+constexpr std::string_view k_whip_delete_session_failed_error = "whip_delete_session_failed";
 std::string make_prefixed_error(std::string_view prefix, std::string_view error)
 {
     std::string message;
@@ -131,7 +143,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
     {
         WEBRTC_LOG_WARN("WHIP parse SDP offer failed stream={} error={}", stream_id, description.error());
 
-        return json_error_response(request, 400, make_prefixed_error("invalid sdp offer: ", description.error()));
+        return json_error_response(request, 400, k_whip_invalid_sdp_offer_error, make_prefixed_error("invalid sdp offer: ", description.error()));
     }
 
     WEBRTC_LOG_INFO("WHIP parsed SDP offer stream={} media_count={}", stream_id, description->media_descriptions.size());
@@ -142,7 +154,8 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
     {
         WEBRTC_LOG_WARN("WHIP extract WebRTC offer failed stream={} error={}", stream_id, offer_summary.error());
 
-        return json_error_response(request, 400, make_prefixed_error("invalid webrtc offer: ", offer_summary.error()));
+        return json_error_response(
+            request, 400, k_whip_invalid_webrtc_offer_error, make_prefixed_error("invalid webrtc offer: ", offer_summary.error()));
     }
 
     auto validation_result = sdp::validate_whip_offer(*offer_summary);
@@ -151,7 +164,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
     {
         WEBRTC_LOG_WARN("WHIP validate offer failed stream={} error={}", stream_id, validation_result.error());
 
-        return json_error_response(request, 400, make_prefixed_error("invalid whip offer: ", validation_result.error()));
+        return json_error_response(request, 400, k_whip_invalid_offer_error, make_prefixed_error("invalid whip offer: ", validation_result.error()));
     }
 
     const std::optional<std::string> replace_session_id = read_whip_replace_session_id(request);
@@ -190,7 +203,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
                             replace_previous_session->session_id(),
                             precondition.error());
 
-            return json_error_response(request, 412, precondition.error());
+            return json_error_response(request, 412, k_whip_precondition_failed_error, precondition.error());
         }
 
         republished_session.stream_id = replace_previous_session->stream_id();
@@ -206,7 +219,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
     {
         WEBRTC_LOG_ERROR("WHIP answer factory is not configured stream={}", stream_id);
 
-        return json_error_response(request, 500, "answer factory is not configured");
+        return json_error_response(request, 500, k_whip_answer_factory_unavailable_error, "answer factory is not configured");
     }
 
     auto answer = answer_factory_->build_whip_answer(stream_id, *offer_summary);
@@ -215,7 +228,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
     {
         WEBRTC_LOG_WARN("WHIP build SDP answer failed stream={} error={}", stream_id, answer.error());
 
-        return json_error_response(request, 400, make_prefixed_error("cannot build sdp answer: ", answer.error()));
+        return json_error_response(request, 400, k_whip_sdp_answer_failed_error, make_prefixed_error("cannot build sdp answer: ", answer.error()));
     }
 
     auto runtime_offer_filter = make_runtime_offer_filter_result(*offer_summary, answer->sdp);
@@ -224,7 +237,10 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
     {
         WEBRTC_LOG_WARN("WHIP runtime publisher offer filter failed stream={} error={}", stream_id, runtime_offer_filter.error());
 
-        return json_error_response(request, 400, make_prefixed_error("failed to filter runtime publisher offer: ", runtime_offer_filter.error()));
+        return json_error_response(request,
+                                   400,
+                                   k_whip_runtime_offer_filter_failed_error,
+                                   make_prefixed_error("failed to filter runtime publisher offer: ", runtime_offer_filter.error()));
     }
 
     auto session_result = [&]() -> publisher_session_result
@@ -245,7 +261,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         {
             WEBRTC_LOG_WARN("WHIP create publisher failed stream={} already has publisher", stream_id);
 
-            return json_error_response(request, 409, "stream already has publisher");
+            return json_error_response(request, 409, k_whip_stream_already_has_publisher_error, "stream already has publisher");
         }
 
         if (error == stream_registry_error::publisher_session_not_found)
@@ -253,7 +269,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
             WEBRTC_LOG_WARN(
                 "WHIP republish failed previous publisher not found stream={} previous_session={}", stream_id, replace_session_id.value_or(""));
 
-            return json_error_response(request, 404, "previous publisher session not found");
+            return json_error_response(request, 404, k_whip_previous_publisher_not_found_error, "previous publisher session not found");
         }
 
         if (error == stream_registry_error::publisher_republish_stream_mismatch)
@@ -261,11 +277,11 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
             WEBRTC_LOG_WARN(
                 "WHIP republish failed previous publisher stream mismatch stream={} previous_session={}", stream_id, replace_session_id.value_or(""));
 
-            return json_error_response(request, 409, "previous publisher session belongs to another stream");
+            return json_error_response(request, 409, k_whip_republish_stream_mismatch_error, "previous publisher session belongs to another stream");
         }
 
         WEBRTC_LOG_ERROR("WHIP create publisher failed stream={} error={}", stream_id, stream_registry_error_to_string(error));
-        return json_error_response(request, 500, "create publisher session failed");
+        return json_error_response(request, 500, k_whip_create_session_failed_error, "create publisher session failed");
     }
 
     const auto& session = *session_result;
@@ -460,7 +476,8 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
         session,
         "WHIP",
         "publisher session not found",
-        [this, &request](int status, std::string_view message) -> http_response_ptr { return json_error_response(request, status, message); },
+        [this, &request](int status, std::string_view error_code, std::string_view message) -> http_response_ptr
+        { return json_error_response(request, status, error_code, message); },
         [this, &request](const auto& updated_session) -> http_response_ptr
         {
             auto response = create_response(request, 204, "");
@@ -481,7 +498,7 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
 
     if (session == nullptr)
     {
-        return json_error_response(request, 404, "publisher session not found");
+        return json_error_response(request, 404, k_whip_session_not_found_error, "publisher session not found");
     }
 
     auto precondition = validate_session_if_match(request, *session);
@@ -489,8 +506,7 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
     if (!precondition)
     {
         WEBRTC_LOG_WARN("WHIP delete session precondition failed session={} error={}", session_id, precondition.error());
-
-        return json_error_response(request, 412, precondition.error());
+        return json_error_response(request, 412, k_whip_precondition_failed_error, precondition.error());
     }
 
     auto result = registry_->remove_publisher_session(session_id);
@@ -503,8 +519,7 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
         }
 
         WEBRTC_LOG_ERROR("WHIP delete publisher failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
-
-        return json_error_response(request, 500, "delete publisher session failed");
+        return json_error_response(request, 500, k_whip_delete_session_failed_error, "delete publisher session failed");
     }
 
     auto response = create_response(request, 204, "");
@@ -521,7 +536,12 @@ http_response_ptr whip_handler::json_response(http_request_t& request, int code,
 
 http_response_ptr whip_handler::json_error_response(http_request_t& request, int code, std::string_view message)
 {
-    return make_json_http_error_response(request, code, "whip_error", message);
+    return json_error_response(request, code, "whip_error", message);
+}
+
+http_response_ptr whip_handler::json_error_response(http_request_t& request, int code, std::string_view error_code, std::string_view message)
+{
+    return make_json_http_error_response(request, code, error_code, message);
 }
 
 http_response_ptr whip_handler::sdp_response(http_request_t& request, int code, std::string_view body)
