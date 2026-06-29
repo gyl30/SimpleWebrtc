@@ -22,10 +22,15 @@ void rtx_retransmission_index::remember(std::string_view stream_id,
                                         uint32_t publisher_primary_ssrc,
                                         uint32_t subscriber_primary_ssrc,
                                         uint16_t primary_sequence_number,
+                                        std::string_view publisher_mid,
+                                        std::string_view subscriber_mid,
+                                        std::string_view kind,
+                                        const std::optional<std::string>& rid,
+                                        const std::optional<std::string>& repaired_rid,
                                         uint64_t now_milliseconds)
 {
-    if (stream_id.empty() || subscriber_session_id.empty() || rtx_ssrc == 0 || publisher_primary_ssrc == 0 || subscriber_primary_ssrc == 0 ||
-        config_.max_entries == 0)
+    if (stream_id.empty() || subscriber_session_id.empty() || publisher_mid.empty() || subscriber_mid.empty() || kind.empty() || rtx_ssrc == 0 ||
+        publisher_primary_ssrc == 0 || subscriber_primary_ssrc == 0 || config_.max_entries == 0)
     {
         return;
     }
@@ -54,6 +59,16 @@ void rtx_retransmission_index::remember(std::string_view stream_id,
     mapping.stream_id = std::string(stream_id);
 
     mapping.subscriber_session_id = std::string(subscriber_session_id);
+
+    mapping.publisher_mid = std::string(publisher_mid);
+
+    mapping.subscriber_mid = std::string(subscriber_mid);
+
+    mapping.kind = std::string(kind);
+
+    mapping.rid = rid;
+
+    mapping.repaired_rid = repaired_rid;
 
     mapping.rtx_ssrc = rtx_ssrc;
 

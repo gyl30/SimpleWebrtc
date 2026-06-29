@@ -22,6 +22,13 @@ struct rtx_retransmission_mapping
     std::string stream_id;
     std::string subscriber_session_id;
 
+    std::string publisher_mid;
+    std::string subscriber_mid;
+    std::string kind;
+
+    std::optional<std::string> rid;
+    std::optional<std::string> repaired_rid;
+
     uint32_t rtx_ssrc = 0;
     uint16_t rtx_sequence_number = 0;
 
@@ -32,7 +39,6 @@ struct rtx_retransmission_mapping
     uint64_t created_at_milliseconds = 0;
     uint64_t last_used_at_milliseconds = 0;
 };
-
 class rtx_retransmission_index
 {
    public:
@@ -56,6 +62,11 @@ class rtx_retransmission_index
                   uint32_t publisher_primary_ssrc,
                   uint32_t subscriber_primary_ssrc,
                   uint16_t primary_sequence_number,
+                  std::string_view publisher_mid,
+                  std::string_view subscriber_mid,
+                  std::string_view kind,
+                  const std::optional<std::string>& rid,
+                  const std::optional<std::string>& repaired_rid,
                   uint64_t now_milliseconds);
 
     [[nodiscard]]

@@ -8301,9 +8301,13 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
                                             primary_ssrc_mapping.publisher_ssrc,
                                             primary_ssrc_mapping.subscriber_ssrc,
                                             cached_packet.sequence_number,
+                                            primary_ssrc_mapping.publisher_mid,
+                                            primary_ssrc_mapping.subscriber_mid,
+                                            primary_ssrc_mapping.kind,
+                                            primary_ssrc_mapping.rid,
+                                            primary_ssrc_mapping.repaired_rid,
                                             now_milliseconds());
     }
-
     WEBRTC_LOG_DEBUG(
         "rtx retransmit packet built stream={} subscriber={} primary_ssrc={} subscriber_primary_ssrc={} rtx_ssrc={} primary_sequence={} "
         "rtx_sequence={} osn={} primary_pt={} rtx_pt={} repaired_rid_rewrite={} rtx_payload_size={} size={}",
@@ -9466,7 +9470,7 @@ std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolv
             resolution.rtx_sequence_index_miss_count += 1;
 
             WEBRTC_LOG_WARN(
-                "rtp nack retransmit rtx sequence mapping primary ssrc mismatch stream={} subscriber={} rtx_ssrc={} rtx_sequence={} "
+                "rtp nack retransmit rtx sequence mapping publisher primary ssrc mismatch stream={} subscriber={} rtx_ssrc={} rtx_sequence={} "
                 "indexed_primary_ssrc={} mapping_primary_ssrc={}",
                 event.source.stream_id,
                 event.source.remote_endpoint,
@@ -9474,6 +9478,50 @@ std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolv
                 rtx_sequence_number,
                 indexed->publisher_primary_ssrc,
                 primary_mapping->publisher_ssrc);
+
+            continue;
+        }
+
+        if (indexed->subscriber_primary_ssrc != primary_mapping->subscriber_ssrc)
+        {
+            resolution.rtx_sequence_index_miss_count += 1;
+
+            WEBRTC_LOG_WARN(
+                "rtp nack retransmit rtx sequence mapping subscriber primary ssrc mismatch stream={} subscriber={} rtx_ssrc={} rtx_sequence={} "
+                "indexed_subscriber_primary_ssrc={} mapping_subscriber_primary_ssrc={}",
+                event.source.stream_id,
+                event.source.remote_endpoint,
+                feedback_media_ssrc,
+                rtx_sequence_number,
+                indexed->subscriber_primary_ssrc,
+                primary_mapping->subscriber_ssrc);
+
+            continue;
+        }
+
+        if (indexed->publisher_mid != primary_mapping->publisher_mid || indexed->subscriber_mid != primary_mapping->subscriber_mid ||
+            indexed->kind != primary_mapping->kind || indexed->rid != primary_mapping->rid || indexed->repaired_rid != primary_mapping->repaired_rid)
+        {
+            resolution.rtx_sequence_index_miss_count += 1;
+
+            WEBRTC_LOG_WARN(
+                "rtp nack retransmit rtx sequence mapping track identity mismatch stream={} subscriber={} rtx_ssrc={} rtx_sequence={} "
+                "indexed_publisher_mid={} mapping_publisher_mid={} indexed_subscriber_mid={} mapping_subscriber_mid={} "
+                "indexed_kind={} mapping_kind={} indexed_rid={} mapping_rid={} indexed_repaired_rid={} mapping_repaired_rid={}",
+                event.source.stream_id,
+                event.source.remote_endpoint,
+                feedback_media_ssrc,
+                rtx_sequence_number,
+                indexed->publisher_mid,
+                primary_mapping->publisher_mid,
+                indexed->subscriber_mid,
+                primary_mapping->subscriber_mid,
+                indexed->kind,
+                primary_mapping->kind,
+                indexed->rid.value_or(""),
+                primary_mapping->rid.value_or(""),
+                indexed->repaired_rid.value_or(""),
+                primary_mapping->repaired_rid.value_or(""));
 
             continue;
         }
@@ -9488,7 +9536,6 @@ std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolv
 
         resolution.sequences.push_back(sequence);
     }
-
     WEBRTC_LOG_DEBUG(
         "rtp nack retransmit rtx feedback resolved stream={} subscriber={} rtx_ssrc={} primary_ssrc={} requested={} mapped={} index_miss={}",
         event.source.stream_id,
