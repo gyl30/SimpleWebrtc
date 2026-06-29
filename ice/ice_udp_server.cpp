@@ -6576,19 +6576,20 @@ void ice_udp_server::observe_inbound_rtcp_reports(const media_peer_info& peer, c
         return;
     }
 
+    if (observation->receiver_report_count != 0 || observation->remb_count != 0)
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats feedback observed stream={} session={} remote={} role={} rr={} remb={} max_remb_bps={}",
+                         peer.stream_id,
+                         peer.session_id,
+                         peer.remote_endpoint,
+                         media_peer_role_to_string(peer.role),
+                         observation->receiver_report_count,
+                         observation->remb_count,
+                         observation->max_remb_bitrate_bps);
+    }
+
     if (peer.role != media_peer_role::publisher)
     {
-        if (observation->receiver_report_count != 0 || observation->remb_count != 0)
-        {
-            WEBRTC_LOG_DEBUG("rtcp stats subscriber feedback observed stream={} session={} remote={} rr={} remb={} max_remb_bps={}",
-                             peer.stream_id,
-                             peer.session_id,
-                             peer.remote_endpoint,
-                             observation->receiver_report_count,
-                             observation->remb_count,
-                             observation->max_remb_bitrate_bps);
-        }
-
         return;
     }
 
@@ -6619,6 +6620,24 @@ void ice_udp_server::observe_inbound_rtcp_reports(const media_peer_info& peer, c
             continue;
         }
 
+        std::string mid;
+        std::optional<std::string> rid;
+        std::optional<std::string> repaired_rid;
+
+        if (identity_authority_ != nullptr)
+        {
+            auto track_binding = identity_authority_->find_track_by_peer_ssrc(peer.remote_endpoint, sender_report_ssrc);
+
+            if (track_binding.has_value())
+            {
+                mid = track_binding->mid;
+
+                rid = track_binding->rid;
+
+                repaired_rid = track_binding->repaired_rid;
+            }
+        }
+
         const uint32_t local_ssrc = make_rtcp_report_local_ssrc(peer, sender_report_ssrc);
 
         rtcp_report_source_config source;
@@ -6628,6 +6647,12 @@ void ice_udp_server::observe_inbound_rtcp_reports(const media_peer_info& peer, c
         source.session_id = peer.session_id;
 
         source.remote_endpoint = peer.remote_endpoint;
+
+        source.mid = mid;
+
+        source.rid = rid;
+
+        source.repaired_rid = repaired_rid;
 
         source.local_ssrc = local_ssrc;
 
@@ -6645,12 +6670,18 @@ void ice_udp_server::observe_inbound_rtcp_reports(const media_peer_info& peer, c
         {
             rtcp_report_remember_source_failed_total_.fetch_add(1, std::memory_order_relaxed);
 
-            WEBRTC_LOG_DEBUG("rtcp stats sender report remember source failed stream={} session={} remote={} ssrc={} error={}",
-                             peer.stream_id,
-                             peer.session_id,
-                             peer.remote_endpoint,
-                             sender_report_ssrc,
-                             remember_result.error());
+            WEBRTC_LOG_DEBUG(
+                "rtcp stats sender report remember source failed stream={} session={} remote={} sender_ssrc={} local_ssrc={} mid={} rid={} "
+                "repaired_rid={} error={}",
+                peer.stream_id,
+                peer.session_id,
+                peer.remote_endpoint,
+                sender_report_ssrc,
+                local_ssrc,
+                mid,
+                rid.value_or(""),
+                repaired_rid.value_or(""),
+                remember_result.error());
 
             continue;
         }
@@ -6658,6 +6689,17 @@ void ice_udp_server::observe_inbound_rtcp_reports(const media_peer_info& peer, c
         rtcp_report_remember_source_success_total_.fetch_add(1, std::memory_order_relaxed);
 
         remembered_sender_report_source_count += 1;
+
+        WEBRTC_LOG_DEBUG(
+            "rtcp stats sender report observed stream={} session={} remote={} sender_ssrc={} local_ssrc={} mid={} rid={} repaired_rid={}",
+            peer.stream_id,
+            peer.session_id,
+            peer.remote_endpoint,
+            sender_report_ssrc,
+            local_ssrc,
+            mid,
+            rid.value_or(""),
+            repaired_rid.value_or(""));
     }
 
     if (remembered_sender_report_source_count != 0)
@@ -6666,6 +6708,7 @@ void ice_udp_server::observe_inbound_rtcp_reports(const media_peer_info& peer, c
                                                                    std::memory_order_relaxed);
     }
 }
+
 void ice_udp_server::normalize_inbound_rtcp_report_stats(const media_peer_info& peer, srtp_packet_process_result& packet)
 {
     if (packet.kind != srtp_packet_kind::rtcp)
@@ -6693,8 +6736,11 @@ void ice_udp_server::normalize_inbound_rtcp_report_stats(const media_peer_info& 
                              packet.rtcp_report_sender_ssrc);
 
             packet.rtcp_has_sender_report = false;
+
             packet.rtcp_has_sender_info = false;
+
             packet.rtcp_report_sender_ssrc = 0;
+
             packet.rtcp_sender_info_data = rtcp_sender_info{};
 
             sender_report_skipped = true;
@@ -6706,6 +6752,7 @@ void ice_udp_server::normalize_inbound_rtcp_report_stats(const media_peer_info& 
         if (sender_report_skipped && !packet.rtcp_has_receiver_report && !packet.rtcp_has_sender_report)
         {
             packet.rtcp_report_packet_count = 0;
+
             packet.rtcp_report_block_count = 0;
         }
 
@@ -6717,7 +6764,7 @@ void ice_udp_server::normalize_inbound_rtcp_report_stats(const media_peer_info& 
         return;
     }
 
-    if (ssrc_mapper_ == nullptr)
+    if (ssrc_mapper_ == nullptr && identity_authority_ == nullptr)
     {
         return;
     }
@@ -6737,7 +6784,9 @@ void ice_udp_server::normalize_inbound_rtcp_report_stats(const media_peer_info& 
             continue;
         }
 
-        const std::optional<media_ssrc_mapping> mapping = ssrc_mapper_->find_by_subscriber_ssrc(peer.session_id, report_block.ssrc);
+        const uint32_t original_subscriber_ssrc = report_block.ssrc;
+
+        const std::optional<media_ssrc_mapping> mapping = find_identity_ssrc_mapping_by_subscriber_ssrc(peer.session_id, original_subscriber_ssrc);
 
         if (!mapping.has_value())
         {
@@ -6747,7 +6796,7 @@ void ice_udp_server::normalize_inbound_rtcp_report_stats(const media_peer_info& 
                              peer.stream_id,
                              peer.session_id,
                              peer.remote_endpoint,
-                             report_block.ssrc);
+                             original_subscriber_ssrc);
 
             continue;
         }
@@ -6784,7 +6833,9 @@ void ice_udp_server::normalize_inbound_rtcp_report_stats(const media_peer_info& 
     if (packet.rtcp_report_blocks.empty())
     {
         packet.rtcp_last_fraction_lost = 0;
+
         packet.rtcp_last_cumulative_lost = 0;
+
         packet.rtcp_last_jitter = 0;
     }
     else
