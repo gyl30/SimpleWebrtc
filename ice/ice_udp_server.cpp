@@ -66,6 +66,7 @@ constexpr uint64_t k_unselected_candidate_pair_retention_milliseconds = 120000;
 
 constexpr std::string_view k_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
 constexpr std::string_view k_absolute_send_time_extension_uri = "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
+constexpr std::string_view k_audio_level_extension_uri = "urn:ietf:params:rtp-hdrext:ssrc-audio-level";
 
 constexpr uint64_t k_fnv_offset_basis = 1469598103934665603ULL;
 
@@ -6169,35 +6170,17 @@ std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const 
         return *resolution;
     }
 
-    if (identity_authority_ != nullptr)
-    {
-        auto identity_result = identity_authority_->remember_track_resolution(*resolution, resolution->rtx);
-
-        if (!identity_result)
-        {
-            WEBRTC_LOG_WARN("media identity track rejected remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={} rtx={} error={}",
-                            peer.remote_endpoint,
-                            peer.stream_id,
-                            peer.session_id,
-                            resolution->mid,
-                            resolution->kind,
-                            resolution->ssrc,
-                            static_cast<unsigned int>(resolution->payload_type),
-                            resolution->rtx ? 1 : 0,
-                            identity_result.error());
-
-            resolution->resolved = false;
-            resolution->newly_bound = false;
-            resolution->state = media_track_resolution_state::unresolved;
-            resolution->error = identity_result.error();
-
-            return *resolution;
-        }
-    }
     if (resolution->newly_bound)
     {
+        const std::string audio_level =
+            resolution->audio_level.has_value() ? std::to_string(static_cast<unsigned int>(*resolution->audio_level)) : std::string();
+
+        const std::string voice_activity =
+            resolution->voice_activity.has_value() ? std::string(*resolution->voice_activity ? "1" : "0") : std::string();
+
         WEBRTC_LOG_INFO(
-            "media track binding created remote={} stream={} session={} state={} mid={} kind={} ssrc={} payload_type={} rid={} repaired_rid={}",
+            "media track binding created remote={} stream={} session={} state={} mid={} kind={} ssrc={} payload_type={} rid={} repaired_rid={} "
+            "audio_level={} voice_activity={} rtx={} rtx_primary_ssrc={} rtx_repair_ssrc={}",
             peer.remote_endpoint,
             peer.stream_id,
             peer.session_id,
@@ -6207,7 +6190,12 @@ std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const 
             resolution->ssrc,
             static_cast<unsigned int>(resolution->payload_type),
             resolution->rid.has_value() ? *resolution->rid : "",
-            resolution->repaired_rid.has_value() ? *resolution->repaired_rid : "");
+            resolution->repaired_rid.has_value() ? *resolution->repaired_rid : "",
+            audio_level,
+            voice_activity,
+            resolution->rtx ? 1 : 0,
+            resolution->rtx_primary_ssrc,
+            resolution->rtx_repair_ssrc);
     }
 
     return *resolution;
@@ -8622,11 +8610,65 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
             rewrite_required = true;
         }
     }
+    if (payload_type_mapping.has_value() && payload_type_mapping->kind == "audio" && registry_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
+
+        auto subscriber = registry_->find_subscriber_by_session_id(target_peer.session_id);
+
+        if (publisher == nullptr || subscriber == nullptr)
+        {
+            WEBRTC_LOG_WARN("rtp audio-level rewrite failed session not found stream={} publisher_session={} subscriber_session={}",
+                            route.source.stream_id,
+                            route.source.session_id,
+                            target_peer.session_id);
+
+            return std::nullopt;
+        }
+
+        auto audio_level_rewrite =
+            make_forwarded_rtp_header_extension_id_rewrite(*payload_type_mapping,
+                                                           publisher->remote_offer_summary(),
+                                                           subscriber->remote_offer_summary(),
+                                                           std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()),
+                                                           k_audio_level_extension_uri,
+                                                           "rtp audio-level rewrite");
+
+        if (!audio_level_rewrite)
+        {
+            WEBRTC_LOG_WARN(
+                "rtp audio-level rewrite failed stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} error={}",
+                payload_type_mapping->stream_id,
+                route.source.session_id,
+                target_peer.session_id,
+                payload_type_mapping->publisher_mid,
+                payload_type_mapping->subscriber_mid,
+                audio_level_rewrite.error());
+
+            return std::nullopt;
+        }
+
+        if (audio_level_rewrite->has_value())
+        {
+            if (!remember_extmap_header_extension_id_rewrite(route.source.stream_id,
+                                                             route.source.session_id,
+                                                             target_peer.session_id,
+                                                             payload_type_mapping->subscriber_mid,
+                                                             k_audio_level_extension_uri,
+                                                             **audio_level_rewrite))
+            {
+                return std::nullopt;
+            }
+
+            options.header_extension_id_rewrites.push_back(**audio_level_rewrite);
+
+            rewrite_required = true;
+        }
+    }
     if (!rewrite_required)
     {
         return original_packet;
     }
-
     auto rewrite_result = rewrite_rtp_packet(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()), options);
 
     if (!rewrite_result)

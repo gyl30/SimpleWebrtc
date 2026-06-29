@@ -387,6 +387,9 @@ void fill_binding_from_values(media_track_resolver::media_track_binding& binding
     {
         binding.repaired_rid = values.repaired_rid;
     }
+
+    binding.audio_level = values.audio_level;
+    binding.voice_activity = values.voice_activity;
 }
 
 bool optional_string_conflicts(const std::optional<std::string>& expected, const std::optional<std::string>& actual)

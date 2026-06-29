@@ -106,6 +106,9 @@ class media_track_resolver
         std::optional<std::string> rid;
         std::optional<std::string> repaired_rid;
 
+        std::optional<uint8_t> audio_level;
+        std::optional<bool> voice_activity;
+
         bool rtx = false;
         uint32_t rtx_primary_ssrc = 0;
         uint32_t rtx_repair_ssrc = 0;
