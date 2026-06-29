@@ -626,6 +626,8 @@ constexpr std::string_view k_rtp_stream_id_extension_uri = "urn:ietf:params:rtp-
 
 constexpr std::string_view k_repaired_rtp_stream_id_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id";
 
+constexpr std::string_view k_absolute_send_time_extension_uri = "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
+
 std::unexpected<std::string> make_payload_mapping_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 const sdp::rtp_header_extension* find_header_extension_by_uri(const sdp::media_summary& media, std::string_view uri)
@@ -804,6 +806,11 @@ std::expected<void, std::string> validate_repaired_rid_extension_compatibility(c
      */
     return {};
 }
+std::expected<void, std::string> validate_forwarded_absolute_send_time_extension_compatibility(const sdp::media_summary& publisher_media,
+                                                                                               const sdp::media_summary& subscriber_media)
+{
+    return validate_forwarded_header_extension_collision(publisher_media, subscriber_media, k_absolute_send_time_extension_uri);
+}
 
 std::expected<void, std::string> validate_payload_mapping_identity_compatibility(const sdp::media_summary& publisher_media,
                                                                                  const sdp::media_summary& subscriber_media,
@@ -847,10 +854,15 @@ std::expected<void, std::string> validate_payload_mapping_identity_compatibility
 
     auto repaired_rid_result =
         validate_repaired_rid_extension_compatibility(publisher_media, subscriber_media, publisher_codec_is_rtx && subscriber_codec_is_rtx);
-
     if (!repaired_rid_result)
     {
         return std::unexpected(repaired_rid_result.error());
+    }
+
+    auto absolute_send_time_result = validate_forwarded_absolute_send_time_extension_compatibility(publisher_media, subscriber_media);
+    if (!absolute_send_time_result)
+    {
+        return std::unexpected(absolute_send_time_result.error());
     }
 
     return {};
