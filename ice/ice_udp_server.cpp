@@ -1079,6 +1079,104 @@ optional_header_extension_id_rewrite_result make_transport_wide_cc_header_extens
     return std::optional<rtp_header_extension_id_rewrite>(rewrite);
 }
 
+optional_header_extension_id_rewrite_result make_forwarded_rtp_header_extension_id_rewrite(const media_payload_type_mapping& mapping,
+                                                                                           const sdp::webrtc_offer_summary& publisher_offer,
+                                                                                           const sdp::webrtc_offer_summary& subscriber_offer,
+                                                                                           std::span<const uint8_t> plain_packet,
+                                                                                           std::string_view extension_uri,
+                                                                                           std::string_view error_prefix)
+{
+    const sdp::media_summary* publisher_media = find_media_summary_by_mid(publisher_offer, mapping.publisher_mid);
+
+    if (publisher_media == nullptr)
+    {
+        std::string message(error_prefix);
+
+        message.append(" publisher media not found");
+
+        return make_error(message);
+    }
+
+    const sdp::media_summary* subscriber_media = find_media_summary_by_mid(subscriber_offer, mapping.subscriber_mid);
+
+    if (subscriber_media == nullptr)
+    {
+        std::string message(error_prefix);
+
+        message.append(" subscriber media not found");
+
+        return make_error(message);
+    }
+
+    const std::optional<uint8_t> publisher_extension_id = find_rtp_header_extension_id(*publisher_media, extension_uri);
+
+    if (!publisher_extension_id.has_value())
+    {
+        return std::optional<rtp_header_extension_id_rewrite>{};
+    }
+
+    auto header = parse_rtp_packet_header(plain_packet);
+
+    if (!header)
+    {
+        std::string message(error_prefix);
+
+        message.append(" parse failed: ");
+        message.append(header.error());
+
+        return std::unexpected(std::move(message));
+    }
+
+    auto publisher_payload = find_rtp_header_extension(plain_packet, *header, *publisher_extension_id);
+
+    if (!publisher_payload.has_value())
+    {
+        return std::optional<rtp_header_extension_id_rewrite>{};
+    }
+
+    const std::optional<uint8_t> subscriber_extension_id = find_rtp_header_extension_id(*subscriber_media, extension_uri);
+
+    if (!subscriber_extension_id.has_value())
+    {
+        return std::optional<rtp_header_extension_id_rewrite>{};
+    }
+
+    if (*publisher_extension_id == *subscriber_extension_id)
+    {
+        return std::optional<rtp_header_extension_id_rewrite>{};
+    }
+
+    rtp_header_extension_id_rewrite rewrite;
+
+    rewrite.source_id = *publisher_extension_id;
+
+    rewrite.target_id = *subscriber_extension_id;
+
+    return std::optional<rtp_header_extension_id_rewrite>(rewrite);
+}
+
+optional_header_extension_id_rewrite_result make_rid_header_extension_id_rewrite(const media_payload_type_mapping& mapping,
+                                                                                 const sdp::webrtc_offer_summary& publisher_offer,
+                                                                                 const sdp::webrtc_offer_summary& subscriber_offer,
+                                                                                 std::span<const uint8_t> plain_packet)
+{
+    return make_forwarded_rtp_header_extension_id_rewrite(
+        mapping, publisher_offer, subscriber_offer, plain_packet, sdp::k_rtp_header_extension_sdes_rtp_stream_id_uri, "rid rewrite");
+}
+
+optional_header_extension_id_rewrite_result make_repaired_rid_header_extension_id_rewrite(const media_payload_type_mapping& mapping,
+                                                                                          const sdp::webrtc_offer_summary& publisher_offer,
+                                                                                          const sdp::webrtc_offer_summary& subscriber_offer,
+                                                                                          std::span<const uint8_t> plain_packet)
+{
+    return make_forwarded_rtp_header_extension_id_rewrite(mapping,
+                                                          publisher_offer,
+                                                          subscriber_offer,
+                                                          plain_packet,
+                                                          sdp::k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri,
+                                                          "repaired-rid rewrite");
+}
+
 optional_rtx_header_extension_id_rewrite_result make_rtx_repaired_rid_header_extension_id_rewrite(const media_payload_type_mapping& mapping,
                                                                                                   const sdp::webrtc_offer_summary& publisher_offer,
                                                                                                   const sdp::webrtc_offer_summary& subscriber_offer,
@@ -7172,6 +7270,55 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
             rewrite_required = true;
         }
     }
+    if (payload_type_mapping.has_value() && registry_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
+
+        auto subscriber = registry_->find_subscriber_by_session_id(target_peer.session_id);
+
+        if (publisher == nullptr || subscriber == nullptr)
+        {
+            WEBRTC_LOG_WARN("rtp rid rewrite skipped session not found stream={} publisher_session={} subscriber_session={}",
+                            route.source.stream_id,
+                            route.source.session_id,
+                            target_peer.session_id);
+
+            return std::nullopt;
+        }
+
+        optional_header_extension_id_rewrite_result rid_rewrite =
+            payload_type_mapping->rtx
+                ? make_repaired_rid_header_extension_id_rewrite(*payload_type_mapping,
+                                                                publisher->remote_offer_summary(),
+                                                                subscriber->remote_offer_summary(),
+                                                                std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()))
+                : make_rid_header_extension_id_rewrite(*payload_type_mapping,
+                                                       publisher->remote_offer_summary(),
+                                                       subscriber->remote_offer_summary(),
+                                                       std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
+
+        if (!rid_rewrite)
+        {
+            WEBRTC_LOG_WARN(
+                "rtp rid rewrite failed stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} rtx={} error={}",
+                payload_type_mapping->stream_id,
+                route.source.session_id,
+                target_peer.session_id,
+                payload_type_mapping->publisher_mid,
+                payload_type_mapping->subscriber_mid,
+                payload_type_mapping->rtx ? 1 : 0,
+                rid_rewrite.error());
+
+            return std::nullopt;
+        }
+
+        if (rid_rewrite->has_value())
+        {
+            options.header_extension_id_rewrites.push_back(**rid_rewrite);
+
+            rewrite_required = true;
+        }
+    }
     if (!rewrite_required)
     {
         return original_packet;
@@ -7398,7 +7545,48 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
             rewrite_required = true;
         }
     }
+    if (payload_type_mapping.has_value() && registry_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(ssrc_mapping->publisher_session_id);
 
+        auto subscriber = registry_->find_subscriber_by_session_id(ssrc_mapping->subscriber_session_id);
+
+        if (publisher == nullptr || subscriber == nullptr)
+        {
+            WEBRTC_LOG_WARN(
+                "rtp nack retransmit rid rewrite failed session not found stream={} publisher_session={} subscriber_session={} sequence={}",
+                event.source.stream_id,
+                ssrc_mapping->publisher_session_id,
+                ssrc_mapping->subscriber_session_id,
+                cached_packet.sequence_number);
+
+            return std::nullopt;
+        }
+
+        auto rid_rewrite =
+            make_rid_header_extension_id_rewrite(*payload_type_mapping,
+                                                 publisher->remote_offer_summary(),
+                                                 subscriber->remote_offer_summary(),
+                                                 std::span<const uint8_t>(cached_packet.plain_packet.data(), cached_packet.plain_packet.size()));
+
+        if (!rid_rewrite)
+        {
+            WEBRTC_LOG_WARN("rtp nack retransmit rid rewrite failed stream={} subscriber={} sequence={} error={}",
+                            event.source.stream_id,
+                            event.source.remote_endpoint,
+                            cached_packet.sequence_number,
+                            rid_rewrite.error());
+
+            return std::nullopt;
+        }
+
+        if (rid_rewrite->has_value())
+        {
+            options.header_extension_id_rewrites.push_back(**rid_rewrite);
+
+            rewrite_required = true;
+        }
+    }
     if (!rewrite_required)
     {
         return make_primary_result(std::move(original_packet));

@@ -741,11 +741,11 @@ std::expected<void, std::string> validate_forwarded_rid_extension_compatibility(
         return {};
     }
 
-    if (publisher_rid_extension->id != subscriber_rid_extension->id)
-    {
-        return make_payload_mapping_error("payload mapping rejected because rid extmap id rewrite is not enabled");
-    }
-
+    /*
+     * Publisher and subscriber may negotiate different extmap ids for RID.
+     * RTP forwarding rewrites the extension id when both peers support RID
+     * and the subscriber id does not collide with another forwarded URI.
+     */
     return {};
 }
 
@@ -797,11 +797,11 @@ std::expected<void, std::string> validate_repaired_rid_extension_compatibility(c
         return make_payload_mapping_error("payload mapping rejected because repaired-rid requires rid extmap on both peers");
     }
 
-    if (publisher_repaired_rid_extension->id != subscriber_repaired_rid_extension->id)
-    {
-        return make_payload_mapping_error("payload mapping rejected because repaired-rid extmap id rewrite is not enabled");
-    }
-
+    /*
+     * Publisher and subscriber may negotiate different extmap ids for
+     * repaired-rid. RTP forwarding rewrites the extension id for RTX packets
+     * after validating that both peers support repaired-rid and RTX.
+     */
     return {};
 }
 
