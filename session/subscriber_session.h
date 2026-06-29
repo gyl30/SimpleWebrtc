@@ -78,6 +78,7 @@ class subscriber_session
                           uint64_t sdp_session_version);
 
     void set_accepted_remote_media_mline_indexes(std::vector<int> accepted_remote_media_mline_indexes);
+    void apply_remote_ice_restart_offer(std::string remote_sdp_offer, sdp::webrtc_offer_summary remote_offer_summary);
 
     [[nodiscard]] std::expected<void, std::string> add_remote_ice_candidate(remote_ice_candidate candidate);
 

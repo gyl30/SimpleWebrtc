@@ -144,6 +144,21 @@ void publisher_session::set_accepted_remote_media_mline_indexes(std::vector<int>
     updated_at_milliseconds_ = now_milliseconds();
 }
 
+void publisher_session::apply_remote_ice_restart_offer(std::string remote_sdp_offer, sdp::webrtc_offer_summary remote_offer_summary)
+{
+    remote_sdp_offer_ = std::move(remote_sdp_offer);
+
+    remote_offer_summary_ = std::move(remote_offer_summary);
+
+    remote_ice_candidates_.clear();
+
+    remote_ice_completed_ = false;
+
+    state_ = session_state::sdp_received;
+
+    updated_at_milliseconds_ = now_milliseconds();
+}
+
 std::expected<void, std::string> publisher_session::add_remote_ice_candidate(remote_ice_candidate candidate)
 {
     if (contains_remote_ice_candidate(remote_ice_candidates_, candidate))

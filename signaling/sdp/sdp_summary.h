@@ -107,6 +107,17 @@ std::expected<void, std::string> validate_rtp_track_identity(const media_summary
                                                              uint8_t payload_type,
                                                              uint32_t ssrc);
 
+[[nodiscard]]
+bool offer_ice_credentials_are_complete(const webrtc_offer_summary& offer);
+
+[[nodiscard]]
+bool offer_ice_credentials_equal(const webrtc_offer_summary& left, const webrtc_offer_summary& right);
+
+[[nodiscard]]
+bool offer_has_ice_restart(const webrtc_offer_summary& previous_offer, const webrtc_offer_summary& next_offer);
+
+[[nodiscard]]
+std::string offer_ice_credentials_to_string(const webrtc_offer_summary& offer);
 [[nodiscard]] webrtc_offer_summary_result extract_webrtc_offer_summary(const session_description& description);
 }    // namespace webrtc::sdp
 

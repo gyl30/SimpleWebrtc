@@ -1144,6 +1144,45 @@ std::optional<uint32_t> find_rtx_repair_ssrc(const media_summary& media, uint32_
 
 bool media_ssrc_is_rtx_repair(const media_summary& media, uint32_t ssrc) { return find_rtx_primary_ssrc(media, ssrc).has_value(); }
 
+bool offer_ice_credentials_are_complete(const webrtc_offer_summary& offer) { return !offer.ice_ufrag.empty() && !offer.ice_pwd.empty(); }
+
+bool offer_ice_credentials_equal(const webrtc_offer_summary& left, const webrtc_offer_summary& right)
+{
+    return left.ice_ufrag == right.ice_ufrag && left.ice_pwd == right.ice_pwd;
+}
+
+bool offer_has_ice_restart(const webrtc_offer_summary& previous_offer, const webrtc_offer_summary& next_offer)
+{
+    if (!offer_ice_credentials_are_complete(previous_offer))
+    {
+        return false;
+    }
+
+    if (!offer_ice_credentials_are_complete(next_offer))
+    {
+        return false;
+    }
+
+    return !offer_ice_credentials_equal(previous_offer, next_offer);
+}
+
+std::string offer_ice_credentials_to_string(const webrtc_offer_summary& offer)
+{
+    std::string result;
+
+    result.reserve(offer.ice_ufrag.size() + 32);
+
+    result.append("ufrag=");
+
+    result.append(offer.ice_ufrag);
+
+    result.append(" pwd=");
+
+    result.append(offer.ice_pwd.empty() ? "empty" : "***");
+
+    return result;
+}
+
 bool media_has_rtp_header_extension_uri(const media_summary& media, std::string_view uri)
 {
     if (uri.empty())
