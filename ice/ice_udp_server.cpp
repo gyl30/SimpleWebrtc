@@ -1790,7 +1790,7 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
             ++iterator;
         }
         publisher_video_ssrc_by_stream_.erase(std::string(stream_id));
-        pending_republish_keyframe_session_by_stream_.erase(std::string(stream_id));
+        pending_republish_keyframe_state_by_stream_.erase(std::string(stream_id));
     }
     WEBRTC_LOG_INFO(
         "publisher republish runtime state forgotten stream={} old_session={} cache_erased={} remaining_cache_packets={} "
@@ -2296,7 +2296,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.keyframe_request_state_count = to_debug_count(keyframe_request_last_time_milliseconds_by_key_.size());
         snapshot.fir_sequence_number_state_count = to_debug_count(fir_sequence_number_by_key_.size());
         snapshot.publisher_video_ssrc_state_count = to_debug_count(publisher_video_ssrc_by_stream_.size());
-        snapshot.pending_republish_keyframe_request_count = to_debug_count(pending_republish_keyframe_session_by_stream_.size());
+        snapshot.pending_republish_keyframe_request_count = to_debug_count(pending_republish_keyframe_state_by_stream_.size());
 
         for (const auto& [endpoint, value] : endpoints_by_address_)
         {
@@ -4754,8 +4754,7 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
 
     const std::string key = make_keyframe_request_key(route, target_peer, packet.ssrc);
 
-    const bool republish_keyframe_request = consume_republish_keyframe_request_pending(packet, route, track_resolution, target_peer);
-
+    const bool republish_keyframe_request = consume_republish_keyframe_request_pending_for_subscriber(packet, route, track_resolution, target_peer);
     {
         std::lock_guard lock(endpoint_mutex_);
 
@@ -8150,7 +8149,7 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         }
 
         publisher_video_ssrc_by_stream_.erase(std::string(stream_id));
-        pending_republish_keyframe_session_by_stream_.erase(std::string(stream_id));
+        pending_republish_keyframe_state_by_stream_.erase(std::string(stream_id));
     }
     WEBRTC_LOG_INFO(
         "ice udp stream runtime state cleanup stream={} cache_erased={} remaining_cache_packets={} media_router_streams_before={} "
@@ -8172,16 +8171,19 @@ void ice_udp_server::mark_republish_keyframe_request_pending(std::string_view st
 
     {
         std::lock_guard lock(endpoint_mutex_);
-
-        pending_republish_keyframe_session_by_stream_[std::string(stream_id)] = std::string(new_publisher_session_id);
+        republish_keyframe_request_state state;
+        state.publisher_session_id = std::string(new_publisher_session_id);
+        pending_republish_keyframe_state_by_stream_[std::string(stream_id)] = std::move(state);
     }
 
-    WEBRTC_LOG_INFO("publisher republish keyframe request pending stream={} publisher_session={}", stream_id, new_publisher_session_id);
+    WEBRTC_LOG_INFO(
+        "publisher republish keyframe request pending stream={} publisher_session={} scope=subscribers", stream_id, new_publisher_session_id);
 }
-bool ice_udp_server::consume_republish_keyframe_request_pending(const srtp_packet_process_result& packet,
-                                                                const media_route_result& route,
-                                                                const std::optional<media_track_resolution>& track_resolution,
-                                                                const media_peer_info& target_peer)
+
+bool ice_udp_server::consume_republish_keyframe_request_pending_for_subscriber(const srtp_packet_process_result& packet,
+                                                                               const media_route_result& route,
+                                                                               const std::optional<media_track_resolution>& track_resolution,
+                                                                               const media_peer_info& target_peer)
 {
     if (packet.kind != srtp_packet_kind::rtp)
     {
@@ -8208,35 +8210,45 @@ bool ice_udp_server::consume_republish_keyframe_request_pending(const srtp_packe
         return false;
     }
 
-    if (route.source.stream_id.empty() || route.source.session_id.empty() || packet.ssrc == 0)
+    if (route.source.stream_id.empty() || route.source.session_id.empty() || target_peer.session_id.empty() || packet.ssrc == 0)
     {
         return false;
     }
 
     std::lock_guard lock(endpoint_mutex_);
 
-    const auto iterator = pending_republish_keyframe_session_by_stream_.find(route.source.stream_id);
+    const auto iterator = pending_republish_keyframe_state_by_stream_.find(route.source.stream_id);
 
-    if (iterator == pending_republish_keyframe_session_by_stream_.end())
+    if (iterator == pending_republish_keyframe_state_by_stream_.end())
     {
         return false;
     }
 
-    if (iterator->second != route.source.session_id)
+    republish_keyframe_request_state& state = iterator->second;
+
+    if (state.publisher_session_id != route.source.session_id)
     {
         return false;
     }
 
-    pending_republish_keyframe_session_by_stream_.erase(iterator);
+    if (state.consumed_subscriber_session_ids.contains(target_peer.session_id))
+    {
+        return false;
+    }
 
-    WEBRTC_LOG_INFO("publisher republish keyframe request consumed stream={} publisher_session={} subscriber_session={} media_ssrc={}",
-                    route.source.stream_id,
-                    route.source.session_id,
-                    target_peer.session_id,
-                    packet.ssrc);
+    state.consumed_subscriber_session_ids.insert(target_peer.session_id);
+
+    WEBRTC_LOG_INFO(
+        "publisher republish keyframe request consumed stream={} publisher_session={} subscriber_session={} consumed_subscribers={} media_ssrc={}",
+        route.source.stream_id,
+        route.source.session_id,
+        target_peer.session_id,
+        state.consumed_subscriber_session_ids.size(),
+        packet.ssrc);
 
     return true;
 }
+
 void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet,
                                           const media_route_result& route,
                                           const std::optional<media_track_resolution>& track_resolution,

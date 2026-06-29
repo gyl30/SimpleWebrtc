@@ -236,6 +236,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         pli,
         fir,
     };
+    struct republish_keyframe_request_state
+    {
+        std::string publisher_session_id;
+        std::unordered_set<std::string> consumed_subscriber_session_ids;
+    };
 
    private:
     [[nodiscard]]
@@ -387,10 +392,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void mark_republish_keyframe_request_pending(std::string_view stream_id, std::string_view new_publisher_session_id);
 
     [[nodiscard]]
-    bool consume_republish_keyframe_request_pending(const srtp_packet_process_result& packet,
-                                                    const media_route_result& route,
-                                                    const std::optional<media_track_resolution>& track_resolution,
-                                                    const media_peer_info& target_peer);
+    bool consume_republish_keyframe_request_pending_for_subscriber(const srtp_packet_process_result& packet,
+                                                                   const media_route_result& route,
+                                                                   const std::optional<media_track_resolution>& track_resolution,
+                                                                   const media_peer_info& target_peer);
+
     void maybe_request_keyframe_from_publisher(const srtp_packet_process_result& packet,
                                                const media_route_result& route,
                                                const std::optional<media_track_resolution>& track_resolution,
@@ -649,7 +655,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, uint64_t> keyframe_request_last_time_milliseconds_by_key_;
     std::unordered_map<std::string, uint8_t> fir_sequence_number_by_key_;
     std::unordered_map<std::string, uint32_t> publisher_video_ssrc_by_stream_;
-    std::unordered_map<std::string, std::string> pending_republish_keyframe_session_by_stream_;
+    std::unordered_map<std::string, republish_keyframe_request_state> pending_republish_keyframe_state_by_stream_;
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
 
