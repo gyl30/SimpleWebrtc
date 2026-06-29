@@ -797,6 +797,135 @@ std::shared_ptr<rtcp_report_service> make_rtcp_report_service_from_env()
     return std::make_shared<rtcp_report_service>(make_rtcp_report_service_config_from_env());
 }
 
+dtls_transport_config make_dtls_transport_config_from_env()
+{
+    dtls_transport_config config;
+
+    const uint64_t handshake_timeout_milliseconds =
+        get_env_uint64_or_default("WEBRTC_DTLS_HANDSHAKE_TIMEOUT_MS", static_cast<uint64_t>(config.handshake_timeout.count()));
+
+    uint64_t clamped_handshake_timeout_milliseconds = handshake_timeout_milliseconds;
+
+    if (clamped_handshake_timeout_milliseconds < 1000)
+    {
+        WEBRTC_LOG_WARN("dtls handshake timeout too small timeout_ms={} clamped=1000", clamped_handshake_timeout_milliseconds);
+
+        clamped_handshake_timeout_milliseconds = 1000;
+    }
+
+    if (clamped_handshake_timeout_milliseconds > 120000)
+    {
+        WEBRTC_LOG_WARN("dtls handshake timeout too large timeout_ms={} clamped=120000", clamped_handshake_timeout_milliseconds);
+
+        clamped_handshake_timeout_milliseconds = 120000;
+    }
+
+    config.handshake_timeout = std::chrono::milliseconds(static_cast<int64_t>(clamped_handshake_timeout_milliseconds));
+
+    WEBRTC_LOG_INFO("dtls transport config handshake_timeout_ms={}", config.handshake_timeout.count());
+
+    return config;
+}
+
+std::chrono::milliseconds make_ice_consent_check_interval_from_env()
+{
+    const uint64_t default_interval_milliseconds =
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(k_ice_consent_check_interval).count());
+
+    uint64_t interval_milliseconds = get_env_uint64_or_default("WEBRTC_ICE_CONSENT_CHECK_INTERVAL_MS", default_interval_milliseconds);
+
+    if (interval_milliseconds < 1000)
+    {
+        WEBRTC_LOG_WARN("ice consent check interval too small interval_ms={} clamped=1000", interval_milliseconds);
+
+        interval_milliseconds = 1000;
+    }
+
+    if (interval_milliseconds > 60000)
+    {
+        WEBRTC_LOG_WARN("ice consent check interval too large interval_ms={} clamped=60000", interval_milliseconds);
+
+        interval_milliseconds = 60000;
+    }
+
+    WEBRTC_LOG_INFO("ice consent check config interval_ms={}", interval_milliseconds);
+
+    return std::chrono::milliseconds(static_cast<int64_t>(interval_milliseconds));
+}
+
+uint64_t make_ice_consent_timeout_milliseconds_from_env()
+{
+    uint64_t timeout_milliseconds = get_env_uint64_or_default("WEBRTC_ICE_CONSENT_TIMEOUT_MS", k_ice_consent_timeout_milliseconds);
+
+    if (timeout_milliseconds < 5000)
+    {
+        WEBRTC_LOG_WARN("ice consent timeout too small timeout_ms={} clamped=5000", timeout_milliseconds);
+
+        timeout_milliseconds = 5000;
+    }
+
+    if (timeout_milliseconds > 300000)
+    {
+        WEBRTC_LOG_WARN("ice consent timeout too large timeout_ms={} clamped=300000", timeout_milliseconds);
+
+        timeout_milliseconds = 300000;
+    }
+
+    WEBRTC_LOG_INFO("ice consent timeout config timeout_ms={}", timeout_milliseconds);
+
+    return timeout_milliseconds;
+}
+
+std::chrono::milliseconds make_rtcp_report_timer_interval_from_env()
+{
+    const uint64_t default_interval_milliseconds =
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(k_rtcp_report_interval).count());
+
+    uint64_t interval_milliseconds = get_env_uint64_or_default("WEBRTC_RTCP_REPORT_TIMER_INTERVAL_MS", default_interval_milliseconds);
+
+    if (interval_milliseconds < 50)
+    {
+        WEBRTC_LOG_WARN("rtcp report timer interval too small interval_ms={} clamped=50", interval_milliseconds);
+
+        interval_milliseconds = 50;
+    }
+
+    if (interval_milliseconds > 10000)
+    {
+        WEBRTC_LOG_WARN("rtcp report timer interval too large interval_ms={} clamped=10000", interval_milliseconds);
+
+        interval_milliseconds = 10000;
+    }
+
+    WEBRTC_LOG_INFO("rtcp report timer config interval_ms={}", interval_milliseconds);
+
+    return std::chrono::milliseconds(static_cast<int64_t>(interval_milliseconds));
+}
+
+uint64_t make_unselected_candidate_pair_retention_milliseconds_from_env()
+{
+    uint64_t retention_milliseconds =
+        get_env_uint64_or_default("WEBRTC_UNSELECTED_CANDIDATE_PAIR_RETENTION_MS", k_unselected_candidate_pair_retention_milliseconds);
+
+    if (retention_milliseconds < 10000)
+    {
+        WEBRTC_LOG_WARN("ice unselected candidate pair retention too small retention_ms={} clamped=10000", retention_milliseconds);
+
+        retention_milliseconds = 10000;
+    }
+
+    if (retention_milliseconds > 600000)
+    {
+        WEBRTC_LOG_WARN("ice unselected candidate pair retention too large retention_ms={} clamped=600000", retention_milliseconds);
+
+        retention_milliseconds = 600000;
+    }
+
+    WEBRTC_LOG_INFO("ice unselected candidate pair config retention_ms={}", retention_milliseconds);
+
+    return retention_milliseconds;
+}
+
 std::size_t make_rtp_packet_cache_max_packets_from_env()
 {
     std::size_t max_packets = get_env_size_or_default("WEBRTC_RTP_CACHE_MAX_PACKETS", k_default_rtp_packet_cache_max_packets);
@@ -806,6 +935,16 @@ std::size_t make_rtp_packet_cache_max_packets_from_env()
     max_packets = std::min(max_packets, k_max_rtp_packet_cache_max_packets);
 
     return max_packets;
+}
+rtp_packet_cache_config make_rtp_packet_cache_config_from_env()
+{
+    rtp_packet_cache_config config;
+
+    config.max_packets = make_rtp_packet_cache_max_packets_from_env();
+
+    WEBRTC_LOG_INFO("rtp packet cache config max_packets={}", config.max_packets);
+
+    return config;
 }
 rtx_retransmission_index_config make_rtx_retransmission_index_config_from_env()
 {
@@ -942,6 +1081,83 @@ rtcp_transport_cc_feedback_config make_rtcp_transport_cc_feedback_config_from_en
         config.max_sources,
         config.max_pending_packets_total,
         config.max_packets_per_feedback);
+
+    return config;
+}
+struct ice_udp_server_runtime_config
+{
+    dtls_transport_config dtls_transport;
+
+    rtp_packet_cache_config rtp_packet_cache;
+
+    rtcp_report_service_config rtcp_report_service;
+
+    rtcp_transport_cc_feedback_config rtcp_transport_cc_feedback;
+
+    rtx_retransmission_index_config rtx_retransmission_index;
+
+    nack_retransmit_throttle_config nack_retransmit_throttle;
+
+    std::chrono::milliseconds ice_consent_check_interval{std::chrono::seconds(5)};
+
+    uint64_t ice_consent_timeout_milliseconds = k_ice_consent_timeout_milliseconds;
+
+    uint64_t unselected_candidate_pair_retention_milliseconds = k_unselected_candidate_pair_retention_milliseconds;
+
+    std::chrono::milliseconds rtcp_report_timer_interval{k_rtcp_report_interval};
+
+    uint64_t endpoint_idle_timeout_milliseconds = k_default_endpoint_idle_timeout_milliseconds;
+
+    uint64_t pending_session_timeout_milliseconds = k_default_pending_session_timeout_milliseconds;
+};
+
+ice_udp_server_runtime_config make_ice_udp_server_runtime_config_from_env()
+{
+    ice_udp_server_runtime_config config;
+
+    config.dtls_transport = make_dtls_transport_config_from_env();
+
+    config.rtp_packet_cache = make_rtp_packet_cache_config_from_env();
+
+    config.rtcp_report_service = make_rtcp_report_service_config_from_env();
+
+    config.rtcp_transport_cc_feedback = make_rtcp_transport_cc_feedback_config_from_env();
+
+    config.rtx_retransmission_index = make_rtx_retransmission_index_config_from_env();
+
+    config.nack_retransmit_throttle = make_nack_retransmit_throttle_config_from_env();
+
+    config.ice_consent_check_interval = make_ice_consent_check_interval_from_env();
+
+    config.ice_consent_timeout_milliseconds = make_ice_consent_timeout_milliseconds_from_env();
+
+    config.unselected_candidate_pair_retention_milliseconds = make_unselected_candidate_pair_retention_milliseconds_from_env();
+
+    config.rtcp_report_timer_interval = make_rtcp_report_timer_interval_from_env();
+
+    config.endpoint_idle_timeout_milliseconds = make_ice_consent_timeout_milliseconds_from_env();
+
+    config.pending_session_timeout_milliseconds = make_ice_consent_timeout_milliseconds_from_env();
+
+    WEBRTC_LOG_INFO(
+        "ice udp runtime config loaded dtls_handshake_timeout_ms={} rtp_cache_max_packets={} ice_consent_interval_ms={} "
+        "ice_consent_timeout_ms={} unselected_pair_retention_ms={} rtcp_timer_interval_ms={} endpoint_idle_timeout_ms={} "
+        "pending_session_timeout_ms={}",
+        config.dtls_transport.handshake_timeout.count(),
+        config.rtp_packet_cache.max_packets,
+        config.ice_consent_check_interval.count(),
+        config.ice_consent_timeout_milliseconds,
+        config.unselected_candidate_pair_retention_milliseconds,
+        config.rtcp_report_timer_interval.count(),
+        config.endpoint_idle_timeout_milliseconds,
+        config.pending_session_timeout_milliseconds);
+
+    return config;
+}
+
+const ice_udp_server_runtime_config& ice_udp_server_runtime_config_instance()
+{
+    static const ice_udp_server_runtime_config config = make_ice_udp_server_runtime_config_from_env();
 
     return config;
 }
@@ -2119,10 +2335,11 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       track_resolver_(std::make_shared<media_track_resolver>()),
       ssrc_mapper_(std::make_shared<media_ssrc_mapper>()),
       identity_authority_(std::make_shared<media_identity_authority>()),
-      rtcp_report_service_(make_rtcp_report_service_from_env()),
-      rtcp_transport_cc_feedback_service_(std::make_shared<rtcp_transport_cc_feedback_service>(make_rtcp_transport_cc_feedback_config_from_env())),
-      endpoint_idle_timeout_milliseconds_(make_endpoint_idle_timeout_milliseconds_from_env()),
-      pending_session_timeout_milliseconds_(make_pending_session_timeout_milliseconds_from_env())
+      rtcp_report_service_(std::make_shared<rtcp_report_service>(ice_udp_server_runtime_config_instance().rtcp_report_service)),
+      rtcp_transport_cc_feedback_service_(
+          std::make_shared<rtcp_transport_cc_feedback_service>(ice_udp_server_runtime_config_instance().rtcp_transport_cc_feedback)),
+      endpoint_idle_timeout_milliseconds_(ice_udp_server_runtime_config_instance().endpoint_idle_timeout_milliseconds),
+      pending_session_timeout_milliseconds_(ice_udp_server_runtime_config_instance().pending_session_timeout_milliseconds)
 {
 }
 
@@ -2148,6 +2365,7 @@ ice_udp_server_result ice_udp_server::start()
         track_resolver_ = std::make_shared<media_track_resolver>();
     }
 
+    const ice_udp_server_runtime_config& runtime_config = ice_udp_server_runtime_config_instance();
     if (ssrc_mapper_ == nullptr)
     {
         ssrc_mapper_ = std::make_shared<media_ssrc_mapper>();
@@ -2159,12 +2377,12 @@ ice_udp_server_result ice_udp_server::start()
 
     if (rtcp_report_service_ == nullptr)
     {
-        rtcp_report_service_ = make_rtcp_report_service_from_env();
+        rtcp_report_service_ = std::make_shared<rtcp_report_service>(runtime_config.rtcp_report_service);
     }
 
     if (rtcp_transport_cc_feedback_service_ == nullptr)
     {
-        rtcp_transport_cc_feedback_service_ = std::make_shared<rtcp_transport_cc_feedback_service>(make_rtcp_transport_cc_feedback_config_from_env());
+        rtcp_transport_cc_feedback_service_ = std::make_shared<rtcp_transport_cc_feedback_service>(runtime_config.rtcp_transport_cc_feedback);
     }
 
     register_session_removed_callback();
@@ -4065,35 +4283,24 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
         return std::unexpected(context.error());
     }
 
-    dtls_transport_config transport_config;
+    const ice_udp_server_runtime_config& runtime_config = ice_udp_server_runtime_config_instance();
 
-    transport_config.handshake_timeout = std::chrono::seconds(30);
-
-    dtls_transport_ = std::make_shared<dtls_transport>(*context, transport_config);
+    dtls_transport_ = std::make_shared<dtls_transport>(*context, runtime_config.dtls_transport);
 
     srtp_transport_ = std::make_shared<srtp_transport>(dtls_transport_);
 
-    rtp_packet_cache_config cache_config;
-
-    cache_config.max_packets = make_rtp_packet_cache_max_packets_from_env();
-
-    rtp_packet_cache_ = std::make_shared<rtp_packet_cache>(cache_config);
+    rtp_packet_cache_ = std::make_shared<rtp_packet_cache>(runtime_config.rtp_packet_cache);
 
     rtx_sequence_allocator_ = std::make_shared<rtx_sequence_number_allocator>();
 
-    rtx_retransmission_index_config rtx_index_config = make_rtx_retransmission_index_config_from_env();
+    rtx_retransmission_index_ = std::make_shared<rtx_retransmission_index>(runtime_config.rtx_retransmission_index);
 
-    rtx_retransmission_index_ = std::make_shared<rtx_retransmission_index>(rtx_index_config);
+    nack_retransmit_throttle_ = std::make_shared<nack_retransmit_throttle>(runtime_config.nack_retransmit_throttle);
 
-    nack_retransmit_throttle_config nack_throttle_config = make_nack_retransmit_throttle_config_from_env();
+    WEBRTC_LOG_INFO("dtls transport initialized handshake_timeout_ms={}", runtime_config.dtls_transport.handshake_timeout.count());
 
-    nack_retransmit_throttle_ = std::make_shared<nack_retransmit_throttle>(nack_throttle_config);
-
-    WEBRTC_LOG_INFO("dtls transport initialized handshake_timeout_ms={}", transport_config.handshake_timeout.count());
-
+    WEBRTC_LOG_INFO("rtp packet cache initialized max_packets={}", runtime_config.rtp_packet_cache.max_packets);
     WEBRTC_LOG_INFO("srtp transport initialized");
-
-    WEBRTC_LOG_INFO("rtp packet cache initialized max_packets={}", cache_config.max_packets);
 
     WEBRTC_LOG_INFO("rtx sequence allocator initialized");
     WEBRTC_LOG_INFO("nack retransmit throttle initialized");
@@ -4987,8 +5194,7 @@ void ice_udp_server::schedule_ice_consent_check()
 
     ice_consent_timer_.cancel();
 
-    ice_consent_timer_.expires_after(k_ice_consent_check_interval);
-
+    ice_consent_timer_.expires_after(ice_udp_server_runtime_config_instance().ice_consent_check_interval);
     auto self = shared_from_this();
 
     ice_consent_timer_.async_wait([this, self](boost::system::error_code ec) { on_ice_consent_check(ec); });
@@ -5040,8 +5246,7 @@ void ice_udp_server::schedule_rtcp_report()
 
     rtcp_report_timer_.cancel();
 
-    rtcp_report_timer_.expires_after(k_rtcp_report_interval);
-
+    rtcp_report_timer_.expires_after(ice_udp_server_runtime_config_instance().rtcp_report_timer_interval);
     auto self = shared_from_this();
 
     rtcp_report_timer_.async_wait([this, self](boost::system::error_code ec) { on_rtcp_report_timer(ec); });
@@ -11357,11 +11562,10 @@ std::vector<ice_udp_server::ice_consent_timeout_event> ice_udp_server::collect_e
         const uint64_t consent_age_milliseconds =
             current_time_milliseconds > consent_freshness_at_milliseconds ? current_time_milliseconds - consent_freshness_at_milliseconds : 0;
 
-        if (consent_age_milliseconds < k_ice_consent_timeout_milliseconds)
+        if (consent_age_milliseconds < ice_udp_server_runtime_config_instance().ice_consent_timeout_milliseconds)
         {
             continue;
         }
-
         ice_consent_timeout_event event;
 
         event.session_id = pair.session_id;
@@ -11434,14 +11638,12 @@ void ice_udp_server::cleanup_unselected_candidate_pairs(uint64_t current_time_mi
 
         const uint64_t age_milliseconds =
             current_time_milliseconds > pair.last_binding_at_milliseconds ? current_time_milliseconds - pair.last_binding_at_milliseconds : 0;
-
-        if (age_milliseconds < k_unselected_candidate_pair_retention_milliseconds)
+        if (age_milliseconds < ice_udp_server_runtime_config_instance().unselected_candidate_pair_retention_milliseconds)
         {
             ++iterator;
 
             continue;
         }
-
         WEBRTC_LOG_DEBUG("ice unselected candidate pair expired stream={} session={} remote={} age_ms={}",
                          pair.stream_id,
                          pair.session_id,
