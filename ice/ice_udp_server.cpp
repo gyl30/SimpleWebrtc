@@ -59,6 +59,7 @@ constexpr auto k_rtcp_report_interval = std::chrono::milliseconds(200);
 constexpr auto k_rtcp_report_empty_generation_log_interval = std::chrono::seconds(60);
 
 constexpr uint64_t k_ice_consent_timeout_milliseconds = 30000;
+constexpr uint64_t k_ice_consent_request_interval_milliseconds = 15000;
 constexpr uint64_t k_ice_consent_request_retry_milliseconds = 5000;
 
 constexpr uint64_t k_unselected_candidate_pair_retention_milliseconds = 120000;
@@ -339,7 +340,9 @@ bool lifecycle_debug_session_exists(const std::vector<lifecycle_debug_session_en
 bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
 {
     return snapshot.endpoint_count == 0 && snapshot.endpoint_session_index_count == 0 && snapshot.endpoint_reverse_index_count == 0 &&
-           snapshot.endpoint_last_seen_count == 0 && snapshot.candidate_pair_count == 0 && snapshot.payload_type_mapping_count == 0 &&
+           snapshot.endpoint_last_seen_count == 0 && snapshot.candidate_pair_count == 0 && snapshot.selected_candidate_pair_count == 0 &&
+           snapshot.candidate_pair_consent_in_flight_count == 0 && snapshot.candidate_pair_consent_failure_count == 0 &&
+           snapshot.candidate_pair_consent_stale_count == 0 && snapshot.payload_type_mapping_count == 0 &&
            snapshot.keyframe_request_state_count == 0 && snapshot.dtls_peer_count == 0 && snapshot.srtp_peer_count == 0 &&
            snapshot.media_router_peer_count == 0 && snapshot.media_router_stream_count == 0 && snapshot.media_router_active_publisher_count == 0 &&
            snapshot.media_router_active_subscriber_count == 0 && snapshot.track_binding_count == 0 && snapshot.ssrc_mapping_count == 0 &&
@@ -2644,9 +2647,12 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
 }
 
 uint16_t ice_udp_server::local_port() const { return bind_port_; }
+
 lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 {
     lifecycle_debug_snapshot snapshot;
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
 
     std::vector<std::string> stream_ids;
 
@@ -2711,11 +2717,40 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         for (const auto& [key, pair] : candidate_pairs_by_key_)
         {
             (void)key;
-
+            lifecycle_debug_candidate_pair_entry entry;
+            entry.session_id = pair.session_id;
+            entry.stream_id = pair.stream_id;
+            entry.remote_address = pair.remote_address;
+            entry.selected = pair.selected;
+            entry.nominated = pair.nominated;
+            entry.consent_request_in_flight = pair.consent_request_in_flight;
+            entry.last_binding_at_milliseconds = pair.last_binding_at_milliseconds;
+            entry.last_consent_request_at_milliseconds = pair.last_consent_request_at_milliseconds;
+            entry.last_consent_response_at_milliseconds = pair.last_consent_response_at_milliseconds;
+            entry.consent_request_failures = static_cast<uint64_t>(pair.consent_request_failures);
             if (pair.selected)
             {
                 snapshot.selected_candidate_pair_count += 1;
             }
+            if (pair.consent_request_in_flight)
+            {
+                snapshot.candidate_pair_consent_in_flight_count += 1;
+            }
+
+            snapshot.candidate_pair_consent_failure_count += static_cast<uint64_t>(pair.consent_request_failures);
+            const uint64_t consent_freshness_at_milliseconds =
+                pair.last_consent_response_at_milliseconds != 0 ? pair.last_consent_response_at_milliseconds : pair.last_binding_at_milliseconds;
+            if (pair.selected && consent_freshness_at_milliseconds != 0)
+            {
+                const uint64_t consent_age_milliseconds =
+                    current_time_milliseconds > consent_freshness_at_milliseconds ? current_time_milliseconds - consent_freshness_at_milliseconds : 0;
+                if (consent_age_milliseconds >= k_ice_consent_timeout_milliseconds)
+                {
+                    snapshot.candidate_pair_consent_stale_count += 1;
+                }
+            }
+
+            snapshot.candidate_pairs.push_back(std::move(entry));
         }
 
         snapshot.payload_type_mapping_count = to_debug_count(payload_type_mappings_by_key_.size());
@@ -2953,6 +2988,28 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             add_lifecycle_residual(snapshot, "endpoint remains count=" + std::to_string(snapshot.endpoint_count));
         }
 
+        if (snapshot.candidate_pair_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "candidate pair remains count=" + std::to_string(snapshot.candidate_pair_count));
+        }
+
+        if (snapshot.candidate_pair_consent_in_flight_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot, "candidate pair consent in flight remains count=" + std::to_string(snapshot.candidate_pair_consent_in_flight_count));
+        }
+
+        if (snapshot.candidate_pair_consent_failure_count != 0)
+        {
+            add_lifecycle_residual(snapshot,
+                                   "candidate pair consent failure remains count=" + std::to_string(snapshot.candidate_pair_consent_failure_count));
+        }
+
+        if (snapshot.candidate_pair_consent_stale_count != 0)
+        {
+            add_lifecycle_residual(snapshot,
+                                   "candidate pair consent stale remains count=" + std::to_string(snapshot.candidate_pair_consent_stale_count));
+        }
         if (snapshot.dtls_peer_count != 0)
         {
             add_lifecycle_residual(snapshot, "dtls peer remains count=" + std::to_string(snapshot.dtls_peer_count));
@@ -10094,11 +10151,19 @@ std::vector<ice_udp_server::ice_consent_request> ice_udp_server::collect_due_ice
                 continue;
             }
 
-            const uint64_t request_age = pair.last_consent_request_at_milliseconds == 0
-                                             ? std::numeric_limits<uint64_t>::max()
-                                             : current_time_milliseconds - pair.last_consent_request_at_milliseconds;
+            const uint64_t request_age_milliseconds = pair.last_consent_request_at_milliseconds == 0 ? std::numeric_limits<uint64_t>::max()
+                                                      : current_time_milliseconds > pair.last_consent_request_at_milliseconds
+                                                          ? current_time_milliseconds - pair.last_consent_request_at_milliseconds
+                                                          : 0;
 
-            if (pair.consent_request_in_flight && request_age < k_ice_consent_request_retry_milliseconds)
+            if (pair.consent_request_in_flight)
+            {
+                if (request_age_milliseconds < k_ice_consent_request_retry_milliseconds)
+                {
+                    continue;
+                }
+            }
+            else if (pair.last_consent_request_at_milliseconds != 0 && request_age_milliseconds < k_ice_consent_request_interval_milliseconds)
             {
                 continue;
             }
@@ -10106,7 +10171,6 @@ std::vector<ice_udp_server::ice_consent_request> ice_udp_server::collect_due_ice
             selected_consent_candidate candidate;
             candidate.pair = pair;
             candidate.remote_endpoint = endpoint_iterator->second;
-
             selected_candidates.push_back(std::move(candidate));
         }
     }
@@ -10201,10 +10265,20 @@ void ice_udp_server::remember_ice_consent_request_sent(std::string_view session_
         return;
     }
 
+    if (pair.consent_request_in_flight && pair.last_consent_request_at_milliseconds != 0)
+    {
+        const uint64_t request_age_milliseconds = current_time_milliseconds > pair.last_consent_request_at_milliseconds
+                                                      ? current_time_milliseconds - pair.last_consent_request_at_milliseconds
+                                                      : 0;
+
+        if (request_age_milliseconds >= k_ice_consent_request_retry_milliseconds)
+        {
+            pair.consent_request_failures += 1;
+        }
+    }
+
     pair.pending_consent_transaction_id = transaction_id;
-
     pair.last_consent_request_at_milliseconds = current_time_milliseconds;
-
     pair.consent_request_in_flight = true;
 }
 
