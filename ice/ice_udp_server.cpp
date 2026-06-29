@@ -347,7 +347,8 @@ bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
            snapshot.rtcp_transport_cc_source_count == 0 && snapshot.rtcp_transport_cc_pending_packet_count == 0 &&
            snapshot.rtp_cache_packet_count == 0 && snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0 &&
            snapshot.fir_sequence_number_state_count == 0 && snapshot.publisher_video_ssrc_state_count == 0 &&
-           snapshot.pending_republish_keyframe_request_count == 0 && snapshot.extmap_rewrite_state_count == 0;
+           snapshot.pending_republish_keyframe_request_count == 0 && snapshot.selected_rid_layer_state_count == 0 &&
+           snapshot.pending_selected_rid_keyframe_request_count == 0 && snapshot.extmap_rewrite_state_count == 0;
 }
 
 uint16_t read_network_u16(std::span<const uint8_t> data, std::size_t offset)
@@ -1992,6 +1993,18 @@ void ice_udp_server::stop()
 
         keyframe_request_last_time_milliseconds_by_key_.clear();
 
+        fir_sequence_number_by_key_.clear();
+
+        publisher_video_ssrc_by_stream_.clear();
+
+        pending_republish_keyframe_state_by_stream_.clear();
+
+        selected_rid_layer_state_by_key_.clear();
+
+        pending_selected_rid_keyframe_request_keys_.clear();
+
+        extmap_rewrite_state_by_key_.clear();
+
         endpoint_last_seen_milliseconds_by_address_.clear();
 
         retired_endpoints_by_address_.clear();
@@ -2002,6 +2015,11 @@ void ice_udp_server::stop()
     track_resolver_ = std::make_shared<media_track_resolver>();
 
     ssrc_mapper_ = std::make_shared<media_ssrc_mapper>();
+
+    if (identity_authority_ != nullptr)
+    {
+        identity_authority_->clear();
+    }
 
     rtcp_report_service_ = make_rtcp_report_service_from_env();
 
@@ -2496,6 +2514,7 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
     {
         return;
     }
+
     if (registry_ == nullptr)
     {
         WEBRTC_LOG_WARN("{} session removal fallback registry missing session={}", reason, session_id);
@@ -2506,6 +2525,7 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
 
         return;
     }
+
     auto publisher = registry_->find_publisher_by_session_id(session_id);
 
     if (publisher != nullptr)
@@ -2513,29 +2533,32 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
         const std::string stream_id = publisher->stream_id();
 
         auto result = registry_->remove_publisher_session(session_id);
+
         if (!result)
         {
             WEBRTC_LOG_WARN("{} publisher removal failed session={} error={}", reason, session_id, stream_registry_error_to_string(result.error()));
-
-            const std::string stream_id = publisher->stream_id();
 
             forget_session(session_id);
 
             cleanup_stream_runtime_state(stream_id);
 
             schedule_lifecycle_snapshot_log(std::string(reason) + " publisher removal failed", stream_id, std::string(session_id));
-        }
 
-        return;
+            return;
+        }
 
         if (!registry_callback_registered_)
         {
             forget_session(session_id);
 
+            cleanup_stream_runtime_state(stream_id);
+
             erase_rtp_cache(stream_id);
         }
 
         WEBRTC_LOG_WARN("{} publisher session removed stream={} session={}", reason, stream_id, session_id);
+
+        schedule_lifecycle_snapshot_log(std::string(reason) + " publisher session removed", stream_id, std::string(session_id));
 
         return;
     }
@@ -2547,24 +2570,26 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
         const std::string stream_id = subscriber->stream_id();
 
         auto result = registry_->remove_subscriber_session(session_id);
+
         if (!result)
         {
             WEBRTC_LOG_WARN("{} subscriber removal failed session={} error={}", reason, session_id, stream_registry_error_to_string(result.error()));
 
-            const std::string stream_id = subscriber->stream_id();
-
             forget_session(session_id);
 
             schedule_lifecycle_snapshot_log(std::string(reason) + " subscriber removal failed", stream_id, std::string(session_id));
+
+            return;
         }
 
-        return;
         if (!registry_callback_registered_)
         {
             forget_session(session_id);
         }
 
         WEBRTC_LOG_WARN("{} subscriber session removed stream={} session={}", reason, stream_id, session_id);
+
+        schedule_lifecycle_snapshot_log(std::string(reason) + " subscriber session removed", stream_id, std::string(session_id));
 
         return;
     }
@@ -2656,6 +2681,8 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.fir_sequence_number_state_count = to_debug_count(fir_sequence_number_by_key_.size());
         snapshot.publisher_video_ssrc_state_count = to_debug_count(publisher_video_ssrc_by_stream_.size());
         snapshot.pending_republish_keyframe_request_count = to_debug_count(pending_republish_keyframe_state_by_stream_.size());
+        snapshot.selected_rid_layer_state_count = to_debug_count(selected_rid_layer_state_by_key_.size());
+        snapshot.pending_selected_rid_keyframe_request_count = to_debug_count(pending_selected_rid_keyframe_request_keys_.size());
         snapshot.extmap_rewrite_state_count = to_debug_count(extmap_rewrite_state_by_key_.size());
 
         for (const auto& [endpoint, value] : endpoints_by_address_)
@@ -2948,11 +2975,23 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             add_lifecycle_residual(
                 snapshot, "pending republish keyframe request remains count=" + std::to_string(snapshot.pending_republish_keyframe_request_count));
         }
+
+        if (snapshot.selected_rid_layer_state_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "selected rid layer state remains count=" + std::to_string(snapshot.selected_rid_layer_state_count));
+        }
+
+        if (snapshot.pending_selected_rid_keyframe_request_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot,
+                "pending selected rid keyframe request remains count=" + std::to_string(snapshot.pending_selected_rid_keyframe_request_count));
+        }
+
         if (snapshot.extmap_rewrite_state_count != 0)
         {
             add_lifecycle_residual(snapshot, "extmap rewrite state remains count=" + std::to_string(snapshot.extmap_rewrite_state_count));
         }
-
         if (snapshot.rtcp_report_source_count != 0)
         {
             add_lifecycle_residual(snapshot, "rtcp report source remains count=" + std::to_string(snapshot.rtcp_report_source_count));
