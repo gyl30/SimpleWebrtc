@@ -297,6 +297,37 @@ void add_lifecycle_inconsistency(lifecycle_debug_snapshot& snapshot, std::string
 }
 
 void add_lifecycle_residual(lifecycle_debug_snapshot& snapshot, std::string message) { snapshot.residuals.push_back(std::move(message)); }
+void add_lifecycle_delayed_residual(lifecycle_debug_snapshot& snapshot, std::string message)
+{
+    snapshot.delayed_residuals.push_back(std::move(message));
+
+    snapshot.delayed_residual_count = to_debug_count(snapshot.delayed_residuals.size());
+}
+
+bool lifecycle_active_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
+{
+    return snapshot.endpoint_count == 0 && snapshot.endpoint_session_index_count == 0 && snapshot.endpoint_reverse_index_count == 0 &&
+           snapshot.endpoint_last_seen_count == 0 && snapshot.candidate_pair_count == 0 && snapshot.selected_candidate_pair_count == 0 &&
+           snapshot.candidate_pair_consent_in_flight_count == 0 && snapshot.candidate_pair_consent_failure_count == 0 &&
+           snapshot.candidate_pair_consent_stale_count == 0 && snapshot.payload_type_mapping_count == 0 &&
+           snapshot.keyframe_request_state_count == 0 && snapshot.dtls_peer_count == 0 && snapshot.srtp_peer_count == 0 &&
+           snapshot.media_router_peer_count == 0 && snapshot.media_router_stream_count == 0 && snapshot.media_router_active_publisher_count == 0 &&
+           snapshot.media_router_active_subscriber_count == 0 && snapshot.track_binding_count == 0 && snapshot.ssrc_mapping_count == 0 &&
+           snapshot.identity_authority_rid_layer_binding_count == 0 && snapshot.identity_authority_track_binding_count == 0 &&
+           snapshot.identity_authority_forward_binding_count == 0 && snapshot.rtcp_report_source_count == 0 &&
+           snapshot.rtcp_report_stats_source_count == 0 && snapshot.rtcp_transport_cc_source_count == 0 &&
+           snapshot.rtcp_transport_cc_pending_packet_count == 0 && snapshot.rtp_cache_packet_count == 0 &&
+           snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0 &&
+           snapshot.fir_sequence_number_state_count == 0 && snapshot.publisher_video_ssrc_state_count == 0 &&
+           snapshot.pending_republish_keyframe_request_count == 0 && snapshot.selected_rid_layer_state_count == 0 &&
+           snapshot.pending_selected_rid_keyframe_request_count == 0 && snapshot.extmap_rewrite_state_count == 0;
+}
+
+bool lifecycle_delayed_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
+{
+    return snapshot.retired_endpoint_count == 0 && snapshot.retired_endpoint_suppressed_packet_count == 0 &&
+           snapshot.retired_ice_credential_count == 0 && snapshot.retired_ice_credential_suppressed_stun_packet_count == 0;
+}
 
 lifecycle_debug_session_entry* find_lifecycle_debug_session_entry(std::vector<lifecycle_debug_session_entry>& sessions, std::string_view session_id)
 {
@@ -339,20 +370,7 @@ bool lifecycle_debug_session_exists(const std::vector<lifecycle_debug_session_en
 
 bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
 {
-    return snapshot.endpoint_count == 0 && snapshot.endpoint_session_index_count == 0 && snapshot.endpoint_reverse_index_count == 0 &&
-           snapshot.endpoint_last_seen_count == 0 && snapshot.candidate_pair_count == 0 && snapshot.selected_candidate_pair_count == 0 &&
-           snapshot.candidate_pair_consent_in_flight_count == 0 && snapshot.candidate_pair_consent_failure_count == 0 &&
-           snapshot.candidate_pair_consent_stale_count == 0 && snapshot.payload_type_mapping_count == 0 &&
-           snapshot.keyframe_request_state_count == 0 && snapshot.dtls_peer_count == 0 && snapshot.srtp_peer_count == 0 &&
-           snapshot.media_router_peer_count == 0 && snapshot.media_router_stream_count == 0 && snapshot.media_router_active_publisher_count == 0 &&
-           snapshot.media_router_active_subscriber_count == 0 && snapshot.track_binding_count == 0 && snapshot.ssrc_mapping_count == 0 &&
-           snapshot.identity_authority_rid_layer_binding_count == 0 && snapshot.identity_authority_track_binding_count == 0 &&
-           snapshot.identity_authority_forward_binding_count == 0 && snapshot.rtcp_report_source_count == 0 &&
-           snapshot.rtcp_transport_cc_source_count == 0 && snapshot.rtcp_transport_cc_pending_packet_count == 0 &&
-           snapshot.rtp_cache_packet_count == 0 && snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0 &&
-           snapshot.fir_sequence_number_state_count == 0 && snapshot.publisher_video_ssrc_state_count == 0 &&
-           snapshot.pending_republish_keyframe_request_count == 0 && snapshot.selected_rid_layer_state_count == 0 &&
-           snapshot.pending_selected_rid_keyframe_request_count == 0 && snapshot.extmap_rewrite_state_count == 0;
+    return lifecycle_active_runtime_state_is_empty(snapshot) && lifecycle_delayed_runtime_state_is_empty(snapshot);
 }
 
 uint16_t read_network_u16(std::span<const uint8_t> data, std::size_t offset)
@@ -3014,10 +3032,11 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         add_lifecycle_inconsistency(snapshot, "endpoint count is smaller than endpoint session reverse index count");
     }
 
-    if (snapshot.registry_session_count == 0 && !lifecycle_runtime_state_is_empty(snapshot))
+    if (snapshot.registry_session_count == 0 && !lifecycle_active_runtime_state_is_empty(snapshot))
     {
-        add_lifecycle_inconsistency(snapshot, "registry is empty but runtime state remains");
+        add_lifecycle_inconsistency(snapshot, "registry is empty but active runtime state remains");
     }
+
     for (const auto& endpoint : snapshot.endpoints)
     {
         if (!endpoint.session_id.empty() && !lifecycle_debug_session_exists(snapshot.sessions, endpoint.session_id))
@@ -3057,9 +3076,29 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             add_lifecycle_residual(snapshot, "endpoint remains count=" + std::to_string(snapshot.endpoint_count));
         }
 
+        if (snapshot.endpoint_session_index_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "endpoint session index remains count=" + std::to_string(snapshot.endpoint_session_index_count));
+        }
+
+        if (snapshot.endpoint_reverse_index_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "endpoint reverse index remains count=" + std::to_string(snapshot.endpoint_reverse_index_count));
+        }
+
+        if (snapshot.endpoint_last_seen_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "endpoint last seen remains count=" + std::to_string(snapshot.endpoint_last_seen_count));
+        }
+
         if (snapshot.candidate_pair_count != 0)
         {
             add_lifecycle_residual(snapshot, "candidate pair remains count=" + std::to_string(snapshot.candidate_pair_count));
+        }
+
+        if (snapshot.selected_candidate_pair_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "selected candidate pair remains count=" + std::to_string(snapshot.selected_candidate_pair_count));
         }
 
         if (snapshot.candidate_pair_consent_in_flight_count != 0)
@@ -3079,6 +3118,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             add_lifecycle_residual(snapshot,
                                    "candidate pair consent stale remains count=" + std::to_string(snapshot.candidate_pair_consent_stale_count));
         }
+
         if (snapshot.dtls_peer_count != 0)
         {
             add_lifecycle_residual(snapshot, "dtls peer remains count=" + std::to_string(snapshot.dtls_peer_count));
@@ -3094,6 +3134,23 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             add_lifecycle_residual(snapshot, "media router peer remains count=" + std::to_string(snapshot.media_router_peer_count));
         }
 
+        if (snapshot.media_router_stream_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "media router stream remains count=" + std::to_string(snapshot.media_router_stream_count));
+        }
+
+        if (snapshot.media_router_active_publisher_count != 0)
+        {
+            add_lifecycle_residual(snapshot,
+                                   "media router active publisher remains count=" + std::to_string(snapshot.media_router_active_publisher_count));
+        }
+
+        if (snapshot.media_router_active_subscriber_count != 0)
+        {
+            add_lifecycle_residual(snapshot,
+                                   "media router active subscriber remains count=" + std::to_string(snapshot.media_router_active_subscriber_count));
+        }
+
         if (snapshot.track_binding_count != 0)
         {
             add_lifecycle_residual(snapshot, "track binding remains count=" + std::to_string(snapshot.track_binding_count));
@@ -3103,22 +3160,26 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot, "ssrc mapping remains count=" + std::to_string(snapshot.ssrc_mapping_count));
         }
+
         if (snapshot.identity_authority_track_binding_count != 0)
         {
             add_lifecycle_residual(
                 snapshot, "identity authority track binding remains count=" + std::to_string(snapshot.identity_authority_track_binding_count));
         }
+
         if (snapshot.identity_authority_rid_layer_binding_count != 0)
         {
             add_lifecycle_residual(
                 snapshot,
                 "identity authority rid layer binding remains count=" + std::to_string(snapshot.identity_authority_rid_layer_binding_count));
         }
+
         if (snapshot.identity_authority_forward_binding_count != 0)
         {
             add_lifecycle_residual(
                 snapshot, "identity authority forward binding remains count=" + std::to_string(snapshot.identity_authority_forward_binding_count));
         }
+
         if (snapshot.payload_type_mapping_count != 0)
         {
             add_lifecycle_residual(snapshot, "payload type mapping remains count=" + std::to_string(snapshot.payload_type_mapping_count));
@@ -3128,6 +3189,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot, "keyframe request state remains count=" + std::to_string(snapshot.keyframe_request_state_count));
         }
+
         if (snapshot.fir_sequence_number_state_count != 0)
         {
             add_lifecycle_residual(snapshot, "fir sequence number state remains count=" + std::to_string(snapshot.fir_sequence_number_state_count));
@@ -3160,9 +3222,15 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot, "extmap rewrite state remains count=" + std::to_string(snapshot.extmap_rewrite_state_count));
         }
+
         if (snapshot.rtcp_report_source_count != 0)
         {
             add_lifecycle_residual(snapshot, "rtcp report source remains count=" + std::to_string(snapshot.rtcp_report_source_count));
+        }
+
+        if (snapshot.rtcp_report_stats_source_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "rtcp report stats source remains count=" + std::to_string(snapshot.rtcp_report_stats_source_count));
         }
 
         if (snapshot.rtcp_transport_cc_source_count != 0)
@@ -3180,6 +3248,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot, "rtp cache packet remains count=" + std::to_string(snapshot.rtp_cache_packet_count));
         }
+
         if (snapshot.rtx_retransmission_index_count != 0)
         {
             add_lifecycle_residual(snapshot, "rtx retransmission index remains count=" + std::to_string(snapshot.rtx_retransmission_index_count));
@@ -3189,13 +3258,38 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot, "nack retransmit throttle remains count=" + std::to_string(snapshot.nack_retransmit_throttle_count));
         }
+
+        if (snapshot.retired_endpoint_count != 0)
+        {
+            add_lifecycle_delayed_residual(snapshot, "retired endpoint pending count=" + std::to_string(snapshot.retired_endpoint_count));
+        }
+
+        if (snapshot.retired_endpoint_suppressed_packet_count != 0)
+        {
+            add_lifecycle_delayed_residual(
+                snapshot, "retired endpoint suppressed packet count=" + std::to_string(snapshot.retired_endpoint_suppressed_packet_count));
+        }
+
+        if (snapshot.retired_ice_credential_count != 0)
+        {
+            add_lifecycle_delayed_residual(snapshot, "retired ice credential pending count=" + std::to_string(snapshot.retired_ice_credential_count));
+        }
+
+        if (snapshot.retired_ice_credential_suppressed_stun_packet_count != 0)
+        {
+            add_lifecycle_delayed_residual(snapshot,
+                                           "retired ice credential suppressed stun packet count=" +
+                                               std::to_string(snapshot.retired_ice_credential_suppressed_stun_packet_count));
+        }
     }
-    snapshot.idle_clean = snapshot.registry_session_count == 0 && lifecycle_runtime_state_is_empty(snapshot);
 
+    snapshot.active_runtime_clean = snapshot.registry_session_count == 0 && lifecycle_active_runtime_state_is_empty(snapshot);
+    snapshot.delayed_runtime_clean = lifecycle_delayed_runtime_state_is_empty(snapshot);
+    snapshot.full_idle_clean = snapshot.active_runtime_clean && snapshot.delayed_runtime_clean;
+    snapshot.idle_clean = snapshot.active_runtime_clean;
     snapshot.inconsistency_count = to_debug_count(snapshot.inconsistencies.size());
-
+    snapshot.delayed_residual_count = to_debug_count(snapshot.delayed_residuals.size());
     snapshot.consistent = snapshot.inconsistency_count == 0;
-
     return snapshot;
 }
 
@@ -3218,9 +3312,9 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
 {
     const lifecycle_debug_snapshot snapshot = debug_state_snapshot();
 
-    const bool runtime_residual_after_idle = snapshot.registry_session_count == 0 && !snapshot.idle_clean;
+    const bool active_runtime_residual_after_idle = snapshot.registry_session_count == 0 && !snapshot.active_runtime_clean;
 
-    if (!snapshot.consistent || runtime_residual_after_idle)
+    if (!snapshot.consistent || active_runtime_residual_after_idle)
     {
         WEBRTC_LOG_WARN(
             "lifecycle snapshot residual reason={} stream={} session={} "
@@ -3239,7 +3333,8 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
             "rtcp_report_sources={} rtcp_report_stats_sources={} "
             "rtcp_transport_cc_sources={} rtcp_transport_cc_pending_packets={} "
             "rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={} "
-            "idle_clean={} consistent={} inconsistencies={} residuals={}",
+            "active_runtime_clean={} delayed_runtime_clean={} full_idle_clean={} idle_clean={} consistent={} inconsistencies={} residuals={} "
+            "delayed_residuals={}",
             reason,
             stream_id,
             session_id,
@@ -3287,10 +3382,14 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
             snapshot.rtp_cache_packet_count,
             snapshot.rtx_retransmission_index_count,
             snapshot.nack_retransmit_throttle_count,
+            snapshot.active_runtime_clean ? 1 : 0,
+            snapshot.delayed_runtime_clean ? 1 : 0,
+            snapshot.full_idle_clean ? 1 : 0,
             snapshot.idle_clean ? 1 : 0,
             snapshot.consistent ? 1 : 0,
             snapshot.inconsistency_count,
-            snapshot.residuals.size());
+            snapshot.residuals.size(),
+            snapshot.delayed_residual_count);
 
         return;
     }
@@ -3311,7 +3410,8 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
         "rtcp_report_sources={} rtcp_report_stats_sources={} "
         "rtcp_transport_cc_sources={} rtcp_transport_cc_pending_packets={} "
         "rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={} "
-        "idle_clean={} consistent={} inconsistencies={} residuals={}",
+        "active_runtime_clean={} delayed_runtime_clean={} full_idle_clean={} idle_clean={} consistent={} inconsistencies={} residuals={} "
+        "delayed_residuals={}",
         reason,
         stream_id,
         session_id,
@@ -3359,10 +3459,14 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
         snapshot.rtp_cache_packet_count,
         snapshot.rtx_retransmission_index_count,
         snapshot.nack_retransmit_throttle_count,
+        snapshot.active_runtime_clean ? 1 : 0,
+        snapshot.delayed_runtime_clean ? 1 : 0,
+        snapshot.full_idle_clean ? 1 : 0,
         snapshot.idle_clean ? 1 : 0,
         snapshot.consistent ? 1 : 0,
         snapshot.inconsistency_count,
-        snapshot.residuals.size());
+        snapshot.residuals.size(),
+        snapshot.delayed_residual_count);
 }
 
 void ice_udp_server::schedule_lifecycle_convergence_checks(std::string reason, std::string stream_id, std::string session_id)
@@ -3445,8 +3549,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
 
     const lifecycle_debug_snapshot snapshot = debug_state_snapshot();
 
-    const bool retired_state_clean =
-        !require_retired_endpoints_empty || (snapshot.retired_endpoint_count == 0 && snapshot.retired_ice_credential_count == 0);
+    const bool retired_state_clean = !require_retired_endpoints_empty || snapshot.delayed_runtime_clean;
 
     if (snapshot.registry_session_count != 0)
     {
@@ -3467,7 +3570,8 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             "rtcp_report_sources={} rtcp_report_stats_sources={} "
             "rtcp_transport_cc_sources={} rtcp_transport_cc_pending_packets={} "
             "rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={} "
-            "idle_clean={} retired_state_clean={} consistent={} inconsistencies={} residuals={}",
+            "active_runtime_clean={} delayed_runtime_clean={} full_idle_clean={} idle_clean={} retired_state_clean={} consistent={} "
+            "inconsistencies={} residuals={} delayed_residuals={}",
             generation,
             delay_milliseconds,
             require_retired_endpoints_empty ? 1 : 0,
@@ -3518,16 +3622,20 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             snapshot.rtp_cache_packet_count,
             snapshot.rtx_retransmission_index_count,
             snapshot.nack_retransmit_throttle_count,
+            snapshot.active_runtime_clean ? 1 : 0,
+            snapshot.delayed_runtime_clean ? 1 : 0,
+            snapshot.full_idle_clean ? 1 : 0,
             snapshot.idle_clean ? 1 : 0,
             retired_state_clean ? 1 : 0,
             snapshot.consistent ? 1 : 0,
             snapshot.inconsistency_count,
-            snapshot.residuals.size());
+            snapshot.residuals.size(),
+            snapshot.delayed_residual_count);
 
         return;
     }
 
-    if (snapshot.idle_clean && snapshot.consistent && retired_state_clean)
+    if (snapshot.active_runtime_clean && snapshot.consistent && retired_state_clean)
     {
         WEBRTC_LOG_INFO(
             "lifecycle convergence clean generation={} delay_ms={} require_retired_empty={} reason={} stream={} session={} "
@@ -3546,7 +3654,8 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             "rtcp_report_sources={} rtcp_report_stats_sources={} "
             "rtcp_transport_cc_sources={} rtcp_transport_cc_pending_packets={} "
             "rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={} "
-            "idle_clean={} retired_state_clean={} consistent={} inconsistencies={} residuals={}",
+            "active_runtime_clean={} delayed_runtime_clean={} full_idle_clean={} idle_clean={} retired_state_clean={} consistent={} "
+            "inconsistencies={} residuals={} delayed_residuals={}",
             generation,
             delay_milliseconds,
             require_retired_endpoints_empty ? 1 : 0,
@@ -3597,11 +3706,15 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             snapshot.rtp_cache_packet_count,
             snapshot.rtx_retransmission_index_count,
             snapshot.nack_retransmit_throttle_count,
+            snapshot.active_runtime_clean ? 1 : 0,
+            snapshot.delayed_runtime_clean ? 1 : 0,
+            snapshot.full_idle_clean ? 1 : 0,
             snapshot.idle_clean ? 1 : 0,
             retired_state_clean ? 1 : 0,
             snapshot.consistent ? 1 : 0,
             snapshot.inconsistency_count,
-            snapshot.residuals.size());
+            snapshot.residuals.size(),
+            snapshot.delayed_residual_count);
 
         return;
     }
@@ -3622,7 +3735,8 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
         "rtcp_report_sources={} rtcp_report_stats_sources={} "
         "rtcp_transport_cc_sources={} rtcp_transport_cc_pending_packets={} "
         "rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={} "
-        "idle_clean={} retired_state_clean={} consistent={} inconsistencies={} residuals={}",
+        "active_runtime_clean={} delayed_runtime_clean={} full_idle_clean={} idle_clean={} retired_state_clean={} consistent={} "
+        "inconsistencies={} residuals={} delayed_residuals={}",
         generation,
         delay_milliseconds,
         require_retired_endpoints_empty ? 1 : 0,
@@ -3673,11 +3787,15 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
         snapshot.rtp_cache_packet_count,
         snapshot.rtx_retransmission_index_count,
         snapshot.nack_retransmit_throttle_count,
+        snapshot.active_runtime_clean ? 1 : 0,
+        snapshot.delayed_runtime_clean ? 1 : 0,
+        snapshot.full_idle_clean ? 1 : 0,
         snapshot.idle_clean ? 1 : 0,
         retired_state_clean ? 1 : 0,
         snapshot.consistent ? 1 : 0,
         snapshot.inconsistency_count,
-        snapshot.residuals.size());
+        snapshot.residuals.size(),
+        snapshot.delayed_residual_count);
 }
 
 ice_udp_server_result ice_udp_server::init_dtls_transport()
