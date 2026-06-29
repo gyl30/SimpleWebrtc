@@ -450,6 +450,22 @@ std::optional<uint16_t> parse_payload_type_text(std::string_view value)
 
 bool codec_is_rtx(const sdp::codec_info& codec) { return equals_ignore_case(codec.name, "rtx"); }
 
+bool codec_is_red(const sdp::codec_info& codec) { return equals_ignore_case(codec.name, "red"); }
+
+bool codec_is_ulpfec(const sdp::codec_info& codec) { return equals_ignore_case(codec.name, "ulpfec"); }
+
+bool codec_is_flexfec(const sdp::codec_info& codec)
+{
+    return equals_ignore_case(codec.name, "flexfec") || equals_ignore_case(codec.name, "flexfec-03");
+}
+
+bool codec_is_unsupported_repair_codec(const sdp::codec_info& codec)
+{
+    return codec_is_red(codec) || codec_is_ulpfec(codec) || codec_is_flexfec(codec);
+}
+
+bool codec_is_forwardable_media_codec(const sdp::codec_info& codec) { return !codec_is_rtx(codec) && !codec_is_unsupported_repair_codec(codec); }
+
 std::optional<uint16_t> find_codec_apt_payload_type(const sdp::codec_info& codec)
 {
     const auto apt = find_fmtp_parameter(codec.fmtp, "apt");
@@ -932,9 +948,10 @@ const sdp::media_summary* find_matching_subscriber_media(const sdp::media_summar
 
     return find_receive_capable_media_by_kind_ordinal(subscriber_offer, publisher_media.kind, *publisher_ordinal);
 }
+
 std::optional<sdp::codec_info> find_compatible_subscriber_codec(const sdp::media_summary& subscriber_media, const sdp::codec_info& publisher_codec)
 {
-    if (codec_is_rtx(publisher_codec))
+    if (!codec_is_forwardable_media_codec(publisher_codec))
     {
         return std::nullopt;
     }
@@ -942,6 +959,11 @@ std::optional<sdp::codec_info> find_compatible_subscriber_codec(const sdp::media
     for (const auto& subscriber_codec : subscriber_media.codecs)
     {
         if (!payload_type_exists(subscriber_media, subscriber_codec.payload_type))
+        {
+            continue;
+        }
+
+        if (!codec_is_forwardable_media_codec(subscriber_codec))
         {
             continue;
         }
@@ -968,7 +990,7 @@ void append_media_mappings(media_payload_type_mapping_table& table,
             continue;
         }
 
-        if (codec_is_rtx(publisher_codec))
+        if (!codec_is_forwardable_media_codec(publisher_codec))
         {
             continue;
         }
@@ -984,6 +1006,7 @@ void append_media_mappings(media_payload_type_mapping_table& table,
         {
             continue;
         }
+
         media_payload_type_mapping mapping;
 
         mapping.stream_id = table.stream_id;
@@ -1011,8 +1034,10 @@ void append_media_mappings(media_payload_type_mapping_table& table,
 
         table.mappings.push_back(std::move(mapping));
     }
+
     append_rtx_mappings(table, publisher_media, subscriber_media);
 }
+
 }    // namespace
 
 media_payload_type_mapping_table_result build_media_payload_type_mapping_table(std::string_view stream_id,
@@ -1159,6 +1184,96 @@ bool media_offer_payload_type_is_rtx(const sdp::webrtc_offer_summary& offer, std
     }
 
     return matched && rtx;
+}
+
+bool media_payload_type_is_unsupported_repair_codec(const sdp::media_summary& media, uint16_t payload_type)
+{
+    const sdp::codec_info* codec = find_codec_by_payload_type(media, payload_type);
+
+    return codec != nullptr && codec_is_unsupported_repair_codec(*codec);
+}
+
+bool media_offer_payload_type_is_unsupported_repair_codec(const sdp::webrtc_offer_summary& offer, std::string_view mid, uint16_t payload_type)
+{
+    bool matched = false;
+
+    bool unsupported_repair_codec = false;
+
+    for (const auto& media : offer.media)
+    {
+        if (!mid.empty() && media.mid != mid)
+        {
+            continue;
+        }
+
+        if (!payload_type_exists(media, payload_type))
+        {
+            continue;
+        }
+
+        const sdp::codec_info* codec = find_codec_by_payload_type(media, payload_type);
+
+        if (codec == nullptr)
+        {
+            continue;
+        }
+
+        if (matched)
+        {
+            return false;
+        }
+
+        matched = true;
+
+        unsupported_repair_codec = codec_is_unsupported_repair_codec(*codec);
+    }
+
+    return matched && unsupported_repair_codec;
+}
+
+bool media_payload_type_is_forwardable_media(const sdp::media_summary& media, uint16_t payload_type)
+{
+    const sdp::codec_info* codec = find_codec_by_payload_type(media, payload_type);
+
+    return codec != nullptr && codec_is_forwardable_media_codec(*codec);
+}
+
+bool media_offer_payload_type_is_forwardable_media(const sdp::webrtc_offer_summary& offer, std::string_view mid, uint16_t payload_type)
+{
+    bool matched = false;
+
+    bool forwardable_media = false;
+
+    for (const auto& media : offer.media)
+    {
+        if (!mid.empty() && media.mid != mid)
+        {
+            continue;
+        }
+
+        if (!payload_type_exists(media, payload_type))
+        {
+            continue;
+        }
+
+        const sdp::codec_info* codec = find_codec_by_payload_type(media, payload_type);
+
+        if (codec == nullptr)
+        {
+            continue;
+        }
+
+        if (matched)
+        {
+            return false;
+        }
+
+        matched = true;
+
+        forwardable_media = codec_is_forwardable_media_codec(*codec);
+    }
+
+    return matched && forwardable_media;
 }
 
 bool media_payload_type_mapping_requires_packet_rewrite(const media_payload_type_mapping& mapping)

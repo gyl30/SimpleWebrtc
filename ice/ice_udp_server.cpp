@@ -6348,6 +6348,26 @@ std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const 
         return *resolution;
     }
 
+    if (media_offer_payload_type_is_unsupported_repair_codec(publisher->remote_offer_summary(), resolution->mid, resolution->payload_type))
+    {
+        WEBRTC_LOG_DEBUG(
+            "media track resolve skipped unsupported repair codec remote={} stream={} session={} ssrc={} sequence={} payload_type={} mid={} kind={} "
+            "rid={} repaired_rid={} rtx={}",
+            peer.remote_endpoint,
+            peer.stream_id,
+            peer.session_id,
+            packet.ssrc,
+            packet.sequence_number,
+            static_cast<unsigned int>(resolution->payload_type),
+            resolution->mid,
+            resolution->kind,
+            resolution->rid.has_value() ? *resolution->rid : "",
+            resolution->repaired_rid.has_value() ? *resolution->repaired_rid : "",
+            resolution->rtx ? 1 : 0);
+
+        return std::nullopt;
+    }
+
     if (resolution->newly_bound)
     {
         const std::string audio_level =
@@ -7360,7 +7380,7 @@ std::optional<media_payload_type_mapping_table> ice_udp_server::get_or_create_pa
 }
 
 std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapping(const media_route_result& route,
-                                                                                    const media_peer_info& target_peer,
+                                                                                    const media_peer_info& subscriber,
                                                                                     const std::optional<media_track_resolution>& track_resolution)
 {
     if (!track_resolution.has_value() || !track_resolution->resolved)
@@ -7368,7 +7388,32 @@ std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapp
         return std::nullopt;
     }
 
-    auto table = get_or_create_payload_type_mapping_table(route, target_peer);
+    if (!track_resolution->mid.empty() && registry_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
+
+        if (publisher != nullptr && media_offer_payload_type_is_unsupported_repair_codec(
+                                        publisher->remote_offer_summary(), track_resolution->mid, track_resolution->payload_type))
+        {
+            WEBRTC_LOG_DEBUG(
+                "payload type mapping skipped unsupported repair codec stream={} publisher_session={} subscriber_session={} publisher_mid={} "
+                "kind={} publisher_payload_type={} ssrc={} rid={} repaired_rid={} rtx={}",
+                route.source.stream_id,
+                route.source.session_id,
+                subscriber.session_id,
+                track_resolution->mid,
+                track_resolution->kind,
+                static_cast<unsigned int>(track_resolution->payload_type),
+                track_resolution->ssrc,
+                track_resolution->rid.has_value() ? *track_resolution->rid : "",
+                track_resolution->repaired_rid.has_value() ? *track_resolution->repaired_rid : "",
+                track_resolution->rtx ? 1 : 0);
+
+            return std::nullopt;
+        }
+    }
+
+    auto table = get_or_create_payload_type_mapping_table(route, subscriber);
 
     if (!table.has_value())
     {
@@ -7384,14 +7429,19 @@ std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapp
             return mapping;
         }
 
-        WEBRTC_LOG_DEBUG(
-            "payload type mapping exact mid not found stream={} publisher_session={} subscriber_session={} mid={} kind={} payload_type={}",
+        WEBRTC_LOG_WARN(
+            "payload type mapping exact mid not found stream={} publisher_session={} subscriber_session={} publisher_mid={} kind={} "
+            "publisher_payload_type={} ssrc={} rid={} repaired_rid={} rtx={}",
             route.source.stream_id,
             route.source.session_id,
-            target_peer.session_id,
+            subscriber.session_id,
             track_resolution->mid,
             track_resolution->kind,
-            static_cast<unsigned int>(track_resolution->payload_type));
+            static_cast<unsigned int>(track_resolution->payload_type),
+            track_resolution->ssrc,
+            track_resolution->rid.has_value() ? *track_resolution->rid : "",
+            track_resolution->repaired_rid.has_value() ? *track_resolution->repaired_rid : "",
+            track_resolution->rtx ? 1 : 0);
 
         return std::nullopt;
     }
@@ -7405,24 +7455,35 @@ std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapp
             return mapping;
         }
 
-        WEBRTC_LOG_DEBUG(
-            "payload type mapping unique kind fallback not found stream={} publisher_session={} subscriber_session={} kind={} payload_type={}",
+        WEBRTC_LOG_WARN(
+            "payload type mapping by kind not found stream={} publisher_session={} subscriber_session={} kind={} publisher_payload_type={} "
+            "ssrc={} rid={} repaired_rid={} rtx={}",
             route.source.stream_id,
             route.source.session_id,
-            target_peer.session_id,
+            subscriber.session_id,
             track_resolution->kind,
-            static_cast<unsigned int>(track_resolution->payload_type));
+            static_cast<unsigned int>(track_resolution->payload_type),
+            track_resolution->ssrc,
+            track_resolution->rid.has_value() ? *track_resolution->rid : "",
+            track_resolution->repaired_rid.has_value() ? *track_resolution->repaired_rid : "",
+            track_resolution->rtx ? 1 : 0);
 
         return std::nullopt;
     }
 
-    WEBRTC_LOG_DEBUG("payload type mapping not found stream={} publisher_session={} subscriber_session={} mid={} kind={} payload_type={}",
-                     route.source.stream_id,
-                     route.source.session_id,
-                     target_peer.session_id,
-                     track_resolution->mid,
-                     track_resolution->kind,
-                     static_cast<unsigned int>(track_resolution->payload_type));
+    WEBRTC_LOG_DEBUG(
+        "payload type mapping not found stream={} publisher_session={} subscriber_session={} mid={} kind={} payload_type={} ssrc={} rid={} "
+        "repaired_rid={} rtx={}",
+        route.source.stream_id,
+        route.source.session_id,
+        subscriber.session_id,
+        track_resolution->mid,
+        track_resolution->kind,
+        static_cast<unsigned int>(track_resolution->payload_type),
+        track_resolution->ssrc,
+        track_resolution->rid.has_value() ? *track_resolution->rid : "",
+        track_resolution->repaired_rid.has_value() ? *track_resolution->repaired_rid : "",
+        track_resolution->rtx ? 1 : 0);
 
     return std::nullopt;
 }

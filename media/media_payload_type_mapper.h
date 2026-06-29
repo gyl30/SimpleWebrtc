@@ -73,6 +73,18 @@ bool media_payload_type_is_rtx(const sdp::media_summary& media, uint16_t payload
 bool media_offer_payload_type_is_rtx(const sdp::webrtc_offer_summary& offer, std::string_view mid, uint16_t payload_type);
 
 [[nodiscard]]
+bool media_payload_type_is_unsupported_repair_codec(const sdp::media_summary& media, uint16_t payload_type);
+
+[[nodiscard]]
+bool media_offer_payload_type_is_unsupported_repair_codec(const sdp::webrtc_offer_summary& offer, std::string_view mid, uint16_t payload_type);
+
+[[nodiscard]]
+bool media_payload_type_is_forwardable_media(const sdp::media_summary& media, uint16_t payload_type);
+
+[[nodiscard]]
+bool media_offer_payload_type_is_forwardable_media(const sdp::webrtc_offer_summary& offer, std::string_view mid, uint16_t payload_type);
+
+[[nodiscard]]
 std::string media_payload_type_mapping_to_string(const media_payload_type_mapping& mapping);
 }    // namespace webrtc
 
