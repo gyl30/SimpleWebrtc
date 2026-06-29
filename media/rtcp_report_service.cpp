@@ -986,9 +986,6 @@ rtcp_report_generation_request rtcp_report_service::make_generation_request(cons
 
     request.session_id = source.session_id;
 
-    request.cname = source.cname;
-
-    request.now_milliseconds = now_milliseconds;
     request.remote_endpoint = source.remote_endpoint;
 
     request.mid = source.mid;
@@ -998,6 +995,11 @@ rtcp_report_generation_request rtcp_report_service::make_generation_request(cons
     request.repaired_rid = source.repaired_rid;
 
     request.local_ssrc = source.local_ssrc;
+
+    request.cname = source.cname;
+
+    request.now_milliseconds = now_milliseconds;
+
     request.max_report_blocks = source.max_report_blocks == 0 ? config_.max_report_blocks : source.max_report_blocks;
 
     if (request.max_report_blocks == 0)
@@ -1081,7 +1083,7 @@ std::string rtcp_report_source_config_to_string(const rtcp_report_source_config&
 {
     std::string result;
 
-    result.reserve(192);
+    result.reserve(256);
 
     result.append("stream=");
     result.append(source.stream_id);
@@ -1091,6 +1093,21 @@ std::string rtcp_report_source_config_to_string(const rtcp_report_source_config&
 
     result.append(" remote=");
     result.append(source.remote_endpoint);
+
+    result.append(" mid=");
+    result.append(source.mid);
+
+    if (source.rid.has_value())
+    {
+        result.append(" rid=");
+        result.append(*source.rid);
+    }
+
+    if (source.repaired_rid.has_value())
+    {
+        result.append(" repaired_rid=");
+        result.append(*source.repaired_rid);
+    }
 
     result.append(" local_ssrc=");
     result.append(std::to_string(source.local_ssrc));
