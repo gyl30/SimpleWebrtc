@@ -22,7 +22,6 @@ struct lifecycle_debug_session_entry
     uint64_t created_at_milliseconds = 0;
     uint64_t updated_at_milliseconds = 0;
 };
-
 struct lifecycle_debug_endpoint_entry
 {
     std::string endpoint;
@@ -35,6 +34,7 @@ struct lifecycle_debug_endpoint_entry
 
     uint64_t last_seen_milliseconds = 0;
 };
+
 struct lifecycle_debug_candidate_pair_entry
 {
     std::string session_id;
@@ -50,6 +50,33 @@ struct lifecycle_debug_candidate_pair_entry
     uint64_t last_consent_response_at_milliseconds = 0;
     uint64_t consent_request_failures = 0;
 };
+
+struct lifecycle_debug_retired_endpoint_entry
+{
+    std::string remote_address;
+    std::string session_id;
+    std::string reason;
+
+    uint64_t expires_at_milliseconds = 0;
+    uint64_t remaining_ttl_milliseconds = 0;
+    uint64_t suppressed_packets = 0;
+};
+
+struct lifecycle_debug_retired_ice_credential_entry
+{
+    std::string stream_id;
+    std::string session_id;
+
+    std::string local_ice_ufrag;
+    std::string remote_ice_ufrag;
+
+    std::string reason;
+
+    uint64_t expires_at_milliseconds = 0;
+    uint64_t remaining_ttl_milliseconds = 0;
+    uint64_t suppressed_stun_packets = 0;
+};
+
 struct lifecycle_debug_snapshot
 {
     uint64_t registry_stream_count = 0;
@@ -62,6 +89,11 @@ struct lifecycle_debug_snapshot
     uint64_t endpoint_session_index_count = 0;
     uint64_t endpoint_reverse_index_count = 0;
     uint64_t endpoint_last_seen_count = 0;
+
+    uint64_t retired_endpoint_count = 0;
+    uint64_t retired_endpoint_suppressed_packet_count = 0;
+    uint64_t retired_ice_credential_count = 0;
+    uint64_t retired_ice_credential_suppressed_stun_packet_count = 0;
 
     uint64_t candidate_pair_count = 0;
     uint64_t selected_candidate_pair_count = 0;
@@ -112,6 +144,8 @@ struct lifecycle_debug_snapshot
     std::vector<lifecycle_debug_session_entry> sessions;
     std::vector<lifecycle_debug_endpoint_entry> endpoints;
     std::vector<lifecycle_debug_candidate_pair_entry> candidate_pairs;
+    std::vector<lifecycle_debug_retired_endpoint_entry> retired_endpoints;
+    std::vector<lifecycle_debug_retired_ice_credential_entry> retired_ice_credentials;
     std::vector<std::string> residuals;
 };
 
@@ -125,9 +159,14 @@ REFLECT_STRUCT(
     webrtc::lifecycle_debug_candidate_pair_entry,
     (session_id)(stream_id)(remote_address)(selected)(nominated)(consent_request_in_flight)(last_binding_at_milliseconds)(last_consent_request_at_milliseconds)(last_consent_response_at_milliseconds)(consent_request_failures));
 
+REFLECT_STRUCT(webrtc::lifecycle_debug_retired_endpoint_entry,
+               (remote_address)(session_id)(reason)(expires_at_milliseconds)(remaining_ttl_milliseconds)(suppressed_packets));
+
 REFLECT_STRUCT(
-    webrtc::lifecycle_debug_snapshot,
-    (registry_stream_count)(registry_publisher_count)(registry_subscriber_count)(registry_session_count)(registry_pending_session_count)(endpoint_count)(endpoint_session_index_count)(endpoint_reverse_index_count)(endpoint_last_seen_count)(candidate_pair_count)(selected_candidate_pair_count)(candidate_pair_consent_in_flight_count)(candidate_pair_consent_failure_count)(candidate_pair_consent_stale_count)(payload_type_mapping_count)(keyframe_request_state_count)(fir_sequence_number_state_count)(publisher_video_ssrc_state_count)(pending_republish_keyframe_request_count)(selected_rid_layer_state_count)(pending_selected_rid_keyframe_request_count)(extmap_rewrite_state_count)(dtls_peer_count)(srtp_peer_count)(media_router_peer_count)(media_router_stream_count)(media_router_active_publisher_count)(media_router_active_subscriber_count)(track_binding_count)(ssrc_mapping_count)(identity_authority_track_binding_count)(identity_authority_rid_layer_binding_count)(identity_authority_forward_binding_count)(rtcp_report_source_count)(rtcp_report_stats_source_count)(rtcp_transport_cc_source_count)(rtcp_transport_cc_pending_packet_count)(rtp_cache_packet_count)(rtx_retransmission_index_count)(nack_retransmit_throttle_count)(idle_clean)(consistent)(inconsistency_count)(inconsistencies)(sessions)(endpoints)(candidate_pairs)(residuals));
+    webrtc::lifecycle_debug_retired_ice_credential_entry,
+    (stream_id)(session_id)(local_ice_ufrag)(remote_ice_ufrag)(reason)(expires_at_milliseconds)(remaining_ttl_milliseconds)(suppressed_stun_packets));
+
+REFLECT_STRUCT(webrtc::lifecycle_debug_snapshot, (registry_stream_count)(registry_publisher_count)(registry_subscriber_count)(registry_session_count)(registry_pending_session_count)(endpoint_count)(endpoint_session_index_count)(endpoint_reverse_index_count)(endpoint_last_seen_count)(retired_endpoint_count)(retired_endpoint_suppressed_packet_count)(retired_ice_credential_count)(retired_ice_credential_suppressed_stun_packet_count)(candidate_pair_count)(selected_candidate_pair_count)(candidate_pair_consent_in_flight_count)(candidate_pair_consent_failure_count)(candidate_pair_consent_stale_count)(payload_type_mapping_count)(keyframe_request_state_count)(fir_sequence_number_state_count)(publisher_video_ssrc_state_count)(pending_republish_keyframe_request_count)(selected_rid_layer_state_count)(pending_selected_rid_keyframe_request_count)(extmap_rewrite_state_count)(dtls_peer_count)(srtp_peer_count)(media_router_peer_count)(media_router_stream_count)(media_router_active_publisher_count)(media_router_active_subscriber_count)(track_binding_count)(ssrc_mapping_count)(identity_authority_track_binding_count)(identity_authority_rid_layer_binding_count)(identity_authority_forward_binding_count)(rtcp_report_source_count)(rtcp_report_stats_source_count)(rtcp_transport_cc_source_count)(rtcp_transport_cc_pending_packet_count)(rtp_cache_packet_count)(rtx_retransmission_index_count)(nack_retransmit_throttle_count)(idle_clean)(consistent)(inconsistency_count)(inconsistencies)(sessions)(endpoints)(candidate_pairs)(retired_endpoints)(retired_ice_credentials)(residuals));
 
 inline std::string lifecycle_debug_snapshot_to_json(const lifecycle_debug_snapshot& snapshot) { return serialize_struct(snapshot); }
 }    // namespace webrtc
