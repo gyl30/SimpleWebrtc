@@ -177,6 +177,21 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
         uint64_t ice_controlled_tie_breaker = 0;
     };
+    struct ice_consent_timeout_event
+    {
+        std::string session_id;
+        std::string stream_id;
+        std::string remote_address;
+
+        uint64_t consent_age_milliseconds = 0;
+        uint64_t last_binding_at_milliseconds = 0;
+        uint64_t last_consent_request_at_milliseconds = 0;
+        uint64_t last_consent_response_at_milliseconds = 0;
+
+        uint32_t consent_request_failures = 0;
+
+        bool consent_request_in_flight = false;
+    };
 
     struct media_payload_type_mapping_cache_entry
     {
@@ -517,7 +532,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::optional<std::string> remote_ice_password_for_session(std::string_view session_id) const;
 
     [[nodiscard]]
-    std::vector<std::string> collect_expired_ice_consent_session_ids(uint64_t current_time_milliseconds);
+    std::vector<ice_consent_timeout_event> collect_expired_ice_consent_timeout_events(uint64_t current_time_milliseconds);
+
+    void expire_ice_consent_session(const ice_consent_timeout_event& event);
 
     void cleanup_unselected_candidate_pairs(uint64_t current_time_milliseconds);
     void remove_expired_session(std::string_view session_id, std::string_view reason);

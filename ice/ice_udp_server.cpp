@@ -4369,6 +4369,15 @@ void ice_udp_server::on_ice_consent_check(boost::system::error_code ec)
         return;
     }
 
+    if (ec)
+    {
+        WEBRTC_LOG_WARN("ice consent timer failed error={}", ec.message());
+
+        schedule_ice_consent_check();
+
+        return;
+    }
+
     if (!started_)
     {
         return;
@@ -4378,11 +4387,11 @@ void ice_udp_server::on_ice_consent_check(boost::system::error_code ec)
 
     send_ice_consent_requests(current_time_milliseconds);
 
-    std::vector<std::string> expired_session_ids = collect_expired_ice_consent_session_ids(current_time_milliseconds);
+    std::vector<ice_consent_timeout_event> timeout_events = collect_expired_ice_consent_timeout_events(current_time_milliseconds);
 
-    for (const auto& session_id : expired_session_ids)
+    for (const auto& event : timeout_events)
     {
-        remove_expired_session(session_id, "ice consent");
+        expire_ice_consent_session(event);
     }
 
     cleanup_unselected_candidate_pairs(current_time_milliseconds);
@@ -10325,8 +10334,10 @@ void ice_udp_server::send_ice_consent_requests(uint64_t current_time_millisecond
     }
 }
 
-std::vector<std::string> ice_udp_server::collect_expired_ice_consent_session_ids(uint64_t current_time_milliseconds)
+std::vector<ice_udp_server::ice_consent_timeout_event> ice_udp_server::collect_expired_ice_consent_timeout_events(uint64_t current_time_milliseconds)
 {
+    std::vector<ice_consent_timeout_event> events;
+
     std::vector<std::string> expired_session_ids;
 
     std::lock_guard lock(endpoint_mutex_);
@@ -10335,26 +10346,90 @@ std::vector<std::string> ice_udp_server::collect_expired_ice_consent_session_ids
     {
         (void)key;
 
-        if (!pair.selected || pair.last_binding_at_milliseconds == 0)
+        if (!pair.selected)
         {
             continue;
         }
 
-        const uint64_t age_milliseconds =
-            current_time_milliseconds > pair.last_binding_at_milliseconds ? current_time_milliseconds - pair.last_binding_at_milliseconds : 0;
-
-        if (age_milliseconds < k_ice_consent_timeout_milliseconds)
+        if (pair.session_id.empty() || pair.remote_address.empty())
         {
             continue;
         }
 
-        if (!contains_string(expired_session_ids, pair.session_id))
+        if (contains_string(expired_session_ids, pair.session_id))
         {
-            expired_session_ids.push_back(pair.session_id);
+            continue;
         }
+
+        const uint64_t consent_freshness_at_milliseconds =
+            pair.last_consent_response_at_milliseconds != 0 ? pair.last_consent_response_at_milliseconds : pair.last_binding_at_milliseconds;
+
+        if (consent_freshness_at_milliseconds == 0)
+        {
+            continue;
+        }
+
+        const uint64_t consent_age_milliseconds =
+            current_time_milliseconds > consent_freshness_at_milliseconds ? current_time_milliseconds - consent_freshness_at_milliseconds : 0;
+
+        if (consent_age_milliseconds < k_ice_consent_timeout_milliseconds)
+        {
+            continue;
+        }
+
+        ice_consent_timeout_event event;
+
+        event.session_id = pair.session_id;
+
+        event.stream_id = pair.stream_id;
+
+        event.remote_address = pair.remote_address;
+
+        event.consent_age_milliseconds = consent_age_milliseconds;
+
+        event.last_binding_at_milliseconds = pair.last_binding_at_milliseconds;
+
+        event.last_consent_request_at_milliseconds = pair.last_consent_request_at_milliseconds;
+
+        event.last_consent_response_at_milliseconds = pair.last_consent_response_at_milliseconds;
+
+        event.consent_request_failures = pair.consent_request_failures;
+
+        event.consent_request_in_flight = pair.consent_request_in_flight;
+
+        events.push_back(std::move(event));
+
+        expired_session_ids.push_back(pair.session_id);
     }
 
-    return expired_session_ids;
+    return events;
+}
+void ice_udp_server::expire_ice_consent_session(const ice_consent_timeout_event& event)
+{
+    if (event.session_id.empty())
+    {
+        return;
+    }
+
+    WEBRTC_LOG_WARN(
+        "ice consent timeout stream={} session={} remote={} age_ms={} failures={} in_flight={} last_binding_ms={} last_request_ms={} "
+        "last_response_ms={}",
+        event.stream_id,
+        event.session_id,
+        event.remote_address,
+        event.consent_age_milliseconds,
+        event.consent_request_failures,
+        event.consent_request_in_flight ? 1 : 0,
+        event.last_binding_at_milliseconds,
+        event.last_consent_request_at_milliseconds,
+        event.last_consent_response_at_milliseconds);
+
+    if (!event.remote_address.empty())
+    {
+        send_dtls_close_notify(event.remote_address);
+    }
+
+    remove_expired_session(event.session_id, "ice consent timeout");
 }
 
 void ice_udp_server::cleanup_unselected_candidate_pairs(uint64_t current_time_milliseconds)
