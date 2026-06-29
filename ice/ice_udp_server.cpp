@@ -59,6 +59,7 @@ constexpr auto k_rtcp_report_interval = std::chrono::milliseconds(200);
 constexpr auto k_rtcp_report_empty_generation_log_interval = std::chrono::seconds(60);
 
 constexpr uint64_t k_ice_consent_timeout_milliseconds = 30000;
+constexpr uint64_t k_ice_consent_request_retry_milliseconds = 5000;
 
 constexpr uint64_t k_unselected_candidate_pair_retention_milliseconds = 120000;
 
@@ -547,6 +548,47 @@ std::string make_candidate_pair_key(std::string_view session_id, std::string_vie
     key.append(remote_address);
 
     return key;
+}
+
+std::string make_ice_consent_username(std::string_view remote_ufrag, std::string_view local_ufrag)
+{
+    std::string username;
+
+    username.reserve(remote_ufrag.size() + local_ufrag.size() + 1);
+
+    username.append(remote_ufrag);
+
+    username.push_back(':');
+
+    username.append(local_ufrag);
+
+    return username;
+}
+
+uint64_t make_ice_consent_tie_breaker(std::string_view session_id, std::string_view remote_address, uint64_t remote_tie_breaker)
+{
+    uint64_t value = remote_tie_breaker == 0 ? 0x5346575254430001ULL : remote_tie_breaker;
+
+    for (const char character : session_id)
+    {
+        value ^= static_cast<uint8_t>(character);
+
+        value *= 1099511628211ULL;
+    }
+
+    for (const char character : remote_address)
+    {
+        value ^= static_cast<uint8_t>(character);
+
+        value *= 1099511628211ULL;
+    }
+
+    if (value == 0)
+    {
+        return 1;
+    }
+
+    return value;
 }
 
 std::string make_payload_type_mapping_key(std::string_view publisher_session_id, std::string_view subscriber_session_id)
@@ -4270,15 +4312,6 @@ void ice_udp_server::on_ice_consent_check(boost::system::error_code ec)
         return;
     }
 
-    if (ec)
-    {
-        WEBRTC_LOG_WARN("ice consent timer failed: {}", ec.message());
-
-        schedule_ice_consent_check();
-
-        return;
-    }
-
     if (!started_)
     {
         return;
@@ -4286,12 +4319,12 @@ void ice_udp_server::on_ice_consent_check(boost::system::error_code ec)
 
     const uint64_t current_time_milliseconds = now_milliseconds();
 
+    send_ice_consent_requests(current_time_milliseconds);
+
     std::vector<std::string> expired_session_ids = collect_expired_ice_consent_session_ids(current_time_milliseconds);
 
     for (const auto& session_id : expired_session_ids)
     {
-        WEBRTC_LOG_WARN("ice consent session expired session={} timeout_ms={}", session_id, k_ice_consent_timeout_milliseconds);
-
         remove_expired_session(session_id, "ice consent");
     }
 
@@ -4724,6 +4757,180 @@ void ice_udp_server::reset_rtcp_report_runtime_counters()
 
     rtcp_report_protect_ignored_total_.store(0, std::memory_order_relaxed);
 }
+std::optional<std::string> ice_udp_server::remote_ice_password_for_session(std::string_view session_id) const
+{
+    if (registry_ == nullptr || session_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    auto publisher = registry_->find_publisher_by_session_id(session_id);
+
+    if (publisher != nullptr)
+    {
+        const auto& password = publisher->remote_offer_summary().ice_pwd;
+
+        if (password.empty())
+        {
+            return std::nullopt;
+        }
+
+        return password;
+    }
+
+    auto subscriber = registry_->find_subscriber_by_session_id(session_id);
+
+    if (subscriber != nullptr)
+    {
+        const auto& password = subscriber->remote_offer_summary().ice_pwd;
+
+        if (password.empty())
+        {
+            return std::nullopt;
+        }
+
+        return password;
+    }
+
+    return std::nullopt;
+}
+
+bool ice_udp_server::remember_ice_consent_success_locked(std::string_view remote_address,
+                                                         const std::array<uint8_t, 12>& transaction_id,
+                                                         uint64_t current_time_milliseconds)
+{
+    if (remote_address.empty())
+    {
+        return false;
+    }
+
+    for (auto& [key, pair] : candidate_pairs_by_key_)
+    {
+        (void)key;
+
+        if (!pair.selected)
+        {
+            continue;
+        }
+
+        if (pair.remote_address != remote_address)
+        {
+            continue;
+        }
+
+        if (!pair.consent_request_in_flight)
+        {
+            continue;
+        }
+
+        if (pair.pending_consent_transaction_id != transaction_id)
+        {
+            continue;
+        }
+
+        pair.last_consent_response_at_milliseconds = current_time_milliseconds;
+
+        pair.last_binding_at_milliseconds = current_time_milliseconds;
+
+        pair.consent_request_failures = 0;
+
+        pair.consent_request_in_flight = false;
+
+        pair.pending_consent_transaction_id = {};
+
+        return true;
+    }
+
+    return false;
+}
+
+void ice_udp_server::handle_stun_binding_success_response(std::span<const uint8_t> data,
+                                                          const stun_message& message,
+                                                          const udp::endpoint& remote_endpoint)
+{
+    const std::string remote_address = endpoint_to_string(remote_endpoint);
+
+    std::string session_id;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        const auto iterator = session_id_by_endpoint_address_.find(remote_address);
+
+        if (iterator == session_id_by_endpoint_address_.end())
+        {
+            WEBRTC_LOG_DEBUG("ice consent response ignored remote={} reason=session endpoint not found", remote_address);
+
+            return;
+        }
+
+        session_id = iterator->second;
+    }
+
+    auto integrity_key = remote_ice_password_for_session(session_id);
+
+    if (!integrity_key.has_value() || integrity_key->empty())
+    {
+        WEBRTC_LOG_WARN("ice consent response remote ice pwd not found session={} remote={}", session_id, remote_address);
+
+        return;
+    }
+
+    if (!message.has_message_integrity)
+    {
+        WEBRTC_LOG_WARN("ice consent response missing message-integrity session={} remote={}", session_id, remote_address);
+
+        return;
+    }
+
+    auto integrity_result = verify_stun_message_integrity(data, *integrity_key);
+
+    if (!integrity_result)
+    {
+        WEBRTC_LOG_WARN("ice consent response message-integrity verify failed session={} remote={} error={}",
+                        session_id,
+                        remote_address,
+                        integrity_result.error());
+
+        return;
+    }
+
+    if (message.has_fingerprint)
+    {
+        auto fingerprint_result = verify_stun_fingerprint(data);
+
+        if (!fingerprint_result)
+        {
+            WEBRTC_LOG_WARN("ice consent response fingerprint verify failed session={} remote={} error={}",
+                            session_id,
+                            remote_address,
+                            fingerprint_result.error());
+
+            return;
+        }
+    }
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    bool accepted = false;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        accepted = remember_ice_consent_success_locked(remote_address, message.transaction_id, current_time_milliseconds);
+    }
+
+    if (!accepted)
+    {
+        WEBRTC_LOG_DEBUG("ice consent response ignored session={} remote={} reason=transaction not found", session_id, remote_address);
+
+        return;
+    }
+
+    touch_endpoint_activity(remote_endpoint);
+
+    WEBRTC_LOG_DEBUG("ice consent response accepted session={} remote={}", session_id, remote_address);
+}
 void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
@@ -4733,6 +4940,13 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
     if (!message)
     {
         WEBRTC_LOG_WARN("ice stun parse failed remote={} error={}", remote_address, message.error());
+
+        return;
+    }
+
+    if (message->method == stun_method::binding && message->message_class == stun_message_class::success_response)
+    {
+        handle_stun_binding_success_response(data, *message, remote_endpoint);
 
         return;
     }
@@ -9716,11 +9930,12 @@ void ice_udp_server::remember_candidate_pair(std::string_view session_id,
     pair.remote_address = std::string(remote_address);
 
     pair.remote_priority = remote_priority;
-
     pair.remote_tie_breaker = remote_tie_breaker;
-
     pair.last_binding_at_milliseconds = now_milliseconds();
-
+    if (pair.last_consent_response_at_milliseconds == 0)
+    {
+        pair.last_consent_response_at_milliseconds = pair.last_binding_at_milliseconds;
+    }
     pair.nominated = pair.nominated || nominated;
 }
 
@@ -9783,11 +9998,13 @@ std::expected<ice_udp_server::ice_candidate_pair_selection_result, std::string> 
 
             pair.remote_tie_breaker = remote_tie_breaker;
 
-            pair.last_binding_at_milliseconds = now_milliseconds();
-
-            pair.nominated = true;
             pair.selected = true;
-
+            pair.nominated = true;
+            pair.last_binding_at_milliseconds = now_milliseconds();
+            if (pair.last_consent_response_at_milliseconds == 0)
+            {
+                pair.last_consent_response_at_milliseconds = pair.last_binding_at_milliseconds;
+            }
             return result;
         }
 
@@ -9824,7 +10041,10 @@ std::expected<ice_udp_server::ice_candidate_pair_selection_result, std::string> 
     pair.selected = true;
 
     result.changed = true;
-
+    if (pair.last_consent_response_at_milliseconds == 0)
+    {
+        pair.last_consent_response_at_milliseconds = pair.last_binding_at_milliseconds;
+    }
     return result;
 }
 
@@ -9838,6 +10058,197 @@ bool ice_udp_server::is_selected_endpoint(std::string_view remote_address) const
     std::lock_guard lock(endpoint_mutex_);
 
     return session_id_by_endpoint_address_.contains(std::string(remote_address));
+}
+
+std::vector<ice_udp_server::ice_consent_request> ice_udp_server::collect_due_ice_consent_requests(uint64_t current_time_milliseconds)
+{
+    struct selected_consent_candidate
+    {
+        ice_candidate_pair pair;
+        udp::endpoint remote_endpoint;
+    };
+
+    std::vector<selected_consent_candidate> selected_candidates;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        for (const auto& [key, pair] : candidate_pairs_by_key_)
+        {
+            (void)key;
+
+            if (!pair.selected)
+            {
+                continue;
+            }
+
+            if (pair.session_id.empty() || pair.stream_id.empty() || pair.remote_address.empty())
+            {
+                continue;
+            }
+
+            const auto endpoint_iterator = endpoints_by_address_.find(pair.remote_address);
+
+            if (endpoint_iterator == endpoints_by_address_.end())
+            {
+                continue;
+            }
+
+            const uint64_t request_age = pair.last_consent_request_at_milliseconds == 0
+                                             ? std::numeric_limits<uint64_t>::max()
+                                             : current_time_milliseconds - pair.last_consent_request_at_milliseconds;
+
+            if (pair.consent_request_in_flight && request_age < k_ice_consent_request_retry_milliseconds)
+            {
+                continue;
+            }
+
+            selected_consent_candidate candidate;
+            candidate.pair = pair;
+            candidate.remote_endpoint = endpoint_iterator->second;
+
+            selected_candidates.push_back(std::move(candidate));
+        }
+    }
+
+    std::vector<ice_consent_request> requests;
+
+    requests.reserve(selected_candidates.size());
+
+    for (const auto& candidate : selected_candidates)
+    {
+        std::string local_ufrag;
+        std::string remote_ufrag;
+        std::string remote_pwd;
+
+        if (registry_ == nullptr)
+        {
+            continue;
+        }
+
+        auto publisher = registry_->find_publisher_by_session_id(candidate.pair.session_id);
+
+        if (publisher != nullptr)
+        {
+            local_ufrag = publisher->local_ice().ufrag;
+
+            remote_ufrag = publisher->remote_offer_summary().ice_ufrag;
+
+            remote_pwd = publisher->remote_offer_summary().ice_pwd;
+        }
+        else
+        {
+            auto subscriber = registry_->find_subscriber_by_session_id(candidate.pair.session_id);
+
+            if (subscriber == nullptr)
+            {
+                continue;
+            }
+
+            local_ufrag = subscriber->local_ice().ufrag;
+
+            remote_ufrag = subscriber->remote_offer_summary().ice_ufrag;
+
+            remote_pwd = subscriber->remote_offer_summary().ice_pwd;
+        }
+
+        if (local_ufrag.empty() || remote_ufrag.empty() || remote_pwd.empty())
+        {
+            continue;
+        }
+
+        ice_consent_request request;
+        request.session_id = candidate.pair.session_id;
+        request.stream_id = candidate.pair.stream_id;
+        request.remote_address = candidate.pair.remote_address;
+        request.remote_endpoint = candidate.remote_endpoint;
+        request.username = make_ice_consent_username(remote_ufrag, local_ufrag);
+        request.message_integrity_key = std::move(remote_pwd);
+        request.ice_controlled_tie_breaker =
+            make_ice_consent_tie_breaker(candidate.pair.session_id, candidate.pair.remote_address, candidate.pair.remote_tie_breaker);
+
+        requests.push_back(std::move(request));
+    }
+
+    return requests;
+}
+
+void ice_udp_server::remember_ice_consent_request_sent(std::string_view session_id,
+                                                       std::string_view remote_address,
+                                                       const std::array<uint8_t, 12>& transaction_id,
+                                                       uint64_t current_time_milliseconds)
+{
+    if (session_id.empty() || remote_address.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const std::string key = make_candidate_pair_key(session_id, remote_address);
+
+    auto iterator = candidate_pairs_by_key_.find(key);
+
+    if (iterator == candidate_pairs_by_key_.end())
+    {
+        return;
+    }
+
+    auto& pair = iterator->second;
+
+    if (!pair.selected)
+    {
+        return;
+    }
+
+    pair.pending_consent_transaction_id = transaction_id;
+
+    pair.last_consent_request_at_milliseconds = current_time_milliseconds;
+
+    pair.consent_request_in_flight = true;
+}
+
+void ice_udp_server::send_ice_consent_requests(uint64_t current_time_milliseconds)
+{
+    auto requests = collect_due_ice_consent_requests(current_time_milliseconds);
+
+    for (const auto& request : requests)
+    {
+        const current_session_endpoint_state current_session =
+            validate_current_session_endpoint(request.remote_address, request.session_id, request.stream_id, "ice consent request");
+
+        if (!current_session.allowed)
+        {
+            continue;
+        }
+
+        stun_binding_request_options options;
+        options.username = request.username;
+        options.message_integrity_key = request.message_integrity_key;
+        options.ice_controlled = request.ice_controlled_tie_breaker;
+        options.include_fingerprint = true;
+
+        std::array<uint8_t, 12> transaction_id{};
+
+        auto packet = write_stun_binding_request(options, transaction_id);
+
+        if (!packet)
+        {
+            WEBRTC_LOG_WARN("ice consent request build failed stream={} session={} remote={} error={}",
+                            request.stream_id,
+                            request.session_id,
+                            request.remote_address,
+                            packet.error());
+
+            continue;
+        }
+
+        remember_ice_consent_request_sent(request.session_id, request.remote_address, transaction_id, current_time_milliseconds);
+
+        send_response(std::move(*packet), request.remote_endpoint);
+
+        WEBRTC_LOG_DEBUG("ice consent request sent stream={} session={} remote={}", request.stream_id, request.session_id, request.remote_address);
+    }
 }
 
 std::vector<std::string> ice_udp_server::collect_expired_ice_consent_session_ids(uint64_t current_time_milliseconds)

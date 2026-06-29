@@ -15,6 +15,7 @@
 #include <netinet/in.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/rand.h>
 
 namespace webrtc
 {
@@ -36,7 +37,19 @@ constexpr std::array<uint8_t, 4> kStunMagicCookieBytes{
 };
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+std::expected<std::array<uint8_t, kStunTransactionIdSize>, std::string> generate_stun_transaction_id()
+{
+    std::array<uint8_t, kStunTransactionIdSize> transaction_id{};
 
+    const int result = RAND_bytes(transaction_id.data(), static_cast<int>(transaction_id.size()));
+
+    if (result != 1)
+    {
+        return make_error("generate stun transaction id failed");
+    }
+
+    return transaction_id;
+}
 uint16_t read_u16(std::span<const uint8_t> data, std::size_t offset)
 {
     return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
@@ -69,6 +82,12 @@ void append_u32(std::vector<uint8_t>& data, uint32_t value)
     data.push_back(static_cast<uint8_t>((value >> 16U) & 0xFFU));
     data.push_back(static_cast<uint8_t>((value >> 8U) & 0xFFU));
     data.push_back(static_cast<uint8_t>(value & 0xFFU));
+}
+void append_u64(std::vector<uint8_t>& data, uint64_t value)
+{
+    append_u32(data, static_cast<uint32_t>((value >> 32U) & 0xFFFFFFFFULL));
+
+    append_u32(data, static_cast<uint32_t>(value & 0xFFFFFFFFULL));
 }
 
 void write_u16(std::vector<uint8_t>& data, std::size_t offset, uint16_t value)
@@ -949,6 +968,86 @@ stun_message_result parse_stun_message(std::span<const uint8_t> data)
     }
 
     return message;
+}
+
+stun_packet_result write_stun_binding_request(const stun_binding_request_options& options, std::array<uint8_t, 12>& transaction_id)
+{
+    if (options.username.empty())
+    {
+        return make_error("stun binding request username is empty");
+    }
+
+    if (options.message_integrity_key.empty())
+    {
+        return make_error("stun binding request message integrity key is empty");
+    }
+
+    if (options.ice_controlled == 0)
+    {
+        return make_error("stun binding request ice-controlled tie breaker is empty");
+    }
+
+    auto generated_transaction_id = generate_stun_transaction_id();
+
+    if (!generated_transaction_id)
+    {
+        return std::unexpected(generated_transaction_id.error());
+    }
+
+    transaction_id = *generated_transaction_id;
+
+    const uint16_t request_type = encode_message_type(kStunBindingMethod, stun_message_class::request);
+
+    std::vector<uint8_t> packet = make_stun_header(request_type, transaction_id);
+
+    const auto* username_data = reinterpret_cast<const uint8_t*>(options.username.data());
+
+    auto username_result = append_attribute(packet, kStunAttributeUsername, std::span<const uint8_t>(username_data, options.username.size()));
+
+    if (!username_result)
+    {
+        return std::unexpected(username_result.error());
+    }
+
+    std::vector<uint8_t> controlled_value;
+
+    controlled_value.reserve(8);
+
+    append_u64(controlled_value, options.ice_controlled);
+
+    auto controlled_result =
+        append_attribute(packet, kStunAttributeIceControlled, std::span<const uint8_t>(controlled_value.data(), controlled_value.size()));
+
+    if (!controlled_result)
+    {
+        return std::unexpected(controlled_result.error());
+    }
+
+    auto length_result = set_stun_message_length(packet, packet.size() - kStunHeaderSize);
+
+    if (!length_result)
+    {
+        return std::unexpected(length_result.error());
+    }
+
+    auto integrity_result = append_message_integrity(packet, options.message_integrity_key);
+
+    if (!integrity_result)
+    {
+        return std::unexpected(integrity_result.error());
+    }
+
+    if (options.include_fingerprint)
+    {
+        auto fingerprint_result = append_fingerprint(packet);
+
+        if (!fingerprint_result)
+        {
+            return std::unexpected(fingerprint_result.error());
+        }
+    }
+
+    return packet;
 }
 
 stun_packet_result write_stun_binding_success_response(const stun_message& request, const stun_binding_success_response_options& options)

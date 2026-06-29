@@ -18,6 +18,7 @@
 #include <boost/asio.hpp>
 
 #include "dtls/dtls_transport.h"
+#include "ice/stun_message.h"
 #include "server/lifecycle_debug_json.h"
 #include "media/media_payload_type_mapper.h"
 #include "media/media_router.h"
@@ -141,18 +142,40 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string remote_address;
 
         uint32_t remote_priority = 0;
+
         uint64_t remote_tie_breaker = 0;
+
         uint64_t last_binding_at_milliseconds = 0;
+        uint64_t last_consent_request_at_milliseconds = 0;
+        uint64_t last_consent_response_at_milliseconds = 0;
+
+        uint32_t consent_request_failures = 0;
+
+        std::array<uint8_t, 12> pending_consent_transaction_id{};
+
+        bool consent_request_in_flight = false;
 
         bool nominated = false;
         bool selected = false;
     };
-
     struct ice_candidate_pair_selection_result
     {
         bool changed = false;
 
         std::string previous_remote_address;
+    };
+    struct ice_consent_request
+    {
+        std::string session_id;
+        std::string stream_id;
+        std::string remote_address;
+
+        boost::asio::ip::udp::endpoint remote_endpoint;
+
+        std::string username;
+        std::string message_integrity_key;
+
+        uint64_t ice_controlled_tie_breaker = 0;
     };
 
     struct media_payload_type_mapping_cache_entry
@@ -474,10 +497,29 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                                           uint64_t remote_tie_breaker);
 
     [[nodiscard]]
+    std::vector<ice_consent_request> collect_due_ice_consent_requests(uint64_t current_time_milliseconds);
+
+    void send_ice_consent_requests(uint64_t current_time_milliseconds);
+
+    void remember_ice_consent_request_sent(std::string_view session_id,
+                                           std::string_view remote_address,
+                                           const std::array<uint8_t, 12>& transaction_id,
+                                           uint64_t current_time_milliseconds);
+
+    [[nodiscard]]
+    bool remember_ice_consent_success_locked(std::string_view remote_address,
+                                             const std::array<uint8_t, 12>& transaction_id,
+                                             uint64_t current_time_milliseconds);
+
+    void handle_stun_binding_success_response(std::span<const uint8_t> data, const stun_message& message, const udp::endpoint& remote_endpoint);
+
+    [[nodiscard]]
+    std::optional<std::string> remote_ice_password_for_session(std::string_view session_id) const;
+
+    [[nodiscard]]
     std::vector<std::string> collect_expired_ice_consent_session_ids(uint64_t current_time_milliseconds);
 
     void cleanup_unselected_candidate_pairs(uint64_t current_time_milliseconds);
-
     void remove_expired_session(std::string_view session_id, std::string_view reason);
 
     [[nodiscard]]

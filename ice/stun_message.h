@@ -82,6 +82,17 @@ struct stun_message
     std::size_t fingerprint_attribute_offset = 0;
 };
 
+struct stun_binding_request_options
+{
+    std::string username;
+
+    std::string message_integrity_key;
+
+    uint64_t ice_controlled = 0;
+
+    bool include_fingerprint = true;
+};
+
 struct stun_binding_success_response_options
 {
     stun_address mapped_address;
@@ -103,6 +114,8 @@ using stun_packet_result = std::expected<std::vector<uint8_t>, std::string>;
 [[nodiscard]] stun_validation_result validate_stun_header(std::span<const uint8_t> data);
 
 [[nodiscard]] stun_message_result parse_stun_message(std::span<const uint8_t> data);
+
+[[nodiscard]] stun_packet_result write_stun_binding_request(const stun_binding_request_options& options, std::array<uint8_t, 12>& transaction_id);
 
 [[nodiscard]] stun_packet_result write_stun_binding_success_response(const stun_message& request,
                                                                      const stun_binding_success_response_options& options);
