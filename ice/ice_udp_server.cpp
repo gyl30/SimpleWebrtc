@@ -3182,70 +3182,135 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
     if (!snapshot.consistent || runtime_residual_after_idle)
     {
         WEBRTC_LOG_WARN(
-            "lifecycle snapshot residual reason={} stream={} session={} registry_sessions={} registry_publishers={} registry_subscribers={} "
-            "endpoints={} endpoint_index={} endpoint_reverse_index={} dtls_peers={} srtp_peers={} media_router_peers={} media_router_streams={} "
-            "track_bindings={} "
-            "ssrc_mappings={} payload_type_mappings={} keyframe_states={} fir_sequence_states={} publisher_video_ssrc_states={} "
-            "pending_republish_keyframes={} rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} "
-            "rtx_retransmission_index={} nack_retransmit_throttle={} idle_clean={} consistent={} inconsistencies={}",
+            "lifecycle snapshot residual reason={} stream={} session={} "
+            "registry_streams={} registry_sessions={} registry_publishers={} registry_subscribers={} registry_pending_sessions={} "
+            "endpoints={} endpoint_session_index={} endpoint_reverse_index={} endpoint_last_seen={} "
+            "candidate_pairs={} selected_candidate_pairs={} candidate_pair_consent_in_flight={} candidate_pair_consent_failures={} "
+            "candidate_pair_consent_stale={} "
+            "payload_type_mappings={} keyframe_states={} fir_sequence_states={} publisher_video_ssrc_states={} pending_republish_keyframes={} "
+            "selected_rid_layer_states={} pending_selected_rid_keyframes={} extmap_rewrite_states={} "
+            "dtls_peers={} srtp_peers={} "
+            "media_router_peers={} media_router_streams={} media_router_active_publishers={} media_router_active_subscribers={} "
+            "track_bindings={} ssrc_mappings={} "
+            "identity_track_bindings={} identity_rid_layer_bindings={} identity_forward_bindings={} "
+            "rtcp_report_sources={} rtcp_report_stats_sources={} "
+            "rtcp_transport_cc_sources={} rtcp_transport_cc_pending_packets={} "
+            "rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={} "
+            "idle_clean={} consistent={} inconsistencies={} residuals={}",
             reason,
             stream_id,
             session_id,
+            snapshot.registry_stream_count,
             snapshot.registry_session_count,
             snapshot.registry_publisher_count,
             snapshot.registry_subscriber_count,
+            snapshot.registry_pending_session_count,
             snapshot.endpoint_count,
             snapshot.endpoint_session_index_count,
             snapshot.endpoint_reverse_index_count,
-            snapshot.dtls_peer_count,
-            snapshot.srtp_peer_count,
-            snapshot.media_router_peer_count,
-            snapshot.media_router_stream_count,
-            snapshot.track_binding_count,
-            snapshot.ssrc_mapping_count,
+            snapshot.endpoint_last_seen_count,
+            snapshot.candidate_pair_count,
+            snapshot.selected_candidate_pair_count,
+            snapshot.candidate_pair_consent_in_flight_count,
+            snapshot.candidate_pair_consent_failure_count,
+            snapshot.candidate_pair_consent_stale_count,
             snapshot.payload_type_mapping_count,
             snapshot.keyframe_request_state_count,
             snapshot.fir_sequence_number_state_count,
             snapshot.publisher_video_ssrc_state_count,
             snapshot.pending_republish_keyframe_request_count,
+            snapshot.selected_rid_layer_state_count,
+            snapshot.pending_selected_rid_keyframe_request_count,
+            snapshot.extmap_rewrite_state_count,
+            snapshot.dtls_peer_count,
+            snapshot.srtp_peer_count,
+            snapshot.media_router_peer_count,
+            snapshot.media_router_stream_count,
+            snapshot.media_router_active_publisher_count,
+            snapshot.media_router_active_subscriber_count,
+            snapshot.track_binding_count,
+            snapshot.ssrc_mapping_count,
+            snapshot.identity_authority_track_binding_count,
+            snapshot.identity_authority_rid_layer_binding_count,
+            snapshot.identity_authority_forward_binding_count,
             snapshot.rtcp_report_source_count,
             snapshot.rtcp_report_stats_source_count,
+            snapshot.rtcp_transport_cc_source_count,
+            snapshot.rtcp_transport_cc_pending_packet_count,
             snapshot.rtp_cache_packet_count,
             snapshot.rtx_retransmission_index_count,
             snapshot.nack_retransmit_throttle_count,
             snapshot.idle_clean ? 1 : 0,
             snapshot.consistent ? 1 : 0,
-            snapshot.inconsistency_count);
+            snapshot.inconsistency_count,
+            snapshot.residuals.size());
 
         return;
     }
 
     WEBRTC_LOG_INFO(
-        "lifecycle snapshot clean reason={} stream={} session={} registry_sessions={} registry_publishers={} registry_subscribers={} endpoints={} "
-        "dtls_peers={} srtp_peers={} media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} payload_type_mappings={} "
-        "keyframe_states={} "
-        "rtcp_report_sources={} rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={}  idle_clean={} consistent={}",
+        "lifecycle snapshot clean reason={} stream={} session={} "
+        "registry_streams={} registry_sessions={} registry_publishers={} registry_subscribers={} registry_pending_sessions={} "
+        "endpoints={} endpoint_session_index={} endpoint_reverse_index={} endpoint_last_seen={} "
+        "candidate_pairs={} selected_candidate_pairs={} candidate_pair_consent_in_flight={} candidate_pair_consent_failures={} "
+        "candidate_pair_consent_stale={} "
+        "payload_type_mappings={} keyframe_states={} fir_sequence_states={} publisher_video_ssrc_states={} pending_republish_keyframes={} "
+        "selected_rid_layer_states={} pending_selected_rid_keyframes={} extmap_rewrite_states={} "
+        "dtls_peers={} srtp_peers={} "
+        "media_router_peers={} media_router_streams={} media_router_active_publishers={} media_router_active_subscribers={} "
+        "track_bindings={} ssrc_mappings={} "
+        "identity_track_bindings={} identity_rid_layer_bindings={} identity_forward_bindings={} "
+        "rtcp_report_sources={} rtcp_report_stats_sources={} "
+        "rtcp_transport_cc_sources={} rtcp_transport_cc_pending_packets={} "
+        "rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={} "
+        "idle_clean={} consistent={} inconsistencies={} residuals={}",
         reason,
         stream_id,
         session_id,
+        snapshot.registry_stream_count,
         snapshot.registry_session_count,
         snapshot.registry_publisher_count,
         snapshot.registry_subscriber_count,
+        snapshot.registry_pending_session_count,
         snapshot.endpoint_count,
+        snapshot.endpoint_session_index_count,
+        snapshot.endpoint_reverse_index_count,
+        snapshot.endpoint_last_seen_count,
+        snapshot.candidate_pair_count,
+        snapshot.selected_candidate_pair_count,
+        snapshot.candidate_pair_consent_in_flight_count,
+        snapshot.candidate_pair_consent_failure_count,
+        snapshot.candidate_pair_consent_stale_count,
+        snapshot.payload_type_mapping_count,
+        snapshot.keyframe_request_state_count,
+        snapshot.fir_sequence_number_state_count,
+        snapshot.publisher_video_ssrc_state_count,
+        snapshot.pending_republish_keyframe_request_count,
+        snapshot.selected_rid_layer_state_count,
+        snapshot.pending_selected_rid_keyframe_request_count,
+        snapshot.extmap_rewrite_state_count,
         snapshot.dtls_peer_count,
         snapshot.srtp_peer_count,
         snapshot.media_router_peer_count,
         snapshot.media_router_stream_count,
+        snapshot.media_router_active_publisher_count,
+        snapshot.media_router_active_subscriber_count,
         snapshot.track_binding_count,
         snapshot.ssrc_mapping_count,
-        snapshot.payload_type_mapping_count,
-        snapshot.keyframe_request_state_count,
+        snapshot.identity_authority_track_binding_count,
+        snapshot.identity_authority_rid_layer_binding_count,
+        snapshot.identity_authority_forward_binding_count,
         snapshot.rtcp_report_source_count,
+        snapshot.rtcp_report_stats_source_count,
+        snapshot.rtcp_transport_cc_source_count,
+        snapshot.rtcp_transport_cc_pending_packet_count,
         snapshot.rtp_cache_packet_count,
         snapshot.rtx_retransmission_index_count,
         snapshot.nack_retransmit_throttle_count,
         snapshot.idle_clean ? 1 : 0,
-        snapshot.consistent ? 1 : 0);
+        snapshot.consistent ? 1 : 0,
+        snapshot.inconsistency_count,
+        snapshot.residuals.size());
 }
 void ice_udp_server::schedule_lifecycle_convergence_checks(std::string reason, std::string stream_id, std::string session_id)
 {
