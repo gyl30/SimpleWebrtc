@@ -88,11 +88,14 @@ media_identity_result media_identity_authority::remember_track_resolution(const 
     const std::string key = make_peer_ssrc_key(binding.remote_endpoint, binding.ssrc);
 
     auto iterator = tracks_by_peer_ssrc_.find(key);
-
     if (iterator == tracks_by_peer_ssrc_.end())
     {
+        auto rid_layer_result = remember_rid_layer_binding_locked(resolution, binding);
+        if (!rid_layer_result)
+        {
+            return std::unexpected(rid_layer_result.error());
+        }
         tracks_by_peer_ssrc_.emplace(key, std::move(binding));
-
         return {};
     }
 
@@ -103,11 +106,13 @@ media_identity_result media_identity_authority::remember_track_resolution(const 
     }
 
     iterator->second.rid = binding.rid;
-
     iterator->second.repaired_rid = binding.repaired_rid;
-
     iterator->second.packet_count += 1;
-
+    auto rid_layer_result = remember_rid_layer_binding_locked(resolution, iterator->second);
+    if (!rid_layer_result)
+    {
+        return std::unexpected(rid_layer_result.error());
+    }
     return {};
 }
 
@@ -227,6 +232,87 @@ std::optional<media_identity_track_binding> media_identity_authority::find_track
 
     return iterator->second;
 }
+std::optional<media_identity_rid_layer_binding> media_identity_authority::find_rid_layer_by_rid(std::string_view stream_id,
+                                                                                                std::string_view session_id,
+                                                                                                std::string_view mid,
+                                                                                                std::string_view rid) const
+{
+    if (stream_id.empty() || session_id.empty() || mid.empty() || rid.empty())
+    {
+        return std::nullopt;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    const std::string key = make_rid_layer_key(stream_id, session_id, mid, rid);
+
+    const auto iterator = rid_layers_by_key_.find(key);
+
+    if (iterator == rid_layers_by_key_.end())
+    {
+        return std::nullopt;
+    }
+
+    return iterator->second;
+}
+
+std::optional<media_identity_rid_layer_binding> media_identity_authority::find_rid_layer_by_primary_ssrc(std::string_view session_id,
+                                                                                                         uint32_t primary_ssrc) const
+{
+    if (session_id.empty() || primary_ssrc == 0)
+    {
+        return std::nullopt;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    const std::string ssrc_key = make_session_ssrc_key(session_id, primary_ssrc);
+
+    const auto key_iterator = rid_layer_key_by_primary_ssrc_key_.find(ssrc_key);
+
+    if (key_iterator == rid_layer_key_by_primary_ssrc_key_.end())
+    {
+        return std::nullopt;
+    }
+
+    const auto layer_iterator = rid_layers_by_key_.find(key_iterator->second);
+
+    if (layer_iterator == rid_layers_by_key_.end())
+    {
+        return std::nullopt;
+    }
+
+    return layer_iterator->second;
+}
+
+std::optional<media_identity_rid_layer_binding> media_identity_authority::find_rid_layer_by_repair_ssrc(std::string_view session_id,
+                                                                                                        uint32_t repair_ssrc) const
+{
+    if (session_id.empty() || repair_ssrc == 0)
+    {
+        return std::nullopt;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    const std::string ssrc_key = make_session_ssrc_key(session_id, repair_ssrc);
+
+    const auto key_iterator = rid_layer_key_by_repair_ssrc_key_.find(ssrc_key);
+
+    if (key_iterator == rid_layer_key_by_repair_ssrc_key_.end())
+    {
+        return std::nullopt;
+    }
+
+    const auto layer_iterator = rid_layers_by_key_.find(key_iterator->second);
+
+    if (layer_iterator == rid_layers_by_key_.end())
+    {
+        return std::nullopt;
+    }
+
+    return layer_iterator->second;
+}
 
 std::optional<media_identity_forward_binding> media_identity_authority::find_forward_by_publisher_ssrc(std::string_view stream_id,
                                                                                                        std::string_view publisher_session_id,
@@ -329,6 +415,19 @@ void media_identity_authority::forget_peer(std::string_view remote_endpoint)
 
         ++iterator;
     }
+    for (auto iterator = rid_layers_by_key_.begin(); iterator != rid_layers_by_key_.end();)
+    {
+        if (iterator->second.remote_endpoint == remote_endpoint)
+        {
+            erase_rid_layer_indexes_locked(iterator->second);
+
+            iterator = rid_layers_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
 }
 
 void media_identity_authority::forget_session(std::string_view session_id)
@@ -351,7 +450,19 @@ void media_identity_authority::forget_session(std::string_view session_id)
 
         ++iterator;
     }
+    for (auto iterator = rid_layers_by_key_.begin(); iterator != rid_layers_by_key_.end();)
+    {
+        if (iterator->second.session_id == session_id)
+        {
+            erase_rid_layer_indexes_locked(iterator->second);
 
+            iterator = rid_layers_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
     for (auto iterator = forwards_by_publisher_key_.begin(); iterator != forwards_by_publisher_key_.end();)
     {
         if (iterator->second.publisher_session_id == session_id || iterator->second.subscriber_session_id == session_id)
@@ -390,6 +501,19 @@ void media_identity_authority::forget_stream(std::string_view stream_id)
         ++iterator;
     }
 
+    for (auto iterator = rid_layers_by_key_.begin(); iterator != rid_layers_by_key_.end();)
+    {
+        if (iterator->second.stream_id == stream_id)
+        {
+            erase_rid_layer_indexes_locked(iterator->second);
+
+            iterator = rid_layers_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
     for (auto iterator = forwards_by_publisher_key_.begin(); iterator != forwards_by_publisher_key_.end();)
     {
         if (iterator->second.stream_id == stream_id)
@@ -410,40 +534,38 @@ void media_identity_authority::forget_stream(std::string_view stream_id)
 void media_identity_authority::clear()
 {
     std::lock_guard lock(mutex_);
-
     tracks_by_peer_ssrc_.clear();
-
+    rid_layers_by_key_.clear();
+    rid_layer_key_by_primary_ssrc_key_.clear();
+    rid_layer_key_by_repair_ssrc_key_.clear();
     forwards_by_publisher_key_.clear();
-
     publisher_key_by_subscriber_key_.clear();
 }
 
 std::size_t media_identity_authority::track_binding_count() const
 {
     std::lock_guard lock(mutex_);
-
     return tracks_by_peer_ssrc_.size();
 }
 
 std::size_t media_identity_authority::forward_binding_count() const
 {
     std::lock_guard lock(mutex_);
-
     return forwards_by_publisher_key_.size();
 }
 
+std::size_t media_identity_authority::rid_layer_binding_count() const
+{
+    std::lock_guard lock(mutex_);
+    return rid_layers_by_key_.size();
+}
 std::string media_identity_authority::make_peer_ssrc_key(std::string_view remote_endpoint, uint32_t ssrc)
 {
     std::string key;
-
     key.reserve(remote_endpoint.size() + 16);
-
     key.append(remote_endpoint);
-
     key.push_back('|');
-
     key.append(std::to_string(ssrc));
-
     return key;
 }
 
@@ -489,6 +611,46 @@ std::string media_identity_authority::make_subscriber_forward_key(std::string_vi
     key.push_back('|');
 
     key.append(std::to_string(subscriber_ssrc));
+
+    return key;
+}
+std::string media_identity_authority::make_rid_layer_key(std::string_view stream_id,
+                                                         std::string_view session_id,
+                                                         std::string_view mid,
+                                                         std::string_view rid)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + session_id.size() + mid.size() + rid.size() + 4);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(session_id);
+
+    key.push_back('|');
+
+    key.append(mid);
+
+    key.push_back('|');
+
+    key.append(rid);
+
+    return key;
+}
+
+std::string media_identity_authority::make_session_ssrc_key(std::string_view session_id, uint32_t ssrc)
+{
+    std::string key;
+
+    key.reserve(session_id.size() + 16);
+
+    key.append(session_id);
+
+    key.push_back('|');
+
+    key.append(std::to_string(ssrc));
 
     return key;
 }
@@ -605,6 +767,259 @@ media_identity_result media_identity_authority::validate_forward_binding(const m
 
     return {};
 }
+media_identity_result media_identity_authority::validate_rid_layer_binding(const media_identity_rid_layer_binding& binding)
+{
+    if (binding.stream_id.empty())
+    {
+        return make_error("media identity rid layer stream id is empty");
+    }
+
+    if (binding.session_id.empty())
+    {
+        return make_error("media identity rid layer session id is empty");
+    }
+
+    if (binding.remote_endpoint.empty())
+    {
+        return make_error("media identity rid layer remote endpoint is empty");
+    }
+
+    if (binding.mid.empty())
+    {
+        return make_error("media identity rid layer mid is empty");
+    }
+
+    if (binding.kind.empty())
+    {
+        return make_error("media identity rid layer kind is empty");
+    }
+
+    if (binding.rid.empty())
+    {
+        return make_error("media identity rid layer rid is empty");
+    }
+
+    if (binding.primary_ssrc == 0 && binding.repair_ssrc == 0)
+    {
+        return make_error("media identity rid layer has no ssrc");
+    }
+
+    if (binding.primary_ssrc != 0 && binding.primary_payload_type == 0)
+    {
+        return make_error("media identity rid layer primary payload type is zero");
+    }
+
+    if (binding.repair_ssrc != 0 && binding.repair_payload_type == 0)
+    {
+        return make_error("media identity rid layer repair payload type is zero");
+    }
+
+    return {};
+}
+
+void media_identity_authority::erase_rid_layer_indexes_locked(const media_identity_rid_layer_binding& binding)
+{
+    if (binding.primary_ssrc != 0)
+    {
+        rid_layer_key_by_primary_ssrc_key_.erase(make_session_ssrc_key(binding.session_id, binding.primary_ssrc));
+    }
+
+    if (binding.repair_ssrc != 0)
+    {
+        rid_layer_key_by_repair_ssrc_key_.erase(make_session_ssrc_key(binding.session_id, binding.repair_ssrc));
+    }
+}
+
+media_identity_result media_identity_authority::remember_rid_layer_binding_locked(const media_track_resolution& resolution,
+                                                                                  const media_identity_track_binding& track_binding)
+{
+    std::optional<std::string> rid;
+
+    if (!track_binding.rtx && track_binding.rid.has_value() && !track_binding.rid->empty())
+    {
+        rid = track_binding.rid;
+    }
+    else if (track_binding.rtx && track_binding.repaired_rid.has_value() && !track_binding.repaired_rid->empty())
+    {
+        rid = track_binding.repaired_rid;
+    }
+    else if (track_binding.rtx && resolution.rtx_primary_ssrc != 0)
+    {
+        const std::string primary_ssrc_key = make_session_ssrc_key(track_binding.session_id, resolution.rtx_primary_ssrc);
+
+        const auto primary_iterator = rid_layer_key_by_primary_ssrc_key_.find(primary_ssrc_key);
+
+        if (primary_iterator == rid_layer_key_by_primary_ssrc_key_.end())
+        {
+            return {};
+        }
+
+        const auto layer_iterator = rid_layers_by_key_.find(primary_iterator->second);
+
+        if (layer_iterator == rid_layers_by_key_.end())
+        {
+            return {};
+        }
+
+        rid = layer_iterator->second.rid;
+    }
+
+    if (!rid.has_value() || rid->empty())
+    {
+        return {};
+    }
+
+    const std::string layer_key = make_rid_layer_key(track_binding.stream_id, track_binding.session_id, track_binding.mid, *rid);
+
+    media_identity_rid_layer_binding next_binding;
+
+    next_binding.stream_id = track_binding.stream_id;
+
+    next_binding.session_id = track_binding.session_id;
+
+    next_binding.remote_endpoint = track_binding.remote_endpoint;
+
+    next_binding.mid = track_binding.mid;
+
+    next_binding.kind = track_binding.kind;
+
+    next_binding.rid = *rid;
+
+    if (track_binding.rtx)
+    {
+        next_binding.primary_ssrc = resolution.rtx_primary_ssrc;
+
+        next_binding.repair_ssrc = track_binding.ssrc;
+
+        next_binding.repair_payload_type = track_binding.payload_type;
+    }
+    else
+    {
+        next_binding.primary_ssrc = track_binding.ssrc;
+
+        next_binding.primary_payload_type = track_binding.payload_type;
+    }
+
+    next_binding.packet_count = 1;
+
+    auto iterator = rid_layers_by_key_.find(layer_key);
+
+    if (iterator != rid_layers_by_key_.end())
+    {
+        media_identity_rid_layer_binding& current = iterator->second;
+
+        if (current.stream_id != next_binding.stream_id || current.session_id != next_binding.session_id ||
+            current.remote_endpoint != next_binding.remote_endpoint || current.mid != next_binding.mid || current.kind != next_binding.kind ||
+            current.rid != next_binding.rid)
+        {
+            return make_error("media identity rid layer binding identity conflict");
+        }
+
+        if (next_binding.primary_ssrc != 0)
+        {
+            if (current.primary_ssrc != 0 && current.primary_ssrc != next_binding.primary_ssrc)
+            {
+                return make_error("media identity rid layer primary ssrc conflict");
+            }
+
+            current.primary_ssrc = next_binding.primary_ssrc;
+
+            current.primary_payload_type = next_binding.primary_payload_type;
+        }
+
+        if (next_binding.repair_ssrc != 0)
+        {
+            if (current.repair_ssrc != 0 && current.repair_ssrc != next_binding.repair_ssrc)
+            {
+                return make_error("media identity rid layer repair ssrc conflict");
+            }
+
+            if (next_binding.primary_ssrc != 0 && current.primary_ssrc != 0 && current.primary_ssrc != next_binding.primary_ssrc)
+            {
+                return make_error("media identity rid layer rtx primary ssrc conflict");
+            }
+
+            if (current.primary_ssrc == 0)
+            {
+                current.primary_ssrc = next_binding.primary_ssrc;
+            }
+
+            current.repair_ssrc = next_binding.repair_ssrc;
+
+            current.repair_payload_type = next_binding.repair_payload_type;
+        }
+
+        current.packet_count += 1;
+
+        auto validation_result = validate_rid_layer_binding(current);
+
+        if (!validation_result)
+        {
+            return std::unexpected(validation_result.error());
+        }
+
+        if (current.primary_ssrc != 0)
+        {
+            const std::string primary_ssrc_key = make_session_ssrc_key(current.session_id, current.primary_ssrc);
+
+            const auto [index_iterator, inserted] = rid_layer_key_by_primary_ssrc_key_.try_emplace(primary_ssrc_key, layer_key);
+
+            if (!inserted && index_iterator->second != layer_key)
+            {
+                return make_error("media identity rid layer primary ssrc index conflict");
+            }
+        }
+
+        if (current.repair_ssrc != 0)
+        {
+            const std::string repair_ssrc_key = make_session_ssrc_key(current.session_id, current.repair_ssrc);
+
+            const auto [index_iterator, inserted] = rid_layer_key_by_repair_ssrc_key_.try_emplace(repair_ssrc_key, layer_key);
+
+            if (!inserted && index_iterator->second != layer_key)
+            {
+                return make_error("media identity rid layer repair ssrc index conflict");
+            }
+        }
+
+        return {};
+    }
+
+    auto validation_result = validate_rid_layer_binding(next_binding);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
+    if (next_binding.primary_ssrc != 0)
+    {
+        const std::string primary_ssrc_key = make_session_ssrc_key(next_binding.session_id, next_binding.primary_ssrc);
+
+        const auto [index_iterator, inserted] = rid_layer_key_by_primary_ssrc_key_.try_emplace(primary_ssrc_key, layer_key);
+
+        if (!inserted && index_iterator->second != layer_key)
+        {
+            return make_error("media identity rid layer primary ssrc index conflict");
+        }
+    }
+
+    if (next_binding.repair_ssrc != 0)
+    {
+        const std::string repair_ssrc_key = make_session_ssrc_key(next_binding.session_id, next_binding.repair_ssrc);
+
+        const auto [index_iterator, inserted] = rid_layer_key_by_repair_ssrc_key_.try_emplace(repair_ssrc_key, layer_key);
+
+        if (!inserted && index_iterator->second != layer_key)
+        {
+            return make_error("media identity rid layer repair ssrc index conflict");
+        }
+    }
+
+    rid_layers_by_key_.emplace(layer_key, std::move(next_binding));
+
+    return {};
+}
 
 std::string media_identity_track_binding_to_string(const media_identity_track_binding& binding)
 {
@@ -657,6 +1072,55 @@ std::string media_identity_track_binding_to_string(const media_identity_track_bi
 
         result.append(*binding.repaired_rid);
     }
+
+    return result;
+}
+
+std::string media_identity_rid_layer_binding_to_string(const media_identity_rid_layer_binding& binding)
+{
+    std::string result;
+
+    result.reserve(256);
+
+    result.append("stream=");
+
+    result.append(binding.stream_id);
+
+    result.append(" session=");
+
+    result.append(binding.session_id);
+
+    result.append(" remote=");
+
+    result.append(binding.remote_endpoint);
+
+    result.append(" mid=");
+
+    result.append(binding.mid);
+
+    result.append(" kind=");
+
+    result.append(binding.kind);
+
+    result.append(" rid=");
+
+    result.append(binding.rid);
+
+    result.append(" primary_ssrc=");
+
+    result.append(std::to_string(binding.primary_ssrc));
+
+    result.append(" repair_ssrc=");
+
+    result.append(std::to_string(binding.repair_ssrc));
+
+    result.append(" primary_pt=");
+
+    result.append(std::to_string(binding.primary_payload_type));
+
+    result.append(" repair_pt=");
+
+    result.append(std::to_string(binding.repair_payload_type));
 
     return result;
 }

@@ -35,7 +35,24 @@ struct media_identity_track_binding
 
     uint64_t packet_count = 0;
 };
+struct media_identity_rid_layer_binding
+{
+    std::string stream_id;
+    std::string session_id;
+    std::string remote_endpoint;
 
+    std::string mid;
+    std::string kind;
+    std::string rid;
+
+    uint32_t primary_ssrc = 0;
+    uint32_t repair_ssrc = 0;
+
+    uint16_t primary_payload_type = 0;
+    uint16_t repair_payload_type = 0;
+
+    uint64_t packet_count = 0;
+};
 struct media_identity_forward_binding
 {
     std::string stream_id;
@@ -92,6 +109,18 @@ class media_identity_authority
     std::optional<media_identity_track_binding> find_track_by_peer_ssrc(std::string_view remote_endpoint, uint32_t ssrc) const;
 
     [[nodiscard]]
+    std::optional<media_identity_rid_layer_binding> find_rid_layer_by_rid(std::string_view stream_id,
+                                                                          std::string_view session_id,
+                                                                          std::string_view mid,
+                                                                          std::string_view rid) const;
+
+    [[nodiscard]]
+    std::optional<media_identity_rid_layer_binding> find_rid_layer_by_primary_ssrc(std::string_view session_id, uint32_t primary_ssrc) const;
+
+    [[nodiscard]]
+    std::optional<media_identity_rid_layer_binding> find_rid_layer_by_repair_ssrc(std::string_view session_id, uint32_t repair_ssrc) const;
+
+    [[nodiscard]]
     std::optional<media_identity_forward_binding> find_forward_by_publisher_ssrc(std::string_view stream_id,
                                                                                  std::string_view publisher_session_id,
                                                                                  std::string_view subscriber_session_id,
@@ -126,6 +155,9 @@ class media_identity_authority
     [[nodiscard]]
     std::size_t forward_binding_count() const;
 
+    [[nodiscard]]
+    std::size_t rid_layer_binding_count() const;
+
    private:
     [[nodiscard]]
     static std::string make_peer_ssrc_key(std::string_view remote_endpoint, uint32_t ssrc);
@@ -141,18 +173,34 @@ class media_identity_authority
     static std::string make_subscriber_forward_key(std::string_view subscriber_session_id, uint32_t subscriber_ssrc);
 
     [[nodiscard]]
+    static std::string make_rid_layer_key(std::string_view stream_id, std::string_view session_id, std::string_view mid, std::string_view rid);
+
+    [[nodiscard]]
+    static std::string make_session_ssrc_key(std::string_view session_id, uint32_t ssrc);
+
+    [[nodiscard]]
     static media_identity_result validate_track_binding(const media_identity_track_binding& binding);
 
     [[nodiscard]]
     static media_identity_result validate_forward_binding(const media_identity_forward_binding& binding);
 
+    [[nodiscard]]
+    static media_identity_result validate_rid_layer_binding(const media_identity_rid_layer_binding& binding);
+
+    [[nodiscard]]
+    media_identity_result remember_rid_layer_binding_locked(const media_track_resolution& resolution,
+                                                            const media_identity_track_binding& track_binding);
+
+    void erase_rid_layer_indexes_locked(const media_identity_rid_layer_binding& binding);
+
    private:
     mutable std::mutex mutex_;
 
     std::unordered_map<std::string, media_identity_track_binding> tracks_by_peer_ssrc_;
-
+    std::unordered_map<std::string, media_identity_rid_layer_binding> rid_layers_by_key_;
+    std::unordered_map<std::string, std::string> rid_layer_key_by_primary_ssrc_key_;
+    std::unordered_map<std::string, std::string> rid_layer_key_by_repair_ssrc_key_;
     std::unordered_map<std::string, media_identity_forward_binding> forwards_by_publisher_key_;
-
     std::unordered_map<std::string, std::string> publisher_key_by_subscriber_key_;
 };
 

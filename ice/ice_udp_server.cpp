@@ -317,10 +317,10 @@ bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
            snapshot.keyframe_request_state_count == 0 && snapshot.dtls_peer_count == 0 && snapshot.srtp_peer_count == 0 &&
            snapshot.media_router_peer_count == 0 && snapshot.media_router_stream_count == 0 && snapshot.media_router_active_publisher_count == 0 &&
            snapshot.media_router_active_subscriber_count == 0 && snapshot.track_binding_count == 0 && snapshot.ssrc_mapping_count == 0 &&
-           snapshot.identity_authority_track_binding_count == 0 && snapshot.identity_authority_forward_binding_count == 0 &&
-           snapshot.rtcp_report_source_count == 0 && snapshot.rtcp_transport_cc_source_count == 0 &&
-           snapshot.rtcp_transport_cc_pending_packet_count == 0 && snapshot.rtp_cache_packet_count == 0 &&
-           snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0 &&
+           snapshot.identity_authority_rid_layer_binding_count == 0 && snapshot.identity_authority_track_binding_count == 0 &&
+           snapshot.identity_authority_forward_binding_count == 0 && snapshot.rtcp_report_source_count == 0 &&
+           snapshot.rtcp_transport_cc_source_count == 0 && snapshot.rtcp_transport_cc_pending_packet_count == 0 &&
+           snapshot.rtp_cache_packet_count == 0 && snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0 &&
            snapshot.fir_sequence_number_state_count == 0 && snapshot.publisher_video_ssrc_state_count == 0 &&
            snapshot.pending_republish_keyframe_request_count == 0 && snapshot.extmap_rewrite_state_count == 0;
 }
@@ -2718,7 +2718,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
     if (identity_authority_ != nullptr)
     {
         snapshot.identity_authority_track_binding_count = to_debug_count(identity_authority_->track_binding_count());
-
+        snapshot.identity_authority_rid_layer_binding_count = to_debug_count(identity_authority_->rid_layer_binding_count());
         snapshot.identity_authority_forward_binding_count = to_debug_count(identity_authority_->forward_binding_count());
     }
     if (rtcp_report_service_ != nullptr)
@@ -2833,7 +2833,12 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             add_lifecycle_residual(
                 snapshot, "identity authority track binding remains count=" + std::to_string(snapshot.identity_authority_track_binding_count));
         }
-
+        if (snapshot.identity_authority_rid_layer_binding_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot,
+                "identity authority rid layer binding remains count=" + std::to_string(snapshot.identity_authority_rid_layer_binding_count));
+        }
         if (snapshot.identity_authority_forward_binding_count != 0)
         {
             add_lifecycle_residual(
