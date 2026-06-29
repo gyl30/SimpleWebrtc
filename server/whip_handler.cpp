@@ -82,6 +82,38 @@ bool is_application_sdp_restart_request(http_request_t& request)
 
     return restart_content_type_matches(content_type, k_restart_application_sdp);
 }
+constexpr std::string_view k_whip_replace_session_header = "WHIP-Replace-Session";
+
+std::string_view trim_ascii_whitespace(std::string_view value)
+{
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0)
+    {
+        value.remove_prefix(1);
+    }
+
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())) != 0)
+    {
+        value.remove_suffix(1);
+    }
+
+    return value;
+}
+
+std::optional<std::string> read_whip_replace_session_id(http_request_t& request)
+{
+    const auto field = request.req[std::string(k_whip_replace_session_header)];
+
+    std::string_view value(field.data(), field.size());
+
+    value = trim_ascii_whitespace(value);
+
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    return std::string(value);
+}
 
 }    // namespace
 
@@ -118,16 +150,58 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
     if (!validation_result)
     {
-        WEBRTC_LOG_WARN("WHIP validate WebRTC offer failed stream={} error={}", stream_id, validation_result.error());
+        WEBRTC_LOG_WARN("WHIP validate offer failed stream={} error={}", stream_id, validation_result.error());
 
         return json_error_response(request, 400, make_prefixed_error("invalid whip offer: ", validation_result.error()));
     }
 
-    WEBRTC_LOG_INFO("WHIP validated WebRTC offer stream={} bundle_mid_count={} media_count={} ice_ufrag_size={}",
-                    stream_id,
-                    offer_summary->bundle_mids.size(),
-                    offer_summary->media.size(),
-                    offer_summary->ice_ufrag.size());
+    const std::optional<std::string> replace_session_id = read_whip_replace_session_id(request);
+
+    std::shared_ptr<publisher_session> replace_previous_session;
+
+    stream_republished_session republished_session;
+
+    if (replace_session_id.has_value())
+    {
+        replace_previous_session = registry_->find_publisher_by_session_id(*replace_session_id);
+
+        if (replace_previous_session == nullptr)
+        {
+            WEBRTC_LOG_WARN("WHIP republish failed previous publisher not found stream={} previous_session={}", stream_id, *replace_session_id);
+
+            return json_error_response(request, 404, "previous publisher session not found");
+        }
+
+        if (replace_previous_session->stream_id() != stream_id)
+        {
+            WEBRTC_LOG_WARN("WHIP republish failed stream mismatch stream={} previous_stream={} previous_session={}",
+                            stream_id,
+                            replace_previous_session->stream_id(),
+                            replace_previous_session->session_id());
+
+            return json_error_response(request, 409, "previous publisher session belongs to another stream");
+        }
+
+        auto precondition = validate_session_if_match(request, *replace_previous_session);
+
+        if (!precondition)
+        {
+            WEBRTC_LOG_WARN("WHIP republish precondition failed stream={} previous_session={} error={}",
+                            stream_id,
+                            replace_previous_session->session_id(),
+                            precondition.error());
+
+            return json_error_response(request, 412, precondition.error());
+        }
+
+        republished_session.stream_id = replace_previous_session->stream_id();
+
+        republished_session.old_session_id = replace_previous_session->session_id();
+
+        republished_session.old_local_ice_ufrag = replace_previous_session->local_ice().ufrag;
+
+        republished_session.old_remote_ice_ufrag = replace_previous_session->remote_offer_summary().ice_ufrag;
+    }
 
     if (answer_factory_ == nullptr)
     {
@@ -154,7 +228,16 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         return json_error_response(request, 400, make_prefixed_error("failed to filter runtime publisher offer: ", runtime_offer_filter.error()));
     }
 
-    auto session_result = registry_->create_publisher_session(std::string(stream_id), offer, std::move(runtime_offer_filter->offer_summary));
+    auto session_result = [&]() -> publisher_session_result
+    {
+        if (replace_session_id.has_value())
+        {
+            return registry_->replace_publisher_session(
+                *replace_session_id, std::string(stream_id), offer, std::move(runtime_offer_filter->offer_summary));
+        }
+
+        return registry_->create_publisher_session(std::string(stream_id), offer, std::move(runtime_offer_filter->offer_summary));
+    }();
     if (!session_result)
     {
         const auto error = session_result.error();
@@ -166,8 +249,23 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
             return json_error_response(request, 409, "stream already has publisher");
         }
 
-        WEBRTC_LOG_ERROR("WHIP create publisher failed stream={} error={}", stream_id, stream_registry_error_to_string(error));
+        if (error == stream_registry_error::publisher_session_not_found)
+        {
+            WEBRTC_LOG_WARN(
+                "WHIP republish failed previous publisher not found stream={} previous_session={}", stream_id, replace_session_id.value_or(""));
 
+            return json_error_response(request, 404, "previous publisher session not found");
+        }
+
+        if (error == stream_registry_error::publisher_republish_stream_mismatch)
+        {
+            WEBRTC_LOG_WARN(
+                "WHIP republish failed previous publisher stream mismatch stream={} previous_session={}", stream_id, replace_session_id.value_or(""));
+
+            return json_error_response(request, 409, "previous publisher session belongs to another stream");
+        }
+
+        WEBRTC_LOG_ERROR("WHIP create publisher failed stream={} error={}", stream_id, stream_registry_error_to_string(error));
         return json_error_response(request, 500, "create publisher session failed");
     }
 
@@ -177,19 +275,39 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
     generated_sdp_answer generated_answer = std::move(*answer);
 
+    const std::string new_local_ice_ufrag = generated_answer.local_ice.ufrag;
+
     session->set_local_answer(std::move(generated_answer.sdp),
                               std::move(generated_answer.local_ice),
                               std::move(generated_answer.local_fingerprint),
                               generated_answer.sdp_session_id,
                               generated_answer.sdp_session_version);
 
-    WEBRTC_LOG_INFO("WHIP create publisher stream={} session={} sdp_size={} offer_media_count={} accepted_media_count={} accepted_mline_count={}",
-                    session->stream_id(),
-                    session->session_id(),
-                    offer.size(),
-                    offer_summary->media.size(),
-                    session->remote_offer_summary().media.size(),
-                    session->accepted_remote_media_mline_indexes().size());
+    if (replace_session_id.has_value())
+    {
+        republished_session.new_session_id = session->session_id();
+
+        republished_session.new_local_ice_ufrag = new_local_ice_ufrag;
+
+        republished_session.new_remote_ice_ufrag = session->remote_offer_summary().ice_ufrag;
+
+        if (registry_ != nullptr)
+        {
+            registry_->notify_publisher_republish(std::move(republished_session));
+        }
+    }
+
+    WEBRTC_LOG_INFO(
+        "WHIP create publisher stream={} session={} republish={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={} "
+        "accepted_mline_count={}",
+        session->stream_id(),
+        session->session_id(),
+        replace_session_id.has_value() ? 1 : 0,
+        replace_session_id.value_or(""),
+        offer.size(),
+        offer_summary->media.size(),
+        session->remote_offer_summary().media.size(),
+        session->accepted_remote_media_mline_indexes().size());
 
     auto response = sdp_response(request, 201, session->local_sdp_answer());
 

@@ -55,6 +55,8 @@ std::string_view stream_registry_error_to_string(stream_registry_error error)
 
         case stream_registry_error::subscriber_reconnect_stream_mismatch:
             return "subscriber_reconnect_stream_mismatch";
+        case stream_registry_error::publisher_republish_stream_mismatch:
+            return "publisher_republish_stream_mismatch";
     }
 
     return "unknown";
@@ -93,6 +95,59 @@ publisher_session_result stream_registry::create_publisher_session(std::string s
         std::make_shared<publisher_session>(session_id, stream_id, std::move(remote_sdp_offer), std::move(remote_offer_summary), created_at);
 
     publishers_by_session_id_.emplace(session_id, session);
+    publishers_by_stream_id_.emplace(std::move(stream_id), session);
+
+    return session;
+}
+publisher_session_result stream_registry::replace_publisher_session(std::string previous_session_id,
+                                                                    std::string stream_id,
+                                                                    std::string remote_sdp_offer,
+                                                                    sdp::webrtc_offer_summary remote_offer_summary)
+{
+    if (previous_session_id.empty())
+    {
+        return std::unexpected(stream_registry_error::publisher_session_not_found);
+    }
+
+    std::lock_guard lock(mutex_);
+
+    const auto previous_iterator = publishers_by_session_id_.find(previous_session_id);
+
+    if (previous_iterator == publishers_by_session_id_.end() || previous_iterator->second == nullptr)
+    {
+        return std::unexpected(stream_registry_error::publisher_session_not_found);
+    }
+
+    const std::shared_ptr<publisher_session> previous_session = previous_iterator->second;
+
+    if (previous_session->stream_id() != stream_id)
+    {
+        return std::unexpected(stream_registry_error::publisher_republish_stream_mismatch);
+    }
+
+    const auto stream_iterator = publishers_by_stream_id_.find(stream_id);
+
+    if (stream_iterator == publishers_by_stream_id_.end() || stream_iterator->second == nullptr ||
+        stream_iterator->second->session_id() != previous_session_id)
+    {
+        return std::unexpected(stream_registry_error::publisher_republish_stream_mismatch);
+    }
+
+    previous_session->set_state(session_state::closed);
+
+    publishers_by_session_id_.erase(previous_iterator);
+
+    publishers_by_stream_id_.erase(stream_iterator);
+
+    const std::string session_id = make_unique_session_id_locked();
+
+    const uint64_t created_at = now_milliseconds();
+
+    auto session =
+        std::make_shared<publisher_session>(session_id, stream_id, std::move(remote_sdp_offer), std::move(remote_offer_summary), created_at);
+
+    publishers_by_session_id_.emplace(session_id, session);
+
     publishers_by_stream_id_.emplace(std::move(stream_id), session);
 
     return session;
@@ -445,6 +500,29 @@ void stream_registry::notify_session_ice_restart(stream_restarted_session restar
     if (callback)
     {
         callback(restarted_session);
+    }
+}
+
+void stream_registry::set_publisher_republish_callback(stream_publisher_republish_callback callback)
+{
+    std::lock_guard lock(mutex_);
+
+    publisher_republish_callback_ = std::move(callback);
+}
+
+void stream_registry::notify_publisher_republish(stream_republished_session republished_session)
+{
+    stream_publisher_republish_callback callback;
+
+    {
+        std::lock_guard lock(mutex_);
+
+        callback = publisher_republish_callback_;
+    }
+
+    if (callback)
+    {
+        callback(republished_session);
     }
 }
 std::vector<stream_session_lifecycle_snapshot> stream_registry::session_lifecycle_snapshots() const

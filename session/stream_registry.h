@@ -28,6 +28,7 @@ enum class stream_registry_error
     publisher_session_not_found,
     subscriber_session_not_found,
     subscriber_reconnect_stream_mismatch,
+    publisher_republish_stream_mismatch,
 };
 
 enum class stream_session_kind
@@ -50,6 +51,19 @@ struct stream_restarted_session
     stream_session_kind kind = stream_session_kind::publisher;
     std::string stream_id;
     std::string session_id;
+
+    std::string old_local_ice_ufrag;
+    std::string old_remote_ice_ufrag;
+
+    std::string new_local_ice_ufrag;
+    std::string new_remote_ice_ufrag;
+};
+struct stream_republished_session
+{
+    std::string stream_id;
+
+    std::string old_session_id;
+    std::string new_session_id;
 
     std::string old_local_ice_ufrag;
     std::string old_remote_ice_ufrag;
@@ -81,6 +95,8 @@ using stream_session_removed_callback = std::function<void(const stream_removed_
 
 using stream_session_ice_restart_callback = std::function<void(const stream_restarted_session& restarted_session)>;
 
+using stream_publisher_republish_callback = std::function<void(const stream_republished_session& republished_session)>;
+
 class stream_registry
 {
    public:
@@ -98,6 +114,11 @@ class stream_registry
                                                                     std::string remote_sdp_offer,
                                                                     sdp::webrtc_offer_summary remote_offer_summary);
 
+    [[nodiscard]]
+    publisher_session_result replace_publisher_session(std::string previous_session_id,
+                                                       std::string stream_id,
+                                                       std::string remote_sdp_offer,
+                                                       sdp::webrtc_offer_summary remote_offer_summary);
     [[nodiscard]] subscriber_session_result create_subscriber_session(std::string stream_id,
                                                                       std::string remote_sdp_offer,
                                                                       sdp::webrtc_offer_summary remote_offer_summary);
@@ -121,11 +142,15 @@ class stream_registry
 
     [[nodiscard]] remove_session_result remove_subscriber_session(std::string_view session_id);
 
-    void notify_session_ice_restart(stream_restarted_session restarted_session);
-
     void set_session_removed_callback(stream_session_removed_callback callback);
 
     void set_session_ice_restart_callback(stream_session_ice_restart_callback callback);
+
+    void notify_session_ice_restart(stream_restarted_session restarted_session);
+
+    void set_publisher_republish_callback(stream_publisher_republish_callback callback);
+
+    void notify_publisher_republish(stream_republished_session republished_session);
 
     [[nodiscard]]
     std::vector<stream_session_lifecycle_snapshot> session_lifecycle_snapshots() const;
@@ -141,15 +166,13 @@ class stream_registry
     mutable std::mutex mutex_;
 
     std::unordered_map<std::string, std::shared_ptr<publisher_session>> publishers_by_stream_id_;
-
     std::unordered_map<std::string, std::shared_ptr<publisher_session>> publishers_by_session_id_;
-
     std::unordered_map<std::string, std::shared_ptr<subscriber_session>> subscribers_by_session_id_;
-
     std::unordered_map<std::string, std::unordered_set<std::string>> subscriber_session_ids_by_stream_id_;
 
     stream_session_removed_callback session_removed_callback_;
     stream_session_ice_restart_callback session_ice_restart_callback_;
+    stream_publisher_republish_callback publisher_republish_callback_;
 };
 }    // namespace webrtc
 
