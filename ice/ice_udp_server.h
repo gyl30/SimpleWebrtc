@@ -31,6 +31,7 @@
 #include "media/nack_retransmit_throttle.h"
 #include "media/rtx_sequence_number_allocator.h"
 #include "media/media_identity_authority.h"
+#include "rtp/rtp_packet_rewriter.h"
 #include "media/rtx_retransmission_index.h"
 #include "session/stream_registry.h"
 #include "srtp/srtp_transport.h"
@@ -242,6 +243,20 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::unordered_set<std::string> consumed_subscriber_session_ids;
     };
 
+    struct extmap_rewrite_runtime_state
+    {
+        std::string stream_id;
+        std::string publisher_session_id;
+        std::string subscriber_session_id;
+        std::string subscriber_mid;
+        std::string uri;
+
+        uint8_t source_id = 0;
+        uint8_t target_id = 0;
+
+        uint64_t packet_count = 0;
+    };
+
    private:
     [[nodiscard]]
     ice_udp_server_result init_dtls_transport();
@@ -397,6 +412,18 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                    const std::optional<media_track_resolution>& track_resolution,
                                                                    const media_peer_info& target_peer);
 
+    [[nodiscard]]
+    bool remember_extmap_header_extension_id_rewrite(std::string_view stream_id,
+                                                     std::string_view publisher_session_id,
+                                                     std::string_view subscriber_session_id,
+                                                     std::string_view subscriber_mid,
+                                                     std::string_view uri,
+                                                     const rtp_header_extension_id_rewrite& rewrite);
+
+    void forget_extmap_rewrite_states_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_extmap_rewrite_states_for_stream_locked(std::string_view stream_id);
     void maybe_request_keyframe_from_publisher(const srtp_packet_process_result& packet,
                                                const media_route_result& route,
                                                const std::optional<media_track_resolution>& track_resolution,
@@ -656,6 +683,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, uint8_t> fir_sequence_number_by_key_;
     std::unordered_map<std::string, uint32_t> publisher_video_ssrc_by_stream_;
     std::unordered_map<std::string, republish_keyframe_request_state> pending_republish_keyframe_state_by_stream_;
+    std::unordered_map<std::string, extmap_rewrite_runtime_state> extmap_rewrite_state_by_key_;
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
 

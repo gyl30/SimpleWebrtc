@@ -63,6 +63,7 @@ constexpr uint64_t k_ice_consent_timeout_milliseconds = 30000;
 constexpr uint64_t k_unselected_candidate_pair_retention_milliseconds = 120000;
 
 constexpr std::string_view k_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
+constexpr std::string_view k_absolute_send_time_extension_uri = "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
 
 constexpr uint64_t k_fnv_offset_basis = 1469598103934665603ULL;
 
@@ -158,6 +159,36 @@ std::string make_keyframe_request_key(const media_route_result& route, const med
     key.push_back('|');
 
     key.append(std::to_string(media_ssrc));
+
+    return key;
+}
+std::string make_extmap_rewrite_runtime_state_key(std::string_view stream_id,
+                                                  std::string_view publisher_session_id,
+                                                  std::string_view subscriber_session_id,
+                                                  std::string_view subscriber_mid,
+                                                  std::string_view uri)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + publisher_session_id.size() + subscriber_session_id.size() + subscriber_mid.size() + uri.size() + 8);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(publisher_session_id);
+
+    key.push_back('|');
+
+    key.append(subscriber_session_id);
+
+    key.push_back('|');
+
+    key.append(subscriber_mid);
+
+    key.push_back('|');
+
+    key.append(uri);
 
     return key;
 }
@@ -291,7 +322,7 @@ bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
            snapshot.rtcp_transport_cc_pending_packet_count == 0 && snapshot.rtp_cache_packet_count == 0 &&
            snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0 &&
            snapshot.fir_sequence_number_state_count == 0 && snapshot.publisher_video_ssrc_state_count == 0 &&
-           snapshot.pending_republish_keyframe_request_count == 0;
+           snapshot.pending_republish_keyframe_request_count == 0 && snapshot.extmap_rewrite_state_count == 0;
 }
 
 uint16_t read_network_u16(std::span<const uint8_t> data, std::size_t offset)
@@ -1933,6 +1964,7 @@ void ice_udp_server::forget_subscriber_session_runtime_state(std::string_view se
         return;
     }
 
+    forget_extmap_rewrite_states_for_session(session_id);
     if (track_resolver_ != nullptr)
     {
         track_resolver_->forget_session(session_id);
@@ -2025,6 +2057,8 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
         std::lock_guard lock(endpoint_mutex_);
         erased_payload_type_mappings = erase_payload_type_mappings_for_stream_locked(stream_id);
         erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
+        const std::size_t erased_extmap_rewrite_states = erase_extmap_rewrite_states_for_stream_locked(stream_id);
+        (void)erased_extmap_rewrite_states;
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
             if (iterator->first.starts_with(std::string(stream_id) + "|"))
@@ -2542,6 +2576,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.fir_sequence_number_state_count = to_debug_count(fir_sequence_number_by_key_.size());
         snapshot.publisher_video_ssrc_state_count = to_debug_count(publisher_video_ssrc_by_stream_.size());
         snapshot.pending_republish_keyframe_request_count = to_debug_count(pending_republish_keyframe_state_by_stream_.size());
+        snapshot.extmap_rewrite_state_count = to_debug_count(extmap_rewrite_state_by_key_.size());
 
         for (const auto& [endpoint, value] : endpoints_by_address_)
         {
@@ -2827,6 +2862,10 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(
                 snapshot, "pending republish keyframe request remains count=" + std::to_string(snapshot.pending_republish_keyframe_request_count));
+        }
+        if (snapshot.extmap_rewrite_state_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "extmap rewrite state remains count=" + std::to_string(snapshot.extmap_rewrite_state_count));
         }
 
         if (snapshot.rtcp_report_source_count != 0)
@@ -7008,9 +7047,23 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
 
             if (repaired_rid_rewrite->has_value())
             {
-                options.header_extension_id_rewrites.push_back(**repaired_rid_rewrite);
+                rtp_header_extension_id_rewrite tracked_rewrite;
 
-                repaired_rid_rewrite_applied = true;
+                tracked_rewrite.source_id = (*repaired_rid_rewrite)->source_id;
+
+                tracked_rewrite.target_id = (*repaired_rid_rewrite)->target_id;
+
+                if (!remember_extmap_header_extension_id_rewrite(event.source.stream_id,
+                                                                 primary_ssrc_mapping.publisher_session_id,
+                                                                 primary_ssrc_mapping.subscriber_session_id,
+                                                                 rtx_payload_type_mapping->subscriber_mid,
+                                                                 sdp::k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri,
+                                                                 tracked_rewrite))
+                {
+                    return std::nullopt;
+                }
+
+                options.header_extension_id_rewrites.push_back(**repaired_rid_rewrite);
             }
         }
     }
@@ -7396,6 +7449,16 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
         if (mid_id_rewrite->has_value())
         {
+            if (!remember_extmap_header_extension_id_rewrite(route.source.stream_id,
+                                                             route.source.session_id,
+                                                             target_peer.session_id,
+                                                             payload_type_mapping->subscriber_mid,
+                                                             k_mid_extension_uri,
+                                                             **mid_id_rewrite))
+            {
+                return std::nullopt;
+            }
+
             options.header_extension_id_rewrites.push_back(**mid_id_rewrite);
 
             rewrite_required = true;
@@ -7488,6 +7551,19 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
         if (rid_rewrite->has_value())
         {
+            const std::string_view uri = payload_type_mapping->rtx ? sdp::k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri
+                                                                   : sdp::k_rtp_header_extension_sdes_rtp_stream_id_uri;
+
+            if (!remember_extmap_header_extension_id_rewrite(route.source.stream_id,
+                                                             route.source.session_id,
+                                                             target_peer.session_id,
+                                                             payload_type_mapping->subscriber_mid,
+                                                             uri,
+                                                             **rid_rewrite))
+            {
+                return std::nullopt;
+            }
+
             options.header_extension_id_rewrites.push_back(**rid_rewrite);
 
             rewrite_required = true;
@@ -7531,6 +7607,16 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
         if (absolute_send_time_rewrite->has_value())
         {
+            if (!remember_extmap_header_extension_id_rewrite(route.source.stream_id,
+                                                             route.source.session_id,
+                                                             target_peer.session_id,
+                                                             payload_type_mapping->subscriber_mid,
+                                                             k_absolute_send_time_extension_uri,
+                                                             **absolute_send_time_rewrite))
+            {
+                return std::nullopt;
+            }
+
             options.header_extension_id_rewrites.push_back(**absolute_send_time_rewrite);
 
             rewrite_required = true;
@@ -7739,8 +7825,16 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
 
         if (mid_id_rewrite->has_value())
         {
+            if (!remember_extmap_header_extension_id_rewrite(event.source.stream_id,
+                                                             ssrc_mapping->publisher_session_id,
+                                                             ssrc_mapping->subscriber_session_id,
+                                                             payload_type_mapping->subscriber_mid,
+                                                             k_mid_extension_uri,
+                                                             **mid_id_rewrite))
+            {
+                return std::nullopt;
+            }
             options.header_extension_id_rewrites.push_back(**mid_id_rewrite);
-
             rewrite_required = true;
         }
     }
@@ -7823,6 +7917,16 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
 
         if (rid_rewrite->has_value())
         {
+            if (!remember_extmap_header_extension_id_rewrite(event.source.stream_id,
+                                                             ssrc_mapping->publisher_session_id,
+                                                             ssrc_mapping->subscriber_session_id,
+                                                             payload_type_mapping->subscriber_mid,
+                                                             sdp::k_rtp_header_extension_sdes_rtp_stream_id_uri,
+                                                             **rid_rewrite))
+            {
+                return std::nullopt;
+            }
+
             options.header_extension_id_rewrites.push_back(**rid_rewrite);
 
             rewrite_required = true;
@@ -7865,6 +7969,16 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
 
         if (absolute_send_time_rewrite->has_value())
         {
+            if (!remember_extmap_header_extension_id_rewrite(event.source.stream_id,
+                                                             ssrc_mapping->publisher_session_id,
+                                                             ssrc_mapping->subscriber_session_id,
+                                                             payload_type_mapping->subscriber_mid,
+                                                             k_absolute_send_time_extension_uri,
+                                                             **absolute_send_time_rewrite))
+            {
+                return std::nullopt;
+            }
+
             options.header_extension_id_rewrites.push_back(**absolute_send_time_rewrite);
 
             rewrite_required = true;
@@ -8608,6 +8722,8 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
 
         erased_payload_type_mappings = erase_payload_type_mappings_for_stream_locked(stream_id);
         erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
+        const std::size_t erased_extmap_rewrite_states = erase_extmap_rewrite_states_for_stream_locked(stream_id);
+        (void)erased_extmap_rewrite_states;
 
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
@@ -8649,6 +8765,123 @@ void ice_udp_server::mark_republish_keyframe_request_pending(std::string_view st
 
     WEBRTC_LOG_INFO(
         "publisher republish keyframe request pending stream={} publisher_session={} scope=subscribers", stream_id, new_publisher_session_id);
+}
+bool ice_udp_server::remember_extmap_header_extension_id_rewrite(std::string_view stream_id,
+                                                                 std::string_view publisher_session_id,
+                                                                 std::string_view subscriber_session_id,
+                                                                 std::string_view subscriber_mid,
+                                                                 std::string_view uri,
+                                                                 const rtp_header_extension_id_rewrite& rewrite)
+{
+    if (stream_id.empty() || publisher_session_id.empty() || subscriber_session_id.empty() || subscriber_mid.empty() || uri.empty() ||
+        rewrite.source_id == 0 || rewrite.target_id == 0)
+    {
+        return false;
+    }
+
+    const std::string key = make_extmap_rewrite_runtime_state_key(stream_id, publisher_session_id, subscriber_session_id, subscriber_mid, uri);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    auto iterator = extmap_rewrite_state_by_key_.find(key);
+
+    if (iterator != extmap_rewrite_state_by_key_.end())
+    {
+        extmap_rewrite_runtime_state& state = iterator->second;
+
+        if (state.source_id != rewrite.source_id || state.target_id != rewrite.target_id)
+        {
+            WEBRTC_LOG_WARN(
+                "rtp extmap rewrite conflict stream={} publisher_session={} subscriber_session={} subscriber_mid={} uri={} old_source_id={} "
+                "old_target_id={} new_source_id={} new_target_id={}",
+                stream_id,
+                publisher_session_id,
+                subscriber_session_id,
+                subscriber_mid,
+                uri,
+                state.source_id,
+                state.target_id,
+                rewrite.source_id,
+                rewrite.target_id);
+
+            return false;
+        }
+
+        state.packet_count += 1;
+
+        return true;
+    }
+
+    extmap_rewrite_runtime_state state;
+
+    state.stream_id = std::string(stream_id);
+
+    state.publisher_session_id = std::string(publisher_session_id);
+
+    state.subscriber_session_id = std::string(subscriber_session_id);
+
+    state.subscriber_mid = std::string(subscriber_mid);
+
+    state.uri = std::string(uri);
+
+    state.source_id = rewrite.source_id;
+
+    state.target_id = rewrite.target_id;
+
+    state.packet_count = 1;
+
+    extmap_rewrite_state_by_key_.emplace(key, std::move(state));
+
+    return true;
+}
+void ice_udp_server::forget_extmap_rewrite_states_for_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    for (auto iterator = extmap_rewrite_state_by_key_.begin(); iterator != extmap_rewrite_state_by_key_.end();)
+    {
+        const extmap_rewrite_runtime_state& state = iterator->second;
+
+        if (state.publisher_session_id == session_id || state.subscriber_session_id == session_id)
+        {
+            iterator = extmap_rewrite_state_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
+std::size_t ice_udp_server::erase_extmap_rewrite_states_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = extmap_rewrite_state_by_key_.begin(); iterator != extmap_rewrite_state_by_key_.end();)
+    {
+        if (iterator->second.stream_id == stream_id)
+        {
+            iterator = extmap_rewrite_state_by_key_.erase(iterator);
+
+            erased_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
 }
 
 bool ice_udp_server::consume_republish_keyframe_request_pending_for_subscriber(const srtp_packet_process_result& packet,
