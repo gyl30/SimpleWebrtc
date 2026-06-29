@@ -286,6 +286,7 @@ bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
            snapshot.keyframe_request_state_count == 0 && snapshot.dtls_peer_count == 0 && snapshot.srtp_peer_count == 0 &&
            snapshot.media_router_peer_count == 0 && snapshot.media_router_stream_count == 0 && snapshot.media_router_active_publisher_count == 0 &&
            snapshot.media_router_active_subscriber_count == 0 && snapshot.track_binding_count == 0 && snapshot.ssrc_mapping_count == 0 &&
+           snapshot.identity_authority_track_binding_count == 0 && snapshot.identity_authority_forward_binding_count == 0 &&
            snapshot.rtcp_report_source_count == 0 && snapshot.rtcp_transport_cc_source_count == 0 &&
            snapshot.rtcp_transport_cc_pending_packet_count == 0 && snapshot.rtp_cache_packet_count == 0 &&
            snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0;
@@ -2273,7 +2274,12 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
     {
         snapshot.ssrc_mapping_count = to_debug_count(ssrc_mapper_->mapping_count());
     }
+    if (identity_authority_ != nullptr)
+    {
+        snapshot.identity_authority_track_binding_count = to_debug_count(identity_authority_->track_binding_count());
 
+        snapshot.identity_authority_forward_binding_count = to_debug_count(identity_authority_->forward_binding_count());
+    }
     if (rtcp_report_service_ != nullptr)
     {
         snapshot.rtcp_report_source_count = to_debug_count(rtcp_report_service_->source_count());
@@ -2381,7 +2387,17 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot, "ssrc mapping remains count=" + std::to_string(snapshot.ssrc_mapping_count));
         }
+        if (snapshot.identity_authority_track_binding_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot, "identity authority track binding remains count=" + std::to_string(snapshot.identity_authority_track_binding_count));
+        }
 
+        if (snapshot.identity_authority_forward_binding_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot, "identity authority forward binding remains count=" + std::to_string(snapshot.identity_authority_forward_binding_count));
+        }
         if (snapshot.payload_type_mapping_count != 0)
         {
             add_lifecycle_residual(snapshot, "payload type mapping remains count=" + std::to_string(snapshot.payload_type_mapping_count));
@@ -2633,7 +2649,8 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
         WEBRTC_LOG_INFO(
             "lifecycle convergence clean generation={} delay_ms={} reason={} stream={} session={} endpoints={} endpoint_index={} "
             "endpoint_reverse_index={} endpoint_last_seen={} candidate_pairs={} selected_candidate_pairs={} dtls_peers={} srtp_peers={} "
-            "media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} payload_type_mappings={} keyframe_states={} "
+            "media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} identity_tracks={} identity_forwards={} "
+            "payload_type_mappings={} keyframe_states={} "
             "rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} retired_endpoints={} retired_ice_credentials={} idle_clean={} "
             "consistent={}",
             generation,
@@ -2653,6 +2670,8 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             snapshot.media_router_stream_count,
             snapshot.track_binding_count,
             snapshot.ssrc_mapping_count,
+            snapshot.identity_authority_track_binding_count,
+            snapshot.identity_authority_forward_binding_count,
             snapshot.payload_type_mapping_count,
             snapshot.keyframe_request_state_count,
             snapshot.rtcp_report_source_count,
@@ -2669,7 +2688,8 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
     WEBRTC_LOG_WARN(
         "lifecycle convergence residual generation={} delay_ms={} reason={} stream={} session={} endpoints={} endpoint_index={} "
         "endpoint_reverse_index={} endpoint_last_seen={} candidate_pairs={} selected_candidate_pairs={} dtls_peers={} srtp_peers={} "
-        "media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} payload_type_mappings={} keyframe_states={} "
+        "media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} identity_tracks={} identity_forwards={} "
+        "payload_type_mappings={} keyframe_states={} "
         "rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={} "
         "retired_endpoints={} retired_ice_credentials={} idle_clean={} "
         "consistent={} inconsistencies={}",
@@ -2690,6 +2710,8 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
         snapshot.media_router_stream_count,
         snapshot.track_binding_count,
         snapshot.ssrc_mapping_count,
+        snapshot.identity_authority_track_binding_count,
+        snapshot.identity_authority_forward_binding_count,
         snapshot.payload_type_mapping_count,
         snapshot.keyframe_request_state_count,
         snapshot.rtcp_report_source_count,
