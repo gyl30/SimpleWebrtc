@@ -289,7 +289,9 @@ bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
            snapshot.identity_authority_track_binding_count == 0 && snapshot.identity_authority_forward_binding_count == 0 &&
            snapshot.rtcp_report_source_count == 0 && snapshot.rtcp_transport_cc_source_count == 0 &&
            snapshot.rtcp_transport_cc_pending_packet_count == 0 && snapshot.rtp_cache_packet_count == 0 &&
-           snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0;
+           snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0 &&
+           snapshot.fir_sequence_number_state_count == 0 && snapshot.publisher_video_ssrc_state_count == 0 &&
+           snapshot.pending_republish_keyframe_request_count == 0;
 }
 
 uint16_t read_network_u16(std::span<const uint8_t> data, std::size_t offset)
@@ -2291,8 +2293,11 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         }
 
         snapshot.payload_type_mapping_count = to_debug_count(payload_type_mappings_by_key_.size());
-
         snapshot.keyframe_request_state_count = to_debug_count(keyframe_request_last_time_milliseconds_by_key_.size());
+        snapshot.fir_sequence_number_state_count = to_debug_count(fir_sequence_number_by_key_.size());
+        snapshot.publisher_video_ssrc_state_count = to_debug_count(publisher_video_ssrc_by_stream_.size());
+        snapshot.pending_republish_keyframe_request_count = to_debug_count(pending_republish_keyframe_session_by_stream_.size());
+
         for (const auto& [endpoint, value] : endpoints_by_address_)
         {
             (void)value;
@@ -2563,6 +2568,21 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot, "keyframe request state remains count=" + std::to_string(snapshot.keyframe_request_state_count));
         }
+        if (snapshot.fir_sequence_number_state_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "fir sequence number state remains count=" + std::to_string(snapshot.fir_sequence_number_state_count));
+        }
+
+        if (snapshot.publisher_video_ssrc_state_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "publisher video ssrc state remains count=" + std::to_string(snapshot.publisher_video_ssrc_state_count));
+        }
+
+        if (snapshot.pending_republish_keyframe_request_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot, "pending republish keyframe request remains count=" + std::to_string(snapshot.pending_republish_keyframe_request_count));
+        }
 
         if (snapshot.rtcp_report_source_count != 0)
         {
@@ -2630,7 +2650,8 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
             "lifecycle snapshot residual reason={} stream={} session={} registry_sessions={} registry_publishers={} registry_subscribers={} "
             "endpoints={} endpoint_index={} endpoint_reverse_index={} dtls_peers={} srtp_peers={} media_router_peers={} media_router_streams={} "
             "track_bindings={} "
-            "ssrc_mappings={} payload_type_mappings={} keyframe_states={} rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} "
+            "ssrc_mappings={} payload_type_mappings={} keyframe_states={} fir_sequence_states={} publisher_video_ssrc_states={} "
+            "pending_republish_keyframes={} rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} "
             "rtx_retransmission_index={} nack_retransmit_throttle={} idle_clean={} consistent={} inconsistencies={}",
             reason,
             stream_id,
@@ -2649,6 +2670,9 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
             snapshot.ssrc_mapping_count,
             snapshot.payload_type_mapping_count,
             snapshot.keyframe_request_state_count,
+            snapshot.fir_sequence_number_state_count,
+            snapshot.publisher_video_ssrc_state_count,
+            snapshot.pending_republish_keyframe_request_count,
             snapshot.rtcp_report_source_count,
             snapshot.rtcp_report_stats_source_count,
             snapshot.rtp_cache_packet_count,
@@ -2806,7 +2830,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             "lifecycle convergence clean generation={} delay_ms={} reason={} stream={} session={} endpoints={} endpoint_index={} "
             "endpoint_reverse_index={} endpoint_last_seen={} candidate_pairs={} selected_candidate_pairs={} dtls_peers={} srtp_peers={} "
             "media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} identity_tracks={} identity_forwards={} "
-            "payload_type_mappings={} keyframe_states={} "
+            "payload_type_mappings={} keyframe_states={} fir_sequence_states={} publisher_video_ssrc_states={} pending_republish_keyframes={} "
             "rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} retired_endpoints={} retired_ice_credentials={} idle_clean={} "
             "consistent={}",
             generation,
@@ -2830,6 +2854,9 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             snapshot.identity_authority_forward_binding_count,
             snapshot.payload_type_mapping_count,
             snapshot.keyframe_request_state_count,
+            snapshot.fir_sequence_number_state_count,
+            snapshot.publisher_video_ssrc_state_count,
+            snapshot.pending_republish_keyframe_request_count,
             snapshot.rtcp_report_source_count,
             snapshot.rtcp_report_stats_source_count,
             snapshot.rtp_cache_packet_count,
@@ -2845,7 +2872,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
         "lifecycle convergence residual generation={} delay_ms={} reason={} stream={} session={} endpoints={} endpoint_index={} "
         "endpoint_reverse_index={} endpoint_last_seen={} candidate_pairs={} selected_candidate_pairs={} dtls_peers={} srtp_peers={} "
         "media_router_peers={} media_router_streams={} track_bindings={} ssrc_mappings={} identity_tracks={} identity_forwards={} "
-        "payload_type_mappings={} keyframe_states={} "
+        "payload_type_mappings={} keyframe_states={} fir_sequence_states={} publisher_video_ssrc_states={} pending_republish_keyframes={}"
         "rtcp_report_sources={} rtcp_report_stats_sources={} rtp_cache_packets={} rtx_retransmission_index={} nack_retransmit_throttle={} "
         "retired_endpoints={} retired_ice_credentials={} idle_clean={} "
         "consistent={} inconsistencies={}",
@@ -2870,6 +2897,9 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
         snapshot.identity_authority_forward_binding_count,
         snapshot.payload_type_mapping_count,
         snapshot.keyframe_request_state_count,
+        snapshot.fir_sequence_number_state_count,
+        snapshot.publisher_video_ssrc_state_count,
+        snapshot.pending_republish_keyframe_request_count,
         snapshot.rtcp_report_source_count,
         snapshot.rtcp_report_stats_source_count,
         snapshot.rtp_cache_packet_count,
