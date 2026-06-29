@@ -1307,6 +1307,68 @@ void append_unique_keyframe_media_ssrc(std::vector<uint32_t>& ssrcs, uint32_t ss
     ssrcs.push_back(ssrc);
 }
 bool is_video_media_kind(std::string_view kind) { return kind == "video"; }
+std::string lower_ascii_copy(std::string_view value)
+{
+    std::string result;
+
+    result.reserve(value.size());
+
+    for (unsigned char ch : value)
+    {
+        result.push_back(static_cast<char>(std::tolower(ch)));
+    }
+
+    return result;
+}
+
+bool rtcp_feedback_value_matches(std::string_view feedback, std::string_view expected) { return lower_ascii_copy(feedback) == expected; }
+
+bool codec_supports_rtcp_feedback(const sdp::codec_info& codec, std::string_view feedback)
+{
+    for (const auto& value : codec.rtcp_feedback)
+    {
+        if (rtcp_feedback_value_matches(value, feedback))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool media_supports_rtcp_feedback(const sdp::media_summary& media, std::string_view feedback)
+{
+    if (!is_video_media_kind(media.kind))
+    {
+        return false;
+    }
+
+    for (const auto& codec : media.codecs)
+    {
+        if (codec_supports_rtcp_feedback(codec, feedback))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::string keyframe_request_feedback_type_to_string(ice_udp_server::keyframe_request_feedback_type feedback_type)
+{
+    switch (feedback_type)
+    {
+        case ice_udp_server::keyframe_request_feedback_type::pli:
+            return "pli";
+
+        case ice_udp_server::keyframe_request_feedback_type::fir:
+            return "fir";
+
+        case ice_udp_server::keyframe_request_feedback_type::none:
+        default:
+            return "none";
+    }
+}
 bool is_resolved_video_track(const std::optional<media_track_resolution>& track_resolution)
 {
     if (!track_resolution.has_value())
@@ -1716,6 +1778,15 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
         std::lock_guard lock(endpoint_mutex_);
         erased_payload_type_mappings = erase_payload_type_mappings_for_stream_locked(stream_id);
         erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
+        for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
+        {
+            if (iterator->first.starts_with(std::string(stream_id) + "|"))
+            {
+                iterator = fir_sequence_number_by_key_.erase(iterator);
+                continue;
+            }
+            ++iterator;
+        }
         publisher_video_ssrc_by_stream_.erase(std::string(stream_id));
         pending_republish_keyframe_session_by_stream_.erase(std::string(stream_id));
     }
@@ -3101,6 +3172,7 @@ void ice_udp_server::send_rtcp_bye_to_subscriber(std::string_view stream_id,
         offset = chunk_end;
     }
 }
+
 void ice_udp_server::remember_publisher_video_ssrc(const media_peer_info& peer,
                                                    const srtp_packet_process_result& packet,
                                                    const std::optional<media_track_resolution>& track_resolution)
@@ -3138,6 +3210,50 @@ void ice_udp_server::remember_publisher_video_ssrc(const media_peer_info& peer,
     std::lock_guard lock(endpoint_mutex_);
 
     publisher_video_ssrc_by_stream_[peer.stream_id] = packet.ssrc;
+}
+
+ice_udp_server::keyframe_request_feedback_type ice_udp_server::select_keyframe_request_feedback_type(std::string_view stream_id) const
+{
+    if (stream_id.empty() || registry_ == nullptr)
+    {
+        return keyframe_request_feedback_type::none;
+    }
+
+    auto publisher = registry_->find_publisher_by_stream_id(stream_id);
+
+    if (publisher == nullptr)
+    {
+        return keyframe_request_feedback_type::none;
+    }
+
+    const sdp::webrtc_offer_summary& offer_summary = publisher->remote_offer_summary();
+
+    bool supports_pli = false;
+    bool supports_fir = false;
+
+    for (const auto& media : offer_summary.media)
+    {
+        if (!is_video_media_kind(media.kind))
+        {
+            continue;
+        }
+
+        supports_pli = supports_pli || media_supports_rtcp_feedback(media, "nack pli");
+
+        supports_fir = supports_fir || media_supports_rtcp_feedback(media, "ccm fir");
+    }
+
+    if (supports_pli)
+    {
+        return keyframe_request_feedback_type::pli;
+    }
+
+    if (supports_fir)
+    {
+        return keyframe_request_feedback_type::fir;
+    }
+
+    return keyframe_request_feedback_type::none;
 }
 std::vector<uint32_t> ice_udp_server::collect_keyframe_request_media_ssrcs(std::string_view stream_id) const
 {
@@ -3187,6 +3303,94 @@ std::vector<uint32_t> ice_udp_server::collect_keyframe_request_media_ssrcs(std::
 
     return media_ssrcs;
 }
+uint8_t ice_udp_server::next_fir_sequence_number(std::string_view stream_id, uint32_t media_ssrc)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + 16);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(std::to_string(media_ssrc));
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    uint8_t& sequence_number = fir_sequence_number_by_key_[key];
+
+    sequence_number = static_cast<uint8_t>(sequence_number + 1U);
+
+    if (sequence_number == 0)
+    {
+        sequence_number = 1;
+    }
+
+    return sequence_number;
+}
+std::optional<std::vector<uint8_t>> ice_udp_server::make_keyframe_request_packet(keyframe_request_feedback_type feedback_type,
+                                                                                 std::string_view stream_id,
+                                                                                 uint32_t sender_ssrc,
+                                                                                 uint32_t media_ssrc)
+{
+    if (sender_ssrc == 0 || media_ssrc == 0)
+    {
+        return std::nullopt;
+    }
+
+    if (feedback_type == keyframe_request_feedback_type::pli)
+    {
+        rtcp_pli_write_options options;
+
+        options.sender_ssrc = sender_ssrc;
+
+        options.media_ssrc = media_ssrc;
+
+        auto packet = write_rtcp_pli_packet(options);
+
+        if (!packet)
+        {
+            WEBRTC_LOG_WARN("keyframe request pli build failed stream={} sender_ssrc={} media_ssrc={} error={}",
+                            stream_id,
+                            sender_ssrc,
+                            media_ssrc,
+                            packet.error());
+
+            return std::nullopt;
+        }
+
+        return std::move(*packet);
+    }
+
+    if (feedback_type == keyframe_request_feedback_type::fir)
+    {
+        rtcp_fir_write_options options;
+
+        options.sender_ssrc = sender_ssrc;
+
+        options.media_ssrc = media_ssrc;
+
+        options.sequence_number = next_fir_sequence_number(stream_id, media_ssrc);
+
+        auto packet = write_rtcp_fir_packet(options);
+
+        if (!packet)
+        {
+            WEBRTC_LOG_WARN("keyframe request fir build failed stream={} sender_ssrc={} media_ssrc={} sequence={} error={}",
+                            stream_id,
+                            sender_ssrc,
+                            media_ssrc,
+                            options.sequence_number,
+                            packet.error());
+
+            return std::nullopt;
+        }
+
+        return std::move(*packet);
+    }
+
+    return std::nullopt;
+}
 keyframe_request_expected ice_udp_server::request_keyframe(std::string_view stream_id)
 {
     if (stream_id.empty())
@@ -3232,6 +3436,13 @@ keyframe_request_expected ice_udp_server::request_keyframe(std::string_view stre
         return make_error("publisher endpoint not found");
     }
 
+    const keyframe_request_feedback_type feedback_type = select_keyframe_request_feedback_type(stream_id);
+
+    if (feedback_type == keyframe_request_feedback_type::none)
+    {
+        return make_error("publisher does not support pli or fir");
+    }
+
     const std::vector<uint32_t> media_ssrcs = collect_keyframe_request_media_ssrcs(stream_id);
 
     if (media_ssrcs.empty())
@@ -3243,14 +3454,10 @@ keyframe_request_expected ice_udp_server::request_keyframe(std::string_view stre
 
     for (uint32_t media_ssrc : media_ssrcs)
     {
-        rtcp_pli_write_options options;
+        const uint32_t sender_ssrc = 1;
 
-        options.sender_ssrc = 1;
-        options.media_ssrc = media_ssrc;
-
-        auto pli_packet = write_rtcp_pli_packet(options);
-
-        if (!pli_packet)
+        auto plain_packet = make_keyframe_request_packet(feedback_type, stream_id, sender_ssrc, media_ssrc);
+        if (!plain_packet.has_value())
         {
             result.failed_count += 1;
 
@@ -3258,8 +3465,7 @@ keyframe_request_expected ice_udp_server::request_keyframe(std::string_view stre
         }
 
         auto protected_packet = srtp_transport_->protect_outbound_packet(
-            std::span<const uint8_t>(pli_packet->data(), pli_packet->size()), *remote_address, srtp_packet_kind::rtcp);
-
+            std::span<const uint8_t>(plain_packet->data(), plain_packet->size()), *remote_address, srtp_packet_kind::rtcp);
         if (!protected_packet)
         {
             result.failed_count += 1;
@@ -3275,7 +3481,13 @@ keyframe_request_expected ice_udp_server::request_keyframe(std::string_view stre
         }
 
         send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
-
+        WEBRTC_LOG_INFO("keyframe request sent stream={} publisher_session={} remote={} feedback={} sender_ssrc={} media_ssrc={}",
+                        result.stream_id,
+                        result.publisher_session_id,
+                        result.publisher_remote_address,
+                        feedback_type == keyframe_request_feedback_type::pli ? "pli" : "fir",
+                        sender_ssrc,
+                        media_ssrc);
         result.sent_count += 1;
     }
 
@@ -4546,12 +4758,26 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
             keyframe_request_last_time_milliseconds_by_key_.emplace(key, current_time_milliseconds);
         }
     }
+    const keyframe_request_feedback_type feedback_type = select_keyframe_request_feedback_type(route.source.stream_id);
+
+    if (feedback_type == keyframe_request_feedback_type::none)
+    {
+        WEBRTC_LOG_DEBUG("keyframe request skipped publisher unsupported stream={} publisher_session={} media_ssrc={}",
+                         route.source.stream_id,
+                         route.source.session_id,
+                         packet.ssrc);
+
+        return;
+    }
+
     const uint32_t sender_ssrc = make_rtcp_report_local_ssrc(route.source, packet.ssrc);
-
-    std::vector<uint8_t> plain_packet = make_rtcp_picture_loss_indication_packet(sender_ssrc, packet.ssrc);
-
+    auto plain_packet = make_keyframe_request_packet(feedback_type, route.source.stream_id, sender_ssrc, packet.ssrc);
+    if (!plain_packet.has_value())
+    {
+        return;
+    }
     auto protected_packet = srtp_transport_->protect_outbound_packet(
-        std::span<const uint8_t>(plain_packet.data(), plain_packet.size()), route.source.remote_endpoint, srtp_packet_kind::rtcp);
+        std::span<const uint8_t>(plain_packet->data(), plain_packet->size()), route.source.remote_endpoint, srtp_packet_kind::rtcp);
 
     if (!protected_packet)
     {
@@ -7616,7 +7842,8 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         auto protected_packet = srtp_transport_->protect_outbound_packet(
             std::span<const uint8_t>(retransmit_plain_packet->packet.data(), retransmit_plain_packet->packet.size()),
             event.source.remote_endpoint,
-            srtp_packet_kind::rtp);
+            srtp_packet_kind::rtcp);
+
         if (!protected_packet)
         {
             failed_count += 1;
@@ -7878,12 +8105,23 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
     std::size_t erased_keyframe_request_states = 0;
     {
         std::lock_guard lock(endpoint_mutex_);
+
         erased_payload_type_mappings = erase_payload_type_mappings_for_stream_locked(stream_id);
         erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
+
+        for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
+        {
+            if (iterator->first.starts_with(std::string(stream_id) + "|"))
+            {
+                iterator = fir_sequence_number_by_key_.erase(iterator);
+                continue;
+            }
+            ++iterator;
+        }
+
         publisher_video_ssrc_by_stream_.erase(std::string(stream_id));
         pending_republish_keyframe_session_by_stream_.erase(std::string(stream_id));
     }
-
     WEBRTC_LOG_INFO(
         "ice udp stream runtime state cleanup stream={} cache_erased={} remaining_cache_packets={} media_router_streams_before={} "
         "media_router_streams_after={} payload_type_mappings_erased={} keyframe_request_states_erased={}",

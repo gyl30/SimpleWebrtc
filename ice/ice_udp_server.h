@@ -163,7 +163,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         media_payload_type_mapping_table table;
     };
 
-   private:
+   public:
     struct retired_endpoint_state
     {
         uint64_t expires_at_milliseconds = 0;
@@ -197,6 +197,44 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         stream_session_kind kind = stream_session_kind::publisher;
 
         std::string reject_reason;
+    };
+    struct nack_retransmit_sequence
+    {
+        uint16_t feedback_sequence_number = 0;
+        uint16_t cache_sequence_number = 0;
+        bool rtx_feedback = false;
+    };
+
+    struct nack_retransmit_resolution
+    {
+        std::optional<media_ssrc_mapping> ssrc_mapping;
+
+        uint32_t feedback_media_ssrc = 0;
+        uint32_t cache_media_ssrc = 0;
+
+        bool primary_video = false;
+        bool rtx_feedback = false;
+
+        std::size_t rtx_sequence_index_miss_count = 0;
+
+        std::vector<nack_retransmit_sequence> sequences;
+    };
+    enum class retransmit_plain_packet_kind
+    {
+        primary,
+        rtx,
+    };
+
+    struct retransmit_plain_packet_result
+    {
+        std::vector<uint8_t> packet;
+        retransmit_plain_packet_kind kind = retransmit_plain_packet_kind::primary;
+    };
+    enum class keyframe_request_feedback_type
+    {
+        none,
+        pli,
+        fir,
     };
 
    private:
@@ -312,38 +350,6 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     std::optional<media_ssrc_mapping> get_or_create_rtx_ssrc_mapping(const media_ssrc_mapping& primary_mapping,
                                                                      const media_payload_type_mapping& rtx_payload_type_mapping);
-    struct nack_retransmit_sequence
-    {
-        uint16_t feedback_sequence_number = 0;
-        uint16_t cache_sequence_number = 0;
-        bool rtx_feedback = false;
-    };
-
-    struct nack_retransmit_resolution
-    {
-        std::optional<media_ssrc_mapping> ssrc_mapping;
-
-        uint32_t feedback_media_ssrc = 0;
-        uint32_t cache_media_ssrc = 0;
-
-        bool primary_video = false;
-        bool rtx_feedback = false;
-
-        std::size_t rtx_sequence_index_miss_count = 0;
-
-        std::vector<nack_retransmit_sequence> sequences;
-    };
-    enum class retransmit_plain_packet_kind
-    {
-        primary,
-        rtx,
-    };
-
-    struct retransmit_plain_packet_result
-    {
-        std::vector<uint8_t> packet;
-        retransmit_plain_packet_kind kind = retransmit_plain_packet_kind::primary;
-    };
 
     [[nodiscard]]
     std::optional<std::vector<uint8_t>> make_rtx_retransmit_plain_packet(const rtcp_feedback_route_event& event,
@@ -547,8 +553,21 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void remember_publisher_video_ssrc(const media_peer_info& peer,
                                        const srtp_packet_process_result& packet,
                                        const std::optional<media_track_resolution>& track_resolution);
+
+    [[nodiscard]]
+    keyframe_request_feedback_type select_keyframe_request_feedback_type(std::string_view stream_id) const;
+
     [[nodiscard]]
     std::vector<uint32_t> collect_keyframe_request_media_ssrcs(std::string_view stream_id) const;
+
+    [[nodiscard]]
+    uint8_t next_fir_sequence_number(std::string_view stream_id, uint32_t media_ssrc);
+
+    [[nodiscard]]
+    std::optional<std::vector<uint8_t>> make_keyframe_request_packet(keyframe_request_feedback_type feedback_type,
+                                                                     std::string_view stream_id,
+                                                                     uint32_t sender_ssrc,
+                                                                     uint32_t media_ssrc);
 
     void send_dtls_close_notify(std::string_view remote_address);
 
@@ -628,6 +647,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, ice_candidate_pair> candidate_pairs_by_key_;
     std::unordered_map<std::string, media_payload_type_mapping_cache_entry> payload_type_mappings_by_key_;
     std::unordered_map<std::string, uint64_t> keyframe_request_last_time_milliseconds_by_key_;
+    std::unordered_map<std::string, uint8_t> fir_sequence_number_by_key_;
     std::unordered_map<std::string, uint32_t> publisher_video_ssrc_by_stream_;
     std::unordered_map<std::string, std::string> pending_republish_keyframe_session_by_stream_;
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;

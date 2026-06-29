@@ -26,8 +26,8 @@ inline constexpr uint8_t k_rtcp_packet_type_bye = 203;
 inline constexpr std::size_t k_rtcp_bye_reason_length_size = 1;
 
 inline constexpr uint8_t k_rtcp_packet_type_payload_specific_feedback = 206;
-
 inline constexpr uint8_t k_rtcp_feedback_format_pli = 1;
+inline constexpr uint8_t k_rtcp_feedback_format_fir = 4;
 
 constexpr uint8_t k_rtcp_sdes_item_type_end = 0;
 constexpr uint8_t k_rtcp_sdes_item_type_cname = 1;
@@ -451,6 +451,40 @@ rtcp_packet_write_result write_rtcp_pli_packet(const rtcp_pli_write_options& opt
     append_u32(packet, options.sender_ssrc);
 
     append_u32(packet, options.media_ssrc);
+
+    return packet;
+}
+rtcp_packet_write_result write_rtcp_fir_packet(const rtcp_fir_write_options& options)
+{
+    if (options.sender_ssrc == 0)
+    {
+        return make_error("rtcp fir sender ssrc is zero");
+    }
+
+    if (options.media_ssrc == 0)
+    {
+        return make_error("rtcp fir media ssrc is zero");
+    }
+
+    std::vector<uint8_t> packet;
+
+    packet.reserve(20);
+
+    append_rtcp_header(packet, k_rtcp_feedback_format_fir, k_rtcp_packet_type_payload_specific_feedback, 4);
+
+    append_u32(packet, options.sender_ssrc);
+
+    /*
+     * RFC 5104 FIR carries the target media SSRC in FCI.
+     * The common feedback media source SSRC is kept zero.
+     */
+    append_u32(packet, 0);
+
+    append_u32(packet, options.media_ssrc);
+
+    append_u8(packet, options.sequence_number);
+
+    append_u24(packet, 0);
 
     return packet;
 }

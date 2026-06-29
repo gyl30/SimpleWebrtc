@@ -48,6 +48,15 @@ struct rtcp_pli_write_options
     uint32_t media_ssrc = 0;
 };
 
+struct rtcp_fir_write_options
+{
+    uint32_t sender_ssrc = 1;
+
+    uint32_t media_ssrc = 0;
+
+    uint8_t sequence_number = 1;
+};
+
 struct rtcp_compound_packet_write_options
 {
     std::vector<rtcp_report_write_options> reports;
@@ -72,6 +81,9 @@ rtcp_packet_write_result write_rtcp_bye_packet(const rtcp_bye_write_options& opt
 
 [[nodiscard]]
 rtcp_packet_write_result write_rtcp_pli_packet(const rtcp_pli_write_options& options);
+
+[[nodiscard]]
+rtcp_packet_write_result write_rtcp_fir_packet(const rtcp_fir_write_options& options);
 
 [[nodiscard]]
 rtcp_packet_write_result write_rtcp_compound_packet(const rtcp_compound_packet_write_options& options);
