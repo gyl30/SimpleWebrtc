@@ -13,6 +13,36 @@ namespace webrtc
 namespace
 {
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+media_ssrc_mapping make_ssrc_mapping_from_forward_binding(const media_identity_forward_binding& binding)
+{
+    media_ssrc_mapping mapping;
+
+    mapping.stream_id = binding.stream_id;
+
+    mapping.publisher_session_id = binding.publisher_session_id;
+
+    mapping.subscriber_session_id = binding.subscriber_session_id;
+
+    mapping.publisher_mid = binding.publisher_mid;
+
+    mapping.subscriber_mid = binding.subscriber_mid;
+
+    mapping.kind = binding.kind;
+
+    mapping.rtx = binding.rtx;
+
+    mapping.publisher_rtx_primary_ssrc = binding.publisher_rtx_primary_ssrc;
+
+    mapping.publisher_rtx_repair_ssrc = binding.publisher_rtx_repair_ssrc;
+
+    mapping.publisher_ssrc = binding.publisher_ssrc;
+
+    mapping.subscriber_ssrc = binding.subscriber_ssrc;
+
+    mapping.packet_count = binding.packet_count;
+
+    return mapping;
+}
 }    // namespace
 
 media_identity_result media_identity_authority::remember_track_resolution(const media_track_resolution& resolution, bool rtx)
@@ -222,6 +252,21 @@ std::optional<media_identity_forward_binding> media_identity_authority::find_for
 
     return iterator->second;
 }
+std::optional<media_ssrc_mapping> media_identity_authority::find_ssrc_mapping_by_publisher_ssrc(std::string_view stream_id,
+                                                                                                std::string_view publisher_session_id,
+                                                                                                std::string_view subscriber_session_id,
+                                                                                                std::string_view publisher_mid,
+                                                                                                uint32_t publisher_ssrc) const
+{
+    auto binding = find_forward_by_publisher_ssrc(stream_id, publisher_session_id, subscriber_session_id, publisher_mid, publisher_ssrc);
+
+    if (!binding.has_value())
+    {
+        return std::nullopt;
+    }
+
+    return make_ssrc_mapping_from_forward_binding(*binding);
+}
 
 std::optional<media_identity_forward_binding> media_identity_authority::find_forward_by_subscriber_ssrc(std::string_view subscriber_session_id,
                                                                                                         uint32_t subscriber_ssrc) const
@@ -250,6 +295,18 @@ std::optional<media_identity_forward_binding> media_identity_authority::find_for
     }
 
     return mapping_iterator->second;
+}
+std::optional<media_ssrc_mapping> media_identity_authority::find_ssrc_mapping_by_subscriber_ssrc(std::string_view subscriber_session_id,
+                                                                                                 uint32_t subscriber_ssrc) const
+{
+    auto binding = find_forward_by_subscriber_ssrc(subscriber_session_id, subscriber_ssrc);
+
+    if (!binding.has_value())
+    {
+        return std::nullopt;
+    }
+
+    return make_ssrc_mapping_from_forward_binding(*binding);
 }
 
 void media_identity_authority::forget_peer(std::string_view remote_endpoint)

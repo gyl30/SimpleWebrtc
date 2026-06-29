@@ -4687,6 +4687,51 @@ bool ice_udp_server::remember_media_identity_forward_mapping(const media_ssrc_ma
 
     return true;
 }
+std::optional<media_ssrc_mapping> ice_udp_server::find_identity_ssrc_mapping_by_subscriber_ssrc(std::string_view subscriber_session_id,
+                                                                                                uint32_t subscriber_ssrc) const
+{
+    if (identity_authority_ != nullptr)
+    {
+        auto mapping = identity_authority_->find_ssrc_mapping_by_subscriber_ssrc(subscriber_session_id, subscriber_ssrc);
+
+        if (mapping.has_value())
+        {
+            return mapping;
+        }
+    }
+
+    if (ssrc_mapper_ == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    return ssrc_mapper_->find_by_subscriber_ssrc(subscriber_session_id, subscriber_ssrc);
+}
+
+std::optional<media_ssrc_mapping> ice_udp_server::find_identity_ssrc_mapping_by_publisher_ssrc(std::string_view stream_id,
+                                                                                               std::string_view publisher_session_id,
+                                                                                               std::string_view subscriber_session_id,
+                                                                                               std::string_view publisher_mid,
+                                                                                               uint32_t publisher_ssrc) const
+{
+    if (identity_authority_ != nullptr)
+    {
+        auto mapping = identity_authority_->find_ssrc_mapping_by_publisher_ssrc(
+            stream_id, publisher_session_id, subscriber_session_id, publisher_mid, publisher_ssrc);
+
+        if (mapping.has_value())
+        {
+            return mapping;
+        }
+    }
+
+    if (ssrc_mapper_ == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    return ssrc_mapper_->find_by_publisher_ssrc(stream_id, publisher_session_id, subscriber_session_id, publisher_mid, publisher_ssrc);
+}
 
 void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
                                                const srtp_packet_process_result& packet,
@@ -5756,16 +5801,15 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
         return original_packet;
     }
 
-    if (ssrc_mapper_ == nullptr)
+    if (identity_authority_ == nullptr && ssrc_mapper_ == nullptr)
     {
-        WEBRTC_LOG_WARN("rtcp feedback block rewrite skipped ssrc mapper is null stream={} subscriber_session={} remote={}",
+        WEBRTC_LOG_WARN("rtcp feedback block rewrite skipped identity mapper is null stream={} subscriber_session={} remote={}",
                         route.source.stream_id,
                         route.source.session_id,
                         route.source.remote_endpoint);
 
         return std::nullopt;
     }
-
     struct feedback_ssrc_mapping_resolution
     {
         media_ssrc_mapping source_mapping;
@@ -5777,7 +5821,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
                                            const rtcp_feedback_route_event& event,
                                            std::string_view field_name) -> std::optional<feedback_ssrc_mapping_resolution>
     {
-        auto mapping = ssrc_mapper_->find_by_subscriber_ssrc(route.source.session_id, subscriber_ssrc);
+        auto mapping = find_identity_ssrc_mapping_by_subscriber_ssrc(route.source.session_id, subscriber_ssrc);
 
         if (!mapping.has_value())
         {
@@ -5856,12 +5900,11 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
             return std::nullopt;
         }
 
-        auto primary_mapping = ssrc_mapper_->find_by_publisher_ssrc(mapping->stream_id,
-                                                                    mapping->publisher_session_id,
-                                                                    mapping->subscriber_session_id,
-                                                                    mapping->publisher_mid,
-                                                                    mapping->publisher_rtx_primary_ssrc);
-
+        auto primary_mapping = find_identity_ssrc_mapping_by_publisher_ssrc(mapping->stream_id,
+                                                                            mapping->publisher_session_id,
+                                                                            mapping->subscriber_session_id,
+                                                                            mapping->publisher_mid,
+                                                                            mapping->publisher_rtx_primary_ssrc);
         if (!primary_mapping.has_value())
         {
             WEBRTC_LOG_WARN(
@@ -6116,6 +6159,11 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_rtx_ssrc_mapping
     if (mapping_result->packet_count == 1)
     {
         WEBRTC_LOG_INFO("rtx ssrc mapping created {}", media_ssrc_mapping_to_string(*mapping_result));
+    }
+
+    if (!remember_media_identity_forward_mapping(*mapping_result, rtx_payload_type_mapping))
+    {
+        return std::nullopt;
     }
 
     return *mapping_result;
@@ -6986,9 +7034,9 @@ void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event&
 std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolve_nack_retransmit_resolution(
     const rtcp_feedback_route_event& event, uint32_t feedback_media_ssrc, const std::vector<uint16_t>& feedback_sequence_numbers) const
 {
-    if (ssrc_mapper_ == nullptr)
+    if (identity_authority_ == nullptr && ssrc_mapper_ == nullptr)
     {
-        WEBRTC_LOG_WARN("rtp nack retransmit skipped ssrc mapper is null stream={} subscriber={} feedback_ssrc={}",
+        WEBRTC_LOG_WARN("rtp nack retransmit skipped identity mapper is null stream={} subscriber={} feedback_ssrc={}",
                         event.source.stream_id,
                         event.source.remote_endpoint,
                         feedback_media_ssrc);
@@ -6996,8 +7044,7 @@ std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolv
         return std::nullopt;
     }
 
-    std::optional<media_ssrc_mapping> feedback_mapping = ssrc_mapper_->find_by_subscriber_ssrc(event.source.session_id, feedback_media_ssrc);
-
+    std::optional<media_ssrc_mapping> feedback_mapping = find_identity_ssrc_mapping_by_subscriber_ssrc(event.source.session_id, feedback_media_ssrc);
     if (!feedback_mapping.has_value())
     {
         WEBRTC_LOG_WARN("rtp nack retransmit skipped mapping not found stream={} subscriber={} feedback_ssrc={}",
@@ -7076,12 +7123,11 @@ std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolv
         return std::nullopt;
     }
 
-    std::optional<media_ssrc_mapping> primary_mapping = ssrc_mapper_->find_by_publisher_ssrc(feedback_mapping->stream_id,
-                                                                                             feedback_mapping->publisher_session_id,
-                                                                                             feedback_mapping->subscriber_session_id,
-                                                                                             feedback_mapping->publisher_mid,
-                                                                                             feedback_mapping->publisher_rtx_primary_ssrc);
-
+    std::optional<media_ssrc_mapping> primary_mapping = find_identity_ssrc_mapping_by_publisher_ssrc(feedback_mapping->stream_id,
+                                                                                                     feedback_mapping->publisher_session_id,
+                                                                                                     feedback_mapping->subscriber_session_id,
+                                                                                                     feedback_mapping->publisher_mid,
+                                                                                                     feedback_mapping->publisher_rtx_primary_ssrc);
     if (!primary_mapping.has_value())
     {
         WEBRTC_LOG_WARN(

@@ -249,6 +249,17 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     bool remember_media_identity_forward_mapping(const media_ssrc_mapping& ssrc_mapping, const media_payload_type_mapping& payload_type_mapping);
 
+    [[nodiscard]]
+    std::optional<media_ssrc_mapping> find_identity_ssrc_mapping_by_subscriber_ssrc(std::string_view subscriber_session_id,
+                                                                                    uint32_t subscriber_ssrc) const;
+
+    [[nodiscard]]
+    std::optional<media_ssrc_mapping> find_identity_ssrc_mapping_by_publisher_ssrc(std::string_view stream_id,
+                                                                                   std::string_view publisher_session_id,
+                                                                                   std::string_view subscriber_session_id,
+                                                                                   std::string_view publisher_mid,
+                                                                                   uint32_t publisher_ssrc) const;
+
     void observe_inbound_rtp_stats(const media_peer_info& peer,
                                    const srtp_packet_process_result& packet,
                                    const std::optional<media_track_resolution>& track_resolution);

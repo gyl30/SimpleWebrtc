@@ -102,6 +102,16 @@ class media_identity_authority
     std::optional<media_identity_forward_binding> find_forward_by_subscriber_ssrc(std::string_view subscriber_session_id,
                                                                                   uint32_t subscriber_ssrc) const;
 
+    [[nodiscard]]
+    std::optional<media_ssrc_mapping> find_ssrc_mapping_by_publisher_ssrc(std::string_view stream_id,
+                                                                          std::string_view publisher_session_id,
+                                                                          std::string_view subscriber_session_id,
+                                                                          std::string_view publisher_mid,
+                                                                          uint32_t publisher_ssrc) const;
+
+    [[nodiscard]]
+    std::optional<media_ssrc_mapping> find_ssrc_mapping_by_subscriber_ssrc(std::string_view subscriber_session_id, uint32_t subscriber_ssrc) const;
+
     void forget_peer(std::string_view remote_endpoint);
 
     void forget_session(std::string_view session_id);
