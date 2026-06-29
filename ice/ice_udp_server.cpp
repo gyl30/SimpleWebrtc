@@ -1531,6 +1531,8 @@ void ice_udp_server::stop()
     {
         registry_->set_session_removed_callback(stream_session_removed_callback{});
 
+        registry_->set_session_ice_restart_callback(stream_session_ice_restart_callback{});
+
         registry_callback_registered_ = false;
     }
     lifecycle_convergence_check_generation_.fetch_add(1, std::memory_order_relaxed);
@@ -3198,6 +3200,25 @@ void ice_udp_server::register_session_removed_callback()
             self->schedule_lifecycle_snapshot_log("registry removal callback", removed_session.stream_id, removed_session.session_id);
         });
 
+    registry_->set_session_ice_restart_callback(
+        [weak_self](const stream_restarted_session& restarted_session)
+        {
+            auto self = weak_self.lock();
+
+            if (self == nullptr)
+            {
+                return;
+            }
+
+            WEBRTC_LOG_INFO("ice udp registry ice restart callback kind={} stream={} session={}",
+                            stream_session_kind_to_string(restarted_session.kind),
+                            restarted_session.stream_id,
+                            restarted_session.session_id);
+
+            self->forget_session(restarted_session.session_id);
+
+            self->schedule_lifecycle_snapshot_log("ice restart callback", restarted_session.stream_id, restarted_session.session_id);
+        });
     registry_callback_registered_ = true;
 }
 

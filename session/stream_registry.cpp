@@ -337,6 +337,29 @@ void stream_registry::set_session_removed_callback(stream_session_removed_callba
 
     session_removed_callback_ = std::move(callback);
 }
+
+void stream_registry::set_session_ice_restart_callback(stream_session_ice_restart_callback callback)
+{
+    std::lock_guard lock(mutex_);
+
+    session_ice_restart_callback_ = std::move(callback);
+}
+
+void stream_registry::notify_session_ice_restart(stream_restarted_session restarted_session)
+{
+    stream_session_ice_restart_callback callback;
+
+    {
+        std::lock_guard lock(mutex_);
+
+        callback = session_ice_restart_callback_;
+    }
+
+    if (callback)
+    {
+        callback(restarted_session);
+    }
+}
 std::vector<stream_session_lifecycle_snapshot> stream_registry::session_lifecycle_snapshots() const
 {
     std::lock_guard lock(mutex_);

@@ -44,7 +44,12 @@ struct stream_removed_session
     std::string local_ice_ufrag;
     std::string remote_ice_ufrag;
 };
-
+struct stream_restarted_session
+{
+    stream_session_kind kind = stream_session_kind::publisher;
+    std::string stream_id;
+    std::string session_id;
+};
 struct stream_session_lifecycle_snapshot
 {
     stream_session_kind kind = stream_session_kind::publisher;
@@ -66,6 +71,8 @@ using subscriber_session_result = std::expected<std::shared_ptr<subscriber_sessi
 using remove_session_result = std::expected<void, stream_registry_error>;
 
 using stream_session_removed_callback = std::function<void(const stream_removed_session& removed_session)>;
+
+using stream_session_ice_restart_callback = std::function<void(const stream_restarted_session& restarted_session)>;
 
 class stream_registry
 {
@@ -102,7 +109,11 @@ class stream_registry
 
     [[nodiscard]] remove_session_result remove_subscriber_session(std::string_view session_id);
 
+    void notify_session_ice_restart(stream_restarted_session restarted_session);
+
     void set_session_removed_callback(stream_session_removed_callback callback);
+
+    void set_session_ice_restart_callback(stream_session_ice_restart_callback callback);
 
     [[nodiscard]]
     std::vector<stream_session_lifecycle_snapshot> session_lifecycle_snapshots() const;
@@ -126,6 +137,7 @@ class stream_registry
     std::unordered_map<std::string, std::unordered_set<std::string>> subscriber_session_ids_by_stream_id_;
 
     stream_session_removed_callback session_removed_callback_;
+    stream_session_ice_restart_callback session_ice_restart_callback_;
 };
 }    // namespace webrtc
 

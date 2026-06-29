@@ -23,6 +23,8 @@ class whep_handler
     http_response_ptr delete_session(http_request_t& request, std::string_view session_id);
 
    private:
+    http_response_ptr patch_sdp_restart(http_request_t& request, std::string_view session_id, const std::shared_ptr<subscriber_session>& session);
+
     http_response_ptr json_response(http_request_t& request, int code, std::string_view body);
 
     http_response_ptr json_error_response(http_request_t& request, int code, std::string_view message);
