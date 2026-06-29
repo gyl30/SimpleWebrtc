@@ -27,7 +27,8 @@ namespace http = boost::beast::http;
 
 constexpr std::string_view k_cors_allow_methods = "GET, POST, PATCH, DELETE, OPTIONS";
 
-constexpr std::string_view k_cors_allow_headers = "Content-Type, Authorization, If-Match, If-None-Match, Cache-Control, X-Requested-With";
+constexpr std::string_view k_cors_allow_headers =
+    "Content-Type, Authorization, If-Match, If-None-Match, Cache-Control, X-Requested-With, WHEP-Reconnect-Session";
 
 constexpr std::string_view k_cors_private_network_header = "Access-Control-Allow-Private-Network";
 

@@ -80,6 +80,38 @@ bool is_application_sdp_restart_request(http_request_t& request)
 
     return restart_content_type_matches(content_type, k_restart_application_sdp);
 }
+constexpr std::string_view k_whep_reconnect_session_header = "WHEP-Reconnect-Session";
+
+std::string_view trim_ascii_whitespace(std::string_view value)
+{
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0)
+    {
+        value.remove_prefix(1);
+    }
+
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())) != 0)
+    {
+        value.remove_suffix(1);
+    }
+
+    return value;
+}
+
+std::optional<std::string> read_whep_reconnect_session_id(http_request_t& request)
+{
+    const auto field = request.req[std::string(k_whep_reconnect_session_header)];
+
+    std::string_view value(field.data(), field.size());
+
+    value = trim_ascii_whitespace(value);
+
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    return std::string(value);
+}
 }    // namespace
 
 whep_handler::whep_handler(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
@@ -141,7 +173,42 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
         return json_error_response(request, 404, "publisher not found");
     }
+    const std::optional<std::string> reconnect_session_id = read_whep_reconnect_session_id(request);
 
+    std::shared_ptr<subscriber_session> reconnect_previous_session;
+    if (reconnect_session_id.has_value())
+    {
+        reconnect_previous_session = registry_->find_subscriber_by_session_id(*reconnect_session_id);
+
+        if (reconnect_previous_session == nullptr)
+        {
+            WEBRTC_LOG_WARN("WHEP reconnect failed previous subscriber not found stream={} previous_session={}", stream_id, *reconnect_session_id);
+
+            return json_error_response(request, 404, "previous subscriber session not found");
+        }
+
+        if (reconnect_previous_session->stream_id() != stream_id)
+        {
+            WEBRTC_LOG_WARN("WHEP reconnect failed stream mismatch stream={} previous_stream={} previous_session={}",
+                            stream_id,
+                            reconnect_previous_session->stream_id(),
+                            reconnect_previous_session->session_id());
+
+            return json_error_response(request, 409, "previous subscriber session belongs to another stream");
+        }
+
+        auto precondition = validate_session_if_match(request, *reconnect_previous_session);
+
+        if (!precondition)
+        {
+            WEBRTC_LOG_WARN("WHEP reconnect precondition failed stream={} previous_session={} error={}",
+                            stream_id,
+                            reconnect_previous_session->session_id(),
+                            precondition.error());
+
+            return json_error_response(request, 412, precondition.error());
+        }
+    }
     auto generated_answer = answer_factory_->build_whep_answer(stream_id, *offer_summary, publisher->remote_offer_summary());
     if (!generated_answer)
     {
@@ -159,7 +226,16 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         return json_error_response(request, 400, make_prefixed_error("failed to filter runtime subscriber offer: ", runtime_offer_filter.error()));
     }
 
-    auto session_result = registry_->create_subscriber_session(std::string(stream_id), offer, std::move(runtime_offer_filter->offer_summary));
+    auto session_result = [&]() -> subscriber_session_result
+    {
+        if (reconnect_session_id.has_value())
+        {
+            return registry_->replace_subscriber_session(
+                *reconnect_session_id, std::string(stream_id), offer, std::move(runtime_offer_filter->offer_summary));
+        }
+
+        return registry_->create_subscriber_session(std::string(stream_id), offer, std::move(runtime_offer_filter->offer_summary));
+    }();
     if (!session_result)
     {
         const auto error = session_result.error();
@@ -169,6 +245,23 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
             WEBRTC_LOG_WARN("WHEP create subscriber failed stream={} publisher not found", stream_id);
 
             return json_error_response(request, 404, "publisher not found");
+        }
+
+        if (error == stream_registry_error::subscriber_session_not_found)
+        {
+            WEBRTC_LOG_WARN(
+                "WHEP reconnect failed previous subscriber not found stream={} previous_session={}", stream_id, reconnect_session_id.value_or(""));
+
+            return json_error_response(request, 404, "previous subscriber session not found");
+        }
+
+        if (error == stream_registry_error::subscriber_reconnect_stream_mismatch)
+        {
+            WEBRTC_LOG_WARN("WHEP reconnect failed previous subscriber stream mismatch stream={} previous_session={}",
+                            stream_id,
+                            reconnect_session_id.value_or(""));
+
+            return json_error_response(request, 409, "previous subscriber session belongs to another stream");
         }
 
         WEBRTC_LOG_ERROR("WHEP create subscriber failed stream={} error={}", stream_id, stream_registry_error_to_string(error));
@@ -187,13 +280,15 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                               generated.sdp_session_id,
                               generated.sdp_session_version);
 
-    WEBRTC_LOG_INFO("WHEP create subscriber stream={} session={} sdp_size={} offer_media_count={} accepted_media_count={} accepted_mline_count={}",
-                    session->stream_id(),
-                    session->session_id(),
-                    offer.size(),
-                    offer_summary->media.size(),
-                    session->remote_offer_summary().media.size(),
-                    session->accepted_remote_media_mline_indexes().size());
+    WEBRTC_LOG_INFO(
+        "WHEP create subscriber stream={} session={} reconnect={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={}",
+        session->stream_id(),
+        session->session_id(),
+        reconnect_session_id.has_value() ? 1 : 0,
+        reconnect_session_id.value_or(""),
+        offer.size(),
+        offer_summary->media.size(),
+        session->remote_offer_summary().media.size());
     auto response = sdp_response(request, 201, session->local_sdp_answer());
 
     response->set(http::field::location, "/whep/session/" + session->session_id());

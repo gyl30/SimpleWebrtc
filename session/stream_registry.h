@@ -27,6 +27,7 @@ enum class stream_registry_error
     publisher_not_found,
     publisher_session_not_found,
     subscriber_session_not_found,
+    subscriber_reconnect_stream_mismatch,
 };
 
 enum class stream_session_kind
@@ -100,6 +101,11 @@ class stream_registry
     [[nodiscard]] subscriber_session_result create_subscriber_session(std::string stream_id,
                                                                       std::string remote_sdp_offer,
                                                                       sdp::webrtc_offer_summary remote_offer_summary);
+    [[nodiscard]]
+    subscriber_session_result replace_subscriber_session(std::string previous_session_id,
+                                                         std::string stream_id,
+                                                         std::string remote_sdp_offer,
+                                                         sdp::webrtc_offer_summary remote_offer_summary);
 
     [[nodiscard]] std::shared_ptr<publisher_session> find_publisher_by_stream_id(std::string_view stream_id) const;
 
