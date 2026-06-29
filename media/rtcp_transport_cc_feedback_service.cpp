@@ -462,6 +462,16 @@ rtcp_transport_cc_feedback_service::rtcp_transport_cc_feedback_service(rtcp_tran
         config_.max_observed_packets_per_source = 512;
     }
 
+    if (config_.max_sources == 0)
+    {
+        config_.max_sources = 4096;
+    }
+
+    if (config_.max_pending_packets_total == 0)
+    {
+        config_.max_pending_packets_total = 65536;
+    }
+
     if (config_.max_packets_per_feedback == 0)
     {
         config_.max_packets_per_feedback = 64;
@@ -529,6 +539,18 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_re
 
     std::lock_guard lock(mutex_);
 
+    const bool source_exists = sources_by_key_.contains(key);
+
+    if (!source_exists && sources_by_key_.size() >= config_.max_sources)
+    {
+        return make_error("transport cc feedback source capacity exceeded");
+    }
+
+    if (!source_exists && pending_packet_count_locked() >= config_.max_pending_packets_total)
+    {
+        return make_error("transport cc feedback pending packet capacity exceeded");
+    }
+
     auto [iterator, inserted] = sources_by_key_.try_emplace(key);
 
     source_state& source = iterator->second;
@@ -556,6 +578,16 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_re
         {
             return {};
         }
+    }
+
+    if (pending_packet_count_locked() >= config_.max_pending_packets_total)
+    {
+        if (source.packets.empty())
+        {
+            return make_error("transport cc feedback pending packet capacity exceeded");
+        }
+
+        source.packets.erase(source.packets.begin());
     }
 
     observed_packet_state observed;
@@ -774,6 +806,19 @@ void rtcp_transport_cc_feedback_service::clear()
 
     sources_by_key_.clear();
 }
+std::size_t rtcp_transport_cc_feedback_service::pending_packet_count_locked() const
+{
+    std::size_t count = 0;
+
+    for (const auto& [key, source] : sources_by_key_)
+    {
+        (void)key;
+
+        count += source.packets.size();
+    }
+
+    return count;
+}
 
 std::size_t rtcp_transport_cc_feedback_service::source_count() const
 {
@@ -786,15 +831,6 @@ std::size_t rtcp_transport_cc_feedback_service::pending_packet_count() const
 {
     std::lock_guard lock(mutex_);
 
-    std::size_t count = 0;
-
-    for (const auto& [key, source] : sources_by_key_)
-    {
-        (void)key;
-
-        count += source.packets.size();
-    }
-
-    return count;
+    return pending_packet_count_locked();
 }
 }    // namespace webrtc

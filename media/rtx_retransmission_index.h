@@ -15,6 +15,7 @@ namespace webrtc
 struct rtx_retransmission_index_config
 {
     std::size_t max_entries = 4096;
+    uint64_t max_age_milliseconds = 60000;
 };
 
 struct rtx_retransmission_mapping
@@ -79,6 +80,9 @@ class rtx_retransmission_index
 
     void forget_stream(std::string_view stream_id);
 
+    [[nodiscard]]
+    std::size_t expire_old(uint64_t now_milliseconds);
+
     void clear();
 
     [[nodiscard]]
@@ -89,6 +93,9 @@ class rtx_retransmission_index
     static std::string make_key(std::string_view stream_id, std::string_view subscriber_session_id, uint32_t rtx_ssrc, uint16_t rtx_sequence_number);
 
     void enforce_capacity_locked();
+
+    [[nodiscard]]
+    std::size_t expire_old_locked(uint64_t now_milliseconds);
 
    private:
     rtx_retransmission_index_config config_;

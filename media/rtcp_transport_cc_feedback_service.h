@@ -58,9 +58,11 @@ struct rtcp_transport_cc_feedback_config
     uint64_t stale_source_milliseconds = 30000;
 
     std::size_t max_observed_packets_per_source = 512;
+    std::size_t max_sources = 4096;
+    std::size_t max_pending_packets_total = 65536;
+
     uint16_t max_packets_per_feedback = 64;
 };
-
 using rtcp_transport_cc_feedback_result = std::expected<void, std::string>;
 
 class rtcp_transport_cc_feedback_service
@@ -126,6 +128,9 @@ class rtcp_transport_cc_feedback_service
    private:
     [[nodiscard]]
     static std::string make_source_key(std::string_view session_id, std::string_view remote_endpoint, uint32_t media_ssrc);
+
+    [[nodiscard]]
+    std::size_t pending_packet_count_locked() const;
 
     [[nodiscard]]
     static rtcp_transport_cc_feedback_result validate_observed_packet(const rtcp_transport_cc_observed_packet& packet);

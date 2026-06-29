@@ -807,6 +807,145 @@ std::size_t make_rtp_packet_cache_max_packets_from_env()
 
     return max_packets;
 }
+rtx_retransmission_index_config make_rtx_retransmission_index_config_from_env()
+{
+    rtx_retransmission_index_config config;
+
+    config.max_entries = get_env_size_or_default("WEBRTC_RTX_RETRANSMISSION_INDEX_MAX_ENTRIES", config.max_entries);
+
+    config.max_entries = std::max<std::size_t>(config.max_entries, 128);
+
+    config.max_entries = std::min<std::size_t>(config.max_entries, 262144);
+
+    config.max_age_milliseconds = get_env_uint64_or_default("WEBRTC_RTX_RETRANSMISSION_INDEX_MAX_AGE_MS", config.max_age_milliseconds);
+
+    if (config.max_age_milliseconds != 0 && config.max_age_milliseconds < 1000)
+    {
+        WEBRTC_LOG_WARN("rtx retransmission index max age too small max_age_ms={} clamped=1000", config.max_age_milliseconds);
+
+        config.max_age_milliseconds = 1000;
+    }
+
+    if (config.max_age_milliseconds > 600000)
+    {
+        WEBRTC_LOG_WARN("rtx retransmission index max age too large max_age_ms={} clamped=600000", config.max_age_milliseconds);
+
+        config.max_age_milliseconds = 600000;
+    }
+
+    WEBRTC_LOG_INFO("rtx retransmission index config max_entries={} max_age_ms={}", config.max_entries, config.max_age_milliseconds);
+
+    return config;
+}
+
+nack_retransmit_throttle_config make_nack_retransmit_throttle_config_from_env()
+{
+    nack_retransmit_throttle_config config;
+
+    config.min_interval_milliseconds = get_env_uint64_or_default("WEBRTC_NACK_RETRANSMIT_MIN_INTERVAL_MS", config.min_interval_milliseconds);
+
+    config.max_age_milliseconds = get_env_uint64_or_default("WEBRTC_NACK_RETRANSMIT_MAX_AGE_MS", config.max_age_milliseconds);
+
+    config.max_entries = get_env_size_or_default("WEBRTC_NACK_RETRANSMIT_MAX_ENTRIES", config.max_entries);
+
+    if (config.min_interval_milliseconds > 1000)
+    {
+        WEBRTC_LOG_WARN("nack retransmit throttle min interval too large min_interval_ms={} clamped=1000", config.min_interval_milliseconds);
+
+        config.min_interval_milliseconds = 1000;
+    }
+
+    if (config.max_age_milliseconds != 0 && config.max_age_milliseconds < 1000)
+    {
+        WEBRTC_LOG_WARN("nack retransmit throttle max age too small max_age_ms={} clamped=1000", config.max_age_milliseconds);
+
+        config.max_age_milliseconds = 1000;
+    }
+
+    if (config.max_age_milliseconds > 600000)
+    {
+        WEBRTC_LOG_WARN("nack retransmit throttle max age too large max_age_ms={} clamped=600000", config.max_age_milliseconds);
+
+        config.max_age_milliseconds = 600000;
+    }
+
+    config.max_entries = std::max<std::size_t>(config.max_entries, 128);
+
+    config.max_entries = std::min<std::size_t>(config.max_entries, 262144);
+
+    WEBRTC_LOG_INFO("nack retransmit throttle config min_interval_ms={} max_age_ms={} max_entries={}",
+                    config.min_interval_milliseconds,
+                    config.max_age_milliseconds,
+                    config.max_entries);
+
+    return config;
+}
+
+rtcp_transport_cc_feedback_config make_rtcp_transport_cc_feedback_config_from_env()
+{
+    rtcp_transport_cc_feedback_config config;
+
+    config.feedback_interval_milliseconds = get_env_uint64_or_default("WEBRTC_TWCC_FEEDBACK_INTERVAL_MS", config.feedback_interval_milliseconds);
+
+    config.stale_source_milliseconds = get_env_uint64_or_default("WEBRTC_TWCC_STALE_SOURCE_MS", config.stale_source_milliseconds);
+
+    config.max_observed_packets_per_source =
+        get_env_size_or_default("WEBRTC_TWCC_MAX_OBSERVED_PACKETS_PER_SOURCE", config.max_observed_packets_per_source);
+
+    config.max_sources = get_env_size_or_default("WEBRTC_TWCC_MAX_SOURCES", config.max_sources);
+
+    config.max_pending_packets_total = get_env_size_or_default("WEBRTC_TWCC_MAX_PENDING_PACKETS_TOTAL", config.max_pending_packets_total);
+
+    const std::size_t max_packets_per_feedback = get_env_size_or_default("WEBRTC_TWCC_MAX_PACKETS_PER_FEEDBACK", config.max_packets_per_feedback);
+
+    config.max_packets_per_feedback = static_cast<uint16_t>(std::min<std::size_t>(max_packets_per_feedback, 255));
+
+    if (config.feedback_interval_milliseconds == 0)
+    {
+        WEBRTC_LOG_WARN("twcc feedback interval is zero use default=100");
+
+        config.feedback_interval_milliseconds = 100;
+    }
+
+    if (config.stale_source_milliseconds != 0 && config.stale_source_milliseconds < 1000)
+    {
+        WEBRTC_LOG_WARN("twcc stale source timeout too small stale_ms={} clamped=1000", config.stale_source_milliseconds);
+
+        config.stale_source_milliseconds = 1000;
+    }
+
+    config.max_observed_packets_per_source = std::max<std::size_t>(config.max_observed_packets_per_source, 16);
+
+    config.max_observed_packets_per_source = std::min<std::size_t>(config.max_observed_packets_per_source, 4096);
+
+    config.max_sources = std::max<std::size_t>(config.max_sources, 16);
+
+    config.max_sources = std::min<std::size_t>(config.max_sources, 65536);
+
+    config.max_pending_packets_total = std::max<std::size_t>(config.max_pending_packets_total, config.max_observed_packets_per_source);
+
+    config.max_pending_packets_total = std::min<std::size_t>(config.max_pending_packets_total, 1048576);
+
+    if (config.max_packets_per_feedback == 0)
+    {
+        WEBRTC_LOG_WARN("twcc max packets per feedback is zero use default=64");
+
+        config.max_packets_per_feedback = 64;
+    }
+
+    WEBRTC_LOG_INFO(
+        "twcc feedback config interval_ms={} stale_ms={} max_packets_per_source={} max_sources={} max_pending_packets_total={} "
+        "max_packets_per_feedback={}",
+        config.feedback_interval_milliseconds,
+        config.stale_source_milliseconds,
+        config.max_observed_packets_per_source,
+        config.max_sources,
+        config.max_pending_packets_total,
+        config.max_packets_per_feedback);
+
+    return config;
+}
+
 uint64_t make_endpoint_idle_timeout_milliseconds_from_env()
 {
     uint64_t timeout_milliseconds = get_env_uint64_or_default("WEBRTC_ENDPOINT_IDLE_TIMEOUT_MS", k_default_endpoint_idle_timeout_milliseconds);
@@ -1981,7 +2120,7 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       ssrc_mapper_(std::make_shared<media_ssrc_mapper>()),
       identity_authority_(std::make_shared<media_identity_authority>()),
       rtcp_report_service_(make_rtcp_report_service_from_env()),
-      rtcp_transport_cc_feedback_service_(std::make_shared<rtcp_transport_cc_feedback_service>()),
+      rtcp_transport_cc_feedback_service_(std::make_shared<rtcp_transport_cc_feedback_service>(make_rtcp_transport_cc_feedback_config_from_env())),
       endpoint_idle_timeout_milliseconds_(make_endpoint_idle_timeout_milliseconds_from_env()),
       pending_session_timeout_milliseconds_(make_pending_session_timeout_milliseconds_from_env())
 {
@@ -2022,9 +2161,10 @@ ice_udp_server_result ice_udp_server::start()
     {
         rtcp_report_service_ = make_rtcp_report_service_from_env();
     }
+
     if (rtcp_transport_cc_feedback_service_ == nullptr)
     {
-        rtcp_transport_cc_feedback_service_ = std::make_shared<rtcp_transport_cc_feedback_service>();
+        rtcp_transport_cc_feedback_service_ = std::make_shared<rtcp_transport_cc_feedback_service>(make_rtcp_transport_cc_feedback_config_from_env());
     }
 
     register_session_removed_callback();
@@ -3941,8 +4081,13 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
 
     rtx_sequence_allocator_ = std::make_shared<rtx_sequence_number_allocator>();
 
-    rtx_retransmission_index_ = std::make_shared<rtx_retransmission_index>();
-    nack_retransmit_throttle_ = std::make_shared<nack_retransmit_throttle>();
+    rtx_retransmission_index_config rtx_index_config = make_rtx_retransmission_index_config_from_env();
+
+    rtx_retransmission_index_ = std::make_shared<rtx_retransmission_index>(rtx_index_config);
+
+    nack_retransmit_throttle_config nack_throttle_config = make_nack_retransmit_throttle_config_from_env();
+
+    nack_retransmit_throttle_ = std::make_shared<nack_retransmit_throttle>(nack_throttle_config);
 
     WEBRTC_LOG_INFO("dtls transport initialized handshake_timeout_ms={}", transport_config.handshake_timeout.count());
 

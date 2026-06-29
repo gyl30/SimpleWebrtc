@@ -39,6 +39,8 @@ void rtx_retransmission_index::remember(std::string_view stream_id,
 
     std::lock_guard lock(mutex_);
 
+    expire_old_locked(now_milliseconds);
+
     const bool exists = mappings_by_key_.contains(key);
 
     rtx_retransmission_mapping mapping;
@@ -182,6 +184,13 @@ void rtx_retransmission_index::forget_stream(std::string_view stream_id)
     insertion_order_ = std::move(filtered_order);
 }
 
+std::size_t rtx_retransmission_index::expire_old(uint64_t now_milliseconds)
+{
+    std::lock_guard lock(mutex_);
+
+    return expire_old_locked(now_milliseconds);
+}
+
 void rtx_retransmission_index::clear()
 {
     std::lock_guard lock(mutex_);
@@ -221,6 +230,53 @@ std::string rtx_retransmission_index::make_key(std::string_view stream_id,
     key.append(std::to_string(rtx_sequence_number));
 
     return key;
+}
+std::size_t rtx_retransmission_index::expire_old_locked(uint64_t now_milliseconds)
+{
+    if (config_.max_age_milliseconds == 0)
+    {
+        return 0;
+    }
+
+    std::size_t expired_count = 0;
+
+    for (auto iterator = mappings_by_key_.begin(); iterator != mappings_by_key_.end();)
+    {
+        const uint64_t reference_milliseconds =
+            iterator->second.last_used_at_milliseconds != 0 ? iterator->second.last_used_at_milliseconds : iterator->second.created_at_milliseconds;
+
+        const uint64_t age_milliseconds = now_milliseconds > reference_milliseconds ? now_milliseconds - reference_milliseconds : 0;
+
+        if (age_milliseconds > config_.max_age_milliseconds)
+        {
+            iterator = mappings_by_key_.erase(iterator);
+
+            expired_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    if (expired_count == 0)
+    {
+        return 0;
+    }
+
+    std::deque<std::string> filtered_order;
+
+    for (const auto& key : insertion_order_)
+    {
+        if (mappings_by_key_.contains(key))
+        {
+            filtered_order.push_back(key);
+        }
+    }
+
+    insertion_order_ = std::move(filtered_order);
+
+    return expired_count;
 }
 
 void rtx_retransmission_index::enforce_capacity_locked()
