@@ -295,35 +295,26 @@ int main(int argc, char* argv[])
     }
 
     const std::string ice_bind_host = get_env_or_default("WEBRTC_ICE_BIND_HOST", "0.0.0.0");
-
     const uint16_t ice_port = get_env_uint16_or_default("WEBRTC_ICE_PORT", 8812);
-
+    const std::string ice_public_ips_config = get_env_or_default("WEBRTC_ICE_PUBLIC_IPS", "");
     const std::string ice_public_ip = get_env_or_default("WEBRTC_ICE_PUBLIC_IP", "127.0.0.1");
-    const std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ip);
+    const std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ips_config.empty() ? ice_public_ip : ice_public_ips_config);
 
     boost::asio::io_context io_context;
 
     auto registry = std::make_shared<webrtc::stream_registry>();
-
     auto media_router = std::make_shared<webrtc::media_router>();
-
     auto ice_server = std::make_shared<webrtc::ice_udp_server>(io_context, ice_bind_host, ice_port, registry, media_router);
-
     auto ice_start_result = ice_server->start();
-
     if (!ice_start_result)
     {
         WEBRTC_LOG_ERROR("start ice udp server failed: {}", ice_start_result.error());
 
         return 1;
     }
-
     answer_factory_config->media_address = ice_public_ips.front();
-
     answer_factory_config->ice_candidate_address = ice_public_ips.front();
-
     answer_factory_config->ice_candidate_port = ice_server->local_port();
-
     answer_factory_config->ice_candidates.clear();
 
     for (std::size_t index = 0; index < ice_public_ips.size(); ++index)
@@ -332,13 +323,15 @@ int main(int argc, char* argv[])
     }
 
     answer_factory_config->include_host_candidate = true;
-
     answer_factory_config->end_of_candidates = true;
 
     WEBRTC_LOG_INFO(
         "certificate fingerprint {} {}", answer_factory_config->local_fingerprint.algorithm, answer_factory_config->local_fingerprint.value);
 
-    WEBRTC_LOG_INFO("ice host candidate {}:{}", answer_factory_config->ice_candidate_address, answer_factory_config->ice_candidate_port);
+    for (const auto& candidate : answer_factory_config->ice_candidates)
+    {
+        WEBRTC_LOG_INFO("ice host candidate {}:{}", candidate.address, candidate.port);
+    }
 
     auto answer_factory = std::make_shared<webrtc::webrtc_answer_factory>(std::move(*answer_factory_config));
 
