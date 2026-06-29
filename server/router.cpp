@@ -14,6 +14,7 @@
 #include "server/signaling_json.h"
 #include "server/trickle_ice_http.h"
 #include "media/rtcp_report_service.h"
+#include "server/http_error_response.h"
 #include "server/trickle_ice_metrics.h"
 #include "media/media_router_stats_json.h"
 #include "signaling/webrtc_answer_factory.h"
@@ -29,8 +30,6 @@ constexpr std::string_view k_cors_allow_methods = "GET, POST, PATCH, DELETE, OPT
 
 constexpr std::string_view k_cors_allow_headers =
     "Content-Type, Authorization, If-Match, If-None-Match, Cache-Control, X-Requested-With, WHEP-Reconnect-Session, WHIP-Replace-Session";
-
-constexpr std::string_view k_cors_private_network_header = "Access-Control-Allow-Private-Network";
 
 constexpr std::string_view k_cors_max_age_seconds = "600";
 
@@ -513,7 +512,7 @@ http_response_ptr router::handle_options(http_request_t& request)
 
     response->set(http::field::access_control_max_age, std::string(k_cors_max_age_seconds));
 
-    response->set(std::string(k_cors_private_network_header), "true");
+    response->set(std::string(k_http_cors_private_network_header), "true");
 
     set_trickle_ice_patch_headers(response);
 
@@ -904,11 +903,11 @@ http_response_ptr router::handle_whep_session(http_request_t& request, std::stri
     return method_not_allowed(request);
 }
 
-http_response_ptr router::not_found(http_request_t& request) { return json_response(request, 404, R"({"error":"not found"})"); }
+http_response_ptr router::not_found(http_request_t& request) { return make_json_http_error_response(request, 404, "not_found", "not found"); }
 
 http_response_ptr router::method_not_allowed(http_request_t& request)
 {
-    auto response = json_response(request, 405, R"({"error":"method not allowed"})");
+    auto response = make_json_http_error_response(request, 405, "method_not_allowed", "method not allowed");
 
     response->set(http::field::allow, "GET, POST, PATCH, DELETE, OPTIONS");
 
@@ -917,50 +916,27 @@ http_response_ptr router::method_not_allowed(http_request_t& request)
 
 http_response_ptr router::bad_request(http_request_t& request, std::string_view message)
 {
-    return json_response(request, 400, json_error_body(message));
+    return make_json_http_error_response(request, 400, "bad_request", message);
 }
 
 http_response_ptr router::unsupported_media_type(http_request_t& request)
 {
-    return json_response(request, 415, R"({"error":"unsupported media type, expected application/sdp"})");
+    return make_json_http_error_response(request, 415, "unsupported_media_type", "unsupported media type, expected application/sdp");
 }
 
 http_response_ptr router::not_implemented(http_request_t& request, std::string_view message)
 {
-    return json_response(request, 501, json_error_body(message));
+    return make_json_http_error_response(request, 501, "not_implemented", message);
 }
 
 http_response_ptr router::json_response(http_request_t& request, int code, std::string_view body)
 {
-    std::string content(body);
-
-    content.push_back('\n');
-
-    auto response = create_response(request, code, content);
-
-    response->set(http::field::content_type, "application/json; charset=utf-8");
-
-    add_common_headers(response);
-
-    return response;
+    return make_json_http_response(request, code, body);
 }
 
 http_response_ptr router::text_response(http_request_t& request, int code, std::string_view body)
 {
-    std::string content(body);
-
-    if (!content.empty() && content.back() != '\n')
-    {
-        content.push_back('\n');
-    }
-
-    auto response = create_response(request, code, content);
-
-    response->set(http::field::content_type, "text/plain; charset=utf-8");
-
-    add_common_headers(response);
-
-    return response;
+    return make_text_http_response(request, code, body);
 }
 
 http_response_ptr router::prometheus_response(http_request_t& request, int code, std::string_view body)
@@ -981,21 +957,7 @@ http_response_ptr router::prometheus_response(http_request_t& request, int code,
     return response;
 }
 
-void router::add_common_headers(const http_response_ptr& response)
-{
-    if (response == nullptr)
-    {
-        return;
-    }
-
-    response->set(http::field::access_control_allow_origin, "*");
-
-    response->set(http::field::access_control_expose_headers, std::string(k_trickle_ice_expose_headers_value));
-
-    response->set(std::string(k_cors_private_network_header), "true");
-
-    response->set(http::field::cache_control, "no-store");
-}
+void router::add_common_headers(const http_response_ptr& response) { add_http_common_headers(response); }
 
 std::string_view router::request_path(http_request_t& request)
 {

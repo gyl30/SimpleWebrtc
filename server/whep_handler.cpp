@@ -13,8 +13,9 @@
 #include "net/http.h"
 #include "server/signaling_json.h"
 #include "server/trickle_ice_http.h"
-#include "server/trickle_ice_patch_handler.h"
+#include "server/http_error_response.h"
 #include "server/runtime_offer_filter.h"
+#include "server/trickle_ice_patch_handler.h"
 #include "signaling/sdp/sdp_offer_validator.h"
 #include "signaling/sdp/sdp_parser.h"
 #include "signaling/sdp/sdp_summary.h"
@@ -25,8 +26,6 @@ namespace webrtc
 namespace
 {
 namespace http = boost::beast::http;
-
-constexpr std::string_view k_cors_private_network_header = "Access-Control-Allow-Private-Network";
 
 std::string make_prefixed_error(std::string_view prefix, std::string_view error)
 {
@@ -506,53 +505,19 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
 
 http_response_ptr whep_handler::json_response(http_request_t& request, int code, std::string_view body)
 {
-    std::string content(body);
-
-    content.push_back('\n');
-
-    auto response = create_response(request, code, content);
-
-    response->set(http::field::content_type, "application/json; charset=utf-8");
-
-    add_common_headers(response);
-
-    return response;
+    return make_json_http_response(request, code, body);
 }
 
 http_response_ptr whep_handler::json_error_response(http_request_t& request, int code, std::string_view message)
 {
-    return json_response(request, code, make_error_response_body(message));
+    return make_json_http_error_response(request, code, "whep_error", message);
 }
 
 http_response_ptr whep_handler::sdp_response(http_request_t& request, int code, std::string_view body)
 {
-    std::string content(body);
-
-    auto response = create_response(request, code, content);
-
-    response->set(http::field::content_type, "application/sdp");
-
-    add_common_headers(response);
-
-    return response;
+    return make_sdp_http_response(request, code, body);
 }
 
-void whep_handler::add_common_headers(const http_response_ptr& response)
-{
-    if (response == nullptr)
-    {
-        return;
-    }
-
-    response->set(http::field::access_control_allow_origin, "*");
-
-    response->set(http::field::access_control_expose_headers, std::string(k_trickle_ice_expose_headers_value));
-
-    response->set(std::string(k_cors_private_network_header), "true");
-
-    response->set(http::field::cache_control, "no-store");
-
-    set_trickle_ice_patch_headers(response);
-}
+void whep_handler::add_common_headers(const http_response_ptr& response) { add_http_common_headers(response); }
 
 }    // namespace webrtc
