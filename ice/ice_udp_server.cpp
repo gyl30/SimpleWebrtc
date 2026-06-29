@@ -1084,6 +1084,40 @@ rtcp_transport_cc_feedback_config make_rtcp_transport_cc_feedback_config_from_en
 
     return config;
 }
+
+uint64_t make_endpoint_idle_timeout_milliseconds_from_env()
+{
+    uint64_t timeout_milliseconds = get_env_uint64_or_default("WEBRTC_ENDPOINT_IDLE_TIMEOUT_MS", k_default_endpoint_idle_timeout_milliseconds);
+
+    if (timeout_milliseconds != 0 && timeout_milliseconds < 10000)
+    {
+        WEBRTC_LOG_WARN("endpoint idle timeout too small timeout_ms={} min_ms=10000 clamped=10000", timeout_milliseconds);
+
+        timeout_milliseconds = 10000;
+    }
+
+    WEBRTC_LOG_INFO(
+        "endpoint idle cleanup config timeout_ms={} interval_ms={}", timeout_milliseconds, k_endpoint_idle_cleanup_interval.count() * 1000);
+
+    return timeout_milliseconds;
+}
+uint64_t make_pending_session_timeout_milliseconds_from_env()
+{
+    uint64_t timeout_milliseconds = get_env_uint64_or_default("WEBRTC_PENDING_SESSION_TIMEOUT_MS", k_default_pending_session_timeout_milliseconds);
+
+    if (timeout_milliseconds != 0 && timeout_milliseconds < 10000)
+    {
+        WEBRTC_LOG_WARN("pending session timeout too small timeout_ms={} min_ms=10000 clamped=10000", timeout_milliseconds);
+
+        timeout_milliseconds = 10000;
+    }
+
+    WEBRTC_LOG_INFO(
+        "pending session cleanup config timeout_ms={} interval_ms={}", timeout_milliseconds, k_pending_session_cleanup_interval.count() * 1000);
+
+    return timeout_milliseconds;
+}
+
 struct ice_udp_server_runtime_config
 {
     dtls_transport_config dtls_transport;
@@ -1135,9 +1169,9 @@ ice_udp_server_runtime_config make_ice_udp_server_runtime_config_from_env()
 
     config.rtcp_report_timer_interval = make_rtcp_report_timer_interval_from_env();
 
-    config.endpoint_idle_timeout_milliseconds = make_ice_consent_timeout_milliseconds_from_env();
+    config.endpoint_idle_timeout_milliseconds = make_endpoint_idle_timeout_milliseconds_from_env();
 
-    config.pending_session_timeout_milliseconds = make_ice_consent_timeout_milliseconds_from_env();
+    config.pending_session_timeout_milliseconds = make_pending_session_timeout_milliseconds_from_env();
 
     WEBRTC_LOG_INFO(
         "ice udp runtime config loaded dtls_handshake_timeout_ms={} rtp_cache_max_packets={} ice_consent_interval_ms={} "
@@ -1160,39 +1194,6 @@ const ice_udp_server_runtime_config& ice_udp_server_runtime_config_instance()
     static const ice_udp_server_runtime_config config = make_ice_udp_server_runtime_config_from_env();
 
     return config;
-}
-
-uint64_t make_endpoint_idle_timeout_milliseconds_from_env()
-{
-    uint64_t timeout_milliseconds = get_env_uint64_or_default("WEBRTC_ENDPOINT_IDLE_TIMEOUT_MS", k_default_endpoint_idle_timeout_milliseconds);
-
-    if (timeout_milliseconds != 0 && timeout_milliseconds < 10000)
-    {
-        WEBRTC_LOG_WARN("endpoint idle timeout too small timeout_ms={} min_ms=10000 clamped=10000", timeout_milliseconds);
-
-        timeout_milliseconds = 10000;
-    }
-
-    WEBRTC_LOG_INFO(
-        "endpoint idle cleanup config timeout_ms={} interval_ms={}", timeout_milliseconds, k_endpoint_idle_cleanup_interval.count() * 1000);
-
-    return timeout_milliseconds;
-}
-uint64_t make_pending_session_timeout_milliseconds_from_env()
-{
-    uint64_t timeout_milliseconds = get_env_uint64_or_default("WEBRTC_PENDING_SESSION_TIMEOUT_MS", k_default_pending_session_timeout_milliseconds);
-
-    if (timeout_milliseconds != 0 && timeout_milliseconds < 10000)
-    {
-        WEBRTC_LOG_WARN("pending session timeout too small timeout_ms={} min_ms=10000 clamped=10000", timeout_milliseconds);
-
-        timeout_milliseconds = 10000;
-    }
-
-    WEBRTC_LOG_INFO(
-        "pending session cleanup config timeout_ms={} interval_ms={}", timeout_milliseconds, k_pending_session_cleanup_interval.count() * 1000);
-
-    return timeout_milliseconds;
 }
 
 bool is_pending_connection_state(session_state state) { return state == session_state::sdp_received || state == session_state::sdp_answered; }
