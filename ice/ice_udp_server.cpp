@@ -1585,6 +1585,58 @@ void append_unique_keyframe_media_ssrc(std::vector<uint32_t>& ssrcs, uint32_t ss
     ssrcs.push_back(ssrc);
 }
 bool is_video_media_kind(std::string_view kind) { return kind == "video"; }
+const sdp::media_summary* find_offer_media_by_mid(const sdp::webrtc_offer_summary& offer, std::string_view mid)
+{
+    if (mid.empty())
+    {
+        return nullptr;
+    }
+
+    for (const auto& media : offer.media)
+    {
+        if (media.mid == mid)
+        {
+            return &media;
+        }
+    }
+
+    return nullptr;
+}
+
+std::vector<std::string> make_default_simulcast_rid_preference(const sdp::media_summary& publisher_media)
+{
+    std::vector<std::string> preferred_rids;
+
+    if (publisher_media.simulcast.has_value())
+    {
+        for (const auto& rid : publisher_media.simulcast->send_rids)
+        {
+            if (rid.empty())
+            {
+                continue;
+            }
+
+            preferred_rids.push_back(rid);
+        }
+    }
+
+    if (!preferred_rids.empty())
+    {
+        return preferred_rids;
+    }
+
+    for (const auto& rid : publisher_media.rids)
+    {
+        if (rid.id.empty())
+        {
+            continue;
+        }
+
+        preferred_rids.push_back(rid.id);
+    }
+
+    return preferred_rids;
+}
 std::string lower_ascii_copy(std::string_view value)
 {
     std::string result;
@@ -6351,6 +6403,101 @@ std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapp
     return std::nullopt;
 }
 
+bool publisher_rtp_rid_is_selected_for_subscriber(const sdp::webrtc_offer_summary& publisher_offer,
+                                                  const std::shared_ptr<media_identity_authority>& identity_authority,
+                                                  const media_route_result& route,
+                                                  const media_peer_info& target_peer,
+                                                  const media_track_resolution& track_resolution)
+{
+    if (identity_authority == nullptr)
+    {
+        return true;
+    }
+
+    if (route.source.role != media_peer_role::publisher || target_peer.role != media_peer_role::subscriber)
+    {
+        return true;
+    }
+
+    if (!track_resolution.resolved || track_resolution.mid.empty() || track_resolution.kind.empty())
+    {
+        return true;
+    }
+
+    if (!is_video_media_kind(track_resolution.kind))
+    {
+        return true;
+    }
+
+    const sdp::media_summary* publisher_media = find_offer_media_by_mid(publisher_offer, track_resolution.mid);
+
+    if (publisher_media == nullptr)
+    {
+        return true;
+    }
+
+    const std::vector<std::string> preferred_rids = make_default_simulcast_rid_preference(*publisher_media);
+
+    if (preferred_rids.empty())
+    {
+        return true;
+    }
+
+    std::optional<std::string> packet_rid;
+
+    if (track_resolution.rtx)
+    {
+        if (track_resolution.repaired_rid.has_value() && !track_resolution.repaired_rid->empty())
+        {
+            packet_rid = track_resolution.repaired_rid;
+        }
+        else if (track_resolution.rtx_primary_ssrc != 0)
+        {
+            auto primary_layer = identity_authority->find_rid_layer_by_primary_ssrc(route.source.session_id, track_resolution.rtx_primary_ssrc);
+
+            if (primary_layer.has_value())
+            {
+                packet_rid = primary_layer->rid;
+            }
+        }
+    }
+    else if (track_resolution.rid.has_value() && !track_resolution.rid->empty())
+    {
+        packet_rid = track_resolution.rid;
+    }
+
+    if (!packet_rid.has_value() || packet_rid->empty())
+    {
+        return true;
+    }
+
+    auto preferred_layer =
+        identity_authority->find_preferred_rid_layer(route.source.stream_id, route.source.session_id, track_resolution.mid, preferred_rids);
+
+    if (!preferred_layer.has_value())
+    {
+        return true;
+    }
+
+    if (preferred_layer->rid == *packet_rid)
+    {
+        return true;
+    }
+
+    WEBRTC_LOG_DEBUG(
+        "simulcast rid layer skipped stream={} publisher_session={} subscriber_session={} mid={} packet_rid={} selected_rid={} ssrc={} rtx={}",
+        route.source.stream_id,
+        route.source.session_id,
+        target_peer.session_id,
+        track_resolution.mid,
+        *packet_rid,
+        preferred_layer->rid,
+        track_resolution.ssrc,
+        track_resolution.rtx ? 1 : 0);
+
+    return false;
+}
+
 std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(const media_route_result& route,
                                                                              const media_peer_info& target_peer,
                                                                              const std::optional<media_track_resolution>& track_resolution,
@@ -7072,7 +7219,54 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
             }
         }
     }
+    if (registry_ != nullptr && identity_authority_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(primary_ssrc_mapping.publisher_session_id);
 
+        if (publisher == nullptr)
+        {
+            WEBRTC_LOG_WARN(
+                "rtx retransmit rid selection failed publisher not found stream={} publisher_session={} subscriber_session={} sequence={}",
+                event.source.stream_id,
+                primary_ssrc_mapping.publisher_session_id,
+                primary_ssrc_mapping.subscriber_session_id,
+                cached_packet.sequence_number);
+
+            return std::nullopt;
+        }
+
+        auto layer =
+            identity_authority_->find_rid_layer_by_primary_ssrc(primary_ssrc_mapping.publisher_session_id, primary_ssrc_mapping.publisher_ssrc);
+
+        if (layer.has_value())
+        {
+            const sdp::media_summary* publisher_media = find_offer_media_by_mid(publisher->remote_offer_summary(), layer->mid);
+
+            if (publisher_media != nullptr)
+            {
+                const std::vector<std::string> preferred_rids = make_default_simulcast_rid_preference(*publisher_media);
+
+                auto preferred_layer = identity_authority_->find_preferred_rid_layer(
+                    event.source.stream_id, primary_ssrc_mapping.publisher_session_id, layer->mid, preferred_rids);
+
+                if (preferred_layer.has_value() && preferred_layer->rid != layer->rid)
+                {
+                    WEBRTC_LOG_DEBUG(
+                        "rtx retransmit skipped non selected rid stream={} subscriber_session={} mid={} packet_rid={} selected_rid={} "
+                        "publisher_ssrc={} sequence={}",
+                        event.source.stream_id,
+                        primary_ssrc_mapping.subscriber_session_id,
+                        layer->mid,
+                        layer->rid,
+                        preferred_layer->rid,
+                        primary_ssrc_mapping.publisher_ssrc,
+                        cached_packet.sequence_number);
+
+                    return std::nullopt;
+                }
+            }
+        }
+    }
     auto rtx_packet = make_rtp_rtx_packet(std::span<const uint8_t>(cached_packet.plain_packet.data(), cached_packet.plain_packet.size()), options);
     if (!rtx_packet)
     {
@@ -7304,8 +7498,24 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
         return std::nullopt;
     }
 
+    if (subscriber_media_mapping_required && track_resolution.has_value() && track_resolution->resolved && registry_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
+        if (publisher == nullptr)
+        {
+            WEBRTC_LOG_WARN("simulcast rid selection skipped publisher not found stream={} publisher_session={} subscriber_session={}",
+                            route.source.stream_id,
+                            route.source.session_id,
+                            target_peer.session_id);
+            return std::nullopt;
+        }
+        if (!publisher_rtp_rid_is_selected_for_subscriber(
+                publisher->remote_offer_summary(), identity_authority_, route, target_peer, *track_resolution))
+        {
+            return std::nullopt;
+        }
+    }
     auto payload_type_mapping = find_payload_type_mapping(route, target_peer, track_resolution);
-
     if (subscriber_media_mapping_required && !payload_type_mapping.has_value())
     {
         WEBRTC_LOG_WARN(
@@ -7769,6 +7979,53 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
         rewrite_required = true;
     }
 
+    if (registry_ != nullptr && identity_authority_ != nullptr)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(ssrc_mapping->publisher_session_id);
+
+        if (publisher == nullptr)
+        {
+            WEBRTC_LOG_WARN(
+                "rtp nack retransmit rid selection failed publisher not found stream={} publisher_session={} subscriber_session={} sequence={}",
+                event.source.stream_id,
+                ssrc_mapping->publisher_session_id,
+                ssrc_mapping->subscriber_session_id,
+                cached_packet.sequence_number);
+
+            return std::nullopt;
+        }
+
+        auto layer = identity_authority_->find_rid_layer_by_primary_ssrc(ssrc_mapping->publisher_session_id, ssrc_mapping->publisher_ssrc);
+
+        if (layer.has_value())
+        {
+            const sdp::media_summary* publisher_media = find_offer_media_by_mid(publisher->remote_offer_summary(), layer->mid);
+
+            if (publisher_media != nullptr)
+            {
+                const std::vector<std::string> preferred_rids = make_default_simulcast_rid_preference(*publisher_media);
+
+                auto preferred_layer = identity_authority_->find_preferred_rid_layer(
+                    event.source.stream_id, ssrc_mapping->publisher_session_id, layer->mid, preferred_rids);
+
+                if (preferred_layer.has_value() && preferred_layer->rid != layer->rid)
+                {
+                    WEBRTC_LOG_DEBUG(
+                        "rtp nack retransmit skipped non selected rid stream={} subscriber_session={} mid={} packet_rid={} selected_rid={} "
+                        "publisher_ssrc={} sequence={}",
+                        event.source.stream_id,
+                        ssrc_mapping->subscriber_session_id,
+                        layer->mid,
+                        layer->rid,
+                        preferred_layer->rid,
+                        ssrc_mapping->publisher_ssrc,
+                        cached_packet.sequence_number);
+
+                    return std::nullopt;
+                }
+            }
+        }
+    }
     if (registry_ != nullptr)
     {
         auto publisher = registry_->find_publisher_by_session_id(ssrc_mapping->publisher_session_id);

@@ -256,6 +256,38 @@ std::optional<media_identity_rid_layer_binding> media_identity_authority::find_r
     return iterator->second;
 }
 
+std::optional<media_identity_rid_layer_binding> media_identity_authority::find_preferred_rid_layer(
+    std::string_view stream_id, std::string_view session_id, std::string_view mid, const std::vector<std::string>& preferred_rids) const
+{
+    if (stream_id.empty() || session_id.empty() || mid.empty() || preferred_rids.empty())
+    {
+        return std::nullopt;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (const auto& rid : preferred_rids)
+    {
+        if (rid.empty())
+        {
+            continue;
+        }
+
+        const std::string key = make_rid_layer_key(stream_id, session_id, mid, rid);
+
+        const auto iterator = rid_layers_by_key_.find(key);
+
+        if (iterator == rid_layers_by_key_.end())
+        {
+            continue;
+        }
+
+        return iterator->second;
+    }
+
+    return std::nullopt;
+}
+
 std::optional<media_identity_rid_layer_binding> media_identity_authority::find_rid_layer_by_primary_ssrc(std::string_view session_id,
                                                                                                          uint32_t primary_ssrc) const
 {

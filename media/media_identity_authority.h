@@ -121,6 +121,12 @@ class media_identity_authority
     std::optional<media_identity_rid_layer_binding> find_rid_layer_by_repair_ssrc(std::string_view session_id, uint32_t repair_ssrc) const;
 
     [[nodiscard]]
+    std::optional<media_identity_rid_layer_binding> find_preferred_rid_layer(std::string_view stream_id,
+                                                                             std::string_view session_id,
+                                                                             std::string_view mid,
+                                                                             const std::vector<std::string>& preferred_rids) const;
+
+    [[nodiscard]]
     std::optional<media_identity_forward_binding> find_forward_by_publisher_ssrc(std::string_view stream_id,
                                                                                  std::string_view publisher_session_id,
                                                                                  std::string_view subscriber_session_id,
