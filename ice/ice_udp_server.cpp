@@ -1675,7 +1675,10 @@ void ice_udp_server::forget_session(std::string_view session_id)
     {
         identity_authority_->forget_session(session_id);
     }
-
+    if (media_router_ != nullptr)
+    {
+        media_router_->forget_session(session_id);
+    }
     if (rtcp_report_service_ != nullptr)
     {
         rtcp_report_service_->forget_session(session_id);
@@ -4102,7 +4105,8 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
                             remote_address);
         }
 
-        if (selection_changed)
+        const bool media_peer_refresh_required = selected_media_peer_needs_refresh(remote_address, session_id);
+        if (selection_changed || media_peer_refresh_required)
         {
             if (publisher != nullptr)
             {
@@ -4784,6 +4788,28 @@ std::optional<media_ssrc_mapping> ice_udp_server::find_identity_ssrc_mapping_by_
     }
 
     return ssrc_mapper_->find_by_publisher_ssrc(stream_id, publisher_session_id, subscriber_session_id, publisher_mid, publisher_ssrc);
+}
+
+bool ice_udp_server::selected_media_peer_needs_refresh(std::string_view remote_address, std::string_view session_id) const
+{
+    if (remote_address.empty() || session_id.empty())
+    {
+        return false;
+    }
+
+    if (media_router_ == nullptr)
+    {
+        return true;
+    }
+
+    const std::optional<media_peer_info> peer = media_router_->get_peer(remote_address);
+
+    if (!peer.has_value())
+    {
+        return true;
+    }
+
+    return peer->session_id != session_id;
 }
 
 void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,

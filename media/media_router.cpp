@@ -225,6 +225,56 @@ void media_router::forget_peer(std::string_view remote_endpoint)
     forget_peer_locked(remote_endpoint);
 }
 
+void media_router::forget_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    const std::string session_key(session_id);
+
+    std::vector<std::string> endpoints;
+
+    {
+        std::lock_guard lock(mutex_);
+
+        for (const auto& [remote_endpoint, peer] : peers_by_endpoint_)
+        {
+            if (peer.session_id != session_key)
+            {
+                continue;
+            }
+
+            endpoints.push_back(remote_endpoint);
+        }
+
+        for (const auto& endpoint : endpoints)
+        {
+            forget_peer_locked(endpoint);
+        }
+
+        std::size_t peer_stats_sweep_count = 0;
+
+        for (auto iterator = peer_stats_by_endpoint_.begin(); iterator != peer_stats_by_endpoint_.end();)
+        {
+            if (iterator->second.peer.session_id == session_key)
+            {
+                iterator = peer_stats_by_endpoint_.erase(iterator);
+
+                peer_stats_sweep_count += 1;
+
+                continue;
+            }
+
+            ++iterator;
+        }
+
+        WEBRTC_LOG_INFO(
+            "media router session forgotten session={} endpoints={} peer_stats_sweep={}", session_key, endpoints.size(), peer_stats_sweep_count);
+    }
+}
+
 void media_router::forget_stream(std::string_view stream_id)
 {
     if (stream_id.empty())

@@ -276,6 +276,8 @@ class media_router
 
     void forget_peer(std::string_view remote_endpoint);
 
+    void forget_session(std::string_view session_id);
+
     void forget_stream(std::string_view stream_id);
 
     void clear();

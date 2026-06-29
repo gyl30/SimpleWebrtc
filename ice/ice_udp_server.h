@@ -259,6 +259,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                                    std::string_view subscriber_session_id,
                                                                                    std::string_view publisher_mid,
                                                                                    uint32_t publisher_ssrc) const;
+    [[nodiscard]]
+    bool selected_media_peer_needs_refresh(std::string_view remote_address, std::string_view session_id) const;
 
     void observe_inbound_rtp_stats(const media_peer_info& peer,
                                    const srtp_packet_process_result& packet,
