@@ -1533,6 +1533,8 @@ void ice_udp_server::stop()
 
         registry_->set_session_ice_restart_callback(stream_session_ice_restart_callback{});
 
+        registry_->set_publisher_republish_callback(stream_publisher_republish_callback{});
+
         registry_callback_registered_ = false;
     }
     lifecycle_convergence_check_generation_.fetch_add(1, std::memory_order_relaxed);
@@ -1666,6 +1668,67 @@ void ice_udp_server::forget_subscriber_session_runtime_state(std::string_view se
     {
         nack_retransmit_throttle_->forget_session(session_id);
     }
+}
+void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view stream_id, std::string_view old_publisher_session_id)
+{
+    if (stream_id.empty() || old_publisher_session_id.empty())
+    {
+        return;
+    }
+
+    /*
+     * Clear old publisher transport/runtime by session id first.
+     * This removes old endpoint, DTLS, SRTP, publisher media_router peer,
+     * track binding, SSRC mapping, identity authority, RTCP/TWCC and
+     * session-scoped RTX/NACK state.
+     *
+     * Do not call cleanup_stream_runtime_state(stream_id) here because it
+     * would remove the stream's subscribers from media_router.
+     */
+    forget_session(old_publisher_session_id);
+
+    bool cache_erased = false;
+    std::size_t remaining_packets = 0;
+
+    if (rtp_packet_cache_ != nullptr)
+    {
+        rtp_packet_cache_->erase_stream(stream_id);
+
+        remaining_packets = rtp_packet_cache_->size();
+
+        cache_erased = true;
+    }
+
+    if (rtx_retransmission_index_ != nullptr)
+    {
+        rtx_retransmission_index_->forget_stream(stream_id);
+    }
+
+    if (nack_retransmit_throttle_ != nullptr)
+    {
+        nack_retransmit_throttle_->forget_stream(stream_id);
+    }
+
+    std::size_t erased_payload_type_mappings = 0;
+    std::size_t erased_keyframe_request_states = 0;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        erased_payload_type_mappings = erase_payload_type_mappings_for_stream_locked(stream_id);
+
+        erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
+    }
+
+    WEBRTC_LOG_INFO(
+        "publisher republish runtime state forgotten stream={} old_session={} cache_erased={} remaining_cache_packets={} "
+        "payload_type_mappings_erased={} keyframe_states_erased={}",
+        stream_id,
+        old_publisher_session_id,
+        cache_erased ? 1 : 0,
+        remaining_packets,
+        erased_payload_type_mappings,
+        erased_keyframe_request_states);
 }
 void ice_udp_server::forget_session(std::string_view session_id)
 {
@@ -3250,6 +3313,35 @@ void ice_udp_server::register_session_removed_callback()
             self->forget_session(restarted_session.session_id);
 
             self->schedule_lifecycle_snapshot_log("ice restart callback", restarted_session.stream_id, restarted_session.session_id);
+        });
+    registry_->set_publisher_republish_callback(
+        [weak_self](const stream_republished_session& republished_session)
+        {
+            auto self = weak_self.lock();
+
+            if (self == nullptr)
+            {
+                return;
+            }
+
+            WEBRTC_LOG_INFO(
+                "ice udp registry publisher republish callback stream={} old_session={} new_session={} "
+                "old_local_ufrag={} old_remote_ufrag={} new_local_ufrag={} new_remote_ufrag={}",
+                republished_session.stream_id,
+                republished_session.old_session_id,
+                republished_session.new_session_id,
+                republished_session.old_local_ice_ufrag,
+                republished_session.old_remote_ice_ufrag,
+                republished_session.new_local_ice_ufrag,
+                republished_session.new_remote_ice_ufrag);
+
+            self->retire_republished_publisher_ice_credentials(republished_session, "publisher republish callback");
+
+            self->retire_old_publisher_endpoint_for_republish(republished_session, "publisher republish callback");
+
+            self->forget_republished_publisher_runtime_state(republished_session.stream_id, republished_session.old_session_id);
+
+            self->schedule_lifecycle_snapshot_log("publisher republish callback", republished_session.stream_id, republished_session.old_session_id);
         });
     registry_callback_registered_ = true;
 }
@@ -8522,6 +8614,47 @@ void ice_udp_server::retire_restarted_session_ice_credentials(const stream_resta
                                   restarted_session.session_id,
                                   now_milliseconds(),
                                   reason);
+}
+
+void ice_udp_server::retire_republished_publisher_ice_credentials(const stream_republished_session& republished_session, std::string_view reason)
+{
+    if (republished_session.old_local_ice_ufrag.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    retire_ice_credentials_locked(republished_session.old_local_ice_ufrag,
+                                  republished_session.old_remote_ice_ufrag,
+                                  republished_session.stream_id,
+                                  republished_session.old_session_id,
+                                  now_milliseconds(),
+                                  reason);
+}
+void ice_udp_server::retire_old_publisher_endpoint_for_republish(const stream_republished_session& republished_session, std::string_view reason)
+{
+    if (republished_session.old_session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto iterator = endpoint_address_by_session_id_.find(republished_session.old_session_id);
+
+    if (iterator == endpoint_address_by_session_id_.end())
+    {
+        return;
+    }
+
+    /*
+     * Republish creates a new logical publisher session id.
+     * Keep the retired endpoint associated with the old session id:
+     *   - old DTLS/SRTP from the old publisher endpoint is suppressed
+     *   - new publisher STUN uses a different session id and can be selected
+     */
+    retire_endpoint_locked(iterator->second, republished_session.old_session_id, now_milliseconds(), reason);
 }
 void ice_udp_server::retire_session_endpoint_for_ice_restart(const stream_restarted_session& restarted_session, std::string_view reason)
 {
