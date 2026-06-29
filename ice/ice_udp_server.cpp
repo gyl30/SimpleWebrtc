@@ -947,6 +947,10 @@ dtls_peer_identity make_publisher_dtls_identity(const std::shared_ptr<publisher_
 
     identity.generation = make_dtls_session_generation_id(identity.session_id, identity.local_ice_ufrag, identity.remote_ice_ufrag);
 
+    identity.local_setup = sdp::dtls_connection_role::passive;
+
+    identity.remote_setup = session->remote_offer_summary().setup;
+
     identity.remote_fingerprint = session->remote_offer_summary().fingerprint;
 
     return identity;
@@ -967,6 +971,10 @@ dtls_peer_identity make_subscriber_dtls_identity(const std::shared_ptr<subscribe
     identity.remote_ice_ufrag = session->remote_offer_summary().ice_ufrag;
 
     identity.generation = make_dtls_session_generation_id(identity.session_id, identity.local_ice_ufrag, identity.remote_ice_ufrag);
+
+    identity.local_setup = sdp::dtls_connection_role::passive;
+
+    identity.remote_setup = session->remote_offer_summary().setup;
 
     identity.remote_fingerprint = session->remote_offer_summary().fingerprint;
 

@@ -37,8 +37,12 @@ struct dtls_peer_identity
 
     std::string generation;
 
+    sdp::dtls_connection_role local_setup = sdp::dtls_connection_role::unknown;
+    sdp::dtls_connection_role remote_setup = sdp::dtls_connection_role::unknown;
+
     sdp::fingerprint_info remote_fingerprint;
 };
+
 struct dtls_transport_config
 {
     std::chrono::milliseconds handshake_timeout{std::chrono::seconds(30)};
