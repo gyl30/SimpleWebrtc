@@ -4757,6 +4757,8 @@ std::vector<ice_udp_server::keyframe_request_media_target> ice_udp_server::colle
         }
     }
 
+    std::vector<uint32_t> legacy_video_ssrcs;
+
     {
         std::lock_guard lock(endpoint_mutex_);
 
@@ -4771,26 +4773,44 @@ std::vector<ice_udp_server::keyframe_request_media_target> ice_udp_server::colle
                 continue;
             }
 
-            media_peer_info publisher_peer;
-
-            publisher_peer.role = media_peer_role::publisher;
-
-            publisher_peer.stream_id = std::string(stream_id);
-
-            auto publisher = registry_ != nullptr ? registry_->find_publisher_by_stream_id(stream_id) : nullptr;
-
-            if (publisher != nullptr)
+            if (ssrc == 0)
             {
-                publisher_peer.session_id = publisher->session_id();
-
-                auto remote_address = remote_address_for_session(publisher_peer.session_id);
-
-                if (remote_address.has_value())
-                {
-                    publisher_peer.remote_endpoint = *remote_address;
-                }
+                continue;
             }
 
+            const auto existing = std::find(legacy_video_ssrcs.begin(), legacy_video_ssrcs.end(), ssrc);
+
+            if (existing == legacy_video_ssrcs.end())
+            {
+                legacy_video_ssrcs.push_back(ssrc);
+            }
+        }
+    }
+
+    if (!legacy_video_ssrcs.empty())
+    {
+        media_peer_info publisher_peer;
+
+        publisher_peer.role = media_peer_role::publisher;
+
+        publisher_peer.stream_id = std::string(stream_id);
+
+        auto publisher = registry_ != nullptr ? registry_->find_publisher_by_stream_id(stream_id) : nullptr;
+
+        if (publisher != nullptr)
+        {
+            publisher_peer.session_id = publisher->session_id();
+
+            auto remote_address = remote_address_for_session(publisher_peer.session_id);
+
+            if (remote_address.has_value())
+            {
+                publisher_peer.remote_endpoint = *remote_address;
+            }
+        }
+
+        for (uint32_t ssrc : legacy_video_ssrcs)
+        {
             keyframe_request_media_target target;
 
             target.media_ssrc = ssrc;
