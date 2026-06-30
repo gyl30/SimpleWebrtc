@@ -932,7 +932,15 @@ media_identity_result media_identity_authority::validate_rid_layer_binding(const
         return make_error("media identity rid layer has no ssrc");
     }
 
-    if (binding.primary_ssrc != 0 && binding.primary_payload_type == 0)
+    /*
+     * RTX repair packets can arrive before the primary RTP packet for the
+     * same RID layer. In that case the layer may already know the primary
+     * SSRC from the RTX OSN/apt binding, while the primary payload type is
+     * still unknown. Keep the layer valid as long as the repair side is
+     * complete; the primary payload type will be filled once primary RTP
+     * for the same RID arrives.
+     */
+    if (binding.primary_ssrc != 0 && binding.primary_payload_type == 0 && binding.repair_ssrc == 0)
     {
         return make_error("media identity rid layer primary payload type is zero");
     }
@@ -977,19 +985,32 @@ media_identity_result media_identity_authority::remember_rid_layer_binding_locke
 
         const auto primary_iterator = rid_layer_key_by_primary_ssrc_key_.find(primary_ssrc_key);
 
-        if (primary_iterator == rid_layer_key_by_primary_ssrc_key_.end())
+        if (primary_iterator != rid_layer_key_by_primary_ssrc_key_.end())
         {
-            return {};
+            const auto layer_iterator = rid_layers_by_key_.find(primary_iterator->second);
+
+            if (layer_iterator != rid_layers_by_key_.end())
+            {
+                rid = layer_iterator->second.rid;
+            }
         }
+    }
 
-        const auto layer_iterator = rid_layers_by_key_.find(primary_iterator->second);
+    if (!rid.has_value() && track_binding.rtx && track_binding.ssrc != 0)
+    {
+        const std::string repair_ssrc_key = make_session_ssrc_key(track_binding.session_id, track_binding.ssrc);
 
-        if (layer_iterator == rid_layers_by_key_.end())
+        const auto repair_iterator = rid_layer_key_by_repair_ssrc_key_.find(repair_ssrc_key);
+
+        if (repair_iterator != rid_layer_key_by_repair_ssrc_key_.end())
         {
-            return {};
-        }
+            const auto layer_iterator = rid_layers_by_key_.find(repair_iterator->second);
 
-        rid = layer_iterator->second.rid;
+            if (layer_iterator != rid_layers_by_key_.end())
+            {
+                rid = layer_iterator->second.rid;
+            }
+        }
     }
 
     if (!rid.has_value() || rid->empty())
@@ -1052,7 +1073,10 @@ media_identity_result media_identity_authority::remember_rid_layer_binding_locke
 
             current.primary_ssrc = next_binding.primary_ssrc;
 
-            current.primary_payload_type = next_binding.primary_payload_type;
+            if (next_binding.primary_payload_type != 0)
+            {
+                current.primary_payload_type = next_binding.primary_payload_type;
+            }
         }
 
         if (next_binding.repair_ssrc != 0)

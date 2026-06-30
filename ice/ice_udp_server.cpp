@@ -7927,11 +7927,36 @@ std::optional<std::string> resolve_packet_rid_for_selection(const std::shared_pt
         return track_resolution.repaired_rid;
     }
 
-    if (track_resolution.rtx && identity_authority != nullptr && track_resolution.rtx_primary_ssrc != 0)
+    if (!track_resolution.rtx || identity_authority == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    if (track_resolution.rtx_repair_ssrc != 0)
+    {
+        auto repair_layer = identity_authority->find_rid_layer_by_repair_ssrc(route.source.session_id, track_resolution.rtx_repair_ssrc);
+
+        if (repair_layer.has_value() && !repair_layer->rid.empty())
+        {
+            return repair_layer->rid;
+        }
+    }
+
+    if (track_resolution.ssrc != 0)
+    {
+        auto repair_layer = identity_authority->find_rid_layer_by_repair_ssrc(route.source.session_id, track_resolution.ssrc);
+
+        if (repair_layer.has_value() && !repair_layer->rid.empty())
+        {
+            return repair_layer->rid;
+        }
+    }
+
+    if (track_resolution.rtx_primary_ssrc != 0)
     {
         auto primary_layer = identity_authority->find_rid_layer_by_primary_ssrc(route.source.session_id, track_resolution.rtx_primary_ssrc);
 
-        if (primary_layer.has_value())
+        if (primary_layer.has_value() && !primary_layer->rid.empty())
         {
             return primary_layer->rid;
         }
@@ -8012,6 +8037,40 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(con
 
     const std::string subscriber_mid = payload_type_mapping.has_value() ? payload_type_mapping->subscriber_mid : track_resolution->mid;
 
+    std::optional<std::string> mapping_rid = track_resolution->rid;
+
+    std::optional<std::string> mapping_repaired_rid = track_resolution->repaired_rid;
+
+    if (track_resolution->rtx && identity_authority_ != nullptr)
+    {
+        std::optional<media_identity_rid_layer_binding> layer;
+
+        if (track_resolution->ssrc != 0)
+        {
+            layer = identity_authority_->find_rid_layer_by_repair_ssrc(route.source.session_id, track_resolution->ssrc);
+        }
+
+        if (!layer.has_value() && track_resolution->rtx_repair_ssrc != 0)
+        {
+            layer = identity_authority_->find_rid_layer_by_repair_ssrc(route.source.session_id, track_resolution->rtx_repair_ssrc);
+        }
+
+        if (!layer.has_value() && track_resolution->rtx_primary_ssrc != 0)
+        {
+            layer = identity_authority_->find_rid_layer_by_primary_ssrc(route.source.session_id, track_resolution->rtx_primary_ssrc);
+        }
+
+        if (layer.has_value() && !layer->rid.empty())
+        {
+            if (!mapping_repaired_rid.has_value() || mapping_repaired_rid->empty())
+            {
+                mapping_repaired_rid = layer->rid;
+            }
+
+            mapping_rid.reset();
+        }
+    }
+
     auto mapping_result = ssrc_mapper_->get_or_create_mapping(route.source.stream_id,
                                                               route.source.session_id,
                                                               target_peer.session_id,
@@ -8023,8 +8082,8 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(con
                                                               track_resolution->rtx,
                                                               track_resolution->rtx_primary_ssrc,
                                                               track_resolution->rtx_repair_ssrc,
-                                                              track_resolution->rid,
-                                                              track_resolution->repaired_rid);
+                                                              mapping_rid,
+                                                              mapping_repaired_rid);
     if (!mapping_result)
     {
         WEBRTC_LOG_WARN("media ssrc mapping failed stream={} publisher_session={} subscriber_session={} mid={} ssrc={} error={}",
@@ -8038,6 +8097,19 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(con
         return std::nullopt;
     }
 
+    if (track_resolution->rtx && (!mapping_result->repaired_rid.has_value() || mapping_result->repaired_rid->empty()))
+    {
+        WEBRTC_LOG_DEBUG(
+            "media rtx ssrc mapping has no repaired rid stream={} publisher_session={} subscriber_session={} mid={} repair_ssrc={} "
+            "primary_ssrc={}",
+            route.source.stream_id,
+            route.source.session_id,
+            target_peer.session_id,
+            track_resolution->mid,
+            track_resolution->ssrc,
+            track_resolution->rtx_primary_ssrc);
+    }
+
     if (mapping_result->packet_count == 1)
     {
         WEBRTC_LOG_INFO("media ssrc mapping created {}", media_ssrc_mapping_to_string(*mapping_result));
@@ -8045,6 +8117,7 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(con
 
     return *mapping_result;
 }
+
 std::optional<media_ssrc_mapping> ice_udp_server::find_primary_feedback_ssrc_mapping(const media_route_result& route,
                                                                                      const media_peer_info& target_peer,
                                                                                      uint32_t subscriber_ssrc,
