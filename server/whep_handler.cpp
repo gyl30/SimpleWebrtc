@@ -186,6 +186,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     const std::optional<std::string> reconnect_session_id = read_whep_reconnect_session_id(request);
 
     std::shared_ptr<subscriber_session> reconnect_previous_session;
+    stream_reconnected_session reconnected_session;
     if (reconnect_session_id.has_value())
     {
         reconnect_previous_session = registry_->find_subscriber_by_session_id(*reconnect_session_id);
@@ -216,6 +217,10 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
             return json_error_response(request, 412, k_whep_precondition_failed_error, precondition.error());
         }
+        reconnected_session.stream_id = reconnect_previous_session->stream_id();
+        reconnected_session.old_session_id = reconnect_previous_session->session_id();
+        reconnected_session.old_local_ice_ufrag = reconnect_previous_session->local_ice().ufrag;
+        reconnected_session.old_remote_ice_ufrag = reconnect_previous_session->remote_offer_summary().ice_ufrag;
     }
     auto generated_answer = answer_factory_->build_whep_answer(stream_id, *offer_summary, publisher->remote_offer_summary());
     if (!generated_answer)
@@ -289,6 +294,17 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                               generated.sdp_session_id,
                               generated.sdp_session_version);
 
+    if (reconnect_session_id.has_value())
+    {
+        reconnected_session.new_session_id = session->session_id();
+        reconnected_session.new_local_ice_ufrag = session->local_ice().ufrag;
+        reconnected_session.new_remote_ice_ufrag = session->remote_offer_summary().ice_ufrag;
+
+        if (registry_ != nullptr)
+        {
+            registry_->notify_subscriber_reconnect(std::move(reconnected_session));
+        }
+    }
     WEBRTC_LOG_INFO(
         "WHEP create subscriber stream={} session={} reconnect={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={}",
         session->stream_id(),

@@ -2479,9 +2479,8 @@ void ice_udp_server::stop()
     if (registry_ != nullptr && registry_callback_registered_)
     {
         registry_->set_session_removed_callback(stream_session_removed_callback{});
-
         registry_->set_session_ice_restart_callback(stream_session_ice_restart_callback{});
-
+        registry_->set_subscriber_reconnect_callback(stream_subscriber_reconnect_callback{});
         registry_->set_publisher_republish_callback(stream_publisher_republish_callback{});
 
         registry_callback_registered_ = false;
@@ -4979,6 +4978,42 @@ void ice_udp_server::register_session_removed_callback()
             self->mark_republish_keyframe_request_pending(republished_session.stream_id, republished_session.new_session_id);
 
             self->schedule_lifecycle_snapshot_log("publisher republish callback", republished_session.stream_id, republished_session.old_session_id);
+        });
+    registry_->set_subscriber_reconnect_callback(
+        [weak_self](const stream_reconnected_session& reconnected_session)
+        {
+            auto self = weak_self.lock();
+
+            if (self == nullptr)
+            {
+                return;
+            }
+
+            WEBRTC_LOG_INFO(
+                "ice udp registry subscriber reconnect callback stream={} old_session={} new_session={} "
+                "old_local_ufrag={} old_remote_ufrag={} new_local_ufrag={} new_remote_ufrag={}",
+                reconnected_session.stream_id,
+                reconnected_session.old_session_id,
+                reconnected_session.new_session_id,
+                reconnected_session.old_local_ice_ufrag,
+                reconnected_session.old_remote_ice_ufrag,
+                reconnected_session.new_local_ice_ufrag,
+                reconnected_session.new_remote_ice_ufrag);
+
+            stream_removed_session removed_subscriber;
+            removed_subscriber.kind = stream_session_kind::subscriber;
+            removed_subscriber.stream_id = reconnected_session.stream_id;
+            removed_subscriber.session_id = reconnected_session.old_session_id;
+            removed_subscriber.local_ice_ufrag = reconnected_session.old_local_ice_ufrag;
+            removed_subscriber.remote_ice_ufrag = reconnected_session.old_remote_ice_ufrag;
+
+            self->retire_removed_session_ice_credentials(removed_subscriber, "subscriber reconnect callback");
+
+            self->send_rtcp_bye_for_removed_session(removed_subscriber);
+
+            self->forget_session(reconnected_session.old_session_id);
+
+            self->schedule_lifecycle_snapshot_log("subscriber reconnect callback", reconnected_session.stream_id, reconnected_session.old_session_id);
         });
     registry_callback_registered_ = true;
 }
