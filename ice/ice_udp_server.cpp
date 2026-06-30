@@ -7577,6 +7577,115 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
         return;
     }
 
+    if (media_router_ == nullptr)
+    {
+        WEBRTC_LOG_WARN("srtp packet ignored media router unavailable remote={} session={} stream={} size={}",
+                        remote_address,
+                        current_session.session_id,
+                        current_session.stream_id,
+                        data.size());
+
+        return;
+    }
+
+    if (registry_ == nullptr)
+    {
+        WEBRTC_LOG_WARN("srtp packet ignored session registry unavailable remote={} session={} stream={} size={}",
+                        remote_address,
+                        current_session.session_id,
+                        current_session.stream_id,
+                        data.size());
+
+        return;
+    }
+
+    std::optional<media_peer_info> peer = media_router_->get_peer(remote_address);
+
+    if (!peer.has_value())
+    {
+        WEBRTC_LOG_DEBUG("srtp packet ignored media peer not ready remote={} session={} stream={} size={}",
+                         remote_address,
+                         current_session.session_id,
+                         current_session.stream_id,
+                         data.size());
+
+        return;
+    }
+
+    if (peer->session_id != current_session.session_id || peer->stream_id != current_session.stream_id)
+    {
+        WEBRTC_LOG_DEBUG(
+            "srtp packet ignored stale media peer remote={} current_session={} current_stream={} peer_session={} peer_stream={} role={} size={}",
+            remote_address,
+            current_session.session_id,
+            current_session.stream_id,
+            peer->session_id,
+            peer->stream_id,
+            media_peer_role_to_string(peer->role),
+            data.size());
+
+        return;
+    }
+
+    std::size_t accepted_mline_count = 0;
+
+    if (peer->role == media_peer_role::publisher)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(peer->session_id);
+
+        if (publisher == nullptr)
+        {
+            WEBRTC_LOG_DEBUG("srtp packet ignored publisher session not ready remote={} session={} stream={} size={}",
+                             remote_address,
+                             peer->session_id,
+                             peer->stream_id,
+                             data.size());
+
+            return;
+        }
+
+        accepted_mline_count = publisher->accepted_remote_media_mline_indexes().size();
+    }
+    else if (peer->role == media_peer_role::subscriber)
+    {
+        auto subscriber = registry_->find_subscriber_by_session_id(peer->session_id);
+
+        if (subscriber == nullptr)
+        {
+            WEBRTC_LOG_DEBUG("srtp packet ignored subscriber session not ready remote={} session={} stream={} size={}",
+                             remote_address,
+                             peer->session_id,
+                             peer->stream_id,
+                             data.size());
+
+            return;
+        }
+
+        accepted_mline_count = subscriber->accepted_remote_media_mline_indexes().size();
+    }
+    else
+    {
+        WEBRTC_LOG_DEBUG("srtp packet ignored unknown media peer role remote={} session={} stream={} size={}",
+                         remote_address,
+                         peer->session_id,
+                         peer->stream_id,
+                         data.size());
+
+        return;
+    }
+
+    if (accepted_mline_count == 0)
+    {
+        WEBRTC_LOG_DEBUG("srtp packet ignored accepted media not ready remote={} role={} session={} stream={} size={}",
+                         remote_address,
+                         media_peer_role_to_string(peer->role),
+                         peer->session_id,
+                         peer->stream_id,
+                         data.size());
+
+        return;
+    }
+
     touch_endpoint_activity(remote_endpoint);
 
     if (srtp_transport_ == nullptr)
@@ -7587,7 +7696,6 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     }
 
     auto result = srtp_transport_->handle_inbound_packet(data, remote_address);
-
     if (!result)
     {
         WEBRTC_LOG_WARN("srtp inbound packet handle failed remote={} error={}", remote_address, result.error());
@@ -7614,16 +7722,11 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
                      result->ssrc,
                      static_cast<unsigned int>(result->payload_type));
 
-    std::optional<media_peer_info> peer = media_router_->get_peer(remote_address);
-
     std::optional<media_track_resolution> track_resolution;
 
-    if (peer.has_value())
-    {
-        track_resolution = resolve_media_track(*peer, *result);
+    track_resolution = resolve_media_track(*peer, *result);
 
-        normalize_inbound_rtcp_report_stats(*peer, *result);
-    }
+    normalize_inbound_rtcp_report_stats(*peer, *result);
 
     const media_route_result route = media_router_->handle_inbound_packet(remote_address, *result);
     if (!route.known_peer)
@@ -7634,32 +7737,29 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
         return;
     }
 
-    if (peer.has_value())
+    observe_inbound_rtp_stats(*peer, *result, track_resolution);
+
+    if (track_resolution.has_value() && track_resolution->resolved)
     {
-        observe_inbound_rtp_stats(*peer, *result, track_resolution);
-
-        if (track_resolution.has_value() && track_resolution->resolved)
+        if (track_resolution->rtx)
         {
-            if (track_resolution->rtx)
-            {
-                WEBRTC_LOG_DEBUG("media inbound track stats skipped rtx repair stream={} session={} remote={} ssrc={} primary_ssrc={} repair_ssrc={}",
-                                 track_resolution->stream_id,
-                                 track_resolution->session_id,
-                                 track_resolution->remote_endpoint,
-                                 track_resolution->ssrc,
-                                 track_resolution->rtx_primary_ssrc,
-                                 track_resolution->rtx_repair_ssrc);
-            }
-            else
-            {
-                media_router_->observe_inbound_track(*peer, *result, *track_resolution);
-
-                remember_publisher_video_ssrc(*peer, *result, track_resolution);
-            }
+            WEBRTC_LOG_DEBUG("media inbound track stats skipped rtx repair stream={} session={} remote={} ssrc={} primary_ssrc={} repair_ssrc={}",
+                             track_resolution->stream_id,
+                             track_resolution->session_id,
+                             track_resolution->remote_endpoint,
+                             track_resolution->ssrc,
+                             track_resolution->rtx_primary_ssrc,
+                             track_resolution->rtx_repair_ssrc);
         }
+        else
+        {
+            media_router_->observe_inbound_track(*peer, *result, *track_resolution);
 
-        observe_inbound_rtcp_reports(*peer, *result);
+            remember_publisher_video_ssrc(*peer, *result, track_resolution);
+        }
     }
+
+    observe_inbound_rtcp_reports(*peer, *result);
     if (track_resolution.has_value() && track_resolution->resolved)
     {
         WEBRTC_LOG_DEBUG(
