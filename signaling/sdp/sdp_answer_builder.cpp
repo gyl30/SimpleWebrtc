@@ -1528,6 +1528,77 @@ std::expected<void, std::string> validate_answer_msid_attributes(const media_des
 
     return {};
 }
+bool media_has_header_extension_uri(const media_summary& media, std::string_view uri)
+{
+    for (const auto& extension : media.header_extensions)
+    {
+        if (extension.uri == uri)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+bool media_has_compatible_header_extension_uri(const media_summary& media, std::string_view uri)
+{
+    if (uri == k_transport_wide_cc_extension_uri || uri == k_transport_wide_cc_extension_uri_02)
+    {
+        return media_has_header_extension_uri(media, k_transport_wide_cc_extension_uri) ||
+               media_has_header_extension_uri(media, k_transport_wide_cc_extension_uri_02);
+    }
+
+    return media_has_header_extension_uri(media, uri);
+}
+
+bool forwarded_publisher_can_supply_header_extension(const media_summary* forwarded_publisher_media, std::string_view uri)
+{
+    if (forwarded_publisher_media == nullptr)
+    {
+        return true;
+    }
+
+    return media_has_compatible_header_extension_uri(*forwarded_publisher_media, uri);
+}
+
+bool media_has_answerable_send_rid(const media_summary& media, std::string_view rid)
+{
+    if (rid.empty())
+    {
+        return false;
+    }
+
+    for (const auto& current : media.rids)
+    {
+        if (current.id != rid)
+        {
+            continue;
+        }
+
+        return current.direction == "send" || current.direction == "sendrecv";
+    }
+
+    return false;
+}
+bool media_has_answerable_recv_rid(const media_summary& media, std::string_view rid)
+{
+    if (rid.empty())
+    {
+        return false;
+    }
+
+    for (const auto& current : media.rids)
+    {
+        if (current.id != rid)
+        {
+            continue;
+        }
+
+        return current.direction == "recv" || current.direction == "sendrecv";
+    }
+
+    return false;
+}
 
 std::expected<void, std::string> validate_accepted_answer_media_identity(const media_summary& offer_media, const media_description& answer_media)
 {
@@ -1576,6 +1647,170 @@ std::expected<void, std::string> validate_accepted_answer_media_identity(const m
     if (!msid_result)
     {
         return std::unexpected(msid_result.error());
+    }
+
+    return {};
+}
+bool string_vector_contains_value(const std::vector<std::string>& values, std::string_view value)
+{
+    for (const auto& current : values)
+    {
+        if (current == value)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+std::expected<void, std::string> validate_whep_answer_media_forwarding_identity(const media_summary& subscriber_media,
+                                                                                const media_summary* forwarded_publisher_media,
+                                                                                const media_description& answer_media)
+{
+    if (is_answer_media_rejected(answer_media))
+    {
+        return {};
+    }
+
+    if (forwarded_publisher_media == nullptr)
+    {
+        return {};
+    }
+
+    if (subscriber_media.kind != forwarded_publisher_media->kind)
+    {
+        return make_error("whep answer publisher media kind mismatch");
+    }
+
+    auto answer_extmaps = parse_answer_extmaps(answer_media);
+
+    if (!answer_extmaps)
+    {
+        return std::unexpected(answer_extmaps.error());
+    }
+
+    for (const auto& extmap : *answer_extmaps)
+    {
+        if (!forwarded_publisher_can_supply_header_extension(forwarded_publisher_media, extmap.uri))
+        {
+            std::string message = "whep answer extmap is not supplied by publisher uri=";
+
+            message.append(extmap.uri);
+
+            return std::unexpected(std::move(message));
+        }
+    }
+
+    auto answer_rids = parse_answer_rids(answer_media);
+
+    if (!answer_rids)
+    {
+        return std::unexpected(answer_rids.error());
+    }
+
+    std::set<std::string> answer_rid_ids;
+
+    for (const auto& rid : *answer_rids)
+    {
+        if (!answer_rid_ids.insert(rid.rid).second)
+        {
+            return make_error("whep answer media has duplicate rid id");
+        }
+
+        if (rid.direction != "send" && rid.direction != "sendrecv")
+        {
+            std::string message = "whep answer rid direction must be send rid=";
+
+            message.append(rid.rid);
+
+            return std::unexpected(std::move(message));
+        }
+
+        if (!media_has_answerable_send_rid(*forwarded_publisher_media, rid.rid))
+        {
+            std::string message = "whep answer rid is not supplied by publisher rid=";
+
+            message.append(rid.rid);
+
+            return std::unexpected(std::move(message));
+        }
+
+        if (forwarded_publisher_media->simulcast.has_value() &&
+            !string_vector_contains_value(forwarded_publisher_media->simulcast->send_rids, rid.rid))
+        {
+            std::string message = "whep answer rid is not in publisher simulcast send list rid=";
+
+            message.append(rid.rid);
+
+            return std::unexpected(std::move(message));
+        }
+    }
+
+    for (const auto& attribute : answer_media.attributes)
+    {
+        if (attribute.key != "simulcast")
+        {
+            continue;
+        }
+
+        const std::vector<std::string> tokens = split_sdp_tokens(attribute.value);
+
+        if (tokens.size() < 2)
+        {
+            return make_error("whep answer simulcast attribute is incomplete");
+        }
+
+        if ((tokens.size() % 2U) != 0U)
+        {
+            return make_error("whep answer simulcast attribute must contain direction rid-list pairs");
+        }
+
+        for (std::size_t index = 0; index < tokens.size(); index += 2)
+        {
+            const std::string& direction = tokens[index];
+
+            if (direction != "send")
+            {
+                std::string message = "whep answer simulcast direction must be send direction=";
+
+                message.append(direction);
+
+                return std::unexpected(std::move(message));
+            }
+
+            const std::vector<std::string> simulcast_rids = extract_simulcast_rids_from_list(tokens[index + 1]);
+
+            for (const auto& rid : simulcast_rids)
+            {
+                if (answer_rid_ids.find(rid) == answer_rid_ids.end())
+                {
+                    std::string message = "whep answer simulcast references unknown rid=";
+
+                    message.append(rid);
+
+                    return std::unexpected(std::move(message));
+                }
+
+                if (!media_has_answerable_send_rid(*forwarded_publisher_media, rid))
+                {
+                    std::string message = "whep answer simulcast rid is not supplied by publisher rid=";
+
+                    message.append(rid);
+
+                    return std::unexpected(std::move(message));
+                }
+
+                if (!forwarded_publisher_media->simulcast.has_value() ||
+                    !string_vector_contains_value(forwarded_publisher_media->simulcast->send_rids, rid))
+                {
+                    std::string message = "whep answer simulcast rid is not in publisher send list rid=";
+
+                    message.append(rid);
+
+                    return std::unexpected(std::move(message));
+                }
+            }
+        }
     }
 
     return {};
@@ -1779,90 +2014,6 @@ std::string make_extmap_value(const rtp_header_extension& extension)
 
     return value;
 }
-bool string_vector_contains_value(const std::vector<std::string>& values, std::string_view value)
-{
-    for (const auto& current : values)
-    {
-        if (current == value)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-bool media_has_header_extension_uri(const media_summary& media, std::string_view uri)
-{
-    for (const auto& extension : media.header_extensions)
-    {
-        if (extension.uri == uri)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-bool media_has_compatible_header_extension_uri(const media_summary& media, std::string_view uri)
-{
-    if (uri == k_transport_wide_cc_extension_uri || uri == k_transport_wide_cc_extension_uri_02)
-    {
-        return media_has_header_extension_uri(media, k_transport_wide_cc_extension_uri) ||
-               media_has_header_extension_uri(media, k_transport_wide_cc_extension_uri_02);
-    }
-
-    return media_has_header_extension_uri(media, uri);
-}
-
-bool forwarded_publisher_can_supply_header_extension(const media_summary* forwarded_publisher_media, std::string_view uri)
-{
-    if (forwarded_publisher_media == nullptr)
-    {
-        return true;
-    }
-
-    return media_has_compatible_header_extension_uri(*forwarded_publisher_media, uri);
-}
-
-bool media_has_answerable_send_rid(const media_summary& media, std::string_view rid)
-{
-    if (rid.empty())
-    {
-        return false;
-    }
-
-    for (const auto& current : media.rids)
-    {
-        if (current.id != rid)
-        {
-            continue;
-        }
-
-        return current.direction == "send" || current.direction == "sendrecv";
-    }
-
-    return false;
-}
-bool media_has_answerable_recv_rid(const media_summary& media, std::string_view rid)
-{
-    if (rid.empty())
-    {
-        return false;
-    }
-
-    for (const auto& current : media.rids)
-    {
-        if (current.id != rid)
-        {
-            continue;
-        }
-
-        return current.direction == "recv" || current.direction == "sendrecv";
-    }
-
-    return false;
-}
 
 void append_header_extension_attributes(media_description& answer_media, const media_summary& media, const media_summary* forwarded_publisher_media)
 {
@@ -1891,6 +2042,7 @@ void append_header_extension_attributes(media_description& answer_media, const m
         push_attribute(answer_media.attributes, "extmap", make_extmap_value(extension));
     }
 }
+
 std::vector<std::string> collect_answerable_whep_simulcast_rids(const media_summary& subscriber_media, const media_summary& publisher_media)
 {
     std::vector<std::string> rids;
@@ -2327,6 +2479,16 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
     if (!identity_result)
     {
         return std::unexpected(identity_result.error());
+    }
+
+    if (role == answer_endpoint_role::whep && forwarded_publisher_media != nullptr)
+    {
+        auto forwarding_identity_result = validate_whep_answer_media_forwarding_identity(media, forwarded_publisher_media, answer_media);
+
+        if (!forwarding_identity_result)
+        {
+            return std::unexpected(forwarding_identity_result.error());
+        }
     }
 
     return answer_media;
