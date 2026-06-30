@@ -55,6 +55,7 @@ struct media_summary
     media_direction direction = media_direction::unknown;
     bool rtcp_mux = false;
     bool rtcp_rsize = false;
+    bool extmap_allow_mixed = false;
 
     std::optional<uint32_t> ptime;
     std::optional<uint32_t> maxptime;

@@ -2169,9 +2169,12 @@ std::string make_extmap_value(const rtp_header_extension& extension)
 
     return value;
 }
+bool rtp_header_extension_id_requires_two_byte(int id) { return id >= 15 && id <= 255; }
 
 void append_header_extension_attributes(media_description& answer_media, const media_summary& media, const media_summary* forwarded_publisher_media)
 {
+    bool answer_needs_extmap_allow_mixed = false;
+
     for (const auto& extension : media.header_extensions)
     {
         if (extension.id <= 0 || extension.id > 255)
@@ -2194,7 +2197,22 @@ void append_header_extension_attributes(media_description& answer_media, const m
             continue;
         }
 
+        if (rtp_header_extension_id_requires_two_byte(extension.id))
+        {
+            if (!media.extmap_allow_mixed)
+            {
+                continue;
+            }
+
+            answer_needs_extmap_allow_mixed = true;
+        }
+
         push_attribute(answer_media.attributes, "extmap", make_extmap_value(extension));
+    }
+
+    if (answer_needs_extmap_allow_mixed)
+    {
+        push_property_attribute(answer_media.attributes, k_attribute_ext_map_allow_mixed);
     }
 }
 

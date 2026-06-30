@@ -377,6 +377,17 @@ std::optional<std::string> find_effective_attribute_value(const session_descript
 
     return description.find_attribute_value(key);
 }
+bool session_has_attribute(const session_description& description, std::string_view key) { return !description.find_attributes(key).empty(); }
+
+bool effective_property_attribute_exists(const session_description& description, const media_description& media, std::string_view key)
+{
+    if (media_has_attribute(media, key))
+    {
+        return true;
+    }
+
+    return session_has_attribute(description, key);
+}
 
 std::optional<std::string> find_first_attribute_value(const session_description& description, std::string_view key)
 {
@@ -1095,7 +1106,7 @@ std::expected<media_summary, std::string> parse_media_summary(const session_desc
     summary.direction = *direction;
     summary.rtcp_mux = media_has_attribute(media, k_attribute_rtcp_mux);
     summary.rtcp_rsize = media_has_attribute(media, k_attribute_rtcp_rsize);
-
+    summary.extmap_allow_mixed = effective_property_attribute_exists(description, media, k_attribute_ext_map_allow_mixed);
     if (!summary.rtcp_mux)
     {
         return make_error("media missing rtcp-mux");
