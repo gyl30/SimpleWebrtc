@@ -548,14 +548,87 @@ std::expected<std::vector<std::string>, std::string> collect_answer_bundle_mids(
 
     return *bundle_mids;
 }
+struct answer_media_mid_state
+{
+    std::vector<std::string> all_mids;
+
+    std::vector<std::string> accepted_mids;
+
+    std::vector<std::string> rejected_mids;
+};
+
+std::expected<answer_media_mid_state, std::string> collect_answer_media_mid_state(const session_description& answer)
+{
+    answer_media_mid_state state;
+
+    if (answer.media_descriptions.empty())
+    {
+        return make_error("answer has no media descriptions");
+    }
+
+    for (const auto& media : answer.media_descriptions)
+    {
+        const std::optional<std::string> mid = find_answer_media_mid(media);
+
+        if (!mid.has_value())
+        {
+            return make_error("answer media is missing mid");
+        }
+
+        if (string_vector_contains(state.all_mids, *mid))
+        {
+            std::string message = "answer media mid duplicated mid=";
+
+            message.append(*mid);
+
+            return std::unexpected(std::move(message));
+        }
+
+        state.all_mids.push_back(*mid);
+
+        if (is_answer_media_rejected(media))
+        {
+            state.rejected_mids.push_back(*mid);
+        }
+        else
+        {
+            state.accepted_mids.push_back(*mid);
+        }
+    }
+
+    if (state.accepted_mids.empty())
+    {
+        return make_error("answer has no accepted media mids");
+    }
+
+    return state;
+}
+
+std::expected<void, std::string> validate_rejected_mids_are_not_bundled(const std::vector<std::string>& rejected_mids,
+                                                                        const std::vector<std::string>& bundle_mids)
+{
+    for (const auto& rejected_mid : rejected_mids)
+    {
+        if (string_vector_contains(bundle_mids, rejected_mid))
+        {
+            std::string message = "answer bundle contains rejected mid=";
+
+            message.append(rejected_mid);
+
+            return std::unexpected(std::move(message));
+        }
+    }
+
+    return {};
+}
 
 std::expected<void, std::string> validate_answer_bundle_group(const session_description& answer)
 {
-    auto accepted_mids = collect_accepted_answer_media_mids(answer);
+    auto media_mid_state = collect_answer_media_mid_state(answer);
 
-    if (!accepted_mids)
+    if (!media_mid_state)
     {
-        return std::unexpected(accepted_mids.error());
+        return std::unexpected(media_mid_state.error());
     }
 
     auto bundle_mids = collect_answer_bundle_mids(answer);
@@ -565,18 +638,25 @@ std::expected<void, std::string> validate_answer_bundle_group(const session_desc
         return std::unexpected(bundle_mids.error());
     }
 
-    if (accepted_mids->size() != bundle_mids->size())
+    auto rejected_bundle_result = validate_rejected_mids_are_not_bundled(media_mid_state->rejected_mids, *bundle_mids);
+
+    if (!rejected_bundle_result)
+    {
+        return std::unexpected(rejected_bundle_result.error());
+    }
+
+    if (media_mid_state->accepted_mids.size() != bundle_mids->size())
     {
         return make_error("answer bundle mids and accepted media mids size mismatch");
     }
 
-    for (std::size_t index = 0; index < accepted_mids->size(); ++index)
+    for (std::size_t index = 0; index < media_mid_state->accepted_mids.size(); ++index)
     {
-        const std::string& accepted_mid = (*accepted_mids)[index];
+        const std::string& accepted_mid = media_mid_state->accepted_mids[index];
 
         const std::string& bundle_mid = (*bundle_mids)[index];
 
-        if (!string_vector_contains(*accepted_mids, bundle_mid))
+        if (!string_vector_contains(media_mid_state->accepted_mids, bundle_mid))
         {
             std::string message = "answer bundle mid is not accepted mid=";
 
