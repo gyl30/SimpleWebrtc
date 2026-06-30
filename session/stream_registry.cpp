@@ -341,6 +341,23 @@ std::optional<stream_removed_session_tombstone> stream_registry::find_removed_se
 
     return iterator->second;
 }
+std::vector<stream_removed_session_tombstone> stream_registry::removed_session_tombstone_snapshot() const
+{
+    std::vector<stream_removed_session_tombstone> snapshot;
+
+    std::lock_guard lock(mutex_);
+
+    snapshot.reserve(removed_session_tombstones_by_session_id_.size());
+
+    for (const auto& [session_id, tombstone] : removed_session_tombstones_by_session_id_)
+    {
+        (void)session_id;
+
+        snapshot.push_back(tombstone);
+    }
+
+    return snapshot;
+}
 
 void stream_registry::remember_removed_session_locked(const stream_removed_session& removed_session)
 {

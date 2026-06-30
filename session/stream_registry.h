@@ -164,6 +164,8 @@ class stream_registry
 
     [[nodiscard]] std::optional<stream_removed_session_tombstone> find_removed_session_tombstone(std::string_view session_id) const;
 
+    [[nodiscard]] std::vector<stream_removed_session_tombstone> removed_session_tombstone_snapshot() const;
+
     [[nodiscard]] remove_session_result remove_publisher_session(std::string_view session_id);
 
     [[nodiscard]] remove_session_result remove_subscriber_session(std::string_view session_id);

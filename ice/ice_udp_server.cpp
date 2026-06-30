@@ -3797,9 +3797,35 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             snapshot.sessions.push_back(std::move(entry));
         }
 
+        const std::vector<stream_removed_session_tombstone> tombstones = registry_->removed_session_tombstone_snapshot();
+
+        snapshot.registry_removed_session_tombstone_count = to_debug_count(tombstones.size());
+
+        snapshot.removed_session_tombstones.reserve(tombstones.size());
+
+        for (const auto& tombstone : tombstones)
+        {
+            if (tombstone.kind == stream_session_kind::publisher)
+            {
+                snapshot.registry_removed_publisher_tombstone_count += 1;
+            }
+            else if (tombstone.kind == stream_session_kind::subscriber)
+            {
+                snapshot.registry_removed_subscriber_tombstone_count += 1;
+            }
+
+            lifecycle_debug_removed_session_tombstone_entry entry;
+
+            entry.kind = std::string(stream_session_kind_to_string(tombstone.kind));
+            entry.stream_id = tombstone.stream_id;
+            entry.session_id = tombstone.session_id;
+            entry.removed_at_milliseconds = tombstone.removed_at_milliseconds;
+
+            snapshot.removed_session_tombstones.push_back(std::move(entry));
+        }
+
         snapshot.registry_stream_count = to_debug_count(stream_ids.size());
     }
-
     {
         std::lock_guard lock(endpoint_mutex_);
 
