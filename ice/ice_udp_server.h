@@ -736,6 +736,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                          uint32_t subscriber_ssrc,
                                                                          std::string_view feedback_name,
                                                                          bool allow_rtx_repair_target) const;
+    [[nodiscard]]
+    std::optional<media_ssrc_mapping> resolve_keyframe_feedback_primary_mapping(const rtcp_feedback_route_event& event) const;
 
     [[nodiscard]]
     std::optional<std::vector<uint8_t>> make_forward_rtcp_feedback_packet(const srtp_packet_process_result& packet,

@@ -10581,6 +10581,146 @@ std::optional<media_ssrc_mapping> ice_udp_server::find_primary_feedback_ssrc_map
 
     return primary_mapping;
 }
+std::optional<media_ssrc_mapping> ice_udp_server::resolve_keyframe_feedback_primary_mapping(const rtcp_feedback_route_event& event) const
+{
+    if (event.media_ssrc == 0)
+    {
+        return std::nullopt;
+    }
+
+    if (event.source.role != media_peer_role::subscriber)
+    {
+        return std::nullopt;
+    }
+
+    if (event.source.stream_id.empty() || event.source.session_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    std::optional<media_ssrc_mapping> mapping = find_identity_ssrc_mapping_by_subscriber_ssrc(event.source.session_id, event.media_ssrc);
+
+    if (!mapping.has_value())
+    {
+        WEBRTC_LOG_WARN("keyframe feedback mapping not found stream={} subscriber_session={} subscriber_ssrc={} feedback={}",
+                        event.source.stream_id,
+                        event.source.session_id,
+                        event.media_ssrc,
+                        event.feedback_name);
+
+        return std::nullopt;
+    }
+
+    if (mapping->stream_id != event.source.stream_id || mapping->subscriber_session_id != event.source.session_id)
+    {
+        WEBRTC_LOG_WARN(
+            "keyframe feedback mapping ownership mismatch stream={} subscriber_session={} subscriber_ssrc={} feedback={} mapping_stream={} "
+            "mapping_subscriber_session={} mapping_publisher_session={} mapping_publisher_mid={} mapping_subscriber_mid={}",
+            event.source.stream_id,
+            event.source.session_id,
+            event.media_ssrc,
+            event.feedback_name,
+            mapping->stream_id,
+            mapping->subscriber_session_id,
+            mapping->publisher_session_id,
+            mapping->publisher_mid,
+            mapping->subscriber_mid);
+
+        return std::nullopt;
+    }
+
+    if (media_ssrc_mapping_is_primary_video(*mapping))
+    {
+        return mapping;
+    }
+
+    if (!media_ssrc_mapping_is_rtx(*mapping))
+    {
+        WEBRTC_LOG_WARN(
+            "keyframe feedback mapping is not primary video stream={} subscriber_session={} subscriber_ssrc={} feedback={} publisher_ssrc={} "
+            "subscriber_mapped_ssrc={} kind={} rtx={}",
+            event.source.stream_id,
+            event.source.session_id,
+            event.media_ssrc,
+            event.feedback_name,
+            mapping->publisher_ssrc,
+            mapping->subscriber_ssrc,
+            mapping->kind,
+            media_ssrc_mapping_is_rtx(*mapping) ? 1 : 0);
+
+        return std::nullopt;
+    }
+
+    if (mapping->publisher_rtx_primary_ssrc == 0)
+    {
+        WEBRTC_LOG_WARN(
+            "keyframe feedback rtx primary ssrc missing stream={} subscriber_session={} subscriber_rtx_ssrc={} feedback={} publisher_rtx_ssrc={}",
+            event.source.stream_id,
+            event.source.session_id,
+            event.media_ssrc,
+            event.feedback_name,
+            mapping->publisher_ssrc);
+
+        return std::nullopt;
+    }
+
+    std::optional<media_ssrc_mapping> primary_mapping = find_identity_ssrc_mapping_by_publisher_ssrc(mapping->stream_id,
+                                                                                                     mapping->publisher_session_id,
+                                                                                                     mapping->subscriber_session_id,
+                                                                                                     mapping->publisher_mid,
+                                                                                                     mapping->publisher_rtx_primary_ssrc);
+
+    if (!primary_mapping.has_value())
+    {
+        WEBRTC_LOG_WARN(
+            "keyframe feedback rtx primary mapping not found stream={} subscriber_session={} subscriber_rtx_ssrc={} feedback={} "
+            "publisher_primary_ssrc={}",
+            event.source.stream_id,
+            event.source.session_id,
+            event.media_ssrc,
+            event.feedback_name,
+            mapping->publisher_rtx_primary_ssrc);
+
+        return std::nullopt;
+    }
+
+    if (primary_mapping->stream_id != event.source.stream_id || primary_mapping->subscriber_session_id != event.source.session_id)
+    {
+        WEBRTC_LOG_WARN(
+            "keyframe feedback rtx primary mapping ownership mismatch stream={} subscriber_session={} subscriber_rtx_ssrc={} feedback={} "
+            "primary_stream={} primary_subscriber_session={} primary_publisher_session={} primary_publisher_mid={} primary_subscriber_mid={}",
+            event.source.stream_id,
+            event.source.session_id,
+            event.media_ssrc,
+            event.feedback_name,
+            primary_mapping->stream_id,
+            primary_mapping->subscriber_session_id,
+            primary_mapping->publisher_session_id,
+            primary_mapping->publisher_mid,
+            primary_mapping->subscriber_mid);
+
+        return std::nullopt;
+    }
+
+    if (!media_ssrc_mapping_is_primary_video(*primary_mapping))
+    {
+        WEBRTC_LOG_WARN(
+            "keyframe feedback rtx primary mapping is not primary video stream={} subscriber_session={} subscriber_rtx_ssrc={} feedback={} "
+            "publisher_primary_ssrc={} subscriber_primary_ssrc={} kind={} rtx={}",
+            event.source.stream_id,
+            event.source.session_id,
+            event.media_ssrc,
+            event.feedback_name,
+            primary_mapping->publisher_ssrc,
+            primary_mapping->subscriber_ssrc,
+            primary_mapping->kind,
+            media_ssrc_mapping_is_rtx(*primary_mapping) ? 1 : 0);
+
+        return std::nullopt;
+    }
+
+    return primary_mapping;
+}
 
 std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_packet(const srtp_packet_process_result& packet,
                                                                                       const media_route_result& route,
@@ -12392,6 +12532,7 @@ void ice_udp_server::handle_rtcp_bye_packet(const srtp_packet_process_result& pa
 
     remove_expired_session(route.source.session_id, "rtcp bye");
 }
+
 void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event& event)
 {
     if (!event.valid)
@@ -12402,7 +12543,43 @@ void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event&
     if (event.has_generic_nack)
     {
         retransmit_cached_rtp_packets(event);
+
+        return;
     }
+
+    if (!event.has_keyframe_request)
+    {
+        return;
+    }
+
+    const std::optional<media_ssrc_mapping> mapping = resolve_keyframe_feedback_primary_mapping(event);
+
+    if (!mapping.has_value())
+    {
+        WEBRTC_LOG_WARN("keyframe feedback skipped unresolved media target stream={} subscriber_session={} remote={} feedback={} media_ssrc={}",
+                        event.source.stream_id,
+                        event.source.session_id,
+                        event.source.remote_endpoint,
+                        event.feedback_name,
+                        event.media_ssrc);
+
+        return;
+    }
+
+    WEBRTC_LOG_DEBUG(
+        "keyframe feedback resolved stream={} subscriber_session={} publisher_session={} feedback={} subscriber_media_ssrc={} "
+        "publisher_media_ssrc={} publisher_mid={} subscriber_mid={} kind={} rid={} repaired_rid={}",
+        event.source.stream_id,
+        mapping->subscriber_session_id,
+        mapping->publisher_session_id,
+        event.feedback_name,
+        event.media_ssrc,
+        mapping->publisher_ssrc,
+        mapping->publisher_mid,
+        mapping->subscriber_mid,
+        mapping->kind,
+        mapping->rid.value_or(""),
+        mapping->repaired_rid.value_or(""));
 }
 
 std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolve_nack_retransmit_resolution(
