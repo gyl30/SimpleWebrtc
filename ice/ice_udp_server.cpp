@@ -6480,7 +6480,7 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
                                           "rtcp active report protect"))
         {
             current_session_gate_skipped_count += 1;
-            rtp_rtcp_drop_rtcp_report_session_gate_total_.fetch_add(1, std::memory_order_relaxed);
+            rtp_rtcp_drop_rtcp_report_runtime_gate_total_.fetch_add(1, std::memory_order_relaxed);
 
             rtcp_report_service_->forget_source(
                 report_packet.source.session_id, report_packet.source.remote_endpoint, report_packet.source.local_ssrc);
@@ -6495,7 +6495,6 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
             continue;
         }
-
         auto protected_packet =
             srtp_transport_->protect_outbound_packet(std::span<const uint8_t>(report_packet.report.packet.data(), report_packet.report.packet.size()),
                                                      report_packet.source.remote_endpoint,
@@ -7932,6 +7931,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
     if (media_router_ == nullptr)
     {
+        rtp_rtcp_drop_inbound_runtime_gate_total_.fetch_add(1, std::memory_order_relaxed);
         WEBRTC_LOG_WARN("srtp packet ignored media router unavailable remote={} session={} stream={} size={}",
                         remote_address,
                         current_session.session_id,
@@ -7943,6 +7943,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
     if (registry_ == nullptr)
     {
+        rtp_rtcp_drop_inbound_runtime_gate_total_.fetch_add(1, std::memory_order_relaxed);
         WEBRTC_LOG_WARN("srtp packet ignored session registry unavailable remote={} session={} stream={} size={}",
                         remote_address,
                         current_session.session_id,
@@ -7968,6 +7969,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
     if (peer->session_id != current_session.session_id || peer->stream_id != current_session.stream_id)
     {
+        rtp_rtcp_drop_inbound_runtime_gate_total_.fetch_add(1, std::memory_order_relaxed);
         WEBRTC_LOG_DEBUG(
             "srtp packet ignored stale media peer remote={} current_session={} current_stream={} peer_session={} peer_stream={} role={} size={}",
             remote_address,
@@ -7989,6 +7991,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
         if (publisher == nullptr)
         {
+            rtp_rtcp_drop_inbound_runtime_gate_total_.fetch_add(1, std::memory_order_relaxed);
             WEBRTC_LOG_DEBUG("srtp packet ignored publisher session not ready remote={} session={} stream={} size={}",
                              remote_address,
                              peer->session_id,
@@ -8006,6 +8009,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
         if (subscriber == nullptr)
         {
+            rtp_rtcp_drop_inbound_runtime_gate_total_.fetch_add(1, std::memory_order_relaxed);
             WEBRTC_LOG_DEBUG("srtp packet ignored subscriber session not ready remote={} session={} stream={} size={}",
                              remote_address,
                              peer->session_id,
@@ -8019,6 +8023,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     }
     else
     {
+        rtp_rtcp_drop_inbound_runtime_gate_total_.fetch_add(1, std::memory_order_relaxed);
         WEBRTC_LOG_DEBUG("srtp packet ignored unknown media peer role remote={} session={} stream={} size={}",
                          remote_address,
                          peer->session_id,
@@ -8030,6 +8035,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
     if (accepted_mline_count == 0)
     {
+        rtp_rtcp_drop_inbound_runtime_gate_total_.fetch_add(1, std::memory_order_relaxed);
         WEBRTC_LOG_DEBUG("srtp packet ignored accepted media not ready remote={} role={} session={} stream={} size={}",
                          remote_address,
                          media_peer_role_to_string(peer->role),
