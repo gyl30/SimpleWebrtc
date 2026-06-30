@@ -342,9 +342,15 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
 {
     if (session == nullptr)
     {
+        const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+
+        if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+        {
+            return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
+        }
+
         return json_error_response(request, 404, "publisher session not found");
     }
-
     auto precondition = validate_session_if_match(request, *session);
 
     if (!precondition)
@@ -478,6 +484,16 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
 http_response_ptr whip_handler::patch_session(http_request_t& request, std::string_view session_id)
 {
     auto session = registry_->find_publisher_by_session_id(session_id);
+
+    if (session == nullptr)
+    {
+        const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+
+        if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+        {
+            return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
+        }
+    }
 
     if (is_application_sdp_restart_request(request))
     {
