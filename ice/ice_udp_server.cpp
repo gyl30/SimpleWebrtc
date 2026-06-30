@@ -2915,7 +2915,14 @@ std::vector<std::string> ice_udp_server::collect_idle_session_ids(uint64_t curre
 
             iterator = endpoint_last_seen_milliseconds_by_address_.erase(iterator);
 
+            endpoints_by_address_.erase(orphan_remote_address);
+
             erase_candidate_pairs_for_endpoint_locked(orphan_remote_address);
+
+            if (rtcp_transport_cc_feedback_service_ != nullptr)
+            {
+                rtcp_transport_cc_feedback_service_->forget_peer(orphan_remote_address);
+            }
 
             WEBRTC_LOG_DEBUG("ice endpoint idle removed orphan last seen remote={}", orphan_remote_address);
 
