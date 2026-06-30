@@ -6417,7 +6417,7 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
     {
         WEBRTC_LOG_DEBUG(
             "keyframe request skipped publisher unsupported stream={} publisher_session={} subscriber_session={} mid={} kind={} rid={} "
-            "repaired_rid={} media_ssrc={}",
+            "repaired_rid={} media_ssrc={} selected_rid_pending={}",
             route.source.stream_id,
             route.source.session_id,
             target_peer.session_id,
@@ -6425,7 +6425,8 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
             track_resolution->kind,
             track_resolution->rid.value_or(""),
             track_resolution->repaired_rid.value_or(""),
-            packet.ssrc);
+            packet.ssrc,
+            selected_rid_keyframe_request ? 1 : 0);
 
         return;
     }
@@ -6436,6 +6437,12 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
 
     if (!plain_packet.has_value())
     {
+        if (selected_rid_keyframe_request)
+        {
+            restore_selected_rid_keyframe_request_pending_for_subscriber(
+                route, track_resolution, target_peer, "keyframe request packet build failed");
+        }
+
         return;
     }
 
@@ -6446,7 +6453,7 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
     {
         WEBRTC_LOG_WARN(
             "keyframe request protect failed stream={} publisher={} publisher_session={} subscriber={} subscriber_session={} feedback_type={} "
-            "mid={} kind={} rid={} repaired_rid={} sender_ssrc={} media_ssrc={} error={}",
+            "mid={} kind={} rid={} repaired_rid={} sender_ssrc={} media_ssrc={} selected_rid_pending={} error={}",
             route.source.stream_id,
             route.source.remote_endpoint,
             route.source.session_id,
@@ -6459,7 +6466,13 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
             track_resolution->repaired_rid.value_or(""),
             sender_ssrc,
             packet.ssrc,
+            selected_rid_keyframe_request ? 1 : 0,
             protected_packet.error());
+
+        if (selected_rid_keyframe_request)
+        {
+            restore_selected_rid_keyframe_request_pending_for_subscriber(route, track_resolution, target_peer, "keyframe request protect failed");
+        }
 
         return;
     }
@@ -6468,7 +6481,7 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
     {
         WEBRTC_LOG_DEBUG(
             "keyframe request ignored stream={} publisher={} publisher_session={} subscriber={} subscriber_session={} feedback_type={} "
-            "mid={} kind={} rid={} repaired_rid={} sender_ssrc={} media_ssrc={} reason={}",
+            "mid={} kind={} rid={} repaired_rid={} sender_ssrc={} media_ssrc={} selected_rid_pending={} reason={}",
             route.source.stream_id,
             route.source.remote_endpoint,
             route.source.session_id,
@@ -6481,7 +6494,13 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
             track_resolution->repaired_rid.value_or(""),
             sender_ssrc,
             packet.ssrc,
+            selected_rid_keyframe_request ? 1 : 0,
             protected_packet->reason);
+
+        if (selected_rid_keyframe_request)
+        {
+            restore_selected_rid_keyframe_request_pending_for_subscriber(route, track_resolution, target_peer, "keyframe request protect ignored");
+        }
 
         return;
     }
@@ -6506,7 +6525,6 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
 
     send_response(std::move(protected_packet->protected_packet), *publisher_endpoint);
 }
-
 void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
@@ -10798,6 +10816,66 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
         track_resolution->rtx ? 1 : 0);
 
     return true;
+}
+void ice_udp_server::restore_selected_rid_keyframe_request_pending_for_subscriber(const media_route_result& route,
+                                                                                  const std::optional<media_track_resolution>& track_resolution,
+                                                                                  const media_peer_info& target_peer,
+                                                                                  std::string_view reason)
+{
+    if (route.action != media_route_action::fanout_to_subscribers)
+    {
+        return;
+    }
+
+    if (route.source.role != media_peer_role::publisher || target_peer.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (!track_resolution.has_value() || !track_resolution->resolved || !is_video_media_kind(track_resolution->kind))
+    {
+        return;
+    }
+
+    if (track_resolution->mid.empty() || track_resolution->kind.empty() || route.source.stream_id.empty() || route.source.session_id.empty() ||
+        target_peer.session_id.empty())
+    {
+        return;
+    }
+
+    const std::string key = make_selected_rid_layer_key(
+        route.source.stream_id, route.source.session_id, target_peer.session_id, track_resolution->mid, track_resolution->kind);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+    if (state_iterator == selected_rid_layer_state_by_key_.end())
+    {
+        return;
+    }
+
+    const selected_rid_layer_runtime_state& state = state_iterator->second;
+
+    if (state.rid.empty() || state.kind.empty())
+    {
+        return;
+    }
+
+    pending_selected_rid_keyframe_request_keys_.insert(key);
+
+    WEBRTC_LOG_INFO(
+        "simulcast selected rid keyframe request restored stream={} publisher_session={} subscriber_session={} mid={} kind={} selected_rid={} "
+        "primary_ssrc={} repair_ssrc={} reason={}",
+        route.source.stream_id,
+        route.source.session_id,
+        target_peer.session_id,
+        state.mid,
+        state.kind,
+        state.rid,
+        state.primary_ssrc,
+        state.repair_ssrc,
+        reason);
 }
 
 bool ice_udp_server::remember_extmap_header_extension_id_rewrite(std::string_view stream_id,

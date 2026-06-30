@@ -474,6 +474,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                       const std::optional<media_track_resolution>& track_resolution,
                                                                       const media_peer_info& target_peer);
 
+    void restore_selected_rid_keyframe_request_pending_for_subscriber(const media_route_result& route,
+                                                                      const std::optional<media_track_resolution>& track_resolution,
+                                                                      const media_peer_info& target_peer,
+                                                                      std::string_view reason);
+
     void forget_selected_rid_layer_states_for_session(std::string_view session_id);
 
     [[nodiscard]]
