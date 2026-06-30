@@ -2280,6 +2280,7 @@ bool is_resolved_video_track(const std::optional<media_track_resolution>& track_
 
     return is_video_media_kind(track_resolution->kind);
 }
+bool media_payload_type_mapping_allows_rid_header_extension_rewrite(const media_payload_type_mapping& mapping) { return mapping.kind == "video"; }
 
 bool rtcp_feedback_event_needs_block_rewrite(const rtcp_feedback_route_event& event)
 {
@@ -10292,7 +10293,8 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
     const std::span<const uint8_t> plain_packet_span(packet.plain_packet.data(), packet.plain_packet.size());
 
-    if (payload_type_mapping.has_value() && registry_ != nullptr)
+    if (payload_type_mapping.has_value() && media_payload_type_mapping_allows_rid_header_extension_rewrite(*payload_type_mapping) &&
+        registry_ != nullptr)
     {
         auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
 
@@ -10396,21 +10398,23 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
             return std::nullopt;
         }
 
-        const std::string_view rid_extension_uri = payload_type_mapping->rtx ? sdp::k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri
-                                                                             : sdp::k_rtp_header_extension_sdes_rtp_stream_id_uri;
-
-        const std::string_view rid_rewrite_name = payload_type_mapping->rtx ? "repaired-rid" : "rid";
-
-        optional_header_extension_id_rewrite_result rid_rewrite =
-            payload_type_mapping->rtx
-                ? make_repaired_rid_header_extension_id_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, plain_packet_span)
-                : make_rid_header_extension_id_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, plain_packet_span);
-
-        if (!append_header_extension_id_rewrite(rid_rewrite_name, rid_extension_uri, true, std::move(rid_rewrite)))
+        if (media_payload_type_mapping_allows_rid_header_extension_rewrite(*payload_type_mapping))
         {
-            return std::nullopt;
-        }
+            const std::string_view rid_extension_uri = payload_type_mapping->rtx ? sdp::k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri
+                                                                                 : sdp::k_rtp_header_extension_sdes_rtp_stream_id_uri;
 
+            const std::string_view rid_rewrite_name = payload_type_mapping->rtx ? "repaired-rid" : "rid";
+
+            optional_header_extension_id_rewrite_result rid_rewrite =
+                payload_type_mapping->rtx
+                    ? make_repaired_rid_header_extension_id_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, plain_packet_span)
+                    : make_rid_header_extension_id_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, plain_packet_span);
+
+            if (!append_header_extension_id_rewrite(rid_rewrite_name, rid_extension_uri, true, std::move(rid_rewrite)))
+            {
+                return std::nullopt;
+            }
+        }
         if (!append_header_extension_id_rewrite(
                 "abs-send-time",
                 k_absolute_send_time_extension_uri,
@@ -10735,19 +10739,23 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
             return std::nullopt;
         }
 
-        const std::string_view rid_extension_uri = payload_type_mapping->rtx ? sdp::k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri
-                                                                             : sdp::k_rtp_header_extension_sdes_rtp_stream_id_uri;
-
-        const std::string_view rid_rewrite_name = payload_type_mapping->rtx ? "repaired-rid" : "rid";
-
-        optional_header_extension_id_rewrite_result rid_rewrite =
-            payload_type_mapping->rtx
-                ? make_repaired_rid_header_extension_id_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, cached_plain_packet_span)
-                : make_rid_header_extension_id_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, cached_plain_packet_span);
-
-        if (!append_header_extension_id_rewrite(rid_rewrite_name, rid_extension_uri, true, std::move(rid_rewrite)))
+        if (media_payload_type_mapping_allows_rid_header_extension_rewrite(*payload_type_mapping))
         {
-            return std::nullopt;
+            const std::string_view rid_extension_uri = payload_type_mapping->rtx ? sdp::k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri
+                                                                                 : sdp::k_rtp_header_extension_sdes_rtp_stream_id_uri;
+
+            const std::string_view rid_rewrite_name = payload_type_mapping->rtx ? "repaired-rid" : "rid";
+
+            optional_header_extension_id_rewrite_result rid_rewrite =
+                payload_type_mapping->rtx
+                    ? make_repaired_rid_header_extension_id_rewrite(
+                          *payload_type_mapping, publisher_offer, subscriber_offer, cached_plain_packet_span)
+                    : make_rid_header_extension_id_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, cached_plain_packet_span);
+
+            if (!append_header_extension_id_rewrite(rid_rewrite_name, rid_extension_uri, true, std::move(rid_rewrite)))
+            {
+                return std::nullopt;
+            }
         }
 
         if (!append_header_extension_id_rewrite("abs-send-time",

@@ -2114,31 +2114,32 @@ std::string make_rtcp_feedback_value(const codec_info& codec, std::string_view f
 
     return value;
 }
+
 bool is_supported_answer_header_extension_uri(std::string_view kind, std::string_view uri)
 {
     if (uri == k_rtp_mid_extension_uri)
     {
-        return true;
+        return kind == "audio" || kind == "video";
     }
 
     if (uri == k_rtp_stream_id_extension_uri)
     {
-        return true;
+        return kind == "video";
     }
 
     if (uri == k_repaired_rtp_stream_id_extension_uri)
     {
-        return true;
+        return kind == "video";
     }
 
     if (uri == k_transport_wide_cc_extension_uri || uri == k_transport_wide_cc_extension_uri_02)
     {
-        return true;
+        return kind == "audio" || kind == "video";
     }
 
     if (uri == k_absolute_send_time_extension_uri)
     {
-        return true;
+        return kind == "audio" || kind == "video";
     }
 
     if (uri == k_audio_level_extension_uri)
