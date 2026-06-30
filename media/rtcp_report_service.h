@@ -85,6 +85,7 @@ struct rtcp_report_source_config
     std::string remote_endpoint;
 
     std::string mid;
+    std::string kind;
     std::optional<std::string> rid;
     std::optional<std::string> repaired_rid;
 

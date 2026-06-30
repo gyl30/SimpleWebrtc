@@ -1097,6 +1097,9 @@ std::string rtcp_report_source_config_to_string(const rtcp_report_source_config&
     result.append(" mid=");
     result.append(source.mid);
 
+    result.append(" kind=");
+    result.append(source.kind);
+
     if (source.rid.has_value())
     {
         result.append(" rid=");

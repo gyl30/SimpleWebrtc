@@ -1751,6 +1751,43 @@ bool payload_type_mapping_matches_accepted_media(const publisher_session& publis
 
     return true;
 }
+bool rtcp_report_source_matches_current_accepted_media(const stream_registry& registry,
+                                                       const ice_udp_server::current_session_endpoint_state& current_session,
+                                                       const rtcp_report_source_config& source)
+{
+    if (source.mid.empty() || source.kind.empty())
+    {
+        return false;
+    }
+
+    if (current_session.kind == stream_session_kind::publisher)
+    {
+        const auto publisher = registry.find_publisher_by_session_id(source.session_id);
+
+        if (publisher == nullptr)
+        {
+            return false;
+        }
+
+        return accepted_offer_media_matches_mid_and_kind(
+            publisher->remote_offer_summary(), publisher->accepted_remote_media_mline_indexes(), source.mid, source.kind);
+    }
+
+    if (current_session.kind == stream_session_kind::subscriber)
+    {
+        const auto subscriber = registry.find_subscriber_by_session_id(source.session_id);
+
+        if (subscriber == nullptr)
+        {
+            return false;
+        }
+
+        return accepted_offer_media_matches_mid_and_kind(
+            subscriber->remote_offer_summary(), subscriber->accepted_remote_media_mline_indexes(), source.mid, source.kind);
+    }
+
+    return false;
+}
 
 std::size_t erase_unaccepted_payload_type_mappings(media_payload_type_mapping_table& table,
                                                    const publisher_session& publisher,
@@ -6561,6 +6598,27 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
 
             continue;
         }
+        if (registry_ == nullptr || !rtcp_report_source_matches_current_accepted_media(*registry_, current_session, report_packet.source))
+        {
+            current_session_gate_skipped_count += 1;
+
+            rtp_rtcp_drop_rtcp_report_session_gate_total_.fetch_add(1, std::memory_order_relaxed);
+
+            rtcp_report_service_->forget_source(
+                report_packet.source.session_id, report_packet.source.remote_endpoint, report_packet.source.local_ssrc);
+
+            WEBRTC_LOG_DEBUG(
+                "rtcp active report source forgotten by accepted media gate stream={} session={} remote={} mid={} kind={} local_ssrc={} "
+                "source_forgot=1",
+                report_packet.source.stream_id,
+                report_packet.source.session_id,
+                report_packet.source.remote_endpoint,
+                report_packet.source.mid,
+                report_packet.source.kind,
+                report_packet.source.local_ssrc);
+
+            continue;
+        }
         auto protected_packet =
             srtp_transport_->protect_outbound_packet(std::span<const uint8_t>(report_packet.report.packet.data(), report_packet.report.packet.size()),
                                                      report_packet.source.remote_endpoint,
@@ -8681,12 +8739,15 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
     }
 
     std::string mid;
+    std::string kind;
     std::optional<std::string> rid;
     std::optional<std::string> repaired_rid;
 
     if (track_resolution.has_value() && track_resolution->resolved)
     {
         mid = track_resolution->mid;
+
+        kind = track_resolution->kind;
 
         rid = track_resolution->rid;
 
@@ -8784,14 +8845,11 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
     source.remote_endpoint = peer.remote_endpoint;
 
     source.mid = mid;
-
+    source.kind = kind;
     source.rid = rid;
-
     source.repaired_rid = repaired_rid;
-
     source.local_ssrc = local_ssrc;
     source.cname = make_rtcp_cname(peer.session_id, local_ssrc);
-
     source.sender_report_enabled = false;
     source.receiver_report_enabled = true;
 
@@ -9193,6 +9251,7 @@ void ice_udp_server::observe_inbound_rtcp_reports(const media_peer_info& peer, c
         source.remote_endpoint = peer.remote_endpoint;
 
         source.mid = track_binding->mid;
+        source.kind = track_binding->kind;
 
         source.rid = track_binding->rid;
 
@@ -9708,9 +9767,8 @@ void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_pe
     source.remote_endpoint = target_peer.remote_endpoint;
 
     source.mid = mapping->subscriber_mid;
-
+    source.kind = mapping->kind;
     source.rid = mapping->rid;
-
     source.repaired_rid = mapping->repaired_rid;
 
     source.local_ssrc = header->ssrc;
