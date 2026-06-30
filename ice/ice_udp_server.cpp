@@ -1915,6 +1915,71 @@ bool publisher_subscriber_media_has_negotiated_absolute_send_time(const publishe
 
     return true;
 }
+bool accepted_offer_media_has_audio_level(const sdp::webrtc_offer_summary& offer,
+                                          const std::vector<int>& accepted_mline_indexes,
+                                          std::string_view mid,
+                                          std::string_view kind)
+{
+    if (mid.empty() || kind.empty())
+    {
+        return false;
+    }
+
+    if (kind != "audio")
+    {
+        return false;
+    }
+
+    const std::optional<std::size_t> media_index = find_media_index_by_mid(offer, mid);
+
+    if (!media_index.has_value())
+    {
+        return false;
+    }
+
+    if (!accepted_mline_indexes_contains(accepted_mline_indexes, *media_index))
+    {
+        return false;
+    }
+
+    const sdp::media_summary& media = offer.media[*media_index];
+
+    if (media.kind != "audio")
+    {
+        return false;
+    }
+
+    return find_rtp_header_extension_id(media, k_audio_level_extension_uri).has_value();
+}
+
+bool publisher_subscriber_media_has_negotiated_audio_level(const publisher_session& publisher,
+                                                           const subscriber_session& subscriber,
+                                                           const media_payload_type_mapping& mapping)
+{
+    if (mapping.publisher_mid.empty() || mapping.subscriber_mid.empty() || mapping.kind.empty())
+    {
+        return false;
+    }
+
+    if (mapping.kind != "audio")
+    {
+        return false;
+    }
+
+    if (!accepted_offer_media_has_audio_level(
+            publisher.remote_offer_summary(), publisher.accepted_remote_media_mline_indexes(), mapping.publisher_mid, mapping.kind))
+    {
+        return false;
+    }
+
+    if (!accepted_offer_media_has_audio_level(
+            subscriber.remote_offer_summary(), subscriber.accepted_remote_media_mline_indexes(), mapping.subscriber_mid, mapping.kind))
+    {
+        return false;
+    }
+
+    return true;
+}
 
 optional_header_extension_id_rewrite_result make_absolute_send_time_header_extension_id_rewrite(const media_payload_type_mapping& mapping,
                                                                                                 const sdp::webrtc_offer_summary& publisher_offer,
@@ -10684,18 +10749,36 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
                 publisher->accepted_remote_media_mline_indexes().size(),
                 subscriber->accepted_remote_media_mline_indexes().size());
         }
-        if (payload_type_mapping->kind == "audio" &&
-            !append_header_extension_id_rewrite("audio-level",
-                                                k_audio_level_extension_uri,
-                                                true,
-                                                make_forwarded_rtp_header_extension_id_rewrite(*payload_type_mapping,
-                                                                                               publisher_offer,
-                                                                                               subscriber_offer,
-                                                                                               plain_packet_span,
-                                                                                               k_audio_level_extension_uri,
-                                                                                               "rtp audio-level rewrite")))
+
+        if (publisher_subscriber_media_has_negotiated_audio_level(*publisher, *subscriber, *payload_type_mapping))
         {
-            return std::nullopt;
+            if (!append_header_extension_id_rewrite("audio-level",
+                                                    k_audio_level_extension_uri,
+                                                    true,
+                                                    make_forwarded_rtp_header_extension_id_rewrite(*payload_type_mapping,
+                                                                                                   publisher_offer,
+                                                                                                   subscriber_offer,
+                                                                                                   plain_packet_span,
+                                                                                                   k_audio_level_extension_uri,
+                                                                                                   "rtp audio-level rewrite")))
+            {
+                return std::nullopt;
+            }
+        }
+        else if (payload_type_mapping->kind == "audio")
+        {
+            WEBRTC_LOG_DEBUG(
+                "rtp audio-level rewrite skipped not negotiated stream={} publisher_session={} subscriber_session={} publisher_mid={} "
+                "subscriber_mid={} "
+                "kind={} publisher_accepted_mlines={} subscriber_accepted_mlines={}",
+                payload_type_mapping->stream_id,
+                route.source.session_id,
+                target_peer.session_id,
+                payload_type_mapping->publisher_mid,
+                payload_type_mapping->subscriber_mid,
+                payload_type_mapping->kind,
+                publisher->accepted_remote_media_mline_indexes().size(),
+                subscriber->accepted_remote_media_mline_indexes().size());
         }
     }
 
@@ -11062,18 +11145,36 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
                 publisher->accepted_remote_media_mline_indexes().size(),
                 subscriber->accepted_remote_media_mline_indexes().size());
         }
-        if (payload_type_mapping->kind == "audio" &&
-            !append_header_extension_id_rewrite("audio-level",
-                                                k_audio_level_extension_uri,
-                                                true,
-                                                make_forwarded_rtp_header_extension_id_rewrite(*payload_type_mapping,
-                                                                                               publisher_offer,
-                                                                                               subscriber_offer,
-                                                                                               cached_plain_packet_span,
-                                                                                               k_audio_level_extension_uri,
-                                                                                               "rtp audio-level rewrite")))
+        if (publisher_subscriber_media_has_negotiated_audio_level(*publisher, *subscriber, *payload_type_mapping))
         {
-            return std::nullopt;
+            if (!append_header_extension_id_rewrite("audio-level",
+                                                    k_audio_level_extension_uri,
+                                                    true,
+                                                    make_forwarded_rtp_header_extension_id_rewrite(*payload_type_mapping,
+                                                                                                   publisher_offer,
+                                                                                                   subscriber_offer,
+                                                                                                   cached_plain_packet_span,
+                                                                                                   k_audio_level_extension_uri,
+                                                                                                   "rtp audio-level rewrite")))
+            {
+                return std::nullopt;
+            }
+        }
+        else if (payload_type_mapping->kind == "audio")
+        {
+            WEBRTC_LOG_DEBUG(
+                "rtp nack retransmit audio-level rewrite skipped not negotiated stream={} subscriber={} publisher_session={} subscriber_session={} "
+                "publisher_mid={} subscriber_mid={} kind={} sequence={} publisher_accepted_mlines={} subscriber_accepted_mlines={}",
+                event.source.stream_id,
+                event.source.remote_endpoint,
+                ssrc_mapping->publisher_session_id,
+                ssrc_mapping->subscriber_session_id,
+                payload_type_mapping->publisher_mid,
+                payload_type_mapping->subscriber_mid,
+                payload_type_mapping->kind,
+                cached_packet.sequence_number,
+                publisher->accepted_remote_media_mline_indexes().size(),
+                subscriber->accepted_remote_media_mline_indexes().size());
         }
     }
 
