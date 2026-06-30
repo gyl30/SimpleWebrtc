@@ -1802,6 +1802,143 @@ void append_header_extension_attributes(media_description& answer_media, const m
         push_attribute(answer_media.attributes, "extmap", make_extmap_value(extension));
     }
 }
+bool string_vector_contains_value(const std::vector<std::string>& values, std::string_view value)
+{
+    for (const auto& current : values)
+    {
+        if (current == value)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool media_has_header_extension_uri(const media_summary& media, std::string_view uri)
+{
+    for (const auto& extension : media.header_extensions)
+    {
+        if (extension.uri == uri)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool media_has_answerable_send_rid(const media_summary& media, std::string_view rid)
+{
+    if (rid.empty())
+    {
+        return false;
+    }
+
+    for (const auto& current : media.rids)
+    {
+        if (current.id != rid)
+        {
+            continue;
+        }
+
+        return current.direction == "send" || current.direction == "sendrecv";
+    }
+
+    return false;
+}
+
+std::vector<std::string> collect_answerable_whip_simulcast_rids(const media_summary& media)
+{
+    std::vector<std::string> rids;
+
+    if (media.kind != "video")
+    {
+        return rids;
+    }
+
+    if (!media.simulcast.has_value())
+    {
+        return rids;
+    }
+
+    if (media.simulcast->send_rids.empty())
+    {
+        return rids;
+    }
+
+    if (!media_has_header_extension_uri(media, k_rtp_stream_id_extension_uri))
+    {
+        return rids;
+    }
+
+    for (const auto& rid : media.simulcast->send_rids)
+    {
+        if (!media_has_answerable_send_rid(media, rid))
+        {
+            continue;
+        }
+
+        if (string_vector_contains_value(rids, rid))
+        {
+            continue;
+        }
+
+        rids.push_back(rid);
+    }
+
+    return rids;
+}
+
+std::string join_rids_with_semicolon(const std::vector<std::string>& rids)
+{
+    std::string value;
+
+    for (const auto& rid : rids)
+    {
+        if (!value.empty())
+        {
+            value.push_back(';');
+        }
+
+        value.append(rid);
+    }
+
+    return value;
+}
+
+void append_whip_simulcast_receive_attributes(media_description& answer_media, const media_summary& media)
+{
+    const std::vector<std::string> rids = collect_answerable_whip_simulcast_rids(media);
+
+    if (rids.empty())
+    {
+        return;
+    }
+
+    for (const auto& rid : rids)
+    {
+        std::string rid_value;
+
+        rid_value.reserve(rid.size() + 8);
+
+        rid_value.append(rid);
+
+        rid_value.append(" recv");
+
+        push_attribute(answer_media.attributes, "rid", rid_value);
+    }
+
+    std::string simulcast_value;
+
+    simulcast_value.reserve(join_rids_with_semicolon(rids).size() + 8);
+
+    simulcast_value.append("recv ");
+
+    simulcast_value.append(join_rids_with_semicolon(rids));
+
+    push_attribute(answer_media.attributes, "simulcast", simulcast_value);
+}
 
 std::string make_msid_value(const sdp_answer_options& options, const media_summary& media)
 {
@@ -2029,6 +2166,11 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
     push_property_attribute(answer_media.attributes, k_attribute_rtcp_mux);
 
     append_header_extension_attributes(answer_media, media);
+
+    if (role == answer_endpoint_role::whip && *answer_direction == media_direction::recv_only)
+    {
+        append_whip_simulcast_receive_attributes(answer_media, media);
+    }
 
     append_codec_attributes(answer_media, codecs);
 
