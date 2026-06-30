@@ -2514,6 +2514,19 @@ std::string make_msid_value(const sdp_answer_options& options, const media_summa
     return value;
 }
 
+std::string make_answer_msid_value(answer_endpoint_role role,
+                                   const sdp_answer_options& options,
+                                   const media_summary& media,
+                                   const media_summary* forwarded_publisher_media)
+{
+    if (role == answer_endpoint_role::whep && forwarded_publisher_media != nullptr)
+    {
+        return make_msid_value(options, *forwarded_publisher_media);
+    }
+
+    return make_msid_value(options, media);
+}
+
 std::string make_candidate_value(const sdp_ice_candidate_options& candidate)
 {
     std::string value;
@@ -2776,7 +2789,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 
     if (*answer_direction == media_direction::send_only || *answer_direction == media_direction::send_recv)
     {
-        push_attribute(answer_media.attributes, "msid", make_msid_value(options, media));
+        push_attribute(answer_media.attributes, "msid", make_answer_msid_value(role, options, media, forwarded_publisher_media));
     }
     auto identity_result = validate_accepted_answer_media_identity(media, answer_media);
 
