@@ -1980,6 +1980,61 @@ bool publisher_subscriber_media_has_negotiated_audio_level(const publisher_sessi
 
     return true;
 }
+bool accepted_offer_media_has_mid(const sdp::webrtc_offer_summary& offer,
+                                  const std::vector<int>& accepted_mline_indexes,
+                                  std::string_view mid,
+                                  std::string_view kind)
+{
+    if (mid.empty() || kind.empty())
+    {
+        return false;
+    }
+
+    const std::optional<std::size_t> media_index = find_media_index_by_mid(offer, mid);
+
+    if (!media_index.has_value())
+    {
+        return false;
+    }
+
+    if (!accepted_mline_indexes_contains(accepted_mline_indexes, *media_index))
+    {
+        return false;
+    }
+
+    const sdp::media_summary& media = offer.media[*media_index];
+
+    if (media.kind != kind)
+    {
+        return false;
+    }
+
+    return find_rtp_header_extension_id(media, k_mid_extension_uri).has_value();
+}
+
+bool publisher_subscriber_media_has_negotiated_mid(const publisher_session& publisher,
+                                                   const subscriber_session& subscriber,
+                                                   const media_payload_type_mapping& mapping)
+{
+    if (mapping.publisher_mid.empty() || mapping.subscriber_mid.empty() || mapping.kind.empty())
+    {
+        return false;
+    }
+
+    if (!accepted_offer_media_has_mid(
+            publisher.remote_offer_summary(), publisher.accepted_remote_media_mline_indexes(), mapping.publisher_mid, mapping.kind))
+    {
+        return false;
+    }
+
+    if (!accepted_offer_media_has_mid(
+            subscriber.remote_offer_summary(), subscriber.accepted_remote_media_mline_indexes(), mapping.subscriber_mid, mapping.kind))
+    {
+        return false;
+    }
+
+    return true;
+}
 
 optional_header_extension_id_rewrite_result make_absolute_send_time_header_extension_id_rewrite(const media_payload_type_mapping& mapping,
                                                                                                 const sdp::webrtc_offer_summary& publisher_offer,
@@ -10249,38 +10304,66 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
             return true;
         };
 
-        if (rtx_payload_type_mapping->mid_rewrite_required)
+        if (publisher_subscriber_media_has_negotiated_mid(*publisher, *subscriber, *rtx_payload_type_mapping))
         {
-            auto mid_rewrite = make_mid_header_extension_rewrite(
-                *rtx_payload_type_mapping, publisher_offer, subscriber_offer, std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()));
-
-            if (!mid_rewrite)
+            if (rtx_payload_type_mapping->mid_rewrite_required)
             {
-                WEBRTC_LOG_WARN("rtx retransmit mid payload rewrite failed stream={} subscriber={} sequence={} error={}",
-                                event.source.stream_id,
-                                event.source.remote_endpoint,
-                                cached_packet.sequence_number,
-                                mid_rewrite.error());
+                auto mid_rewrite = make_mid_header_extension_rewrite(
+                    *rtx_payload_type_mapping, publisher_offer, subscriber_offer, std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()));
 
+                if (!mid_rewrite)
+                {
+                    WEBRTC_LOG_WARN(
+                        "rtx retransmit mid payload rewrite failed stream={} subscriber={} publisher_session={} subscriber_session={} "
+                        "publisher_mid={} subscriber_mid={} kind={} sequence={} error={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        primary_ssrc_mapping.publisher_session_id,
+                        primary_ssrc_mapping.subscriber_session_id,
+                        rtx_payload_type_mapping->publisher_mid,
+                        rtx_payload_type_mapping->subscriber_mid,
+                        rtx_payload_type_mapping->kind,
+                        cached_packet.sequence_number,
+                        mid_rewrite.error());
+
+                    return std::nullopt;
+                }
+
+                if (mid_rewrite->has_value())
+                {
+                    rewrite_options.header_extensions.push_back(std::move(**mid_rewrite));
+
+                    rewrite_required = true;
+                }
+            }
+
+            if (!append_header_extension_id_rewrite(
+                    "mid",
+                    k_mid_extension_uri,
+                    true,
+                    make_mid_header_extension_id_rewrite(*rtx_payload_type_mapping,
+                                                         publisher_offer,
+                                                         subscriber_offer,
+                                                         std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()))))
+            {
                 return std::nullopt;
             }
-
-            if (mid_rewrite->has_value())
-            {
-                rewrite_options.header_extensions.push_back(std::move(**mid_rewrite));
-
-                rewrite_required = true;
-            }
         }
-
-        if (!append_header_extension_id_rewrite(
-                "mid",
-                k_mid_extension_uri,
-                true,
-                make_mid_header_extension_id_rewrite(
-                    *rtx_payload_type_mapping, publisher_offer, subscriber_offer, std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()))))
+        else
         {
-            return std::nullopt;
+            WEBRTC_LOG_DEBUG(
+                "rtx retransmit mid rewrite skipped not negotiated stream={} subscriber={} publisher_session={} subscriber_session={} "
+                "publisher_mid={} subscriber_mid={} kind={} sequence={} publisher_accepted_mlines={} subscriber_accepted_mlines={}",
+                event.source.stream_id,
+                event.source.remote_endpoint,
+                primary_ssrc_mapping.publisher_session_id,
+                primary_ssrc_mapping.subscriber_session_id,
+                rtx_payload_type_mapping->publisher_mid,
+                rtx_payload_type_mapping->subscriber_mid,
+                rtx_payload_type_mapping->kind,
+                cached_packet.sequence_number,
+                publisher->accepted_remote_media_mline_indexes().size(),
+                subscriber->accepted_remote_media_mline_indexes().size());
         }
 
         if (!append_rtx_header_extension_id_rewrite(
@@ -10648,38 +10731,56 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
             return true;
         };
 
-        auto mid_payload_rewrite = make_mid_header_extension_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, plain_packet_span);
-
-        if (!mid_payload_rewrite)
+        if (publisher_subscriber_media_has_negotiated_mid(*publisher, *subscriber, *payload_type_mapping))
         {
-            WEBRTC_LOG_WARN(
-                "rtp mid payload rewrite failed stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} error={}",
+            auto mid_payload_rewrite = make_mid_header_extension_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, plain_packet_span);
+
+            if (!mid_payload_rewrite)
+            {
+                WEBRTC_LOG_WARN(
+                    "rtp mid payload rewrite failed stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} kind={} "
+                    "error={}",
+                    payload_type_mapping->stream_id,
+                    route.source.session_id,
+                    target_peer.session_id,
+                    payload_type_mapping->publisher_mid,
+                    payload_type_mapping->subscriber_mid,
+                    payload_type_mapping->kind,
+                    mid_payload_rewrite.error());
+
+                return std::nullopt;
+            }
+
+            if (mid_payload_rewrite->has_value())
+            {
+                options.header_extensions.push_back(std::move(**mid_payload_rewrite));
+
+                rewrite_required = true;
+            }
+
+            if (!append_header_extension_id_rewrite(
+                    "mid",
+                    k_mid_extension_uri,
+                    true,
+                    make_mid_header_extension_id_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, plain_packet_span)))
+            {
+                return std::nullopt;
+            }
+        }
+        else
+        {
+            WEBRTC_LOG_DEBUG(
+                "rtp mid rewrite skipped not negotiated stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} "
+                "kind={} publisher_accepted_mlines={} subscriber_accepted_mlines={}",
                 payload_type_mapping->stream_id,
                 route.source.session_id,
                 target_peer.session_id,
                 payload_type_mapping->publisher_mid,
                 payload_type_mapping->subscriber_mid,
-                mid_payload_rewrite.error());
-
-            return std::nullopt;
+                payload_type_mapping->kind,
+                publisher->accepted_remote_media_mline_indexes().size(),
+                subscriber->accepted_remote_media_mline_indexes().size());
         }
-
-        if (mid_payload_rewrite->has_value())
-        {
-            options.header_extensions.push_back(std::move(**mid_payload_rewrite));
-
-            rewrite_required = true;
-        }
-
-        if (!append_header_extension_id_rewrite(
-                "mid",
-                k_mid_extension_uri,
-                true,
-                make_mid_header_extension_id_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, plain_packet_span)))
-        {
-            return std::nullopt;
-        }
-
         if (publisher_subscriber_media_has_negotiated_transport_cc(*publisher, *subscriber, *payload_type_mapping))
         {
             if (!append_header_extension_id_rewrite(
@@ -11043,36 +11144,61 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
             return true;
         };
 
-        auto mid_payload_rewrite =
-            make_mid_header_extension_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, cached_plain_packet_span);
-
-        if (!mid_payload_rewrite)
+        if (publisher_subscriber_media_has_negotiated_mid(*publisher, *subscriber, *payload_type_mapping))
         {
-            WEBRTC_LOG_WARN("rtp nack retransmit mid payload rewrite failed stream={} subscriber={} sequence={} error={}",
-                            event.source.stream_id,
-                            event.source.remote_endpoint,
-                            cached_packet.sequence_number,
-                            mid_payload_rewrite.error());
+            auto mid_payload_rewrite =
+                make_mid_header_extension_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, cached_plain_packet_span);
 
-            return std::nullopt;
+            if (!mid_payload_rewrite)
+            {
+                WEBRTC_LOG_WARN(
+                    "rtp nack retransmit mid payload rewrite failed stream={} subscriber={} publisher_session={} subscriber_session={} "
+                    "publisher_mid={} subscriber_mid={} kind={} sequence={} error={}",
+                    event.source.stream_id,
+                    event.source.remote_endpoint,
+                    ssrc_mapping->publisher_session_id,
+                    ssrc_mapping->subscriber_session_id,
+                    payload_type_mapping->publisher_mid,
+                    payload_type_mapping->subscriber_mid,
+                    payload_type_mapping->kind,
+                    cached_packet.sequence_number,
+                    mid_payload_rewrite.error());
+
+                return std::nullopt;
+            }
+
+            if (mid_payload_rewrite->has_value())
+            {
+                options.header_extensions.push_back(std::move(**mid_payload_rewrite));
+
+                rewrite_required = true;
+            }
+
+            if (!append_header_extension_id_rewrite(
+                    "mid",
+                    k_mid_extension_uri,
+                    true,
+                    make_mid_header_extension_id_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, cached_plain_packet_span)))
+            {
+                return std::nullopt;
+            }
         }
-
-        if (mid_payload_rewrite->has_value())
+        else
         {
-            options.header_extensions.push_back(std::move(**mid_payload_rewrite));
-
-            rewrite_required = true;
+            WEBRTC_LOG_DEBUG(
+                "rtp nack retransmit mid rewrite skipped not negotiated stream={} subscriber={} publisher_session={} subscriber_session={} "
+                "publisher_mid={} subscriber_mid={} kind={} sequence={} publisher_accepted_mlines={} subscriber_accepted_mlines={}",
+                event.source.stream_id,
+                event.source.remote_endpoint,
+                ssrc_mapping->publisher_session_id,
+                ssrc_mapping->subscriber_session_id,
+                payload_type_mapping->publisher_mid,
+                payload_type_mapping->subscriber_mid,
+                payload_type_mapping->kind,
+                cached_packet.sequence_number,
+                publisher->accepted_remote_media_mline_indexes().size(),
+                subscriber->accepted_remote_media_mline_indexes().size());
         }
-
-        if (!append_header_extension_id_rewrite(
-                "mid",
-                k_mid_extension_uri,
-                true,
-                make_mid_header_extension_id_rewrite(*payload_type_mapping, publisher_offer, subscriber_offer, cached_plain_packet_span)))
-        {
-            return std::nullopt;
-        }
-
         if (publisher_subscriber_media_has_negotiated_transport_cc(*publisher, *subscriber, *payload_type_mapping))
         {
             if (!append_header_extension_id_rewrite("transport-cc",
