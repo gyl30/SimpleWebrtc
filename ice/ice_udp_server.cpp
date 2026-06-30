@@ -3149,7 +3149,7 @@ void ice_udp_server::stop()
     }
 }
 
-void ice_udp_server::forget_subscriber_session_runtime_state(std::string_view session_id)
+void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
 {
     if (session_id.empty())
     {
@@ -3276,7 +3276,6 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
         }
 
         pending_republish_keyframe_state_by_stream_.erase(std::string(stream_id));
-        pending_republish_keyframe_state_by_stream_.erase(std::string(stream_id));
     }
     WEBRTC_LOG_INFO(
         "publisher republish runtime state forgotten stream={} old_session={} cache_erased={} remaining_cache_packets={} "
@@ -3295,7 +3294,7 @@ void ice_udp_server::forget_session(std::string_view session_id)
         return;
     }
 
-    std::string remote_address;
+    std::vector<std::string> remote_addresses;
     bool endpoint_removed = false;
 
     {
@@ -3307,20 +3306,16 @@ void ice_udp_server::forget_session(std::string_view session_id)
         {
             retire_endpoint_locked(erased_remote_address, session_id, current_time_milliseconds, "session cleanup");
         }
+
         if (erased_remote_addresses.empty())
         {
             WEBRTC_LOG_DEBUG("ice udp session endpoint not found session={}", session_id);
         }
         else
         {
-            remote_address = erased_remote_addresses.front();
-            endpoint_address_by_session_id_.erase(remote_address);
-            session_id_by_endpoint_address_.erase(remote_address);
-            endpoints_by_address_.erase(remote_address);
-            endpoint_last_seen_milliseconds_by_address_.erase(remote_address);
+            remote_addresses = erased_remote_addresses;
             endpoint_removed = true;
         }
-
         erase_candidate_pairs_for_session_locked(session_id);
 
         const std::size_t orphan_endpoint_indexes_erased = erase_orphan_endpoint_indexes_locked();
@@ -3338,18 +3333,20 @@ void ice_udp_server::forget_session(std::string_view session_id)
         WEBRTC_LOG_DEBUG("ice udp session keyframe request states erased session={} count={}", session_id, erased_keyframe_request_state_count);
     }
 
-    forget_subscriber_session_runtime_state(session_id);
+    forget_session_runtime_state(session_id);
 
     if (endpoint_removed)
     {
-        send_dtls_close_notify(remote_address);
-        forget_peer_transport_state(remote_address);
+        for (const auto& remote_address : remote_addresses)
+        {
+            send_dtls_close_notify(remote_address);
+            forget_peer_transport_state(remote_address);
+        }
     }
 
     WEBRTC_LOG_INFO(
-        "ice udp session cleanup completed session={} endpoint_removed={} remote={}", session_id, endpoint_removed ? 1 : 0, remote_address);
+        "ice udp session cleanup completed session={} endpoint_removed={} remote_count={}", session_id, endpoint_removed, remote_addresses.size());
 }
-
 void ice_udp_server::touch_endpoint_activity(const boost::asio::ip::udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
@@ -12668,7 +12665,21 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
             ++iterator;
         }
 
-        publisher_video_ssrc_by_stream_.erase(std::string(stream_id));
+        const std::string publisher_video_ssrc_exact_key = std::string(stream_id);
+        const std::string publisher_video_ssrc_prefix = publisher_video_ssrc_exact_key + "|";
+
+        for (auto iterator = publisher_video_ssrc_by_stream_.begin(); iterator != publisher_video_ssrc_by_stream_.end();)
+        {
+            if (iterator->first == publisher_video_ssrc_exact_key || iterator->first.starts_with(publisher_video_ssrc_prefix))
+            {
+                iterator = publisher_video_ssrc_by_stream_.erase(iterator);
+
+                continue;
+            }
+
+            ++iterator;
+        }
+
         pending_republish_keyframe_state_by_stream_.erase(std::string(stream_id));
     }
     WEBRTC_LOG_INFO(
