@@ -5514,8 +5514,13 @@ keyframe_request_expected ice_udp_server::request_keyframe(std::string_view stre
         return make_error("publisher endpoint not found");
     }
 
-    const std::vector<keyframe_request_media_target> media_targets = collect_keyframe_request_media_targets(stream_id);
+    if (!outbound_media_runtime_ready(
+            *remote_address, result.publisher_session_id, result.stream_id, media_peer_role::publisher, "keyframe request protect"))
+    {
+        return make_error("publisher media runtime not ready");
+    }
 
+    const std::vector<keyframe_request_media_target> media_targets = collect_keyframe_request_media_targets(stream_id);
     if (media_targets.empty())
     {
         return make_error("publisher media ssrc not found");
@@ -6552,11 +6557,33 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
             continue;
         }
 
+        if (!outbound_media_runtime_ready(feedback_packet.remote_endpoint,
+                                          feedback_packet.session_id,
+                                          feedback_packet.stream_id,
+                                          media_peer_role::publisher,
+                                          "rtcp transport cc feedback protect"))
+        {
+            send_session_gate_skipped_count += 1;
+
+            rtcp_transport_cc_feedback_service_->forget_source(
+                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+            WEBRTC_LOG_DEBUG(
+                "rtcp transport cc protect skipped outbound runtime not ready stream={} session={} remote={} media_ssrc={} mid={} kind={}",
+                feedback_packet.stream_id,
+                feedback_packet.session_id,
+                feedback_packet.remote_endpoint,
+                feedback_packet.media_ssrc,
+                track_binding->mid,
+                track_binding->kind);
+
+            continue;
+        }
+
         auto protected_packet =
             srtp_transport_->protect_outbound_packet(std::span<const uint8_t>(feedback_packet.packet.data(), feedback_packet.packet.size()),
                                                      feedback_packet.remote_endpoint,
                                                      srtp_packet_kind::rtcp);
-
         if (!protected_packet)
         {
             protect_failed_count += 1;
@@ -13244,6 +13271,20 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
             continue;
         }
 
+        if (!outbound_media_runtime_ready(
+                target_address, target_peer->session_id, target_peer->stream_id, target_peer->role, "media forward protect"))
+        {
+            WEBRTC_LOG_DEBUG(
+                "media forward skipped outbound runtime not ready stream={} source={} target={} target_session={} target_role={} kind={}",
+                route.source.stream_id,
+                route.source.remote_endpoint,
+                target_address,
+                target_peer->session_id,
+                media_peer_role_to_string(target_peer->role),
+                srtp_packet_kind_to_string(packet.kind));
+
+            continue;
+        }
         auto protected_packet = srtp_transport_->protect_outbound_packet(
             std::span<const uint8_t>(outbound_plain_packet->data(), outbound_plain_packet->size()), target_address, packet.kind);
         if (!protected_packet)
@@ -14926,6 +14967,198 @@ ice_udp_server::current_session_endpoint_state ice_udp_server::validate_current_
     state.allowed = true;
 
     return state;
+}
+
+bool ice_udp_server::outbound_media_runtime_ready(std::string_view remote_address,
+                                                  std::string_view expected_session_id,
+                                                  std::string_view expected_stream_id,
+                                                  media_peer_role expected_role,
+                                                  std::string_view packet_kind)
+{
+    if (remote_address.empty() || expected_session_id.empty() || expected_stream_id.empty())
+    {
+        WEBRTC_LOG_DEBUG("outbound media runtime gate rejected empty identity remote={} session={} stream={} kind={}",
+                         remote_address,
+                         expected_session_id,
+                         expected_stream_id,
+                         packet_kind);
+
+        return false;
+    }
+
+    if (expected_role != media_peer_role::publisher && expected_role != media_peer_role::subscriber)
+    {
+        WEBRTC_LOG_DEBUG("outbound media runtime gate rejected unknown role remote={} session={} stream={} kind={}",
+                         remote_address,
+                         expected_session_id,
+                         expected_stream_id,
+                         packet_kind);
+
+        return false;
+    }
+
+    if (registry_ == nullptr)
+    {
+        WEBRTC_LOG_WARN("outbound media runtime gate rejected registry unavailable remote={} session={} stream={} role={} kind={}",
+                        remote_address,
+                        expected_session_id,
+                        expected_stream_id,
+                        media_peer_role_to_string(expected_role),
+                        packet_kind);
+
+        return false;
+    }
+
+    if (media_router_ == nullptr)
+    {
+        WEBRTC_LOG_WARN("outbound media runtime gate rejected media router unavailable remote={} session={} stream={} role={} kind={}",
+                        remote_address,
+                        expected_session_id,
+                        expected_stream_id,
+                        media_peer_role_to_string(expected_role),
+                        packet_kind);
+
+        return false;
+    }
+
+    const stream_session_kind expected_session_kind =
+        expected_role == media_peer_role::publisher ? stream_session_kind::publisher : stream_session_kind::subscriber;
+
+    const current_session_endpoint_state current_session =
+        validate_current_session_endpoint(remote_address, expected_session_id, expected_stream_id, packet_kind);
+
+    if (!current_session.allowed)
+    {
+        WEBRTC_LOG_DEBUG("outbound media runtime gate rejected by current session gate remote={} session={} stream={} role={} kind={} reason={}",
+                         remote_address,
+                         expected_session_id,
+                         expected_stream_id,
+                         media_peer_role_to_string(expected_role),
+                         packet_kind,
+                         current_session.reject_reason);
+
+        return false;
+    }
+
+    if (current_session.kind != expected_session_kind)
+    {
+        WEBRTC_LOG_DEBUG("outbound media runtime gate rejected session kind mismatch remote={} session={} stream={} expected_role={} kind={}",
+                         remote_address,
+                         expected_session_id,
+                         expected_stream_id,
+                         media_peer_role_to_string(expected_role),
+                         packet_kind);
+
+        return false;
+    }
+
+    const std::optional<media_peer_info> peer = media_router_->get_peer(remote_address);
+
+    if (!peer.has_value())
+    {
+        WEBRTC_LOG_DEBUG("outbound media runtime gate rejected peer not found remote={} session={} stream={} role={} kind={}",
+                         remote_address,
+                         expected_session_id,
+                         expected_stream_id,
+                         media_peer_role_to_string(expected_role),
+                         packet_kind);
+
+        return false;
+    }
+
+    if (peer->session_id != expected_session_id || peer->stream_id != expected_stream_id || peer->role != expected_role)
+    {
+        WEBRTC_LOG_DEBUG(
+            "outbound media runtime gate rejected peer mismatch remote={} expected_session={} expected_stream={} expected_role={} "
+            "peer_session={} peer_stream={} peer_role={} kind={}",
+            remote_address,
+            expected_session_id,
+            expected_stream_id,
+            media_peer_role_to_string(expected_role),
+            peer->session_id,
+            peer->stream_id,
+            media_peer_role_to_string(peer->role),
+            packet_kind);
+
+        return false;
+    }
+
+    std::size_t accepted_mline_count = 0;
+
+    if (expected_role == media_peer_role::publisher)
+    {
+        auto publisher = registry_->find_publisher_by_session_id(expected_session_id);
+
+        if (publisher == nullptr)
+        {
+            WEBRTC_LOG_DEBUG("outbound media runtime gate rejected publisher missing remote={} session={} stream={} kind={}",
+                             remote_address,
+                             expected_session_id,
+                             expected_stream_id,
+                             packet_kind);
+
+            return false;
+        }
+
+        if (publisher->stream_id() != expected_stream_id)
+        {
+            WEBRTC_LOG_DEBUG(
+                "outbound media runtime gate rejected publisher stream mismatch remote={} session={} expected_stream={} actual_stream={} kind={}",
+                remote_address,
+                expected_session_id,
+                expected_stream_id,
+                publisher->stream_id(),
+                packet_kind);
+
+            return false;
+        }
+
+        accepted_mline_count = publisher->accepted_remote_media_mline_indexes().size();
+    }
+    else
+    {
+        auto subscriber = registry_->find_subscriber_by_session_id(expected_session_id);
+
+        if (subscriber == nullptr)
+        {
+            WEBRTC_LOG_DEBUG("outbound media runtime gate rejected subscriber missing remote={} session={} stream={} kind={}",
+                             remote_address,
+                             expected_session_id,
+                             expected_stream_id,
+                             packet_kind);
+
+            return false;
+        }
+
+        if (subscriber->stream_id() != expected_stream_id)
+        {
+            WEBRTC_LOG_DEBUG(
+                "outbound media runtime gate rejected subscriber stream mismatch remote={} session={} expected_stream={} actual_stream={} kind={}",
+                remote_address,
+                expected_session_id,
+                expected_stream_id,
+                subscriber->stream_id(),
+                packet_kind);
+
+            return false;
+        }
+
+        accepted_mline_count = subscriber->accepted_remote_media_mline_indexes().size();
+    }
+
+    if (accepted_mline_count == 0)
+    {
+        WEBRTC_LOG_DEBUG("outbound media runtime gate rejected accepted media not ready remote={} session={} stream={} role={} kind={}",
+                         remote_address,
+                         expected_session_id,
+                         expected_stream_id,
+                         media_peer_role_to_string(expected_role),
+                         packet_kind);
+
+        return false;
+    }
+
+    return true;
 }
 
 std::optional<dtls_peer_identity> ice_udp_server::current_dtls_identity_for_session(std::string_view session_id) const
