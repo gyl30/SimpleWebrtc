@@ -3803,25 +3803,52 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             entry.last_consent_request_at_milliseconds = pair.last_consent_request_at_milliseconds;
             entry.last_consent_response_at_milliseconds = pair.last_consent_response_at_milliseconds;
             entry.consent_request_failures = static_cast<uint64_t>(pair.consent_request_failures);
+
             if (pair.selected)
             {
                 snapshot.selected_candidate_pair_count += 1;
             }
+
             if (pair.consent_request_in_flight)
             {
                 snapshot.candidate_pair_consent_in_flight_count += 1;
             }
 
             snapshot.candidate_pair_consent_failure_count += static_cast<uint64_t>(pair.consent_request_failures);
+
             const uint64_t consent_freshness_at_milliseconds =
                 pair.last_consent_response_at_milliseconds != 0 ? pair.last_consent_response_at_milliseconds : pair.last_binding_at_milliseconds;
+
+            uint64_t consent_age_milliseconds = 0;
+            bool consent_stale = false;
+
             if (pair.selected && consent_freshness_at_milliseconds != 0)
             {
-                const uint64_t consent_age_milliseconds =
+                consent_age_milliseconds =
                     current_time_milliseconds > consent_freshness_at_milliseconds ? current_time_milliseconds - consent_freshness_at_milliseconds : 0;
+
                 if (consent_age_milliseconds >= k_ice_consent_timeout_milliseconds)
                 {
+                    consent_stale = true;
+
                     snapshot.candidate_pair_consent_stale_count += 1;
+                }
+            }
+
+            if (pair.selected)
+            {
+                lifecycle_debug_session_entry* session_entry = find_lifecycle_debug_session_entry(snapshot.sessions, pair.session_id);
+
+                if (session_entry != nullptr)
+                {
+                    session_entry->has_selected_candidate_pair = true;
+                    session_entry->selected_candidate_pair_nominated = pair.nominated;
+                    session_entry->selected_candidate_pair_consent_in_flight = pair.consent_request_in_flight;
+                    session_entry->selected_candidate_pair_consent_stale = consent_stale;
+                    session_entry->selected_candidate_pair_last_binding_at_milliseconds = pair.last_binding_at_milliseconds;
+                    session_entry->selected_candidate_pair_last_consent_response_at_milliseconds = pair.last_consent_response_at_milliseconds;
+                    session_entry->selected_candidate_pair_consent_age_milliseconds = consent_age_milliseconds;
+                    session_entry->selected_candidate_pair_consent_failures = static_cast<uint64_t>(pair.consent_request_failures);
                 }
             }
 
@@ -3980,6 +4007,34 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             }
 
             snapshot.endpoints.push_back(std::move(entry));
+        }
+        for (auto& session_entry : snapshot.sessions)
+        {
+            session_entry.transport_blockers.clear();
+
+            if (!session_entry.has_endpoint)
+            {
+                session_entry.transport_blockers.push_back("endpoint missing");
+            }
+
+            if (!session_entry.has_selected_candidate_pair)
+            {
+                session_entry.transport_blockers.push_back("selected candidate pair missing");
+            }
+
+            if (session_entry.has_selected_candidate_pair && !session_entry.selected_candidate_pair_nominated)
+            {
+                session_entry.transport_blockers.push_back("selected candidate pair not nominated");
+            }
+
+            if (session_entry.selected_candidate_pair_consent_stale)
+            {
+                session_entry.transport_blockers.push_back("selected candidate pair consent stale");
+            }
+
+            session_entry.transport_blocker_count = to_debug_count(session_entry.transport_blockers.size());
+
+            session_entry.transport_ready = session_entry.transport_blocker_count == 0;
         }
     }
 

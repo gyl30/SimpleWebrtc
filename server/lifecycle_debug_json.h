@@ -19,6 +19,20 @@ struct lifecycle_debug_session_entry
     std::string endpoint;
     bool has_endpoint = false;
 
+    bool has_selected_candidate_pair = false;
+    bool selected_candidate_pair_nominated = false;
+    bool selected_candidate_pair_consent_in_flight = false;
+    bool selected_candidate_pair_consent_stale = false;
+
+    uint64_t selected_candidate_pair_last_binding_at_milliseconds = 0;
+    uint64_t selected_candidate_pair_last_consent_response_at_milliseconds = 0;
+    uint64_t selected_candidate_pair_consent_age_milliseconds = 0;
+    uint64_t selected_candidate_pair_consent_failures = 0;
+
+    bool transport_ready = false;
+    uint64_t transport_blocker_count = 0;
+    std::vector<std::string> transport_blockers;
+
     uint64_t created_at_milliseconds = 0;
     uint64_t updated_at_milliseconds = 0;
 };
@@ -157,8 +171,7 @@ struct lifecycle_debug_snapshot
 };
 
 REFLECT_STRUCT(webrtc::lifecycle_debug_session_entry,
-               (kind)(stream_id)(session_id)(state)(endpoint)(has_endpoint)(created_at_milliseconds)(updated_at_milliseconds));
-
+               (kind)(stream_id)(session_id)(state)(endpoint)(has_endpoint)(has_selected_candidate_pair)(selected_candidate_pair_nominated)(selected_candidate_pair_consent_in_flight)(selected_candidate_pair_consent_stale)(selected_candidate_pair_last_binding_at_milliseconds)(selected_candidate_pair_last_consent_response_at_milliseconds)(selected_candidate_pair_consent_age_milliseconds)(selected_candidate_pair_consent_failures)(transport_ready)(transport_blocker_count)(transport_blockers)(created_at_milliseconds)(updated_at_milliseconds));
 REFLECT_STRUCT(webrtc::lifecycle_debug_endpoint_entry,
                (endpoint)(session_id)(has_endpoint)(has_forward_session_index)(has_reverse_endpoint_index)(has_last_seen)(last_seen_milliseconds));
 
