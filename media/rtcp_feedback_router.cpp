@@ -61,6 +61,50 @@ rtcp_feedback_event_type choose_feedback_event_type(const rtcp_compound_block& b
 
     return rtcp_feedback_event_type::compound_feedback;
 }
+bool rtcp_feedback_route_event_has_valid_payload(const rtcp_feedback_route_event& event)
+{
+    if (!event.valid)
+    {
+        return false;
+    }
+
+    if (event.event_type == rtcp_feedback_event_type::generic_nack)
+    {
+        if (event.media_ssrc == 0)
+        {
+            return false;
+        }
+
+        if (event.nack_count == 0 || event.nack_items.empty())
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    if (event.event_type == rtcp_feedback_event_type::keyframe_request)
+    {
+        if (event.media_ssrc == 0)
+        {
+            return false;
+        }
+
+        if (!event.has_keyframe_request && event.fir_count == 0)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    if (event.event_type == rtcp_feedback_event_type::remb)
+    {
+        return event.remb_bitrate_bps != 0;
+    }
+
+    return false;
+}
 }    // namespace
 
 std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const srtp_packet_process_result& packet, const media_route_result& route)
@@ -114,8 +158,12 @@ std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const sr
     event.has_transport_cc = packet.rtcp_has_transport_cc;
     event.has_remb = packet.rtcp_has_remb;
     event.remb_bitrate_bps = packet.rtcp_remb_bitrate_bps;
-
     event.target_endpoints = route.target_endpoints;
+
+    if (!rtcp_feedback_route_event_has_valid_payload(event))
+    {
+        return std::nullopt;
+    }
 
     return event;
 }
@@ -171,6 +219,11 @@ std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const rt
     event.remb_bitrate_bps = block.remb_bitrate_bps;
     event.remb_ssrcs = block.remb_ssrcs;
     event.target_endpoints = route.target_endpoints;
+
+    if (!rtcp_feedback_route_event_has_valid_payload(event))
+    {
+        return std::nullopt;
+    }
 
     return event;
 }
