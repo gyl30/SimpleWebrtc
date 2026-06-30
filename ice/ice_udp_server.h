@@ -286,6 +286,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string publisher_session_id;
         std::string subscriber_session_id;
         std::string mid;
+        std::string kind;
         std::string rid;
 
         uint32_t primary_ssrc = 0;

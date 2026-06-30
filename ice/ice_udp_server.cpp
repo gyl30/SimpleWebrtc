@@ -248,28 +248,23 @@ std::string make_publisher_video_ssrc_state_key(std::string_view stream_id,
 std::string make_selected_rid_layer_key(std::string_view stream_id,
                                         std::string_view publisher_session_id,
                                         std::string_view subscriber_session_id,
-                                        std::string_view mid)
+                                        std::string_view mid,
+                                        std::string_view kind)
 {
     std::string key;
-
-    key.reserve(stream_id.size() + publisher_session_id.size() + subscriber_session_id.size() + mid.size() + 4);
-
+    key.reserve(stream_id.size() + publisher_session_id.size() + subscriber_session_id.size() + mid.size() + kind.size() + 5);
     key.append(stream_id);
-
     key.push_back('|');
-
     key.append(publisher_session_id);
-
     key.push_back('|');
-
     key.append(subscriber_session_id);
-
     key.push_back('|');
-
     key.append(mid);
-
+    key.push_back('|');
+    key.append(kind);
     return key;
 }
+
 std::string make_extmap_rewrite_runtime_state_key(std::string_view stream_id,
                                                   std::string_view publisher_session_id,
                                                   std::string_view subscriber_session_id,
@@ -10469,18 +10464,86 @@ void ice_udp_server::mark_republish_keyframe_request_pending(std::string_view st
     WEBRTC_LOG_INFO(
         "publisher republish keyframe request pending stream={} publisher_session={} scope=subscribers", stream_id, new_publisher_session_id);
 }
+
 void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_route_result& route,
                                                                 const media_peer_info& target_peer,
                                                                 const media_track_resolution& track_resolution,
                                                                 const media_identity_rid_layer_binding& selected_layer)
 {
-    if (route.source.stream_id.empty() || route.source.session_id.empty() || target_peer.session_id.empty() || selected_layer.mid.empty() ||
+    if (route.source.stream_id.empty() || route.source.session_id.empty() || target_peer.session_id.empty())
+    {
+        return;
+    }
+
+    if (!track_resolution.resolved || !is_video_media_kind(track_resolution.kind))
+    {
+        return;
+    }
+
+    if (track_resolution.mid.empty() || track_resolution.kind.empty() || selected_layer.mid.empty() || selected_layer.kind.empty() ||
         selected_layer.rid.empty())
     {
         return;
     }
 
-    const std::string key = make_selected_rid_layer_key(route.source.stream_id, route.source.session_id, target_peer.session_id, selected_layer.mid);
+    if (!selected_layer.stream_id.empty() && selected_layer.stream_id != route.source.stream_id)
+    {
+        WEBRTC_LOG_WARN("simulcast selected rid ignored stream mismatch route_stream={} layer_stream={} publisher_session={} subscriber_session={}",
+                        route.source.stream_id,
+                        selected_layer.stream_id,
+                        route.source.session_id,
+                        target_peer.session_id);
+
+        return;
+    }
+
+    if (!selected_layer.session_id.empty() && selected_layer.session_id != route.source.session_id)
+    {
+        WEBRTC_LOG_WARN("simulcast selected rid ignored session mismatch stream={} route_publisher_session={} layer_session={} subscriber_session={}",
+                        route.source.stream_id,
+                        route.source.session_id,
+                        selected_layer.session_id,
+                        target_peer.session_id);
+
+        return;
+    }
+
+    if (selected_layer.mid != track_resolution.mid || selected_layer.kind != track_resolution.kind)
+    {
+        WEBRTC_LOG_WARN(
+            "simulcast selected rid ignored media identity mismatch stream={} publisher_session={} subscriber_session={} layer_mid={} "
+            "packet_mid={} layer_kind={} packet_kind={} selected_rid={}",
+            route.source.stream_id,
+            route.source.session_id,
+            target_peer.session_id,
+            selected_layer.mid,
+            track_resolution.mid,
+            selected_layer.kind,
+            track_resolution.kind,
+            selected_layer.rid);
+
+        return;
+    }
+
+    if (track_resolution.rtx)
+    {
+        if (selected_layer.repair_ssrc != 0 && track_resolution.ssrc != selected_layer.repair_ssrc)
+        {
+            return;
+        }
+
+        if (selected_layer.repair_ssrc == 0 && selected_layer.primary_ssrc != 0 && track_resolution.rtx_primary_ssrc != selected_layer.primary_ssrc)
+        {
+            return;
+        }
+    }
+    else if (selected_layer.primary_ssrc != 0 && track_resolution.ssrc != selected_layer.primary_ssrc)
+    {
+        return;
+    }
+
+    const std::string key =
+        make_selected_rid_layer_key(route.source.stream_id, route.source.session_id, target_peer.session_id, selected_layer.mid, selected_layer.kind);
 
     std::lock_guard lock(endpoint_mutex_);
 
@@ -10490,12 +10553,15 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
     {
         selected_rid_layer_runtime_state& state = iterator->second;
 
-        if (state.rid == selected_layer.rid && state.primary_ssrc == selected_layer.primary_ssrc && state.repair_ssrc == selected_layer.repair_ssrc)
+        if (state.kind == selected_layer.kind && state.rid == selected_layer.rid && state.primary_ssrc == selected_layer.primary_ssrc &&
+            state.repair_ssrc == selected_layer.repair_ssrc)
         {
             state.packet_count += 1;
 
             return;
         }
+
+        state.kind = selected_layer.kind;
 
         state.rid = selected_layer.rid;
 
@@ -10508,12 +10574,13 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
         pending_selected_rid_keyframe_request_keys_.insert(key);
 
         WEBRTC_LOG_INFO(
-            "simulcast selected rid changed stream={} publisher_session={} subscriber_session={} mid={} selected_rid={} primary_ssrc={} "
+            "simulcast selected rid changed stream={} publisher_session={} subscriber_session={} mid={} kind={} selected_rid={} primary_ssrc={} "
             "repair_ssrc={}",
             route.source.stream_id,
             route.source.session_id,
             target_peer.session_id,
             selected_layer.mid,
+            selected_layer.kind,
             selected_layer.rid,
             selected_layer.primary_ssrc,
             selected_layer.repair_ssrc);
@@ -10531,6 +10598,8 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
 
     state.mid = selected_layer.mid;
 
+    state.kind = selected_layer.kind;
+
     state.rid = selected_layer.rid;
 
     state.primary_ssrc = selected_layer.primary_ssrc;
@@ -10544,16 +10613,18 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
     pending_selected_rid_keyframe_request_keys_.insert(key);
 
     WEBRTC_LOG_INFO(
-        "simulcast selected rid established stream={} publisher_session={} subscriber_session={} mid={} selected_rid={} primary_ssrc={} "
+        "simulcast selected rid established stream={} publisher_session={} subscriber_session={} mid={} kind={} selected_rid={} primary_ssrc={} "
         "repair_ssrc={}",
         route.source.stream_id,
         route.source.session_id,
         target_peer.session_id,
         selected_layer.mid,
+        selected_layer.kind,
         selected_layer.rid,
         selected_layer.primary_ssrc,
         selected_layer.repair_ssrc);
 }
+
 bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscriber(const srtp_packet_process_result& packet,
                                                                                   const media_route_result& route,
                                                                                   const std::optional<media_track_resolution>& track_resolution,
@@ -10579,13 +10650,14 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
         return false;
     }
 
-    if (track_resolution->mid.empty() || route.source.stream_id.empty() || route.source.session_id.empty() || target_peer.session_id.empty())
+    if (track_resolution->mid.empty() || track_resolution->kind.empty() || route.source.stream_id.empty() || route.source.session_id.empty() ||
+        target_peer.session_id.empty())
     {
         return false;
     }
 
-    const std::string key =
-        make_selected_rid_layer_key(route.source.stream_id, route.source.session_id, target_peer.session_id, track_resolution->mid);
+    const std::string key = make_selected_rid_layer_key(
+        route.source.stream_id, route.source.session_id, target_peer.session_id, track_resolution->mid, track_resolution->kind);
 
     std::lock_guard lock(endpoint_mutex_);
 
@@ -10607,7 +10679,14 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
 
     const selected_rid_layer_runtime_state& state = state_iterator->second;
 
-    if (state.rid.empty())
+    if (state.rid.empty() || state.kind.empty())
+    {
+        pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
+
+        return false;
+    }
+
+    if (state.kind != track_resolution->kind)
     {
         pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
 
@@ -10634,12 +10713,13 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
     pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
 
     WEBRTC_LOG_INFO(
-        "simulcast selected rid keyframe request consumed stream={} publisher_session={} subscriber_session={} mid={} selected_rid={} media_ssrc={} "
-        "rtx={}",
+        "simulcast selected rid keyframe request consumed stream={} publisher_session={} subscriber_session={} mid={} kind={} selected_rid={} "
+        "media_ssrc={} rtx={}",
         route.source.stream_id,
         route.source.session_id,
         target_peer.session_id,
         track_resolution->mid,
+        track_resolution->kind,
         state.rid,
         packet.ssrc,
         track_resolution->rtx ? 1 : 0);
