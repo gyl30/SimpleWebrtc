@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cctype>
 #include <expected>
 #include <optional>
 #include <set>
@@ -2119,6 +2120,105 @@ std::string make_rtcp_feedback_value(const codec_info& codec, std::string_view f
 
     return value;
 }
+std::string lower_rtcp_feedback_ascii(std::string_view value)
+{
+    std::string result;
+
+    result.reserve(value.size());
+
+    for (unsigned char ch : value)
+    {
+        result.push_back(static_cast<char>(std::tolower(ch)));
+    }
+
+    return result;
+}
+
+std::string normalize_rtcp_feedback_value(std::string_view feedback)
+{
+    const std::vector<std::string> tokens = split_sdp_tokens(feedback);
+
+    std::string normalized;
+
+    for (const auto& token : tokens)
+    {
+        if (token.empty())
+        {
+            continue;
+        }
+
+        if (!normalized.empty())
+        {
+            normalized.push_back(' ');
+        }
+
+        normalized.append(lower_rtcp_feedback_ascii(token));
+    }
+
+    return normalized;
+}
+
+bool rtcp_feedback_is_supported_for_answer_media(std::string_view media_kind, std::string_view feedback)
+{
+    const std::string normalized_feedback = normalize_rtcp_feedback_value(feedback);
+
+    if (normalized_feedback.empty())
+    {
+        return false;
+    }
+
+    if (media_kind == "audio")
+    {
+        return normalized_feedback == "transport-cc";
+    }
+
+    if (media_kind != "video")
+    {
+        return false;
+    }
+
+    if (normalized_feedback == "nack")
+    {
+        return true;
+    }
+
+    if (normalized_feedback == "nack pli")
+    {
+        return true;
+    }
+
+    if (normalized_feedback == "ccm fir")
+    {
+        return true;
+    }
+
+    if (normalized_feedback == "transport-cc")
+    {
+        return true;
+    }
+
+    if (normalized_feedback == "goog-remb")
+    {
+        return true;
+    }
+
+    return false;
+}
+
+std::string make_rtcp_feedback_deduplication_key(const codec_info& codec, std::string_view normalized_feedback)
+{
+    std::string key;
+
+    key.reserve(normalized_feedback.size() + 8);
+
+    key.append(std::to_string(codec.payload_type));
+
+    key.push_back('|');
+
+    key.append(normalized_feedback);
+
+    return key;
+}
 
 bool is_supported_answer_header_extension_uri(std::string_view kind, std::string_view uri)
 {
@@ -2437,8 +2537,10 @@ std::string make_candidate_value(const sdp_ice_candidate_options& candidate)
     return value;
 }
 
-void append_codec_attributes(media_description& answer_media, const std::vector<codec_info>& codecs)
+void append_codec_attributes(media_description& answer_media, std::string_view media_kind, const std::vector<codec_info>& codecs)
 {
+    std::set<std::string> emitted_rtcp_feedback;
+
     for (const auto& codec : codecs)
     {
         push_attribute(answer_media.attributes, k_attribute_rtp_map, make_rtp_map_value(codec));
@@ -2450,10 +2552,25 @@ void append_codec_attributes(media_description& answer_media, const std::vector<
 
         for (const auto& feedback : codec.rtcp_feedback)
         {
-            push_attribute(answer_media.attributes, k_attribute_rtcp_feedback, make_rtcp_feedback_value(codec, feedback));
+            if (!rtcp_feedback_is_supported_for_answer_media(media_kind, feedback))
+            {
+                continue;
+            }
+
+            const std::string normalized_feedback = normalize_rtcp_feedback_value(feedback);
+
+            const std::string deduplication_key = make_rtcp_feedback_deduplication_key(codec, normalized_feedback);
+
+            if (!emitted_rtcp_feedback.insert(deduplication_key).second)
+            {
+                continue;
+            }
+
+            push_attribute(answer_media.attributes, k_attribute_rtcp_feedback, make_rtcp_feedback_value(codec, normalized_feedback));
         }
     }
 }
+
 void append_media_timing_attributes(media_description& answer_media, const media_summary& media)
 {
     if (media.kind != "audio")
@@ -2646,7 +2763,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
         append_whep_simulcast_send_attributes(answer_media, media, forwarded_publisher_media);
     }
 
-    append_codec_attributes(answer_media, codecs);
+    append_codec_attributes(answer_media, media.kind, codecs);
 
     append_media_timing_attributes(answer_media, media);
 
