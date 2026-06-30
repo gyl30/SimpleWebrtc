@@ -20,6 +20,7 @@ namespace webrtc
 {
 namespace
 {
+constexpr std::size_t k_max_removed_session_tombstones = 4096;
 void notify_removed_sessions(const stream_session_removed_callback& callback, const std::vector<stream_removed_session>& removed_sessions)
 {
     if (!callback)
@@ -322,6 +323,68 @@ std::shared_ptr<subscriber_session> stream_registry::find_subscriber_by_local_ic
 
     return nullptr;
 }
+std::optional<stream_removed_session_tombstone> stream_registry::find_removed_session_tombstone(std::string_view session_id) const
+{
+    if (session_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    const auto iterator = removed_session_tombstones_by_session_id_.find(std::string(session_id));
+
+    if (iterator == removed_session_tombstones_by_session_id_.end())
+    {
+        return std::nullopt;
+    }
+
+    return iterator->second;
+}
+
+void stream_registry::remember_removed_session_locked(const stream_removed_session& removed_session)
+{
+    if (removed_session.session_id.empty())
+    {
+        return;
+    }
+
+    stream_removed_session_tombstone tombstone;
+
+    tombstone.kind = removed_session.kind;
+    tombstone.stream_id = removed_session.stream_id;
+    tombstone.session_id = removed_session.session_id;
+    tombstone.removed_at_milliseconds = now_milliseconds();
+
+    removed_session_tombstones_by_session_id_[tombstone.session_id] = std::move(tombstone);
+
+    prune_removed_session_tombstones_locked();
+}
+
+void stream_registry::prune_removed_session_tombstones_locked()
+{
+    while (removed_session_tombstones_by_session_id_.size() > k_max_removed_session_tombstones)
+    {
+        auto oldest_iterator = removed_session_tombstones_by_session_id_.end();
+
+        for (auto iterator = removed_session_tombstones_by_session_id_.begin(); iterator != removed_session_tombstones_by_session_id_.end();
+             ++iterator)
+        {
+            if (oldest_iterator == removed_session_tombstones_by_session_id_.end() ||
+                iterator->second.removed_at_milliseconds < oldest_iterator->second.removed_at_milliseconds)
+            {
+                oldest_iterator = iterator;
+            }
+        }
+
+        if (oldest_iterator == removed_session_tombstones_by_session_id_.end())
+        {
+            return;
+        }
+
+        removed_session_tombstones_by_session_id_.erase(oldest_iterator);
+    }
+}
 
 remove_session_result stream_registry::remove_publisher_session(std::string_view session_id)
 {
@@ -351,6 +414,7 @@ remove_session_result stream_registry::remove_publisher_session(std::string_view
         removed_publisher.local_ice_ufrag = publisher->local_ice().ufrag;
         removed_publisher.remote_ice_ufrag = publisher->remote_offer_summary().ice_ufrag;
 
+        remember_removed_session_locked(removed_publisher);
         removed_sessions.push_back(std::move(removed_publisher));
 
         const auto subscribers_iterator = subscriber_session_ids_by_stream_id_.find(stream_id);
@@ -377,8 +441,8 @@ remove_session_result stream_registry::remove_publisher_session(std::string_view
                 removed_subscriber.local_ice_ufrag = subscriber->local_ice().ufrag;
                 removed_subscriber.remote_ice_ufrag = subscriber->remote_offer_summary().ice_ufrag;
 
+                remember_removed_session_locked(removed_subscriber);
                 removed_sessions.push_back(std::move(removed_subscriber));
-
                 subscribers_by_session_id_.erase(subscriber_iterator);
             }
 
@@ -426,6 +490,7 @@ remove_session_result stream_registry::remove_subscriber_session(std::string_vie
         removed_subscriber.local_ice_ufrag = subscriber->local_ice().ufrag;
         removed_subscriber.remote_ice_ufrag = subscriber->remote_offer_summary().ice_ufrag;
 
+        remember_removed_session_locked(removed_subscriber);
         removed_sessions.push_back(std::move(removed_subscriber));
         subscribers_by_session_id_.erase(subscriber_iterator);
 

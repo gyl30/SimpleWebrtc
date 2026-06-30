@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -45,6 +46,14 @@ struct stream_removed_session
 
     std::string local_ice_ufrag;
     std::string remote_ice_ufrag;
+};
+struct stream_removed_session_tombstone
+{
+    stream_session_kind kind = stream_session_kind::publisher;
+    std::string stream_id;
+    std::string session_id;
+
+    uint64_t removed_at_milliseconds = 0;
 };
 struct stream_restarted_session
 {
@@ -153,6 +162,8 @@ class stream_registry
 
     [[nodiscard]] std::shared_ptr<subscriber_session> find_subscriber_by_local_ice_ufrag(std::string_view local_ice_ufrag) const;
 
+    [[nodiscard]] std::optional<stream_removed_session_tombstone> find_removed_session_tombstone(std::string_view session_id) const;
+
     [[nodiscard]] remove_session_result remove_publisher_session(std::string_view session_id);
 
     [[nodiscard]] remove_session_result remove_subscriber_session(std::string_view session_id);
@@ -178,6 +189,10 @@ class stream_registry
     [[nodiscard]] std::size_t subscriber_count() const;
 
    private:
+   private:
+    void remember_removed_session_locked(const stream_removed_session& removed_session);
+    void prune_removed_session_tombstones_locked();
+
     [[nodiscard]] std::string make_unique_session_id_locked() const;
     [[nodiscard]] static uint64_t now_milliseconds();
 
@@ -188,6 +203,7 @@ class stream_registry
     std::unordered_map<std::string, std::shared_ptr<publisher_session>> publishers_by_session_id_;
     std::unordered_map<std::string, std::shared_ptr<subscriber_session>> subscribers_by_session_id_;
     std::unordered_map<std::string, std::unordered_set<std::string>> subscriber_session_ids_by_stream_id_;
+    std::unordered_map<std::string, stream_removed_session_tombstone> removed_session_tombstones_by_session_id_;
 
     stream_session_removed_callback session_removed_callback_;
     stream_session_ice_restart_callback session_ice_restart_callback_;

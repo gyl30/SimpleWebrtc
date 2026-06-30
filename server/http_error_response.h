@@ -251,6 +251,10 @@ inline http_response_ptr make_sdp_http_response(http_request_t& request, int sta
 
     return response;
 }
+inline http_response_ptr make_json_http_gone_response(http_request_t& request, std::string_view error_code, std::string_view message)
+{
+    return make_json_http_error_response(request, 410, error_code, message);
+}
 }    // namespace webrtc
 
 #endif

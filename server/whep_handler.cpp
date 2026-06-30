@@ -508,9 +508,15 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
 
     if (session == nullptr)
     {
+        const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+
+        if (removed_session.has_value() && removed_session->kind == stream_session_kind::subscriber)
+        {
+            return json_error_response(request, 410, "whep_session_gone", "subscriber session already deleted");
+        }
+
         return json_error_response(request, 404, k_whep_session_not_found_error, "subscriber session not found");
     }
-
     auto precondition = validate_session_if_match(request, *session);
 
     if (!precondition)
@@ -526,13 +532,19 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
     {
         if (result.error() == stream_registry_error::subscriber_session_not_found)
         {
-            return json_error_response(request, 404, "subscriber session not found");
+            const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+
+            if (removed_session.has_value() && removed_session->kind == stream_session_kind::subscriber)
+            {
+                return json_error_response(request, 410, "whep_session_gone", "subscriber session already deleted");
+            }
+
+            return json_error_response(request, 404, k_whep_session_not_found_error, "subscriber session not found");
         }
 
         WEBRTC_LOG_ERROR("WHEP delete subscriber failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
         return json_error_response(request, 500, k_whep_delete_session_failed_error, "delete subscriber session failed");
     }
-
     auto response = create_response(request, 204, "");
 
     add_common_headers(response);

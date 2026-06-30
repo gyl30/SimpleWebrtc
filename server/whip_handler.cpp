@@ -512,9 +512,15 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
 
     if (session == nullptr)
     {
+        const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+
+        if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+        {
+            return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
+        }
+
         return json_error_response(request, 404, k_whip_session_not_found_error, "publisher session not found");
     }
-
     auto precondition = validate_session_if_match(request, *session);
 
     if (!precondition)
@@ -529,7 +535,14 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
     {
         if (result.error() == stream_registry_error::publisher_session_not_found)
         {
-            return json_error_response(request, 404, "publisher session not found");
+            const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+
+            if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+            {
+                return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
+            }
+
+            return json_error_response(request, 404, k_whip_session_not_found_error, "publisher session not found");
         }
 
         WEBRTC_LOG_ERROR("WHIP delete publisher failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
