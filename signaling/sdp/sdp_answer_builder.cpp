@@ -2713,6 +2713,11 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 
         if (!codec_result)
         {
+            if (role == answer_endpoint_role::whip)
+            {
+                return make_rejected_answer_media(options, media);
+            }
+
             return std::unexpected(codec_result.error());
         }
 
@@ -2821,6 +2826,11 @@ validation_result append_answer_media_descriptions(session_description& answer,
             has_accepted_media = true;
         }
         answer.media_descriptions.push_back(std::move(*answer_media));
+    }
+
+    if (role == answer_endpoint_role::whip && !has_accepted_media)
+    {
+        return make_error("whip answer has no supported publisher media");
     }
 
     if (role == answer_endpoint_role::whep && whep_publisher_offer != nullptr && !has_accepted_media)
