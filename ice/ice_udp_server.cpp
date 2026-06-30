@@ -1677,6 +1677,71 @@ std::optional<std::size_t> find_media_index_by_mid(const sdp::webrtc_offer_summa
 
     return std::nullopt;
 }
+bool accepted_offer_media_matches_mid_and_kind(const sdp::webrtc_offer_summary& offer,
+                                               const std::vector<int>& accepted_mline_indexes,
+                                               std::string_view mid,
+                                               std::string_view kind)
+{
+    if (mid.empty() || kind.empty())
+    {
+        return false;
+    }
+
+    const std::optional<std::size_t> media_index = find_media_index_by_mid(offer, mid);
+
+    if (!media_index.has_value())
+    {
+        return false;
+    }
+
+    if (!accepted_mline_indexes_contains(accepted_mline_indexes, *media_index))
+    {
+        return false;
+    }
+
+    const sdp::media_summary& media = offer.media[*media_index];
+
+    return media.kind == kind;
+}
+
+bool payload_type_mapping_matches_accepted_media(const publisher_session& publisher,
+                                                 const subscriber_session& subscriber,
+                                                 const media_payload_type_mapping& mapping)
+{
+    if (mapping.publisher_mid.empty() || mapping.subscriber_mid.empty() || mapping.kind.empty())
+    {
+        return false;
+    }
+
+    if (!accepted_offer_media_matches_mid_and_kind(
+            publisher.remote_offer_summary(), publisher.accepted_remote_media_mline_indexes(), mapping.publisher_mid, mapping.kind))
+    {
+        return false;
+    }
+
+    if (!accepted_offer_media_matches_mid_and_kind(
+            subscriber.remote_offer_summary(), subscriber.accepted_remote_media_mline_indexes(), mapping.subscriber_mid, mapping.kind))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+std::size_t erase_unaccepted_payload_type_mappings(media_payload_type_mapping_table& table,
+                                                   const publisher_session& publisher,
+                                                   const subscriber_session& subscriber)
+{
+    const std::size_t before_size = table.mappings.size();
+
+    table.mappings.erase(std::remove_if(table.mappings.begin(),
+                                        table.mappings.end(),
+                                        [&](const media_payload_type_mapping& mapping)
+                                        { return !payload_type_mapping_matches_accepted_media(publisher, subscriber, mapping); }),
+                         table.mappings.end());
+
+    return before_size - table.mappings.size();
+}
 bool accepted_offer_media_has_transport_cc(const sdp::webrtc_offer_summary& offer,
                                            const std::vector<int>& accepted_mline_indexes,
                                            std::string_view mid,
@@ -9211,10 +9276,40 @@ std::optional<media_payload_type_mapping_table> ice_udp_server::get_or_create_pa
         return std::nullopt;
     }
 
+    const std::size_t removed_mapping_count = erase_unaccepted_payload_type_mappings(*table_result, *publisher, *subscriber);
+
+    if (table_result->mappings.empty())
+    {
+        WEBRTC_LOG_WARN(
+            "payload type mapping build rejected by accepted media gate stream={} publisher_session={} subscriber_session={} "
+            "publisher_accepted_mlines={} subscriber_accepted_mlines={} removed_mappings={}",
+            stream_id,
+            publisher_session_id,
+            subscriber_session_id,
+            publisher->accepted_remote_media_mline_indexes().size(),
+            subscriber->accepted_remote_media_mline_indexes().size(),
+            removed_mapping_count);
+
+        return std::nullopt;
+    }
+
+    if (removed_mapping_count != 0)
+    {
+        WEBRTC_LOG_INFO(
+            "payload type mapping filtered by accepted media gate stream={} publisher_session={} subscriber_session={} remaining_mappings={} "
+            "removed_mappings={} publisher_accepted_mlines={} subscriber_accepted_mlines={}",
+            stream_id,
+            publisher_session_id,
+            subscriber_session_id,
+            table_result->mappings.size(),
+            removed_mapping_count,
+            publisher->accepted_remote_media_mline_indexes().size(),
+            subscriber->accepted_remote_media_mline_indexes().size());
+    }
+
     media_payload_type_mapping_cache_entry entry;
 
     entry.publisher_session_id = std::string(publisher_session_id);
-
     entry.subscriber_session_id = std::string(subscriber_session_id);
 
     entry.stream_id = std::string(stream_id);
