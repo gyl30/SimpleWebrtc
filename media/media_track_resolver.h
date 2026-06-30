@@ -79,23 +79,6 @@ class media_track_resolver
     media_track_resolver& operator=(media_track_resolver&&) = delete;
 
    public:
-    [[nodiscard]]
-    media_track_resolution_result resolve_inbound_rtp(std::string_view remote_endpoint,
-                                                      std::string_view stream_id,
-                                                      std::string_view session_id,
-                                                      const sdp::webrtc_offer_summary& offer,
-                                                      const std::vector<int>& accepted_mline_indexes,
-                                                      std::span<const uint8_t> plain_packet);
-    void forget_peer(std::string_view remote_endpoint);
-
-    void forget_session(std::string_view session_id);
-
-    void forget_stream(std::string_view stream_id);
-
-    [[nodiscard]]
-    std::size_t binding_count() const;
-
-   public:
     struct media_track_binding
     {
         std::string remote_endpoint;
@@ -119,6 +102,26 @@ class media_track_resolver
 
         uint64_t packet_count = 0;
     };
+
+   public:
+    [[nodiscard]]
+    media_track_resolution_result resolve_inbound_rtp(std::string_view remote_endpoint,
+                                                      std::string_view stream_id,
+                                                      std::string_view session_id,
+                                                      const sdp::webrtc_offer_summary& offer,
+                                                      const std::vector<int>& accepted_mline_indexes,
+                                                      std::span<const uint8_t> plain_packet);
+    void forget_peer(std::string_view remote_endpoint);
+
+    void forget_session(std::string_view session_id);
+
+    void forget_stream(std::string_view stream_id);
+
+    [[nodiscard]]
+    std::size_t binding_count() const;
+
+    [[nodiscard]]
+    std::vector<media_track_binding> binding_snapshot() const;
 
    private:
     [[nodiscard]]

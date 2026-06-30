@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <mutex>
+#include <vector>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -169,6 +170,15 @@ class media_identity_authority
 
     [[nodiscard]]
     std::size_t rid_layer_binding_count() const;
+
+    [[nodiscard]]
+    std::vector<media_identity_track_binding> track_binding_snapshot() const;
+
+    [[nodiscard]]
+    std::vector<media_identity_rid_layer_binding> rid_layer_binding_snapshot() const;
+
+    [[nodiscard]]
+    std::vector<media_identity_forward_binding> forward_binding_snapshot() const;
 
    private:
     [[nodiscard]]

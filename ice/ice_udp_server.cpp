@@ -362,7 +362,15 @@ bool contains_string(const std::vector<std::string>& values, std::string_view va
 }
 
 uint64_t to_debug_count(std::size_t value) { return static_cast<uint64_t>(value); }
+std::string optional_string_or_empty(const std::optional<std::string>& value)
+{
+    if (!value.has_value())
+    {
+        return {};
+    }
 
+    return *value;
+}
 void add_lifecycle_inconsistency(lifecycle_debug_snapshot& snapshot, std::string message)
 {
     snapshot.consistent = false;
@@ -4063,18 +4071,142 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
     if (track_resolver_ != nullptr)
     {
-        snapshot.track_binding_count = to_debug_count(track_resolver_->binding_count());
-    }
+        const std::vector<media_track_resolver::media_track_binding> bindings = track_resolver_->binding_snapshot();
 
+        snapshot.track_binding_count = to_debug_count(bindings.size());
+
+        snapshot.track_bindings.reserve(bindings.size());
+
+        for (const auto& binding : bindings)
+        {
+            lifecycle_debug_track_binding_entry entry;
+
+            entry.remote_endpoint = binding.remote_endpoint;
+            entry.stream_id = binding.stream_id;
+            entry.session_id = binding.session_id;
+
+            entry.mid = binding.mid;
+            entry.kind = binding.kind;
+            entry.rid = optional_string_or_empty(binding.rid);
+            entry.repaired_rid = optional_string_or_empty(binding.repaired_rid);
+
+            entry.ssrc = binding.ssrc;
+            entry.payload_type = static_cast<uint64_t>(binding.payload_type);
+
+            entry.rtx = binding.rtx;
+            entry.rtx_primary_ssrc = binding.rtx_primary_ssrc;
+            entry.rtx_repair_ssrc = binding.rtx_repair_ssrc;
+
+            entry.packet_count = binding.packet_count;
+
+            snapshot.track_bindings.push_back(std::move(entry));
+        }
+    }
     if (ssrc_mapper_ != nullptr)
     {
         snapshot.ssrc_mapping_count = to_debug_count(ssrc_mapper_->mapping_count());
     }
     if (identity_authority_ != nullptr)
     {
-        snapshot.identity_authority_track_binding_count = to_debug_count(identity_authority_->track_binding_count());
-        snapshot.identity_authority_rid_layer_binding_count = to_debug_count(identity_authority_->rid_layer_binding_count());
-        snapshot.identity_authority_forward_binding_count = to_debug_count(identity_authority_->forward_binding_count());
+        const std::vector<media_identity_track_binding> track_bindings = identity_authority_->track_binding_snapshot();
+        const std::vector<media_identity_rid_layer_binding> rid_layers = identity_authority_->rid_layer_binding_snapshot();
+        const std::vector<media_identity_forward_binding> forward_bindings = identity_authority_->forward_binding_snapshot();
+
+        snapshot.identity_authority_track_binding_count = to_debug_count(track_bindings.size());
+        snapshot.identity_authority_rid_layer_binding_count = to_debug_count(rid_layers.size());
+        snapshot.identity_authority_forward_binding_count = to_debug_count(forward_bindings.size());
+
+        snapshot.identity_track_bindings.reserve(track_bindings.size());
+
+        for (const auto& binding : track_bindings)
+        {
+            lifecycle_debug_identity_track_binding_entry entry;
+
+            entry.remote_endpoint = binding.remote_endpoint;
+            entry.stream_id = binding.stream_id;
+            entry.session_id = binding.session_id;
+
+            entry.track_key = binding.track_key;
+
+            entry.mid = binding.mid;
+            entry.kind = binding.kind;
+            entry.rid = optional_string_or_empty(binding.rid);
+            entry.repaired_rid = optional_string_or_empty(binding.repaired_rid);
+
+            entry.ssrc = binding.ssrc;
+            entry.payload_type = static_cast<uint64_t>(binding.payload_type);
+
+            entry.rtx = binding.rtx;
+
+            entry.packet_count = binding.packet_count;
+
+            snapshot.identity_track_bindings.push_back(std::move(entry));
+        }
+
+        snapshot.identity_rid_layers.reserve(rid_layers.size());
+
+        for (const auto& binding : rid_layers)
+        {
+            lifecycle_debug_identity_rid_layer_entry entry;
+
+            entry.remote_endpoint = binding.remote_endpoint;
+            entry.stream_id = binding.stream_id;
+            entry.session_id = binding.session_id;
+
+            entry.mid = binding.mid;
+            entry.kind = binding.kind;
+            entry.rid = binding.rid;
+
+            entry.primary_ssrc = binding.primary_ssrc;
+            entry.repair_ssrc = binding.repair_ssrc;
+
+            entry.primary_payload_type = static_cast<uint64_t>(binding.primary_payload_type);
+            entry.repair_payload_type = static_cast<uint64_t>(binding.repair_payload_type);
+
+            entry.packet_count = binding.packet_count;
+
+            snapshot.identity_rid_layers.push_back(std::move(entry));
+        }
+
+        snapshot.identity_forward_bindings.reserve(forward_bindings.size());
+
+        for (const auto& binding : forward_bindings)
+        {
+            lifecycle_debug_identity_forward_binding_entry entry;
+
+            entry.stream_id = binding.stream_id;
+
+            entry.publisher_session_id = binding.publisher_session_id;
+            entry.subscriber_session_id = binding.subscriber_session_id;
+
+            entry.publisher_track_key = binding.publisher_track_key;
+            entry.subscriber_track_key = binding.subscriber_track_key;
+
+            entry.publisher_mid = binding.publisher_mid;
+            entry.subscriber_mid = binding.subscriber_mid;
+            entry.kind = binding.kind;
+
+            entry.publisher_ssrc = binding.publisher_ssrc;
+            entry.subscriber_ssrc = binding.subscriber_ssrc;
+
+            entry.publisher_payload_type = static_cast<uint64_t>(binding.publisher_payload_type);
+            entry.subscriber_payload_type = static_cast<uint64_t>(binding.subscriber_payload_type);
+
+            entry.rtx = binding.rtx;
+            entry.publisher_apt_payload_type = static_cast<uint64_t>(binding.publisher_apt_payload_type);
+            entry.subscriber_apt_payload_type = static_cast<uint64_t>(binding.subscriber_apt_payload_type);
+
+            entry.publisher_rtx_primary_ssrc = binding.publisher_rtx_primary_ssrc;
+            entry.publisher_rtx_repair_ssrc = binding.publisher_rtx_repair_ssrc;
+
+            entry.payload_type_rewrite_required = binding.payload_type_rewrite_required;
+            entry.mid_rewrite_required = binding.mid_rewrite_required;
+            entry.ssrc_rewrite_required = binding.ssrc_rewrite_required;
+
+            entry.packet_count = binding.packet_count;
+
+            snapshot.identity_forward_bindings.push_back(std::move(entry));
+        }
     }
     if (rtcp_report_service_ != nullptr)
     {

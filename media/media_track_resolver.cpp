@@ -878,6 +878,24 @@ std::size_t media_track_resolver::binding_count() const
     return bindings_by_peer_ssrc_.size();
 }
 
+std::vector<media_track_resolver::media_track_binding> media_track_resolver::binding_snapshot() const
+{
+    std::vector<media_track_binding> snapshot;
+
+    std::lock_guard lock(mutex_);
+
+    snapshot.reserve(bindings_by_peer_ssrc_.size());
+
+    for (const auto& [key, binding] : bindings_by_peer_ssrc_)
+    {
+        (void)key;
+
+        snapshot.push_back(binding);
+    }
+
+    return snapshot;
+}
+
 std::optional<media_track_resolver::media_track_binding> media_track_resolver::find_binding_locked(std::string_view remote_endpoint,
                                                                                                    uint32_t ssrc) const
 {

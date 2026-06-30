@@ -424,6 +424,59 @@ std::size_t media_identity_authority::rid_layer_binding_count() const
     std::lock_guard lock(mutex_);
     return rid_layers_by_key_.size();
 }
+std::vector<media_identity_track_binding> media_identity_authority::track_binding_snapshot() const
+{
+    std::vector<media_identity_track_binding> snapshot;
+
+    std::lock_guard lock(mutex_);
+
+    snapshot.reserve(tracks_by_peer_ssrc_.size());
+
+    for (const auto& [key, binding] : tracks_by_peer_ssrc_)
+    {
+        (void)key;
+
+        snapshot.push_back(binding);
+    }
+
+    return snapshot;
+}
+
+std::vector<media_identity_rid_layer_binding> media_identity_authority::rid_layer_binding_snapshot() const
+{
+    std::vector<media_identity_rid_layer_binding> snapshot;
+
+    std::lock_guard lock(mutex_);
+
+    snapshot.reserve(rid_layers_by_key_.size());
+
+    for (const auto& [key, binding] : rid_layers_by_key_)
+    {
+        (void)key;
+
+        snapshot.push_back(binding);
+    }
+
+    return snapshot;
+}
+
+std::vector<media_identity_forward_binding> media_identity_authority::forward_binding_snapshot() const
+{
+    std::vector<media_identity_forward_binding> snapshot;
+
+    std::lock_guard lock(mutex_);
+
+    snapshot.reserve(forwards_by_publisher_key_.size());
+
+    for (const auto& [key, binding] : forwards_by_publisher_key_)
+    {
+        (void)key;
+
+        snapshot.push_back(binding);
+    }
+
+    return snapshot;
+}
 std::string media_identity_authority::make_peer_ssrc_key(std::string_view remote_endpoint, uint32_t ssrc)
 {
     std::string key;
