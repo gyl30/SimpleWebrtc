@@ -46,23 +46,20 @@ void write_u32(std::vector<uint8_t>& packet, std::size_t offset, uint32_t value)
     packet[offset + 3] = static_cast<uint8_t>(value & 0xffU);
 }
 
-bool header_extension_id_exists(const rtp_packet_header& header, uint8_t extension_id)
+struct rtp_rtx_header_extension_id_rewrite_plan_entry
 {
-    if (extension_id == 0)
-    {
-        return false;
-    }
+    const rtp_header_extension_entry* extension = nullptr;
 
-    for (const auto& extension : header.header_extensions)
-    {
-        if (extension.id == extension_id)
-        {
-            return true;
-        }
-    }
+    uint8_t source_id = 0;
+    uint8_t target_id = 0;
+};
 
-    return false;
-}
+struct rtp_rtx_header_extension_id_rewrite_plan
+{
+    std::vector<rtp_rtx_header_extension_id_rewrite_plan_entry> entries;
+
+    bool changed = false;
+};
 
 const rtp_header_extension_entry* find_header_extension_entry(const rtp_packet_header& header, uint8_t extension_id)
 {
@@ -80,6 +77,210 @@ const rtp_header_extension_entry* find_header_extension_entry(const rtp_packet_h
     }
 
     return nullptr;
+}
+
+std::expected<void, std::string> validate_rtx_header_extension_target_id(rtp_header_extension_format format, uint8_t target_id)
+{
+    if (target_id == 0)
+    {
+        return make_error("rtx header extension target id is zero");
+    }
+
+    switch (format)
+    {
+        case rtp_header_extension_format::one_byte:
+            if (target_id >= 15)
+            {
+                return make_error("rtx one-byte header extension target id is out of range");
+            }
+
+            return {};
+
+        case rtp_header_extension_format::two_byte:
+            return {};
+
+        case rtp_header_extension_format::unknown:
+            return make_error("rtx header extension format is unknown");
+    }
+
+    return make_error("rtx header extension format is unsupported");
+}
+
+std::expected<void, std::string> append_normalized_rtx_header_extension_id_rewrite(
+    std::vector<rtp_rtx_header_extension_id_rewrite>& normalized_rewrites, const rtp_rtx_header_extension_id_rewrite& rewrite)
+{
+    if (rewrite.source_id == rewrite.target_id)
+    {
+        return {};
+    }
+
+    for (const auto& existing : normalized_rewrites)
+    {
+        if (existing.source_id != rewrite.source_id)
+        {
+            continue;
+        }
+
+        if (existing.target_id == rewrite.target_id)
+        {
+            return {};
+        }
+
+        return make_error("rtx header extension source id has conflicting rewrite targets");
+    }
+
+    normalized_rewrites.push_back(rewrite);
+
+    return {};
+}
+
+bool find_normalized_rtx_target_id(const std::vector<rtp_rtx_header_extension_id_rewrite>& normalized_rewrites, uint8_t source_id, uint8_t& target_id)
+{
+    for (const auto& rewrite : normalized_rewrites)
+    {
+        if (rewrite.source_id == source_id)
+        {
+            target_id = rewrite.target_id;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool rtx_final_header_extension_id_exists(const std::vector<uint8_t>& final_ids, uint8_t final_id)
+{
+    for (const auto& existing : final_ids)
+    {
+        if (existing == final_id)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::expected<void, std::string> validate_final_rtx_header_extension_ids(const rtp_packet_header& header,
+                                                                         const std::vector<rtp_rtx_header_extension_id_rewrite>& normalized_rewrites)
+{
+    std::vector<uint8_t> final_ids;
+
+    final_ids.reserve(header.header_extensions.size());
+
+    for (const auto& extension : header.header_extensions)
+    {
+        uint8_t final_id = extension.id;
+
+        uint8_t target_id = 0;
+
+        if (find_normalized_rtx_target_id(normalized_rewrites, extension.id, target_id))
+        {
+            final_id = target_id;
+        }
+
+        auto validation_result = validate_rtx_header_extension_target_id(header.extension_format, final_id);
+
+        if (!validation_result)
+        {
+            return std::unexpected(validation_result.error());
+        }
+
+        if (rtx_final_header_extension_id_exists(final_ids, final_id))
+        {
+            return make_error("rtx header extension rewrite plan has duplicate final id");
+        }
+
+        final_ids.push_back(final_id);
+    }
+
+    return {};
+}
+
+std::expected<rtp_rtx_header_extension_id_rewrite_plan, std::string> make_rtx_header_extension_id_rewrite_plan(const rtp_packet_header& header,
+                                                                                                               const rtp_rtx_packet_options& options)
+{
+    rtp_rtx_header_extension_id_rewrite_plan plan;
+
+    std::vector<rtp_rtx_header_extension_id_rewrite> normalized_rewrites;
+
+    normalized_rewrites.reserve(options.header_extension_id_rewrites.size());
+
+    for (const auto& rewrite : options.header_extension_id_rewrites)
+    {
+        if (rewrite.source_id == 0)
+        {
+            return make_error("rtx header extension source id is zero");
+        }
+
+        if (rewrite.target_id == 0)
+        {
+            return make_error("rtx header extension target id is zero");
+        }
+
+        if (rewrite.source_id == rewrite.target_id)
+        {
+            continue;
+        }
+
+        const rtp_header_extension_entry* source_extension = find_header_extension_entry(header, rewrite.source_id);
+
+        if (source_extension == nullptr)
+        {
+            continue;
+        }
+
+        auto target_validation_result = validate_rtx_header_extension_target_id(header.extension_format, rewrite.target_id);
+
+        if (!target_validation_result)
+        {
+            return std::unexpected(target_validation_result.error());
+        }
+
+        auto append_result = append_normalized_rtx_header_extension_id_rewrite(normalized_rewrites, rewrite);
+
+        if (!append_result)
+        {
+            return std::unexpected(append_result.error());
+        }
+    }
+
+    if (normalized_rewrites.empty())
+    {
+        return plan;
+    }
+
+    auto final_ids_validation_result = validate_final_rtx_header_extension_ids(header, normalized_rewrites);
+
+    if (!final_ids_validation_result)
+    {
+        return std::unexpected(final_ids_validation_result.error());
+    }
+
+    plan.entries.reserve(normalized_rewrites.size());
+
+    for (const auto& rewrite : normalized_rewrites)
+    {
+        const rtp_header_extension_entry* source_extension = find_header_extension_entry(header, rewrite.source_id);
+
+        if (source_extension == nullptr)
+        {
+            continue;
+        }
+
+        rtp_rtx_header_extension_id_rewrite_plan_entry entry;
+
+        entry.extension = source_extension;
+        entry.source_id = rewrite.source_id;
+        entry.target_id = rewrite.target_id;
+
+        plan.entries.push_back(entry);
+
+        plan.changed = true;
+    }
+
+    return plan;
 }
 
 std::expected<void, std::string> rewrite_one_byte_header_extension_id(std::vector<uint8_t>& packet,
@@ -135,9 +336,14 @@ std::expected<void, std::string> rewrite_two_byte_header_extension_id(std::vecto
 }
 
 std::expected<void, std::string> rewrite_header_extension_id(std::vector<uint8_t>& packet,
-                                                             const rtp_packet_header& header,
-                                                             const rtp_rtx_header_extension_id_rewrite& rewrite)
+                                                             rtp_header_extension_format format,
+                                                             const rtp_rtx_header_extension_id_rewrite_plan_entry& rewrite)
 {
+    if (rewrite.extension == nullptr)
+    {
+        return make_error("rtx header extension rewrite source extension is null");
+    }
+
     if (rewrite.source_id == 0)
     {
         return make_error("rtx header extension source id is zero");
@@ -153,25 +359,13 @@ std::expected<void, std::string> rewrite_header_extension_id(std::vector<uint8_t
         return {};
     }
 
-    const rtp_header_extension_entry* source_extension = find_header_extension_entry(header, rewrite.source_id);
-
-    if (source_extension == nullptr)
-    {
-        return {};
-    }
-
-    if (header_extension_id_exists(header, rewrite.target_id))
-    {
-        return make_error("rtx header extension target id is already present");
-    }
-
-    switch (header.extension_format)
+    switch (format)
     {
         case rtp_header_extension_format::one_byte:
-            return rewrite_one_byte_header_extension_id(packet, *source_extension, rewrite.target_id);
+            return rewrite_one_byte_header_extension_id(packet, *rewrite.extension, rewrite.target_id);
 
         case rtp_header_extension_format::two_byte:
-            return rewrite_two_byte_header_extension_id(packet, *source_extension, rewrite.target_id);
+            return rewrite_two_byte_header_extension_id(packet, *rewrite.extension, rewrite.target_id);
 
         case rtp_header_extension_format::unknown:
             return make_error("rtx header extension format is unknown");
@@ -184,9 +378,21 @@ std::expected<void, std::string> rewrite_header_extension_ids(std::vector<uint8_
                                                               const rtp_packet_header& header,
                                                               const rtp_rtx_packet_options& options)
 {
-    for (const auto& rewrite : options.header_extension_id_rewrites)
+    auto plan = make_rtx_header_extension_id_rewrite_plan(header, options);
+
+    if (!plan)
     {
-        auto rewrite_result = rewrite_header_extension_id(packet, header, rewrite);
+        return std::unexpected(plan.error());
+    }
+
+    if (!plan->changed)
+    {
+        return {};
+    }
+
+    for (const auto& rewrite : plan->entries)
+    {
+        auto rewrite_result = rewrite_header_extension_id(packet, header.extension_format, rewrite);
 
         if (!rewrite_result)
         {
