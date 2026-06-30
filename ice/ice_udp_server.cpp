@@ -1648,6 +1648,76 @@ std::optional<uint8_t> find_transport_wide_cc_header_extension_id(const sdp::med
 
     return std::nullopt;
 }
+bool accepted_mline_indexes_contains(const std::vector<int>& accepted_mline_indexes, std::size_t media_index)
+{
+    if (media_index > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    {
+        return false;
+    }
+
+    const int expected_index = static_cast<int>(media_index);
+
+    return std::find(accepted_mline_indexes.begin(), accepted_mline_indexes.end(), expected_index) != accepted_mline_indexes.end();
+}
+
+std::optional<std::size_t> find_media_index_by_mid(const sdp::webrtc_offer_summary& offer, std::string_view mid)
+{
+    if (mid.empty())
+    {
+        return std::nullopt;
+    }
+
+    for (std::size_t index = 0; index < offer.media.size(); ++index)
+    {
+        if (offer.media[index].mid == mid)
+        {
+            return index;
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool publisher_media_has_negotiated_transport_cc(const publisher_session& publisher, const std::optional<media_track_resolution>& track_resolution)
+{
+    if (!track_resolution.has_value())
+    {
+        return false;
+    }
+
+    if (!track_resolution->resolved)
+    {
+        return false;
+    }
+
+    if (track_resolution->mid.empty() || track_resolution->kind.empty())
+    {
+        return false;
+    }
+
+    const sdp::webrtc_offer_summary& offer = publisher.remote_offer_summary();
+
+    const std::optional<std::size_t> media_index = find_media_index_by_mid(offer, track_resolution->mid);
+
+    if (!media_index.has_value())
+    {
+        return false;
+    }
+
+    if (!accepted_mline_indexes_contains(publisher.accepted_remote_media_mline_indexes(), *media_index))
+    {
+        return false;
+    }
+
+    const sdp::media_summary& media = offer.media[*media_index];
+
+    if (media.kind != track_resolution->kind)
+    {
+        return false;
+    }
+
+    return find_transport_wide_cc_header_extension_id(media).has_value();
+}
 
 optional_header_extension_id_rewrite_result make_transport_wide_cc_header_extension_id_rewrite(const media_payload_type_mapping& mapping,
                                                                                                const sdp::webrtc_offer_summary& publisher_offer,
@@ -7453,7 +7523,34 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
     if (peer.role == media_peer_role::publisher && rtcp_transport_cc_feedback_service_ != nullptr && track_resolution.has_value() &&
         track_resolution->resolved && track_resolution->transport_wide_sequence_number.has_value())
     {
-        if (identity_authority_ == nullptr)
+        auto publisher = registry_ != nullptr ? registry_->find_publisher_by_session_id(peer.session_id) : nullptr;
+
+        if (publisher == nullptr)
+        {
+            WEBRTC_LOG_DEBUG(
+                "rtcp transport cc observe skipped publisher session not found stream={} session={} remote={} ssrc={} mid={} kind={} twcc={}",
+                peer.stream_id,
+                peer.session_id,
+                peer.remote_endpoint,
+                header->ssrc,
+                track_resolution->mid,
+                track_resolution->kind,
+                *track_resolution->transport_wide_sequence_number);
+        }
+        else if (!publisher_media_has_negotiated_transport_cc(*publisher, track_resolution))
+        {
+            WEBRTC_LOG_DEBUG(
+                "rtcp transport cc observe skipped not negotiated stream={} session={} remote={} ssrc={} mid={} kind={} twcc={} accepted_mlines={}",
+                peer.stream_id,
+                peer.session_id,
+                peer.remote_endpoint,
+                header->ssrc,
+                track_resolution->mid,
+                track_resolution->kind,
+                *track_resolution->transport_wide_sequence_number,
+                publisher->accepted_remote_media_mline_indexes().size());
+        }
+        else if (identity_authority_ == nullptr)
         {
             WEBRTC_LOG_DEBUG("rtcp transport cc observe skipped identity authority unavailable stream={} session={} remote={} ssrc={} twcc={}",
                              peer.stream_id,
