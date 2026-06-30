@@ -7767,8 +7767,89 @@ void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_pe
         return;
     }
 
+    if (target_peer.session_id.empty() || target_peer.remote_endpoint.empty())
+    {
+        return;
+    }
+
     if (outbound_plain_packet.empty())
     {
+        return;
+    }
+
+    if (!mapping.has_value())
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats outbound rtp skipped missing mapping stream={} session={} remote={}",
+                         target_peer.stream_id,
+                         target_peer.session_id,
+                         target_peer.remote_endpoint);
+
+        return;
+    }
+
+    if (mapping->subscriber_session_id != target_peer.session_id)
+    {
+        WEBRTC_LOG_WARN(
+            "rtcp stats outbound rtp skipped mapping session mismatch target_stream={} target_session={} remote={} mapping_stream={} "
+            "mapping_publisher_session={} mapping_subscriber_session={} publisher_mid={} subscriber_mid={} publisher_ssrc={} subscriber_ssrc={}",
+            target_peer.stream_id,
+            target_peer.session_id,
+            target_peer.remote_endpoint,
+            mapping->stream_id,
+            mapping->publisher_session_id,
+            mapping->subscriber_session_id,
+            mapping->publisher_mid,
+            mapping->subscriber_mid,
+            mapping->publisher_ssrc,
+            mapping->subscriber_ssrc);
+
+        return;
+    }
+
+    if (!target_peer.stream_id.empty() && mapping->stream_id != target_peer.stream_id)
+    {
+        WEBRTC_LOG_WARN(
+            "rtcp stats outbound rtp skipped mapping stream mismatch target_stream={} target_session={} remote={} mapping_stream={} "
+            "mapping_publisher_session={} publisher_mid={} subscriber_mid={} publisher_ssrc={} subscriber_ssrc={}",
+            target_peer.stream_id,
+            target_peer.session_id,
+            target_peer.remote_endpoint,
+            mapping->stream_id,
+            mapping->publisher_session_id,
+            mapping->publisher_mid,
+            mapping->subscriber_mid,
+            mapping->publisher_ssrc,
+            mapping->subscriber_ssrc);
+
+        return;
+    }
+
+    if (mapping->subscriber_mid.empty() || mapping->kind.empty())
+    {
+        WEBRTC_LOG_WARN(
+            "rtcp stats outbound rtp skipped incomplete mapping stream={} session={} remote={} publisher_mid={} subscriber_mid={} kind={} "
+            "publisher_ssrc={} subscriber_ssrc={}",
+            target_peer.stream_id,
+            target_peer.session_id,
+            target_peer.remote_endpoint,
+            mapping->publisher_mid,
+            mapping->subscriber_mid,
+            mapping->kind,
+            mapping->publisher_ssrc,
+            mapping->subscriber_ssrc);
+
+        return;
+    }
+
+    if (media_ssrc_mapping_is_rtx(*mapping))
+    {
+        WEBRTC_LOG_DEBUG("rtcp stats outbound rtp skipped rtx mapping stream={} session={} remote={} subscriber_ssrc={} publisher_ssrc={}",
+                         target_peer.stream_id,
+                         target_peer.session_id,
+                         target_peer.remote_endpoint,
+                         mapping->subscriber_ssrc,
+                         mapping->publisher_ssrc);
+
         return;
     }
 
@@ -7781,14 +7862,25 @@ void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_pe
         return;
     }
 
-    if (mapping.has_value() && media_ssrc_mapping_is_rtx(*mapping))
+    if (header->ssrc == 0)
     {
-        WEBRTC_LOG_DEBUG("rtcp stats outbound rtp skipped rtx mapping stream={} session={} remote={} subscriber_ssrc={} publisher_ssrc={}",
-                         target_peer.stream_id,
-                         target_peer.session_id,
-                         target_peer.remote_endpoint,
-                         mapping->subscriber_ssrc,
-                         mapping->publisher_ssrc);
+        return;
+    }
+
+    if (header->ssrc != mapping->subscriber_ssrc)
+    {
+        WEBRTC_LOG_WARN(
+            "rtcp stats outbound rtp skipped ssrc mismatch stream={} session={} remote={} packet_ssrc={} mapping_subscriber_ssrc={} "
+            "publisher_ssrc={} publisher_mid={} subscriber_mid={} kind={}",
+            target_peer.stream_id,
+            target_peer.session_id,
+            target_peer.remote_endpoint,
+            header->ssrc,
+            mapping->subscriber_ssrc,
+            mapping->publisher_ssrc,
+            mapping->publisher_mid,
+            mapping->subscriber_mid,
+            mapping->kind);
 
         return;
     }
@@ -7807,32 +7899,19 @@ void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_pe
         return;
     }
 
-    std::string mid;
-    std::optional<std::string> rid;
-    std::optional<std::string> repaired_rid;
-
-    if (mapping.has_value())
-    {
-        mid = mapping->subscriber_mid;
-
-        rid = mapping->rid;
-
-        repaired_rid = mapping->repaired_rid;
-    }
-
     rtcp_sent_rtp_packet observed_packet;
 
-    observed_packet.stream_id = target_peer.stream_id;
+    observed_packet.stream_id = mapping->stream_id;
 
     observed_packet.session_id = target_peer.session_id;
 
     observed_packet.remote_endpoint = target_peer.remote_endpoint;
 
-    observed_packet.mid = mid;
+    observed_packet.mid = mapping->subscriber_mid;
 
-    observed_packet.rid = rid;
+    observed_packet.rid = mapping->rid;
 
-    observed_packet.repaired_rid = repaired_rid;
+    observed_packet.repaired_rid = mapping->repaired_rid;
 
     observed_packet.ssrc = header->ssrc;
 
@@ -7846,11 +7925,14 @@ void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_pe
 
     if (!observe_result)
     {
-        WEBRTC_LOG_DEBUG("rtcp stats outbound rtp observe failed stream={} session={} remote={} ssrc={} error={}",
-                         target_peer.stream_id,
-                         target_peer.session_id,
-                         target_peer.remote_endpoint,
-                         header->ssrc,
+        WEBRTC_LOG_DEBUG("rtcp stats outbound rtp observe failed stream={} session={} remote={} ssrc={} mid={} rid={} repaired_rid={} error={}",
+                         observed_packet.stream_id,
+                         observed_packet.session_id,
+                         observed_packet.remote_endpoint,
+                         observed_packet.ssrc,
+                         observed_packet.mid,
+                         observed_packet.rid.value_or(""),
+                         observed_packet.repaired_rid.value_or(""),
                          observe_result.error());
 
         return;
@@ -7858,17 +7940,17 @@ void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_pe
 
     rtcp_report_source_config source;
 
-    source.stream_id = target_peer.stream_id;
+    source.stream_id = mapping->stream_id;
 
     source.session_id = target_peer.session_id;
 
     source.remote_endpoint = target_peer.remote_endpoint;
 
-    source.mid = mid;
+    source.mid = mapping->subscriber_mid;
 
-    source.rid = rid;
+    source.rid = mapping->rid;
 
-    source.repaired_rid = repaired_rid;
+    source.repaired_rid = mapping->repaired_rid;
 
     source.local_ssrc = header->ssrc;
 
@@ -7878,21 +7960,39 @@ void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_pe
 
     source.receiver_report_enabled = true;
 
-    auto remember_result = rtcp_report_service_->remember_source(source);
+    auto remember_result = rtcp_report_service_->remember_source(source, observed_packet.send_time_milliseconds);
 
     if (!remember_result)
     {
         WEBRTC_LOG_DEBUG(
             "rtcp stats outbound rtp remember source failed stream={} session={} remote={} ssrc={} mid={} rid={} repaired_rid={} error={}",
-            target_peer.stream_id,
-            target_peer.session_id,
-            target_peer.remote_endpoint,
-            header->ssrc,
-            mid,
-            rid.value_or(""),
-            repaired_rid.value_or(""),
+            source.stream_id,
+            source.session_id,
+            source.remote_endpoint,
+            source.local_ssrc,
+            source.mid,
+            source.rid.value_or(""),
+            source.repaired_rid.value_or(""),
             remember_result.error());
+
+        return;
     }
+
+    WEBRTC_LOG_DEBUG(
+        "rtcp stats outbound rtp source remembered stream={} session={} remote={} publisher_session={} publisher_mid={} subscriber_mid={} "
+        "kind={} publisher_ssrc={} subscriber_ssrc={} rid={} repaired_rid={} payload_size={}",
+        mapping->stream_id,
+        target_peer.session_id,
+        target_peer.remote_endpoint,
+        mapping->publisher_session_id,
+        mapping->publisher_mid,
+        mapping->subscriber_mid,
+        mapping->kind,
+        mapping->publisher_ssrc,
+        mapping->subscriber_ssrc,
+        mapping->rid.value_or(""),
+        mapping->repaired_rid.value_or(""),
+        *payload_size);
 }
 
 void ice_udp_server::observe_outbound_track_stats(const media_peer_info& target_peer,
