@@ -90,6 +90,18 @@ class webrtc_answer_factory
     generated_sdp_answer_result build_whep_answer(std::string_view stream_id,
                                                   const sdp::webrtc_offer_summary& subscriber_offer,
                                                   const sdp::webrtc_offer_summary& publisher_offer);
+    [[nodiscard]]
+    generated_sdp_answer_result build_whip_restart_answer(std::string_view stream_id,
+                                                          const sdp::webrtc_offer_summary& offer,
+                                                          uint64_t sdp_session_id,
+                                                          uint64_t sdp_session_version);
+
+    [[nodiscard]]
+    generated_sdp_answer_result build_whep_restart_answer(std::string_view stream_id,
+                                                          const sdp::webrtc_offer_summary& subscriber_offer,
+                                                          const sdp::webrtc_offer_summary& publisher_offer,
+                                                          uint64_t sdp_session_id,
+                                                          uint64_t sdp_session_version);
 
    private:
     [[nodiscard]]
@@ -106,6 +118,13 @@ class webrtc_answer_factory
                                              std::string_view stream_id,
                                              const sdp::webrtc_offer_summary& offer,
                                              const sdp::webrtc_offer_summary* whep_publisher_offer);
+    [[nodiscard]]
+    generated_sdp_answer_result build_answer_with_origin(bool is_whip,
+                                                         std::string_view stream_id,
+                                                         const sdp::webrtc_offer_summary& offer,
+                                                         const sdp::webrtc_offer_summary* whep_publisher_offer,
+                                                         uint64_t sdp_session_id,
+                                                         uint64_t sdp_session_version);
     [[nodiscard]]
     static uint64_t make_initial_session_id();
 

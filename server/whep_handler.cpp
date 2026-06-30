@@ -378,8 +378,10 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
         return json_error_response(request, 400, "sdp patch does not contain ice restart");
     }
 
-    auto answer = answer_factory_->build_whep_answer(session->stream_id(), *offer_summary, publisher->remote_offer_summary());
+    const uint64_t next_sdp_session_version = session->sdp_session_version() + 1U;
 
+    auto answer = answer_factory_->build_whep_restart_answer(
+        session->stream_id(), *offer_summary, publisher->remote_offer_summary(), session->sdp_session_id(), next_sdp_session_version);
     if (!answer)
     {
         WEBRTC_LOG_WARN("WHEP build SDP restart answer failed session={} error={}", session_id, answer.error());
