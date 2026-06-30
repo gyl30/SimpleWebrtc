@@ -83,8 +83,8 @@ class media_track_resolver
                                                       std::string_view stream_id,
                                                       std::string_view session_id,
                                                       const sdp::webrtc_offer_summary& offer,
+                                                      const std::vector<int>& accepted_mline_indexes,
                                                       std::span<const uint8_t> plain_packet);
-
     void forget_peer(std::string_view remote_endpoint);
 
     void forget_session(std::string_view session_id);

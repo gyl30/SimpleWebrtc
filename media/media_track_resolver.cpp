@@ -38,16 +38,46 @@ bool is_active_media(const sdp::media_summary& media)
 {
     return media.direction != sdp::media_direction::inactive && media.direction != sdp::media_direction::unknown;
 }
+bool accepted_mline_indexes_contains(const std::vector<int>& accepted_mline_indexes, std::size_t media_index)
+{
+    if (media_index > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    {
+        return false;
+    }
 
-const sdp::media_summary* find_media_by_mid(const sdp::webrtc_offer_summary& offer, std::string_view mid)
+    const int expected_index = static_cast<int>(media_index);
+
+    return std::find(accepted_mline_indexes.begin(), accepted_mline_indexes.end(), expected_index) != accepted_mline_indexes.end();
+}
+
+bool media_index_is_accepted(const std::vector<int>& accepted_mline_indexes, std::size_t media_index)
+{
+    if (accepted_mline_indexes.empty())
+    {
+        return false;
+    }
+
+    return accepted_mline_indexes_contains(accepted_mline_indexes, media_index);
+}
+
+const sdp::media_summary* find_media_by_mid(const sdp::webrtc_offer_summary& offer,
+                                            const std::vector<int>& accepted_mline_indexes,
+                                            std::string_view mid)
 {
     if (mid.empty())
     {
         return nullptr;
     }
 
-    for (const auto& media : offer.media)
+    for (std::size_t index = 0; index < offer.media.size(); ++index)
     {
+        if (!media_index_is_accepted(accepted_mline_indexes, index))
+        {
+            continue;
+        }
+
+        const auto& media = offer.media[index];
+
         if (media.mid == mid)
         {
             return &media;
@@ -79,13 +109,21 @@ bool media_has_payload_type(const sdp::media_summary& media, uint8_t payload_typ
 
     return false;
 }
-
-const sdp::media_summary* find_unique_media_by_payload_type(const sdp::webrtc_offer_summary& offer, uint8_t payload_type)
+const sdp::media_summary* find_unique_media_by_payload_type(const sdp::webrtc_offer_summary& offer,
+                                                            const std::vector<int>& accepted_mline_indexes,
+                                                            uint8_t payload_type)
 {
     const sdp::media_summary* matched_media = nullptr;
 
-    for (const auto& media : offer.media)
+    for (std::size_t index = 0; index < offer.media.size(); ++index)
     {
+        if (!media_index_is_accepted(accepted_mline_indexes, index))
+        {
+            continue;
+        }
+
+        const auto& media = offer.media[index];
+
         if (!is_active_media(media))
         {
             continue;
@@ -107,12 +145,21 @@ const sdp::media_summary* find_unique_media_by_payload_type(const sdp::webrtc_of
     return matched_media;
 }
 
-const sdp::media_summary* find_single_active_media_with_payload_type(const sdp::webrtc_offer_summary& offer, uint8_t payload_type)
+const sdp::media_summary* find_single_active_media_with_payload_type(const sdp::webrtc_offer_summary& offer,
+                                                                     const std::vector<int>& accepted_mline_indexes,
+                                                                     uint8_t payload_type)
 {
     const sdp::media_summary* selected_media = nullptr;
 
-    for (const auto& media : offer.media)
+    for (std::size_t index = 0; index < offer.media.size(); ++index)
     {
+        if (!media_index_is_accepted(accepted_mline_indexes, index))
+        {
+            continue;
+        }
+
+        const auto& media = offer.media[index];
+
         if (!is_active_media(media))
         {
             continue;
@@ -196,52 +243,6 @@ struct media_extension_match
     const sdp::media_summary* media = nullptr;
     rtp_header_extension_values values;
 };
-
-std::expected<media_extension_match, std::string> find_media_by_mid_extension(std::span<const uint8_t> packet,
-                                                                              const rtp_packet_header& header,
-                                                                              const sdp::webrtc_offer_summary& offer)
-{
-    for (const auto& media : offer.media)
-    {
-        if (!is_active_media(media))
-        {
-            continue;
-        }
-
-        if (!media_has_payload_type(media, header.payload_type))
-        {
-            continue;
-        }
-
-        auto mid = extract_mid_for_media(packet, header, media);
-
-        if (!mid.has_value())
-        {
-            continue;
-        }
-
-        if (*mid != media.mid)
-        {
-            continue;
-        }
-
-        auto values = parse_rtp_header_extension_values(packet, header, media);
-        if (!values)
-        {
-            return std::unexpected(values.error());
-        }
-
-        media_extension_match match;
-
-        match.media = &media;
-        match.values = std::move(*values);
-
-        return match;
-    }
-
-    return make_error("rtp mid extension does not match any media section");
-}
-
 rtp_header_extension_values parse_optional_extension_values(std::span<const uint8_t> packet,
                                                             const rtp_packet_header& header,
                                                             const sdp::media_summary& media)
@@ -344,7 +345,6 @@ void fill_resolution_from_values(media_track_resolution& resolution, const rtp_h
 
     resolution.voice_activity = values.voice_activity;
 }
-
 std::optional<media_track_resolution> make_identity_rejected_resolution(media_track_resolution resolution, std::string_view error)
 {
     resolution.resolved = false;
@@ -390,6 +390,75 @@ void fill_binding_from_values(media_track_resolver::media_track_binding& binding
 
     binding.audio_level = values.audio_level;
     binding.voice_activity = values.voice_activity;
+}
+
+std::expected<media_extension_match, std::string> find_media_by_mid_extension(std::span<const uint8_t> packet,
+                                                                              const rtp_packet_header& header,
+                                                                              const sdp::webrtc_offer_summary& offer,
+                                                                              const std::vector<int>& accepted_mline_indexes)
+{
+    for (std::size_t index = 0; index < offer.media.size(); ++index)
+    {
+        if (!media_index_is_accepted(accepted_mline_indexes, index))
+        {
+            continue;
+        }
+
+        const auto& media = offer.media[index];
+
+        if (!is_active_media(media))
+        {
+            continue;
+        }
+
+        if (!media_has_payload_type(media, header.payload_type))
+        {
+            continue;
+        }
+
+        auto mid = extract_mid_for_media(packet, header, media);
+
+        if (!mid.has_value())
+        {
+            continue;
+        }
+
+        if (*mid != media.mid)
+        {
+            continue;
+        }
+
+        const rtp_header_extension_values values = parse_optional_extension_values(packet, header, media);
+
+        media_track_resolution resolution;
+
+        fill_resolution_from_header(resolution, header);
+
+        resolution.mid = media.mid;
+
+        resolution.kind = media.kind;
+
+        fill_resolution_from_values(resolution, values);
+
+        fill_resolution_rtx_from_media(resolution, media);
+
+        auto identity_rejection = validate_resolved_track_identity(media, values, header, resolution);
+
+        if (identity_rejection.has_value())
+        {
+            return make_error(identity_rejection->error);
+        }
+
+        media_extension_match match;
+
+        match.media = &media;
+
+        match.values = values;
+
+        return match;
+    }
+
+    return make_error("media track mid extension did not match accepted media");
 }
 
 bool optional_string_conflicts(const std::optional<std::string>& expected, const std::optional<std::string>& actual)
@@ -442,6 +511,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
                                                                         std::string_view stream_id,
                                                                         std::string_view session_id,
                                                                         const sdp::webrtc_offer_summary& offer,
+                                                                        const std::vector<int>& accepted_mline_indexes,
                                                                         std::span<const uint8_t> plain_packet)
 {
     if (remote_endpoint.empty())
@@ -469,6 +539,10 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
         return make_error("media track offer has no media sections");
     }
 
+    if (accepted_mline_indexes.empty())
+    {
+        return make_error("media track accepted mline indexes is empty");
+    }
     auto header = parse_rtp_packet_header(plain_packet);
 
     if (!header)
@@ -497,7 +571,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
         if (binding.has_value())
         {
-            const sdp::media_summary* media = find_media_by_mid(offer, binding->mid);
+            const sdp::media_summary* media = find_media_by_mid(offer, accepted_mline_indexes, binding->mid);
             if (media != nullptr && is_active_media(*media) && media_has_payload_type(*media, header->payload_type))
             {
                 const rtp_header_extension_values values = parse_optional_extension_values(plain_packet, *header, *media);
@@ -542,8 +616,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
     if (header->extension)
     {
-        auto match = find_media_by_mid_extension(plain_packet, *header, offer);
-
+        auto match = find_media_by_mid_extension(plain_packet, *header, offer, accepted_mline_indexes);
         if (match)
         {
             media_track_binding binding;
@@ -601,11 +674,10 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
         }
     }
 
-    const sdp::media_summary* payload_type_media = find_unique_media_by_payload_type(offer, header->payload_type);
-
-    if (payload_type_media != nullptr)
+    const sdp::media_summary* payload_media = find_unique_media_by_payload_type(offer, accepted_mline_indexes, header->payload_type);
+    if (payload_media != nullptr)
     {
-        const rtp_header_extension_values values = parse_optional_extension_values(plain_packet, *header, *payload_type_media);
+        const rtp_header_extension_values values = parse_optional_extension_values(plain_packet, *header, *payload_media);
 
         media_track_binding binding;
 
@@ -615,9 +687,9 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
         binding.session_id = std::string(session_id);
 
-        binding.mid = payload_type_media->mid;
+        binding.mid = payload_media->mid;
 
-        binding.kind = payload_type_media->kind;
+        binding.kind = payload_media->kind;
 
         binding.ssrc = header->ssrc;
 
@@ -625,7 +697,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
         fill_binding_from_values(binding, values);
 
-        fill_binding_rtx_from_media(binding, *payload_type_media);
+        fill_binding_rtx_from_media(binding, *payload_media);
 
         binding.packet_count = 1;
 
@@ -640,7 +712,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
         resolution.newly_bound = true;
 
-        fill_resolution_from_media(resolution, *payload_type_media);
+        fill_resolution_from_media(resolution, *payload_media);
 
         fill_resolution_from_values(resolution, values);
 
@@ -660,8 +732,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
         return resolution;
     }
-    const sdp::media_summary* single_media = find_single_active_media_with_payload_type(offer, header->payload_type);
-
+    const sdp::media_summary* single_media = find_single_active_media_with_payload_type(offer, accepted_mline_indexes, header->payload_type);
     if (single_media != nullptr)
     {
         const rtp_header_extension_values values = parse_optional_extension_values(plain_packet, *header, *single_media);

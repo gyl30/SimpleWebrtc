@@ -7754,8 +7754,8 @@ std::optional<media_track_resolution> ice_udp_server::resolve_media_track(const 
                                                            peer.stream_id,
                                                            peer.session_id,
                                                            publisher->remote_offer_summary(),
+                                                           publisher->accepted_remote_media_mline_indexes(),
                                                            std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
-
     if (!resolution)
     {
         WEBRTC_LOG_WARN("media track resolve failed remote={} stream={} session={} ssrc={} sequence={} error={}",
