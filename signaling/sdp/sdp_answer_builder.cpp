@@ -962,6 +962,11 @@ bool rejected_answer_media_attribute_is_allowed(std::string_view key)
         return true;
     }
 
+    if (key == k_attribute_rtcp_rsize)
+    {
+        return true;
+    }
+
     return false;
 }
 
@@ -2515,8 +2520,12 @@ std::expected<media_description, std::string> make_rejected_answer_media(const s
         push_property_attribute(answer_media.attributes, k_attribute_rtcp_mux);
     }
 
-    auto rejection_state_result = validate_answer_media_rejection_state(answer_media);
+    if (media.rtcp_rsize)
+    {
+        push_property_attribute(answer_media.attributes, k_attribute_rtcp_rsize);
+    }
 
+    auto rejection_state_result = validate_answer_media_rejection_state(answer_media);
     if (!rejection_state_result)
     {
         return std::unexpected(rejection_state_result.error());
@@ -2602,6 +2611,11 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
     push_property_attribute(answer_media.attributes, *answer_direction_text);
 
     push_property_attribute(answer_media.attributes, k_attribute_rtcp_mux);
+
+    if (media.rtcp_rsize)
+    {
+        push_property_attribute(answer_media.attributes, k_attribute_rtcp_rsize);
+    }
 
     append_header_extension_attributes(answer_media, media, forwarded_publisher_media);
 

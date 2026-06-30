@@ -54,6 +54,7 @@ struct media_summary
     std::string mid;
     media_direction direction = media_direction::unknown;
     bool rtcp_mux = false;
+    bool rtcp_rsize = false;
 
     std::optional<uint32_t> ptime;
     std::optional<uint32_t> maxptime;

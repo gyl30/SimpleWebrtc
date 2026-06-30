@@ -1094,6 +1094,7 @@ std::expected<media_summary, std::string> parse_media_summary(const session_desc
 
     summary.direction = *direction;
     summary.rtcp_mux = media_has_attribute(media, k_attribute_rtcp_mux);
+    summary.rtcp_rsize = media_has_attribute(media, k_attribute_rtcp_rsize);
 
     if (!summary.rtcp_mux)
     {
