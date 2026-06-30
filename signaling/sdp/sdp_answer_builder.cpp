@@ -942,6 +942,14 @@ constexpr std::string_view k_rtp_stream_id_extension_uri = "urn:ietf:params:rtp-
 
 constexpr std::string_view k_repaired_rtp_stream_id_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id";
 
+constexpr std::string_view k_transport_wide_cc_extension_uri = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
+
+constexpr std::string_view k_transport_wide_cc_extension_uri_02 = "http://www.webrtc.org/experiments/rtp-hdrext/transport-wide-cc-02";
+
+constexpr std::string_view k_absolute_send_time_extension_uri = "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
+
+constexpr std::string_view k_audio_level_extension_uri = "urn:ietf:params:rtp-hdrext:ssrc-audio-level";
+
 struct parsed_extmap_attribute
 {
     uint16_t id = 0;
@@ -1722,6 +1730,78 @@ std::string make_rtcp_feedback_value(const codec_info& codec, std::string_view f
 
     return value;
 }
+bool is_supported_answer_header_extension_uri(std::string_view kind, std::string_view uri)
+{
+    if (uri == k_rtp_mid_extension_uri)
+    {
+        return true;
+    }
+
+    if (uri == k_rtp_stream_id_extension_uri)
+    {
+        return true;
+    }
+
+    if (uri == k_repaired_rtp_stream_id_extension_uri)
+    {
+        return true;
+    }
+
+    if (uri == k_transport_wide_cc_extension_uri || uri == k_transport_wide_cc_extension_uri_02)
+    {
+        return true;
+    }
+
+    if (uri == k_absolute_send_time_extension_uri)
+    {
+        return true;
+    }
+
+    if (uri == k_audio_level_extension_uri)
+    {
+        return kind == "audio";
+    }
+
+    return false;
+}
+
+std::string make_extmap_value(const rtp_header_extension& extension)
+{
+    std::string value;
+
+    value.reserve(extension.uri.size() + 16);
+
+    value.append(std::to_string(extension.id));
+
+    value.push_back(' ');
+
+    value.append(extension.uri);
+
+    return value;
+}
+
+void append_header_extension_attributes(media_description& answer_media, const media_summary& media)
+{
+    for (const auto& extension : media.header_extensions)
+    {
+        if (extension.id <= 0 || extension.id > 255)
+        {
+            continue;
+        }
+
+        if (extension.uri.empty())
+        {
+            continue;
+        }
+
+        if (!is_supported_answer_header_extension_uri(media.kind, extension.uri))
+        {
+            continue;
+        }
+
+        push_attribute(answer_media.attributes, "extmap", make_extmap_value(extension));
+    }
+}
 
 std::string make_msid_value(const sdp_answer_options& options, const media_summary& media)
 {
@@ -1947,6 +2027,8 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
     push_property_attribute(answer_media.attributes, *answer_direction_text);
 
     push_property_attribute(answer_media.attributes, k_attribute_rtcp_mux);
+
+    append_header_extension_attributes(answer_media, media);
 
     append_codec_attributes(answer_media, codecs);
 
