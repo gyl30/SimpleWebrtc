@@ -124,6 +124,60 @@ inline std::string make_http_error_response_body(std::string_view error_code, st
 
 inline std::string make_http_error_response_body(std::string_view message) { return make_http_error_response_body("error", message); }
 
+inline bool contains_header_unsafe_character(std::string_view value)
+{
+    for (const char ch : value)
+    {
+        if (ch == '\r' || ch == '\n')
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+inline std::string make_absolute_resource_url(http_request_t& request, std::string_view path)
+{
+    const auto host_field = request.req[boost::beast::http::field::host];
+
+    const std::string_view host(host_field.data(), host_field.size());
+
+    if (host.empty() || contains_header_unsafe_character(host))
+    {
+        return std::string(path);
+    }
+
+    std::string scheme = "http";
+
+    const auto forwarded_proto_field = request.req["X-Forwarded-Proto"];
+
+    const std::string_view forwarded_proto(forwarded_proto_field.data(), forwarded_proto_field.size());
+
+    if (forwarded_proto == "https")
+    {
+        scheme = "https";
+    }
+
+    std::string url;
+
+    url.reserve(scheme.size() + 3 + host.size() + path.size());
+
+    url.append(scheme);
+
+    url.append("://");
+
+    url.append(host);
+
+    if (!path.empty() && path.front() != '/')
+    {
+        url.push_back('/');
+    }
+
+    url.append(path);
+
+    return url;
+}
 inline void add_http_common_headers(const http_response_ptr& response)
 {
     if (response == nullptr)

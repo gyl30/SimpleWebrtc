@@ -314,12 +314,11 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         offer.size(),
         offer_summary->media.size(),
         session->remote_offer_summary().media.size());
+
     auto response = sdp_response(request, 201, session->local_sdp_answer());
-
-    response->set(http::field::location, "/whep/session/" + session->session_id());
-
+    const std::string session_location_path = "/whep/session/" + session->session_id();
+    response->set(http::field::location, make_absolute_resource_url(request, session_location_path));
     set_session_resource_headers(response, *session);
-
     return response;
 }
 

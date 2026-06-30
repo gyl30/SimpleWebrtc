@@ -327,7 +327,9 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
     auto response = sdp_response(request, 201, session->local_sdp_answer());
 
-    response->set(http::field::location, "/whip/session/" + session->session_id());
+    const std::string session_location_path = "/whip/session/" + session->session_id();
+
+    response->set(http::field::location, make_absolute_resource_url(request, session_location_path));
 
     set_session_resource_headers(response, *session);
 
