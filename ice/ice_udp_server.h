@@ -827,8 +827,38 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::atomic<uint64_t> rtcp_report_send_attempts_total_{0};
     std::atomic<uint64_t> rtcp_report_send_success_total_{0};
     std::atomic<uint64_t> rtcp_report_endpoint_not_found_total_{0};
+
     std::atomic<uint64_t> rtcp_report_protect_failed_total_{0};
     std::atomic<uint64_t> rtcp_report_protect_ignored_total_{0};
+
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_session_gate_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_runtime_gate_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_transport_missing_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_srtp_failed_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_srtp_ignored_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_unknown_peer_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_identity_gate_total_{0};
+
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_no_target_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_transport_missing_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_target_endpoint_missing_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_target_peer_missing_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_rewrite_failed_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_rewrite_empty_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_runtime_gate_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_protect_failed_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_protect_ignored_total_{0};
+
+    std::atomic<uint64_t> rtp_rtcp_drop_rtcp_report_session_gate_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_rtcp_report_runtime_gate_total_{0};
+
+    std::atomic<uint64_t> rtp_rtcp_drop_twcc_session_gate_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_twcc_identity_gate_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_twcc_send_runtime_gate_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_twcc_endpoint_missing_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_twcc_protect_failed_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_twcc_protect_ignored_total_{0};
+
     std::atomic<uint64_t> lifecycle_convergence_check_generation_{0};
 };
 }    // namespace webrtc

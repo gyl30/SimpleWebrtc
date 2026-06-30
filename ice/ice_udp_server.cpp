@@ -362,6 +362,22 @@ bool contains_string(const std::vector<std::string>& values, std::string_view va
 }
 
 uint64_t to_debug_count(std::size_t value) { return static_cast<uint64_t>(value); }
+void append_lifecycle_debug_drop_reason(lifecycle_debug_snapshot& snapshot, std::string_view category, std::string_view reason, uint64_t count)
+{
+    if (count == 0)
+    {
+        return;
+    }
+
+    lifecycle_debug_drop_reason_entry entry;
+
+    entry.category = std::string(category);
+    entry.reason = std::string(reason);
+    entry.count = count;
+
+    snapshot.rtp_rtcp_drop_total += count;
+    snapshot.rtp_rtcp_drop_reasons.push_back(std::move(entry));
+}
 std::string optional_string_or_empty(const std::optional<std::string>& value)
 {
     if (!value.has_value())
@@ -4233,6 +4249,67 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
     {
         snapshot.nack_retransmit_throttle_count = to_debug_count(nack_retransmit_throttle_->size());
     }
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtp_inbound", "current session gate", rtp_rtcp_drop_inbound_session_gate_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtp_inbound", "media runtime gate", rtp_rtcp_drop_inbound_runtime_gate_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtp_inbound", "srtp transport missing", rtp_rtcp_drop_inbound_transport_missing_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtp_inbound", "srtp unprotect failed", rtp_rtcp_drop_inbound_srtp_failed_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtp_inbound", "srtp unprotect ignored", rtp_rtcp_drop_inbound_srtp_ignored_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtp_inbound", "media router unknown peer", rtp_rtcp_drop_inbound_unknown_peer_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtp_inbound", "publisher identity gate", rtp_rtcp_drop_inbound_identity_gate_total_.load(std::memory_order_relaxed));
+
+    append_lifecycle_debug_drop_reason(
+        snapshot, "media_forward", "no target", rtp_rtcp_drop_media_forward_no_target_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "media_forward", "srtp transport missing", rtp_rtcp_drop_media_forward_transport_missing_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(snapshot,
+                                       "media_forward",
+                                       "target endpoint missing",
+                                       rtp_rtcp_drop_media_forward_target_endpoint_missing_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "media_forward", "target peer missing", rtp_rtcp_drop_media_forward_target_peer_missing_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "media_forward", "rewrite failed", rtp_rtcp_drop_media_forward_rewrite_failed_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "media_forward", "rewrite empty", rtp_rtcp_drop_media_forward_rewrite_empty_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "media_forward", "outbound runtime gate", rtp_rtcp_drop_media_forward_runtime_gate_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "media_forward", "srtp protect failed", rtp_rtcp_drop_media_forward_protect_failed_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "media_forward", "srtp protect ignored", rtp_rtcp_drop_media_forward_protect_ignored_total_.load(std::memory_order_relaxed));
+
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtcp_report", "current session gate", rtp_rtcp_drop_rtcp_report_session_gate_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtcp_report", "outbound runtime gate", rtp_rtcp_drop_rtcp_report_runtime_gate_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtcp_report", "endpoint missing", rtcp_report_endpoint_not_found_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtcp_report", "srtp protect failed", rtcp_report_protect_failed_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtcp_report", "srtp protect ignored", rtcp_report_protect_ignored_total_.load(std::memory_order_relaxed));
+
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtcp_twcc", "current session gate", rtp_rtcp_drop_twcc_session_gate_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtcp_twcc", "identity gate", rtp_rtcp_drop_twcc_identity_gate_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtcp_twcc", "send runtime gate", rtp_rtcp_drop_twcc_send_runtime_gate_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtcp_twcc", "endpoint missing", rtp_rtcp_drop_twcc_endpoint_missing_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtcp_twcc", "srtp protect failed", rtp_rtcp_drop_twcc_protect_failed_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtcp_twcc", "srtp protect ignored", rtp_rtcp_drop_twcc_protect_ignored_total_.load(std::memory_order_relaxed));
+
+    snapshot.rtp_rtcp_drop_reason_count = to_debug_count(snapshot.rtp_rtcp_drop_reasons.size());
     if (snapshot.endpoint_session_index_count != snapshot.endpoint_reverse_index_count)
     {
         add_lifecycle_inconsistency(snapshot, "endpoint session index count does not match reverse index count");
@@ -6335,6 +6412,7 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
         if (!current_session.allowed)
         {
             current_session_gate_skipped_count += 1;
+            rtp_rtcp_drop_rtcp_report_session_gate_total_.fetch_add(1, std::memory_order_relaxed);
 
             rtcp_report_service_->forget_source(
                 report_packet.source.session_id, report_packet.source.remote_endpoint, report_packet.source.local_ssrc);
@@ -6381,6 +6459,7 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
         else
         {
             current_session_gate_skipped_count += 1;
+            rtp_rtcp_drop_rtcp_report_session_gate_total_.fetch_add(1, std::memory_order_relaxed);
 
             rtcp_report_service_->forget_source(
                 report_packet.source.session_id, report_packet.source.remote_endpoint, report_packet.source.local_ssrc);
@@ -6401,6 +6480,7 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
                                           "rtcp active report protect"))
         {
             current_session_gate_skipped_count += 1;
+            rtp_rtcp_drop_rtcp_report_session_gate_total_.fetch_add(1, std::memory_order_relaxed);
 
             rtcp_report_service_->forget_source(
                 report_packet.source.session_id, report_packet.source.remote_endpoint, report_packet.source.local_ssrc);
@@ -6458,6 +6538,7 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
         if (!send_session.allowed)
         {
             current_session_gate_skipped_count += 1;
+            rtp_rtcp_drop_rtcp_report_session_gate_total_.fetch_add(1, std::memory_order_relaxed);
 
             rtcp_report_service_->forget_source(
                 report_packet.source.session_id, report_packet.source.remote_endpoint, report_packet.source.local_ssrc);
@@ -6617,7 +6698,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
         if (!current_session.allowed)
         {
             current_session_gate_skipped_count += 1;
-
+            rtp_rtcp_drop_rtcp_report_session_gate_total_.fetch_add(1, std::memory_order_relaxed);
             rtcp_transport_cc_feedback_service_->forget_source(
                 feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
 
@@ -6897,6 +6978,12 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
         sent_count += 1;
     }
 
+    rtp_rtcp_drop_twcc_session_gate_total_.fetch_add(static_cast<uint64_t>(current_session_gate_skipped_count), std::memory_order_relaxed);
+    rtp_rtcp_drop_twcc_identity_gate_total_.fetch_add(static_cast<uint64_t>(identity_gate_skipped_count), std::memory_order_relaxed);
+    rtp_rtcp_drop_twcc_send_runtime_gate_total_.fetch_add(static_cast<uint64_t>(send_session_gate_skipped_count), std::memory_order_relaxed);
+    rtp_rtcp_drop_twcc_endpoint_missing_total_.fetch_add(static_cast<uint64_t>(endpoint_not_found_count), std::memory_order_relaxed);
+    rtp_rtcp_drop_twcc_protect_failed_total_.fetch_add(static_cast<uint64_t>(protect_failed_count), std::memory_order_relaxed);
+    rtp_rtcp_drop_twcc_protect_ignored_total_.fetch_add(static_cast<uint64_t>(protect_ignored_count), std::memory_order_relaxed);
     const bool has_hard_error = !generation.errors.empty() || endpoint_not_found_count != 0 || protect_failed_count != 0;
 
     const bool has_soft_event = generation.stale_sources_expired != 0 || generation.skipped_sources != 0 || protect_ignored_count != 0 ||
@@ -7839,6 +7926,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
                          data.size(),
                          current_session.reject_reason);
 
+        rtp_rtcp_drop_inbound_session_gate_total_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -7874,6 +7962,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
                          current_session.stream_id,
                          data.size());
 
+        rtp_rtcp_drop_inbound_runtime_gate_total_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -7955,6 +8044,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
     if (srtp_transport_ == nullptr)
     {
+        rtp_rtcp_drop_inbound_transport_missing_total_.fetch_add(1, std::memory_order_relaxed);
         WEBRTC_LOG_WARN("srtp transport is null remote={} size={}", remote_address, data.size());
 
         return;
@@ -7964,12 +8054,13 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     if (!result)
     {
         WEBRTC_LOG_WARN("srtp inbound packet handle failed remote={} error={}", remote_address, result.error());
-
+        rtp_rtcp_drop_inbound_srtp_failed_total_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
     if (result->state == srtp_packet_process_state::ignored)
     {
+        rtp_rtcp_drop_inbound_srtp_ignored_total_.fetch_add(1, std::memory_order_relaxed);
         WEBRTC_LOG_DEBUG("srtp inbound packet ignored remote={} kind={} size={} reason={}",
                          remote_address,
                          srtp_packet_kind_to_string(result->kind),
@@ -7996,6 +8087,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     const media_route_result route = media_router_->handle_inbound_packet(remote_address, *result);
     if (!route.known_peer)
     {
+        rtp_rtcp_drop_inbound_unknown_peer_total_.fetch_add(1, std::memory_order_relaxed);
         WEBRTC_LOG_WARN(
             "media route ignored unknown peer remote={} kind={} ssrc={}", remote_address, srtp_packet_kind_to_string(result->kind), result->ssrc);
 
@@ -8059,6 +8151,7 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
     if (!publisher_rtp_identity_is_allowed(route, *result, track_resolution))
     {
+        rtp_rtcp_drop_inbound_identity_gate_total_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     cache_inbound_rtp_packet(*result, route, track_resolution);
@@ -13483,12 +13576,14 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
 
     if (route.action == media_route_action::none || route.target_endpoints.empty())
     {
+        rtp_rtcp_drop_media_forward_no_target_total_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
     if (srtp_transport_ == nullptr)
     {
         WEBRTC_LOG_WARN("media forward skipped srtp transport is null stream={} session={}", route.source.stream_id, route.source.session_id);
+        rtp_rtcp_drop_media_forward_transport_missing_total_.fetch_add(1, std::memory_order_relaxed);
 
         return;
     }
@@ -13505,6 +13600,7 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
                             target_address,
                             srtp_packet_kind_to_string(packet.kind));
 
+            rtp_rtcp_drop_media_forward_target_endpoint_missing_total_.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
 
@@ -13518,12 +13614,14 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
                             target_address,
                             srtp_packet_kind_to_string(packet.kind));
 
+            rtp_rtcp_drop_media_forward_target_peer_missing_total_.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
 
         auto outbound_plain_packet = make_forward_plain_packet(packet, route, track_resolution, feedback_events, *target_peer);
         if (!outbound_plain_packet.has_value())
         {
+            rtp_rtcp_drop_media_forward_rewrite_failed_total_.fetch_add(1, std::memory_order_relaxed);
             WEBRTC_LOG_WARN("media forward skipped rewrite failed stream={} source={} target={} kind={}",
                             route.source.stream_id,
                             route.source.remote_endpoint,
@@ -13535,6 +13633,7 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
 
         if (outbound_plain_packet->empty())
         {
+            rtp_rtcp_drop_media_forward_rewrite_empty_total_.fetch_add(1, std::memory_order_relaxed);
             WEBRTC_LOG_WARN("media forward skipped empty rewritten packet stream={} source={} target={} kind={}",
                             route.source.stream_id,
                             route.source.remote_endpoint,
@@ -13547,6 +13646,7 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
         if (!outbound_media_runtime_ready(
                 target_address, target_peer->session_id, target_peer->stream_id, target_peer->role, "media forward protect"))
         {
+            rtp_rtcp_drop_media_forward_runtime_gate_total_.fetch_add(1, std::memory_order_relaxed);
             WEBRTC_LOG_DEBUG(
                 "media forward skipped outbound runtime not ready stream={} source={} target={} target_session={} target_role={} kind={}",
                 route.source.stream_id,
@@ -13562,6 +13662,7 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
             std::span<const uint8_t>(outbound_plain_packet->data(), outbound_plain_packet->size()), target_address, packet.kind);
         if (!protected_packet)
         {
+            rtp_rtcp_drop_media_forward_protect_failed_total_.fetch_add(1, std::memory_order_relaxed);
             WEBRTC_LOG_WARN("media forward protect failed stream={} source={} target={} kind={} error={}",
                             route.source.stream_id,
                             route.source.remote_endpoint,
@@ -13574,6 +13675,7 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
 
         if (protected_packet->state == srtp_packet_process_state::ignored)
         {
+            rtp_rtcp_drop_media_forward_protect_ignored_total_.fetch_add(1, std::memory_order_relaxed);
             WEBRTC_LOG_DEBUG("media forward target ignored stream={} source={} target={} kind={} reason={}",
                              route.source.stream_id,
                              route.source.remote_endpoint,
