@@ -275,6 +275,17 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         pli,
         fir,
     };
+    struct keyframe_request_media_target
+    {
+        uint32_t sender_ssrc = 0;
+        uint32_t media_ssrc = 0;
+
+        std::string mid;
+        std::string kind;
+
+        std::optional<std::string> rid;
+        std::optional<std::string> repaired_rid;
+    };
     struct republish_keyframe_request_state
     {
         std::string publisher_session_id;
@@ -678,7 +689,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                      const std::vector<uint32_t>& ssrcs);
 
     [[nodiscard]]
-    std::optional<std::string> remote_address_for_session(std::string_view session_id);
+    std::optional<std::string> remote_address_for_session(std::string_view session_id) const;
 
     void remember_publisher_video_ssrc(const media_peer_info& peer,
                                        const srtp_packet_process_result& packet,
@@ -691,8 +702,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                          std::string_view kind = {}) const;
 
     [[nodiscard]]
-    std::vector<uint32_t> collect_keyframe_request_media_ssrcs(std::string_view stream_id) const;
-
+    std::vector<keyframe_request_media_target> collect_keyframe_request_media_targets(std::string_view stream_id) const;
     [[nodiscard]]
     uint8_t next_fir_sequence_number(std::string_view stream_id, uint32_t media_ssrc);
 
