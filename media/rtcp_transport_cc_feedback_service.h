@@ -93,6 +93,7 @@ class rtcp_transport_cc_feedback_service
 
     void forget_peer(std::string_view remote_endpoint);
 
+    void forget_source(std::string_view session_id, std::string_view remote_endpoint, uint32_t media_ssrc);
     void clear();
 
     [[nodiscard]]

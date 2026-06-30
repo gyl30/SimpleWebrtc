@@ -799,6 +799,19 @@ void rtcp_transport_cc_feedback_service::forget_peer(std::string_view remote_end
         ++iterator;
     }
 }
+void rtcp_transport_cc_feedback_service::forget_source(std::string_view session_id, std::string_view remote_endpoint, uint32_t media_ssrc)
+{
+    if (session_id.empty() || remote_endpoint.empty() || media_ssrc == 0)
+    {
+        return;
+    }
+
+    const std::string key = make_source_key(session_id, remote_endpoint, media_ssrc);
+
+    std::lock_guard lock(mutex_);
+
+    sources_by_key_.erase(key);
+}
 
 void rtcp_transport_cc_feedback_service::clear()
 {

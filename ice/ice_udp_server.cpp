@@ -5782,6 +5782,8 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
     std::size_t protect_failed_count = 0;
     std::size_t protect_ignored_count = 0;
     std::size_t current_session_gate_skipped_count = 0;
+    std::size_t identity_gate_skipped_count = 0;
+    std::size_t send_session_gate_skipped_count = 0;
 
     for (const auto& feedback_packet : generation.packets)
     {
@@ -5792,7 +5794,161 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
         {
             current_session_gate_skipped_count += 1;
 
-            rtcp_transport_cc_feedback_service_->forget_session(feedback_packet.session_id);
+            rtcp_transport_cc_feedback_service_->forget_source(
+                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+            WEBRTC_LOG_DEBUG("rtcp transport cc source forgotten by current session gate stream={} session={} remote={} media_ssrc={} reason={}",
+                             feedback_packet.stream_id,
+                             feedback_packet.session_id,
+                             feedback_packet.remote_endpoint,
+                             feedback_packet.media_ssrc,
+                             current_session.reject_reason);
+
+            continue;
+        }
+
+        if (identity_authority_ == nullptr)
+        {
+            identity_gate_skipped_count += 1;
+
+            rtcp_transport_cc_feedback_service_->forget_source(
+                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+            WEBRTC_LOG_DEBUG("rtcp transport cc source forgotten identity authority unavailable stream={} session={} remote={} media_ssrc={}",
+                             feedback_packet.stream_id,
+                             feedback_packet.session_id,
+                             feedback_packet.remote_endpoint,
+                             feedback_packet.media_ssrc);
+
+            continue;
+        }
+
+        const std::optional<media_identity_track_binding> track_binding =
+            identity_authority_->find_track_by_peer_ssrc(feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+        if (!track_binding.has_value())
+        {
+            identity_gate_skipped_count += 1;
+
+            rtcp_transport_cc_feedback_service_->forget_source(
+                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+            WEBRTC_LOG_DEBUG("rtcp transport cc source forgotten missing media identity stream={} session={} remote={} sender_ssrc={} media_ssrc={}",
+                             feedback_packet.stream_id,
+                             feedback_packet.session_id,
+                             feedback_packet.remote_endpoint,
+                             feedback_packet.sender_ssrc,
+                             feedback_packet.media_ssrc);
+
+            continue;
+        }
+
+        if (track_binding->stream_id != feedback_packet.stream_id || track_binding->session_id != feedback_packet.session_id ||
+            track_binding->remote_endpoint != feedback_packet.remote_endpoint || track_binding->ssrc != feedback_packet.media_ssrc)
+        {
+            identity_gate_skipped_count += 1;
+
+            rtcp_transport_cc_feedback_service_->forget_source(
+                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+            WEBRTC_LOG_WARN(
+                "rtcp transport cc source forgotten identity mismatch stream={} session={} remote={} sender_ssrc={} media_ssrc={} "
+                "binding_stream={} binding_session={} binding_remote={} binding_ssrc={} binding_mid={} binding_kind={}",
+                feedback_packet.stream_id,
+                feedback_packet.session_id,
+                feedback_packet.remote_endpoint,
+                feedback_packet.sender_ssrc,
+                feedback_packet.media_ssrc,
+                track_binding->stream_id,
+                track_binding->session_id,
+                track_binding->remote_endpoint,
+                track_binding->ssrc,
+                track_binding->mid,
+                track_binding->kind);
+
+            continue;
+        }
+
+        if (track_binding->rtx)
+        {
+            identity_gate_skipped_count += 1;
+
+            rtcp_transport_cc_feedback_service_->forget_source(
+                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+            WEBRTC_LOG_DEBUG("rtcp transport cc source forgotten rtx identity stream={} session={} remote={} media_ssrc={} mid={} kind={}",
+                             feedback_packet.stream_id,
+                             feedback_packet.session_id,
+                             feedback_packet.remote_endpoint,
+                             feedback_packet.media_ssrc,
+                             track_binding->mid,
+                             track_binding->kind);
+
+            continue;
+        }
+
+        if (track_binding->mid.empty() || track_binding->kind.empty())
+        {
+            identity_gate_skipped_count += 1;
+
+            rtcp_transport_cc_feedback_service_->forget_source(
+                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+            WEBRTC_LOG_DEBUG("rtcp transport cc source forgotten incomplete identity stream={} session={} remote={} media_ssrc={} mid={} kind={}",
+                             feedback_packet.stream_id,
+                             feedback_packet.session_id,
+                             feedback_packet.remote_endpoint,
+                             feedback_packet.media_ssrc,
+                             track_binding->mid,
+                             track_binding->kind);
+
+            continue;
+        }
+
+        if (current_session.kind != stream_session_kind::publisher)
+        {
+            identity_gate_skipped_count += 1;
+
+            rtcp_transport_cc_feedback_service_->forget_source(
+                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+            WEBRTC_LOG_WARN("rtcp transport cc source forgotten non publisher session stream={} session={} remote={} media_ssrc={}",
+                            feedback_packet.stream_id,
+                            feedback_packet.session_id,
+                            feedback_packet.remote_endpoint,
+                            feedback_packet.media_ssrc);
+
+            continue;
+        }
+        media_peer_info feedback_peer;
+
+        feedback_peer.role = media_peer_role::publisher;
+
+        feedback_peer.stream_id = current_session.stream_id;
+
+        feedback_peer.session_id = current_session.session_id;
+
+        feedback_peer.remote_endpoint = current_session.remote_address;
+
+        const uint32_t expected_sender_ssrc = make_rtcp_report_local_ssrc(feedback_peer, feedback_packet.media_ssrc);
+        if (expected_sender_ssrc != 0 && feedback_packet.sender_ssrc != expected_sender_ssrc)
+        {
+            identity_gate_skipped_count += 1;
+
+            rtcp_transport_cc_feedback_service_->forget_source(
+                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+            WEBRTC_LOG_WARN(
+                "rtcp transport cc source forgotten sender ssrc mismatch stream={} session={} remote={} media_ssrc={} sender_ssrc={} "
+                "expected_sender_ssrc={} mid={} kind={}",
+                feedback_packet.stream_id,
+                feedback_packet.session_id,
+                feedback_packet.remote_endpoint,
+                feedback_packet.media_ssrc,
+                feedback_packet.sender_ssrc,
+                expected_sender_ssrc,
+                track_binding->mid,
+                track_binding->kind);
 
             continue;
         }
@@ -5803,7 +5959,14 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
         {
             endpoint_not_found_count += 1;
 
-            rtcp_transport_cc_feedback_service_->forget_peer(feedback_packet.remote_endpoint);
+            rtcp_transport_cc_feedback_service_->forget_source(
+                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+            WEBRTC_LOG_WARN("rtcp transport cc endpoint not found stream={} session={} remote={} media_ssrc={} source_forgot=1",
+                            feedback_packet.stream_id,
+                            feedback_packet.session_id,
+                            feedback_packet.remote_endpoint,
+                            feedback_packet.media_ssrc);
 
             continue;
         }
@@ -5817,14 +5980,17 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
         {
             protect_failed_count += 1;
 
-            WEBRTC_LOG_DEBUG("rtcp transport cc protect failed stream={} session={} remote={} media_ssrc={} base_seq={} count={} error={}",
-                             feedback_packet.stream_id,
-                             feedback_packet.session_id,
-                             feedback_packet.remote_endpoint,
-                             feedback_packet.media_ssrc,
-                             feedback_packet.base_sequence_number,
-                             feedback_packet.packet_status_count,
-                             protected_packet.error());
+            WEBRTC_LOG_DEBUG(
+                "rtcp transport cc protect failed stream={} session={} remote={} media_ssrc={} mid={} kind={} base_seq={} count={} error={}",
+                feedback_packet.stream_id,
+                feedback_packet.session_id,
+                feedback_packet.remote_endpoint,
+                feedback_packet.media_ssrc,
+                track_binding->mid,
+                track_binding->kind,
+                feedback_packet.base_sequence_number,
+                feedback_packet.packet_status_count,
+                protected_packet.error());
 
             continue;
         }
@@ -5833,26 +5999,126 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
         {
             protect_ignored_count += 1;
 
+            WEBRTC_LOG_DEBUG("rtcp transport cc protect ignored stream={} session={} remote={} media_ssrc={} mid={} kind={} reason={}",
+                             feedback_packet.stream_id,
+                             feedback_packet.session_id,
+                             feedback_packet.remote_endpoint,
+                             feedback_packet.media_ssrc,
+                             track_binding->mid,
+                             track_binding->kind,
+                             protected_packet->reason);
+
             continue;
         }
+
+        const current_session_endpoint_state send_session = validate_current_session_endpoint(
+            feedback_packet.remote_endpoint, feedback_packet.session_id, feedback_packet.stream_id, "rtcp transport cc feedback send");
+
+        if (!send_session.allowed)
+        {
+            send_session_gate_skipped_count += 1;
+
+            rtcp_transport_cc_feedback_service_->forget_source(
+                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+
+            WEBRTC_LOG_DEBUG("rtcp transport cc send skipped by current session gate stream={} session={} remote={} media_ssrc={} reason={}",
+                             feedback_packet.stream_id,
+                             feedback_packet.session_id,
+                             feedback_packet.remote_endpoint,
+                             feedback_packet.media_ssrc,
+                             send_session.reject_reason);
+
+            continue;
+        }
+
+        WEBRTC_LOG_DEBUG(
+            "rtcp transport cc send stream={} session={} remote={} sender_ssrc={} media_ssrc={} mid={} kind={} base_seq={} count={} "
+            "feedback_count={} protected_size={}",
+            feedback_packet.stream_id,
+            feedback_packet.session_id,
+            feedback_packet.remote_endpoint,
+            feedback_packet.sender_ssrc,
+            feedback_packet.media_ssrc,
+            track_binding->mid,
+            track_binding->kind,
+            feedback_packet.base_sequence_number,
+            feedback_packet.packet_status_count,
+            static_cast<unsigned int>(feedback_packet.feedback_packet_count),
+            protected_packet->protected_packet.size());
 
         send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
 
         sent_count += 1;
     }
 
+    const bool has_hard_error = !generation.errors.empty() || endpoint_not_found_count != 0 || protect_failed_count != 0;
+
+    const bool has_soft_event = generation.stale_sources_expired != 0 || generation.skipped_sources != 0 || protect_ignored_count != 0 ||
+                                current_session_gate_skipped_count != 0 || identity_gate_skipped_count != 0 || send_session_gate_skipped_count != 0;
+
+    if (has_hard_error)
+    {
+        WEBRTC_LOG_WARN(
+            "rtcp transport cc generation summary sources={} pending={} packets={} sent={} stale_expired={} skipped_sources={} "
+            "current_session_gate_skipped={} identity_gate_skipped={} send_session_gate_skipped={} endpoint_not_found={} protect_failed={} "
+            "protect_ignored={} errors={}",
+            generation.source_count,
+            generation.pending_packet_count,
+            generation.packets.size(),
+            sent_count,
+            generation.stale_sources_expired,
+            generation.skipped_sources,
+            current_session_gate_skipped_count,
+            identity_gate_skipped_count,
+            send_session_gate_skipped_count,
+            endpoint_not_found_count,
+            protect_failed_count,
+            protect_ignored_count,
+            generation.errors.size());
+
+        return;
+    }
+
+    if (has_soft_event)
+    {
+        WEBRTC_LOG_INFO(
+            "rtcp transport cc generation summary sources={} pending={} packets={} sent={} stale_expired={} skipped_sources={} "
+            "current_session_gate_skipped={} identity_gate_skipped={} send_session_gate_skipped={} endpoint_not_found={} protect_failed={} "
+            "protect_ignored={} errors={}",
+            generation.source_count,
+            generation.pending_packet_count,
+            generation.packets.size(),
+            sent_count,
+            generation.stale_sources_expired,
+            generation.skipped_sources,
+            current_session_gate_skipped_count,
+            identity_gate_skipped_count,
+            send_session_gate_skipped_count,
+            endpoint_not_found_count,
+            protect_failed_count,
+            protect_ignored_count,
+            generation.errors.size());
+
+        return;
+    }
+
     WEBRTC_LOG_DEBUG(
-        "rtcp transport cc feedback generation sources={} pending={} packets={} sent={} endpoint_not_found={} protect_failed={} protect_ignored={} "
-        "current_session_gate_skipped={} stale_expired={}",
+        "rtcp transport cc generation summary sources={} pending={} packets={} sent={} stale_expired={} skipped_sources={} "
+        "current_session_gate_skipped={} identity_gate_skipped={} send_session_gate_skipped={} endpoint_not_found={} protect_failed={} "
+        "protect_ignored={} errors={}",
         generation.source_count,
         generation.pending_packet_count,
         generation.packets.size(),
         sent_count,
+        generation.stale_sources_expired,
+        generation.skipped_sources,
+        current_session_gate_skipped_count,
+        identity_gate_skipped_count,
+        send_session_gate_skipped_count,
         endpoint_not_found_count,
         protect_failed_count,
         protect_ignored_count,
-        current_session_gate_skipped_count,
-        generation.stale_sources_expired);
+        generation.errors.size());
 }
 
 void ice_udp_server::reset_rtcp_report_runtime_counters()
