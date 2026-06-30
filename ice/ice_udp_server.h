@@ -685,7 +685,10 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                        const std::optional<media_track_resolution>& track_resolution);
 
     [[nodiscard]]
-    keyframe_request_feedback_type select_keyframe_request_feedback_type(std::string_view stream_id) const;
+    keyframe_request_feedback_type select_keyframe_request_feedback_type(std::string_view stream_id,
+                                                                         std::string_view publisher_session_id = {},
+                                                                         std::string_view mid = {},
+                                                                         std::string_view kind = {}) const;
 
     [[nodiscard]]
     std::vector<uint32_t> collect_keyframe_request_media_ssrcs(std::string_view stream_id) const;

@@ -4570,14 +4570,37 @@ void ice_udp_server::remember_publisher_video_ssrc(const media_peer_info& peer,
     publisher_video_ssrc_by_stream_[state_key] = packet.ssrc;
 }
 
-ice_udp_server::keyframe_request_feedback_type ice_udp_server::select_keyframe_request_feedback_type(std::string_view stream_id) const
+ice_udp_server::keyframe_request_feedback_type ice_udp_server::select_keyframe_request_feedback_type(std::string_view stream_id,
+                                                                                                     std::string_view publisher_session_id,
+                                                                                                     std::string_view mid,
+                                                                                                     std::string_view kind) const
 {
     if (stream_id.empty() || registry_ == nullptr)
     {
         return keyframe_request_feedback_type::none;
     }
 
-    auto publisher = registry_->find_publisher_by_stream_id(stream_id);
+    std::shared_ptr<publisher_session> publisher;
+
+    if (!publisher_session_id.empty())
+    {
+        publisher = registry_->find_publisher_by_session_id(publisher_session_id);
+
+        if (publisher != nullptr && publisher->stream_id() != stream_id)
+        {
+            WEBRTC_LOG_WARN(
+                "keyframe request feedback selection rejected publisher stream mismatch stream={} publisher_session={} publisher_stream={}",
+                stream_id,
+                publisher_session_id,
+                publisher->stream_id());
+
+            return keyframe_request_feedback_type::none;
+        }
+    }
+    else
+    {
+        publisher = registry_->find_publisher_by_stream_id(stream_id);
+    }
 
     if (publisher == nullptr)
     {
@@ -4588,17 +4611,41 @@ ice_udp_server::keyframe_request_feedback_type ice_udp_server::select_keyframe_r
 
     bool supports_pli = false;
     bool supports_fir = false;
+    bool matched_media = false;
 
     for (const auto& media : offer_summary.media)
     {
+        if (!kind.empty() && media.kind != kind)
+        {
+            continue;
+        }
+
+        if (!mid.empty() && media.mid != mid)
+        {
+            continue;
+        }
+
         if (!is_video_media_kind(media.kind))
         {
             continue;
         }
 
+        matched_media = true;
+
         supports_pli = supports_pli || media_supports_rtcp_feedback(media, "nack pli");
 
         supports_fir = supports_fir || media_supports_rtcp_feedback(media, "ccm fir");
+    }
+
+    if ((!mid.empty() || !kind.empty()) && !matched_media)
+    {
+        WEBRTC_LOG_WARN("keyframe request feedback selection media not found stream={} publisher_session={} mid={} kind={}",
+                        stream_id,
+                        publisher_session_id,
+                        mid,
+                        kind);
+
+        return keyframe_request_feedback_type::none;
     }
 
     if (supports_pli)
@@ -6411,7 +6458,8 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
         }
     }
 
-    const keyframe_request_feedback_type feedback_type = select_keyframe_request_feedback_type(route.source.stream_id);
+    const keyframe_request_feedback_type feedback_type =
+        select_keyframe_request_feedback_type(route.source.stream_id, route.source.session_id, track_resolution->mid, track_resolution->kind);
 
     if (feedback_type == keyframe_request_feedback_type::none)
     {
@@ -6427,7 +6475,6 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
             track_resolution->repaired_rid.value_or(""),
             packet.ssrc,
             selected_rid_keyframe_request ? 1 : 0);
-
         return;
     }
 
