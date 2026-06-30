@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include "rtp/rtp_packet.h"
 #include "signaling/sdp/sdp_summary.h"

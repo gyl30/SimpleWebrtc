@@ -1,13 +1,16 @@
 #include "media/media_track_resolver.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "log/log.h"
 #include "rtp/rtp_packet.h"
