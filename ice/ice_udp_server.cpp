@@ -7159,33 +7159,113 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
     if (peer.role == media_peer_role::publisher && rtcp_transport_cc_feedback_service_ != nullptr && track_resolution.has_value() &&
         track_resolution->resolved && track_resolution->transport_wide_sequence_number.has_value())
     {
-        rtcp_transport_cc_observed_packet transport_cc_packet;
-
-        transport_cc_packet.stream_id = peer.stream_id;
-
-        transport_cc_packet.session_id = peer.session_id;
-
-        transport_cc_packet.remote_endpoint = peer.remote_endpoint;
-
-        transport_cc_packet.sender_ssrc = make_rtcp_report_local_ssrc(peer, header->ssrc);
-
-        transport_cc_packet.media_ssrc = header->ssrc;
-
-        transport_cc_packet.transport_sequence_number = *track_resolution->transport_wide_sequence_number;
-
-        transport_cc_packet.arrival_time_milliseconds = now_milliseconds();
-
-        auto transport_cc_observe_result = rtcp_transport_cc_feedback_service_->observe_received_packet(transport_cc_packet);
-
-        if (!transport_cc_observe_result)
+        if (identity_authority_ == nullptr)
         {
-            WEBRTC_LOG_DEBUG("rtcp transport cc observe skipped stream={} session={} remote={} ssrc={} twcc={} error={}",
+            WEBRTC_LOG_DEBUG("rtcp transport cc observe skipped identity authority unavailable stream={} session={} remote={} ssrc={} twcc={}",
                              peer.stream_id,
                              peer.session_id,
                              peer.remote_endpoint,
                              header->ssrc,
-                             *track_resolution->transport_wide_sequence_number,
-                             transport_cc_observe_result.error());
+                             *track_resolution->transport_wide_sequence_number);
+        }
+        else if (track_resolution->mid.empty() || track_resolution->kind.empty())
+        {
+            WEBRTC_LOG_DEBUG(
+                "rtcp transport cc observe skipped incomplete track resolution stream={} session={} remote={} ssrc={} mid={} kind={} twcc={}",
+                peer.stream_id,
+                peer.session_id,
+                peer.remote_endpoint,
+                header->ssrc,
+                track_resolution->mid,
+                track_resolution->kind,
+                *track_resolution->transport_wide_sequence_number);
+        }
+        else
+        {
+            const std::optional<media_identity_track_binding> track_binding =
+                identity_authority_->find_track_by_peer_ssrc(peer.remote_endpoint, header->ssrc);
+
+            if (!track_binding.has_value())
+            {
+                WEBRTC_LOG_DEBUG(
+                    "rtcp transport cc observe skipped missing media identity stream={} session={} remote={} ssrc={} mid={} kind={} twcc={}",
+                    peer.stream_id,
+                    peer.session_id,
+                    peer.remote_endpoint,
+                    header->ssrc,
+                    track_resolution->mid,
+                    track_resolution->kind,
+                    *track_resolution->transport_wide_sequence_number);
+            }
+            else if (track_binding->stream_id != peer.stream_id || track_binding->session_id != peer.session_id ||
+                     track_binding->remote_endpoint != peer.remote_endpoint || track_binding->ssrc != header->ssrc ||
+                     track_binding->mid != track_resolution->mid || track_binding->kind != track_resolution->kind)
+            {
+                WEBRTC_LOG_WARN(
+                    "rtcp transport cc observe skipped identity mismatch stream={} session={} remote={} ssrc={} mid={} kind={} "
+                    "binding_stream={} binding_session={} binding_remote={} binding_ssrc={} binding_mid={} binding_kind={} twcc={}",
+                    peer.stream_id,
+                    peer.session_id,
+                    peer.remote_endpoint,
+                    header->ssrc,
+                    track_resolution->mid,
+                    track_resolution->kind,
+                    track_binding->stream_id,
+                    track_binding->session_id,
+                    track_binding->remote_endpoint,
+                    track_binding->ssrc,
+                    track_binding->mid,
+                    track_binding->kind,
+                    *track_resolution->transport_wide_sequence_number);
+            }
+            else if (track_binding->rtx)
+            {
+                WEBRTC_LOG_DEBUG("rtcp transport cc observe skipped rtx identity stream={} session={} remote={} ssrc={} mid={} kind={} twcc={}",
+                                 peer.stream_id,
+                                 peer.session_id,
+                                 peer.remote_endpoint,
+                                 header->ssrc,
+                                 track_binding->mid,
+                                 track_binding->kind,
+                                 *track_resolution->transport_wide_sequence_number);
+            }
+            else
+            {
+                rtcp_transport_cc_observed_packet transport_cc_packet;
+
+                transport_cc_packet.stream_id = peer.stream_id;
+
+                transport_cc_packet.session_id = peer.session_id;
+
+                transport_cc_packet.remote_endpoint = peer.remote_endpoint;
+
+                transport_cc_packet.sender_ssrc = make_rtcp_report_local_ssrc(peer, header->ssrc);
+
+                transport_cc_packet.media_ssrc = header->ssrc;
+
+                transport_cc_packet.transport_sequence_number = *track_resolution->transport_wide_sequence_number;
+
+                transport_cc_packet.arrival_time_milliseconds = now_milliseconds();
+
+                auto transport_cc_observe_result = rtcp_transport_cc_feedback_service_->observe_received_packet(transport_cc_packet);
+
+                if (!transport_cc_observe_result)
+                {
+                    WEBRTC_LOG_DEBUG(
+                        "rtcp transport cc observe skipped stream={} session={} remote={} ssrc={} mid={} kind={} rid={} repaired_rid={} twcc={} "
+                        "error={}",
+                        peer.stream_id,
+                        peer.session_id,
+                        peer.remote_endpoint,
+                        header->ssrc,
+                        track_binding->mid,
+                        track_binding->kind,
+                        track_binding->rid.value_or(""),
+                        track_binding->repaired_rid.value_or(""),
+                        *track_resolution->transport_wide_sequence_number,
+                        transport_cc_observe_result.error());
+                }
+            }
         }
     }
 
