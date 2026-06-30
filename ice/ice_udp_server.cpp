@@ -6177,11 +6177,58 @@ void ice_udp_server::send_rtcp_reports(uint64_t current_time_milliseconds)
             continue;
         }
 
+        media_peer_role report_peer_role = media_peer_role::subscriber;
+
+        if (current_session.kind == stream_session_kind::publisher)
+        {
+            report_peer_role = media_peer_role::publisher;
+        }
+        else if (current_session.kind == stream_session_kind::subscriber)
+        {
+            report_peer_role = media_peer_role::subscriber;
+        }
+        else
+        {
+            current_session_gate_skipped_count += 1;
+
+            rtcp_report_service_->forget_source(
+                report_packet.source.session_id, report_packet.source.remote_endpoint, report_packet.source.local_ssrc);
+
+            WEBRTC_LOG_DEBUG("rtcp active report protect skipped unknown session kind stream={} session={} remote={} local_ssrc={} source_forgot=1",
+                             report_packet.source.stream_id,
+                             report_packet.source.session_id,
+                             report_packet.source.remote_endpoint,
+                             report_packet.source.local_ssrc);
+
+            continue;
+        }
+
+        if (!outbound_media_runtime_ready(report_packet.source.remote_endpoint,
+                                          report_packet.source.session_id,
+                                          report_packet.source.stream_id,
+                                          report_peer_role,
+                                          "rtcp active report protect"))
+        {
+            current_session_gate_skipped_count += 1;
+
+            rtcp_report_service_->forget_source(
+                report_packet.source.session_id, report_packet.source.remote_endpoint, report_packet.source.local_ssrc);
+
+            WEBRTC_LOG_DEBUG(
+                "rtcp active report protect skipped outbound runtime not ready stream={} session={} remote={} role={} local_ssrc={} source_forgot=1",
+                report_packet.source.stream_id,
+                report_packet.source.session_id,
+                report_packet.source.remote_endpoint,
+                media_peer_role_to_string(report_peer_role),
+                report_packet.source.local_ssrc);
+
+            continue;
+        }
+
         auto protected_packet =
             srtp_transport_->protect_outbound_packet(std::span<const uint8_t>(report_packet.report.packet.data(), report_packet.report.packet.size()),
                                                      report_packet.source.remote_endpoint,
                                                      srtp_packet_kind::rtcp);
-
         if (!protected_packet)
         {
             protect_failed_count += 1;
@@ -12315,12 +12362,33 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
         }
 
         const bool retransmit_is_rtx = retransmit_plain_packet->kind == retransmit_plain_packet_kind::rtx;
+        if (!outbound_media_runtime_ready(event.source.remote_endpoint,
+                                          event.source.session_id,
+                                          event.source.stream_id,
+                                          media_peer_role::subscriber,
+                                          "rtp nack retransmit protect"))
+        {
+            ignored_count += 1;
+
+            WEBRTC_LOG_DEBUG(
+                "rtp nack retransmit protect skipped outbound runtime not ready stream={} subscriber={} feedback_ssrc={} cache_ssrc={} "
+                "feedback_sequence={} cache_sequence={} rtx_feedback={} retransmit_kind={}",
+                event.source.stream_id,
+                event.source.remote_endpoint,
+                feedback_media_ssrc,
+                cache_media_ssrc,
+                requested_sequence.feedback_sequence_number,
+                requested_sequence.cache_sequence_number,
+                requested_sequence.rtx_feedback ? 1 : 0,
+                retransmit_is_rtx ? "rtx" : "primary");
+
+            continue;
+        }
 
         auto protected_packet = srtp_transport_->protect_outbound_packet(
             std::span<const uint8_t>(retransmit_plain_packet->packet.data(), retransmit_plain_packet->packet.size()),
             event.source.remote_endpoint,
-            srtp_packet_kind::rtcp);
-
+            srtp_packet_kind::rtp);
         if (!protected_packet)
         {
             failed_count += 1;
