@@ -7654,12 +7654,17 @@ std::optional<media_ssrc_mapping> ice_udp_server::find_outbound_ssrc_mapping(con
         return std::nullopt;
     }
 
+    if (target_peer.session_id.empty())
+    {
+        return std::nullopt;
+    }
+
     if (outbound_plain_packet.empty())
     {
         return std::nullopt;
     }
 
-    if (ssrc_mapper_ == nullptr)
+    if (identity_authority_ == nullptr && ssrc_mapper_ == nullptr)
     {
         return std::nullopt;
     }
@@ -7668,10 +7673,85 @@ std::optional<media_ssrc_mapping> ice_udp_server::find_outbound_ssrc_mapping(con
 
     if (!header)
     {
+        WEBRTC_LOG_DEBUG("outbound ssrc mapping parse skipped subscriber_session={} remote={} error={}",
+                         target_peer.session_id,
+                         target_peer.remote_endpoint,
+                         header.error());
+
         return std::nullopt;
     }
 
-    return ssrc_mapper_->find_by_subscriber_ssrc(target_peer.session_id, header->ssrc);
+    if (header->ssrc == 0)
+    {
+        return std::nullopt;
+    }
+
+    auto mapping = find_identity_ssrc_mapping_by_subscriber_ssrc(target_peer.session_id, header->ssrc);
+
+    if (!mapping.has_value())
+    {
+        WEBRTC_LOG_DEBUG("outbound ssrc mapping not found subscriber_session={} remote={} subscriber_ssrc={}",
+                         target_peer.session_id,
+                         target_peer.remote_endpoint,
+                         header->ssrc);
+
+        return std::nullopt;
+    }
+
+    if (mapping->subscriber_session_id != target_peer.session_id)
+    {
+        WEBRTC_LOG_WARN(
+            "outbound ssrc mapping subscriber session mismatch target_session={} remote={} subscriber_ssrc={} mapping_stream={} "
+            "mapping_publisher_session={} mapping_subscriber_session={} publisher_mid={} subscriber_mid={}",
+            target_peer.session_id,
+            target_peer.remote_endpoint,
+            header->ssrc,
+            mapping->stream_id,
+            mapping->publisher_session_id,
+            mapping->subscriber_session_id,
+            mapping->publisher_mid,
+            mapping->subscriber_mid);
+
+        return std::nullopt;
+    }
+
+    if (!target_peer.stream_id.empty() && mapping->stream_id != target_peer.stream_id)
+    {
+        WEBRTC_LOG_WARN(
+            "outbound ssrc mapping stream mismatch target_stream={} subscriber_session={} remote={} subscriber_ssrc={} mapping_stream={} "
+            "mapping_publisher_session={} publisher_mid={} subscriber_mid={}",
+            target_peer.stream_id,
+            target_peer.session_id,
+            target_peer.remote_endpoint,
+            header->ssrc,
+            mapping->stream_id,
+            mapping->publisher_session_id,
+            mapping->publisher_mid,
+            mapping->subscriber_mid);
+
+        return std::nullopt;
+    }
+
+    if (mapping->subscriber_ssrc != header->ssrc)
+    {
+        WEBRTC_LOG_WARN(
+            "outbound ssrc mapping subscriber ssrc mismatch stream={} subscriber_session={} remote={} packet_ssrc={} mapping_subscriber_ssrc={} "
+            "publisher_ssrc={} publisher_mid={} subscriber_mid={} kind={} rtx={}",
+            mapping->stream_id,
+            target_peer.session_id,
+            target_peer.remote_endpoint,
+            header->ssrc,
+            mapping->subscriber_ssrc,
+            mapping->publisher_ssrc,
+            mapping->publisher_mid,
+            mapping->subscriber_mid,
+            mapping->kind,
+            media_ssrc_mapping_is_rtx(*mapping) ? 1 : 0);
+
+        return std::nullopt;
+    }
+
+    return mapping;
 }
 void ice_udp_server::observe_outbound_rtp_stats(const media_peer_info& target_peer,
                                                 std::span<const uint8_t> outbound_plain_packet,
