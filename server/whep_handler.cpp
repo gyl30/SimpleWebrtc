@@ -193,10 +193,19 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
         if (reconnect_previous_session == nullptr)
         {
+            const auto removed_session = registry_->find_removed_session_tombstone(*reconnect_session_id);
+
+            if (removed_session.has_value() && removed_session->kind == stream_session_kind::subscriber)
+            {
+                WEBRTC_LOG_WARN("WHEP reconnect failed previous subscriber gone stream={} previous_session={}", stream_id, *reconnect_session_id);
+
+                return json_error_response(request, 410, "whep_session_gone", "previous subscriber session already deleted");
+            }
+
             WEBRTC_LOG_WARN("WHEP reconnect failed previous subscriber not found stream={} previous_session={}", stream_id, *reconnect_session_id);
+
             return json_error_response(request, 404, k_whep_previous_subscriber_not_found_error, "previous subscriber session not found");
         }
-
         if (reconnect_previous_session->stream_id() != stream_id)
         {
             WEBRTC_LOG_WARN("WHEP reconnect failed stream mismatch stream={} previous_stream={} previous_session={}",
@@ -264,12 +273,23 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
         if (error == stream_registry_error::subscriber_session_not_found)
         {
+            if (reconnect_session_id.has_value())
+            {
+                const auto removed_session = registry_->find_removed_session_tombstone(*reconnect_session_id);
+
+                if (removed_session.has_value() && removed_session->kind == stream_session_kind::subscriber)
+                {
+                    WEBRTC_LOG_WARN("WHEP reconnect failed previous subscriber gone stream={} previous_session={}", stream_id, *reconnect_session_id);
+
+                    return json_error_response(request, 410, "whep_session_gone", "previous subscriber session already deleted");
+                }
+            }
+
             WEBRTC_LOG_WARN(
                 "WHEP reconnect failed previous subscriber not found stream={} previous_session={}", stream_id, reconnect_session_id.value_or(""));
 
-            return json_error_response(request, 404, "previous subscriber session not found");
+            return json_error_response(request, 404, k_whep_previous_subscriber_not_found_error, "previous subscriber session not found");
         }
-
         if (error == stream_registry_error::subscriber_reconnect_stream_mismatch)
         {
             WEBRTC_LOG_WARN("WHEP reconnect failed previous subscriber stream mismatch stream={} previous_session={}",

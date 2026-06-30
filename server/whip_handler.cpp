@@ -180,11 +180,19 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
         if (replace_previous_session == nullptr)
         {
+            const auto removed_session = registry_->find_removed_session_tombstone(*replace_session_id);
+
+            if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+            {
+                WEBRTC_LOG_WARN("WHIP republish failed previous publisher gone stream={} previous_session={}", stream_id, *replace_session_id);
+
+                return json_error_response(request, 410, "whip_session_gone", "previous publisher session already deleted");
+            }
+
             WEBRTC_LOG_WARN("WHIP republish failed previous publisher not found stream={} previous_session={}", stream_id, *replace_session_id);
 
-            return json_error_response(request, 404, "previous publisher session not found");
+            return json_error_response(request, 404, k_whip_previous_publisher_not_found_error, "previous publisher session not found");
         }
-
         if (replace_previous_session->stream_id() != stream_id)
         {
             WEBRTC_LOG_WARN("WHIP republish failed stream mismatch stream={} previous_stream={} previous_session={}",
@@ -267,12 +275,23 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
         if (error == stream_registry_error::publisher_session_not_found)
         {
+            if (replace_session_id.has_value())
+            {
+                const auto removed_session = registry_->find_removed_session_tombstone(*replace_session_id);
+
+                if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+                {
+                    WEBRTC_LOG_WARN("WHIP republish failed previous publisher gone stream={} previous_session={}", stream_id, *replace_session_id);
+
+                    return json_error_response(request, 410, "whip_session_gone", "previous publisher session already deleted");
+                }
+            }
+
             WEBRTC_LOG_WARN(
                 "WHIP republish failed previous publisher not found stream={} previous_session={}", stream_id, replace_session_id.value_or(""));
 
             return json_error_response(request, 404, k_whip_previous_publisher_not_found_error, "previous publisher session not found");
         }
-
         if (error == stream_registry_error::publisher_republish_stream_mismatch)
         {
             WEBRTC_LOG_WARN(
