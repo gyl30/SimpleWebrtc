@@ -1779,29 +1779,6 @@ std::string make_extmap_value(const rtp_header_extension& extension)
 
     return value;
 }
-
-void append_header_extension_attributes(media_description& answer_media, const media_summary& media)
-{
-    for (const auto& extension : media.header_extensions)
-    {
-        if (extension.id <= 0 || extension.id > 255)
-        {
-            continue;
-        }
-
-        if (extension.uri.empty())
-        {
-            continue;
-        }
-
-        if (!is_supported_answer_header_extension_uri(media.kind, extension.uri))
-        {
-            continue;
-        }
-
-        push_attribute(answer_media.attributes, "extmap", make_extmap_value(extension));
-    }
-}
 bool string_vector_contains_value(const std::vector<std::string>& values, std::string_view value)
 {
     for (const auto& current : values)
@@ -1827,6 +1804,26 @@ bool media_has_header_extension_uri(const media_summary& media, std::string_view
 
     return false;
 }
+bool media_has_compatible_header_extension_uri(const media_summary& media, std::string_view uri)
+{
+    if (uri == k_transport_wide_cc_extension_uri || uri == k_transport_wide_cc_extension_uri_02)
+    {
+        return media_has_header_extension_uri(media, k_transport_wide_cc_extension_uri) ||
+               media_has_header_extension_uri(media, k_transport_wide_cc_extension_uri_02);
+    }
+
+    return media_has_header_extension_uri(media, uri);
+}
+
+bool forwarded_publisher_can_supply_header_extension(const media_summary* forwarded_publisher_media, std::string_view uri)
+{
+    if (forwarded_publisher_media == nullptr)
+    {
+        return true;
+    }
+
+    return media_has_compatible_header_extension_uri(*forwarded_publisher_media, uri);
+}
 
 bool media_has_answerable_send_rid(const media_summary& media, std::string_view rid)
 {
@@ -1846,6 +1843,161 @@ bool media_has_answerable_send_rid(const media_summary& media, std::string_view 
     }
 
     return false;
+}
+bool media_has_answerable_recv_rid(const media_summary& media, std::string_view rid)
+{
+    if (rid.empty())
+    {
+        return false;
+    }
+
+    for (const auto& current : media.rids)
+    {
+        if (current.id != rid)
+        {
+            continue;
+        }
+
+        return current.direction == "recv" || current.direction == "sendrecv";
+    }
+
+    return false;
+}
+
+void append_header_extension_attributes(media_description& answer_media, const media_summary& media, const media_summary* forwarded_publisher_media)
+{
+    for (const auto& extension : media.header_extensions)
+    {
+        if (extension.id <= 0 || extension.id > 255)
+        {
+            continue;
+        }
+
+        if (extension.uri.empty())
+        {
+            continue;
+        }
+
+        if (!is_supported_answer_header_extension_uri(media.kind, extension.uri))
+        {
+            continue;
+        }
+
+        if (!forwarded_publisher_can_supply_header_extension(forwarded_publisher_media, extension.uri))
+        {
+            continue;
+        }
+
+        push_attribute(answer_media.attributes, "extmap", make_extmap_value(extension));
+    }
+}
+std::vector<std::string> collect_answerable_whep_simulcast_rids(const media_summary& subscriber_media, const media_summary& publisher_media)
+{
+    std::vector<std::string> rids;
+
+    if (subscriber_media.kind != "video" || publisher_media.kind != "video")
+    {
+        return rids;
+    }
+
+    if (!subscriber_media.simulcast.has_value() || !publisher_media.simulcast.has_value())
+    {
+        return rids;
+    }
+
+    if (subscriber_media.simulcast->recv_rids.empty() || publisher_media.simulcast->send_rids.empty())
+    {
+        return rids;
+    }
+
+    if (!media_has_compatible_header_extension_uri(subscriber_media, k_rtp_stream_id_extension_uri) ||
+        !media_has_compatible_header_extension_uri(publisher_media, k_rtp_stream_id_extension_uri))
+    {
+        return rids;
+    }
+
+    for (const auto& rid : subscriber_media.simulcast->recv_rids)
+    {
+        if (!media_has_answerable_recv_rid(subscriber_media, rid))
+        {
+            continue;
+        }
+
+        if (!media_has_answerable_send_rid(publisher_media, rid))
+        {
+            continue;
+        }
+
+        if (!string_vector_contains_value(publisher_media.simulcast->send_rids, rid))
+        {
+            continue;
+        }
+
+        if (string_vector_contains_value(rids, rid))
+        {
+            continue;
+        }
+
+        rids.push_back(rid);
+    }
+
+    return rids;
+}
+std::string join_rids_with_semicolon(const std::vector<std::string>& rids)
+{
+    std::string value;
+
+    for (const auto& rid : rids)
+    {
+        if (!value.empty())
+        {
+            value.push_back(';');
+        }
+
+        value.append(rid);
+    }
+
+    return value;
+}
+
+void append_whep_simulcast_send_attributes(media_description& answer_media,
+                                           const media_summary& subscriber_media,
+                                           const media_summary* forwarded_publisher_media)
+{
+    if (forwarded_publisher_media == nullptr)
+    {
+        return;
+    }
+
+    const std::vector<std::string> rids = collect_answerable_whep_simulcast_rids(subscriber_media, *forwarded_publisher_media);
+
+    if (rids.empty())
+    {
+        return;
+    }
+
+    for (const auto& rid : rids)
+    {
+        std::string rid_value;
+
+        rid_value.reserve(rid.size() + 8);
+
+        rid_value.append(rid);
+
+        rid_value.append(" send");
+
+        push_attribute(answer_media.attributes, "rid", rid_value);
+    }
+
+    std::string simulcast_value;
+
+    simulcast_value.reserve(join_rids_with_semicolon(rids).size() + 8);
+
+    simulcast_value.append("send ");
+
+    simulcast_value.append(join_rids_with_semicolon(rids));
+
+    push_attribute(answer_media.attributes, "simulcast", simulcast_value);
 }
 
 std::vector<std::string> collect_answerable_whip_simulcast_rids(const media_summary& media)
@@ -1888,23 +2040,6 @@ std::vector<std::string> collect_answerable_whip_simulcast_rids(const media_summ
     }
 
     return rids;
-}
-
-std::string join_rids_with_semicolon(const std::vector<std::string>& rids)
-{
-    std::string value;
-
-    for (const auto& rid : rids)
-    {
-        if (!value.empty())
-        {
-            value.push_back(';');
-        }
-
-        value.append(rid);
-    }
-
-    return value;
 }
 
 void append_whip_simulcast_receive_attributes(media_description& answer_media, const media_summary& media)
@@ -2104,7 +2239,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
         return make_rejected_answer_media(options, media);
     }
     std::vector<codec_info> codecs;
-
+    const media_summary* forwarded_publisher_media = nullptr;
     if (role == answer_endpoint_role::whep && whep_publisher_offer != nullptr)
     {
         if (whep_subscriber_offer == nullptr)
@@ -2116,6 +2251,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
         {
             return make_rejected_answer_media(options, media);
         }
+        forwarded_publisher_media = publisher_media;
 
         auto codec_result = negotiate_codecs(media, *publisher_media);
         if (!codec_result)
@@ -2165,11 +2301,15 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 
     push_property_attribute(answer_media.attributes, k_attribute_rtcp_mux);
 
-    append_header_extension_attributes(answer_media, media);
+    append_header_extension_attributes(answer_media, media, forwarded_publisher_media);
 
     if (role == answer_endpoint_role::whip && *answer_direction == media_direction::recv_only)
     {
         append_whip_simulcast_receive_attributes(answer_media, media);
+    }
+    if (role == answer_endpoint_role::whep && *answer_direction == media_direction::send_only)
+    {
+        append_whep_simulcast_send_attributes(answer_media, media, forwarded_publisher_media);
     }
 
     append_codec_attributes(answer_media, codecs);
