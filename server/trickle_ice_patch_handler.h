@@ -285,23 +285,23 @@ inline std::string describe_content_type(http_request_t& request)
 
 inline std::expected<trickle_ice_patch_body, std::string> parse_json_patch_body(std::string_view body, uint64_t received_at_milliseconds)
 {
-    auto request = parse_trickle_ice_candidate_request(body);
+    auto requests = parse_trickle_ice_candidate_requests(body);
 
-    if (!request)
+    if (!requests)
     {
-        return std::unexpected(request.error());
+        return std::unexpected(requests.error());
     }
 
-    auto candidate = make_remote_ice_candidate_from_trickle_request(*request, received_at_milliseconds);
+    auto candidates = make_remote_ice_candidates_from_trickle_requests(*requests, received_at_milliseconds);
 
-    if (!candidate)
+    if (!candidates)
     {
-        return std::unexpected(candidate.error());
+        return std::unexpected(candidates.error());
     }
 
     trickle_ice_patch_body parsed_body;
 
-    parsed_body.candidates.push_back(std::move(*candidate));
+    parsed_body.candidates = std::move(*candidates);
 
     return parsed_body;
 }
