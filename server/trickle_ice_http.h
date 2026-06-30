@@ -15,7 +15,7 @@
 
 namespace webrtc
 {
-inline constexpr std::string_view k_trickle_ice_patch_accept_patch_value = "application/trickle-ice-sdpfrag, application/json";
+inline constexpr std::string_view k_trickle_ice_patch_accept_patch_value = "application/sdp, application/trickle-ice-sdpfrag, application/json";
 
 inline constexpr std::string_view k_session_resource_state_header = "X-Session-Resource-State";
 inline constexpr std::string_view k_session_resource_updated_at_header = "X-Session-Resource-Updated-At";
