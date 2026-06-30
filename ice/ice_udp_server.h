@@ -11,6 +11,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -133,8 +134,6 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                          uint64_t generation);
 
    private:
-    using udp = boost::asio::ip::udp;
-
     struct ice_candidate_pair
     {
         std::string session_id;
@@ -351,13 +350,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void reset_rtcp_report_runtime_counters();
 
-    void handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
+    void handle_stun_packet(std::span<const uint8_t> data, const boost::asio::ip::udp::endpoint& remote_endpoint);
 
-    void handle_dtls_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
+    void handle_dtls_packet(std::span<const uint8_t> data, const boost::asio::ip::udp::endpoint& remote_endpoint);
 
     void handle_dtls_close_notify(std::string_view remote_address);
 
-    void handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint);
+    void handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const boost::asio::ip::udp::endpoint& remote_endpoint);
 
     [[nodiscard]]
     std::optional<media_track_resolution> resolve_media_track(const media_peer_info& peer, const srtp_packet_process_result& packet);
@@ -512,7 +511,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                const std::optional<media_track_resolution>& track_resolution,
                                                const media_peer_info& target_peer);
 
-    void send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint);
+    void send_response(std::vector<uint8_t> response, const boost::asio::ip::udp::endpoint& remote_endpoint);
 
     void remember_candidate_pair(std::string_view session_id,
                                  std::string_view stream_id,
@@ -524,7 +523,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     std::expected<ice_candidate_pair_selection_result, std::string> select_candidate_pair(std::string_view session_id,
                                                                                           std::string_view stream_id,
-                                                                                          const udp::endpoint& remote_endpoint,
+                                                                                          const boost::asio::ip::udp::endpoint& remote_endpoint,
                                                                                           uint32_t remote_priority,
                                                                                           uint64_t remote_tie_breaker);
 
@@ -543,7 +542,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                              const std::array<uint8_t, 12>& transaction_id,
                                              uint64_t current_time_milliseconds);
 
-    void handle_stun_binding_success_response(std::span<const uint8_t> data, const stun_message& message, const udp::endpoint& remote_endpoint);
+    void handle_stun_binding_success_response(std::span<const uint8_t> data,
+                                              const stun_message& message,
+                                              const boost::asio::ip::udp::endpoint& remote_endpoint);
 
     [[nodiscard]]
     std::optional<std::string> remote_ice_password_for_session(std::string_view session_id) const;
@@ -582,6 +583,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void erase_candidate_pairs_for_session_locked(std::string_view session_id);
 
     void erase_candidate_pairs_for_endpoint_locked(std::string_view remote_address);
+
+    [[nodiscard]]
+    std::vector<std::pair<std::string, boost::asio::ip::udp::endpoint>> collect_session_endpoint_snapshots_locked(std::string_view session_id) const;
 
     [[nodiscard]]
     std::vector<std::string> erase_endpoint_indexes_for_session_locked(std::string_view session_id);
@@ -668,7 +672,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::size_t erase_keyframe_request_states_for_stream_locked(std::string_view stream_id);
 
     [[nodiscard]]
-    std::optional<udp::endpoint> find_remote_endpoint(std::string_view remote_address) const;
+    std::optional<boost::asio::ip::udp::endpoint> find_remote_endpoint(std::string_view remote_address) const;
 
     [[nodiscard]] std::optional<std::string> find_session_id_by_endpoint(std::string_view remote_address) const;
 
@@ -682,7 +686,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     static std::string extract_local_ufrag(std::string_view username);
 
     [[nodiscard]]
-    static std::string endpoint_ip(const udp::endpoint& endpoint);
+    static std::string endpoint_ip(const boost::asio::ip::udp::endpoint& endpoint);
 
     void send_rtcp_bye_for_removed_session(const stream_removed_session& removed_session);
 
@@ -720,6 +724,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                      uint32_t media_ssrc);
 
     void send_dtls_close_notify(std::string_view remote_address);
+    void send_dtls_close_notify_to_endpoint(std::string_view remote_address, const boost::asio::ip::udp::endpoint& remote_endpoint);
 
     void observe_outbound_track_stats(const media_peer_info& target_peer,
                                       std::span<const uint8_t> outbound_plain_packet,
@@ -741,7 +746,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
    private:
     boost::asio::io_context& io_context_;
 
-    udp::socket socket_;
+    boost::asio::ip::udp::socket socket_;
 
     boost::asio::steady_timer dtls_timeout_timer_;
 
@@ -784,13 +789,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::shared_ptr<rtx_retransmission_index> rtx_retransmission_index_;
     std::shared_ptr<nack_retransmit_throttle> nack_retransmit_throttle_;
 
-    udp::endpoint remote_endpoint_;
+    boost::asio::ip::udp::endpoint remote_endpoint_;
 
     std::array<uint8_t, 4096> receive_buffer_{};
 
     mutable std::mutex endpoint_mutex_;
 
-    std::unordered_map<std::string, udp::endpoint> endpoints_by_address_;
+    std::unordered_map<std::string, boost::asio::ip::udp::endpoint> endpoints_by_address_;
     std::unordered_map<std::string, std::string> endpoint_address_by_session_id_;
     std::unordered_map<std::string, std::string> session_id_by_endpoint_address_;
     std::unordered_map<std::string, uint64_t> endpoint_last_seen_milliseconds_by_address_;

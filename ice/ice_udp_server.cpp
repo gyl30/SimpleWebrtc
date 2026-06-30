@@ -2975,7 +2975,7 @@ ice_udp_server_result ice_udp_server::start()
         return std::unexpected(std::move(message));
     }
 
-    udp::endpoint endpoint(address, bind_port_);
+    boost::asio::ip::udp::endpoint endpoint(address, bind_port_);
 
     socket_.open(endpoint.protocol(), ec);
 
@@ -3295,10 +3295,14 @@ void ice_udp_server::forget_session(std::string_view session_id)
     }
 
     std::vector<std::string> remote_addresses;
+    std::vector<std::pair<std::string, boost::asio::ip::udp::endpoint>> close_notify_targets;
     bool endpoint_removed = false;
 
     {
         std::lock_guard lock(endpoint_mutex_);
+
+        close_notify_targets = collect_session_endpoint_snapshots_locked(session_id);
+
         const std::vector<std::string> erased_remote_addresses = erase_endpoint_indexes_for_session_locked(session_id);
         const uint64_t current_time_milliseconds = now_milliseconds();
 
@@ -3337,13 +3341,16 @@ void ice_udp_server::forget_session(std::string_view session_id)
 
     if (endpoint_removed)
     {
+        for (const auto& [remote_address, remote_endpoint] : close_notify_targets)
+        {
+            send_dtls_close_notify_to_endpoint(remote_address, remote_endpoint);
+        }
+
         for (const auto& remote_address : remote_addresses)
         {
-            send_dtls_close_notify(remote_address);
             forget_peer_transport_state(remote_address);
         }
     }
-
     WEBRTC_LOG_INFO(
         "ice udp session cleanup completed session={} endpoint_removed={} remote_count={}", session_id, endpoint_removed, remote_addresses.size());
 }
@@ -6886,7 +6893,7 @@ bool ice_udp_server::remember_ice_consent_success_locked(std::string_view remote
 
 void ice_udp_server::handle_stun_binding_success_response(std::span<const uint8_t> data,
                                                           const stun_message& message,
-                                                          const udp::endpoint& remote_endpoint)
+                                                          const boost::asio::ip::udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
 
@@ -6971,7 +6978,7 @@ void ice_udp_server::handle_stun_binding_success_response(std::span<const uint8_
 
     WEBRTC_LOG_DEBUG("ice consent response accepted session={} remote={}", session_id, remote_address);
 }
-void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
+void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const boost::asio::ip::udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
 
@@ -7279,7 +7286,7 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const udp
     send_response(std::move(*response), remote_endpoint);
 }
 
-void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
+void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const boost::asio::ip::udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
 
@@ -7631,7 +7638,7 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
 
     send_response(std::move(protected_packet->protected_packet), *publisher_endpoint);
 }
-void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const udp::endpoint& remote_endpoint)
+void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, const boost::asio::ip::udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
 
@@ -13414,7 +13421,7 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
     }
 }
 
-void ice_udp_server::send_response(std::vector<uint8_t> response, const udp::endpoint& remote_endpoint)
+void ice_udp_server::send_response(std::vector<uint8_t> response, const boost::asio::ip::udp::endpoint& remote_endpoint)
 {
     const std::string remote_address = endpoint_to_string(remote_endpoint);
 
@@ -13476,7 +13483,7 @@ void ice_udp_server::remember_candidate_pair(std::string_view session_id,
 std::expected<ice_udp_server::ice_candidate_pair_selection_result, std::string> ice_udp_server::select_candidate_pair(
     std::string_view session_id,
     std::string_view stream_id,
-    const udp::endpoint& remote_endpoint,
+    const boost::asio::ip::udp::endpoint& remote_endpoint,
     uint32_t remote_priority,
     uint64_t remote_tie_breaker)
 {
@@ -13599,7 +13606,7 @@ std::vector<ice_udp_server::ice_consent_request> ice_udp_server::collect_due_ice
     struct selected_consent_candidate
     {
         ice_candidate_pair pair;
-        udp::endpoint remote_endpoint;
+        boost::asio::ip::udp::endpoint remote_endpoint;
     };
 
     std::vector<selected_consent_candidate> selected_candidates;
@@ -13946,12 +13953,19 @@ void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
     }
 
     std::string session_id;
+    std::optional<boost::asio::ip::udp::endpoint> close_notify_endpoint;
 
     {
         std::lock_guard lock(endpoint_mutex_);
 
-        const auto session_iterator = session_id_by_endpoint_address_.find(std::string(remote_address));
+        const auto endpoint_iterator = endpoints_by_address_.find(std::string(remote_address));
 
+        if (endpoint_iterator != endpoints_by_address_.end())
+        {
+            close_notify_endpoint = endpoint_iterator->second;
+        }
+
+        const auto session_iterator = session_id_by_endpoint_address_.find(std::string(remote_address));
         if (session_iterator != session_id_by_endpoint_address_.end())
         {
             session_id = session_iterator->second;
@@ -13982,9 +13996,18 @@ void ice_udp_server::forget_peer_endpoint(std::string_view remote_address)
                 "ice orphan endpoint indexes erased during peer endpoint cleanup remote={} count={}", remote_address, orphan_endpoint_indexes_erased);
         }
     }
-    send_dtls_close_notify(remote_address);
+    if (close_notify_endpoint.has_value())
+    {
+        send_dtls_close_notify_to_endpoint(remote_address, *close_notify_endpoint);
+    }
+    else
+    {
+        send_dtls_close_notify(remote_address);
+    }
+
     forget_peer_transport_state(remote_address);
 }
+
 void ice_udp_server::send_dtls_close_notify(std::string_view remote_address)
 {
     if (remote_address.empty())
@@ -13992,14 +14015,24 @@ void ice_udp_server::send_dtls_close_notify(std::string_view remote_address)
         return;
     }
 
-    if (dtls_transport_ == nullptr)
+    auto remote_endpoint = find_remote_endpoint(remote_address);
+
+    if (!remote_endpoint.has_value())
     {
         return;
     }
 
-    auto remote_endpoint = find_remote_endpoint(remote_address);
+    send_dtls_close_notify_to_endpoint(remote_address, *remote_endpoint);
+}
 
-    if (!remote_endpoint.has_value())
+void ice_udp_server::send_dtls_close_notify_to_endpoint(std::string_view remote_address, const boost::asio::ip::udp::endpoint& remote_endpoint)
+{
+    if (remote_address.empty())
+    {
+        return;
+    }
+
+    if (dtls_transport_ == nullptr)
     {
         return;
     }
@@ -14020,7 +14053,7 @@ void ice_udp_server::send_dtls_close_notify(std::string_view remote_address)
             continue;
         }
 
-        send_response(std::move(packet), *remote_endpoint);
+        send_response(std::move(packet), remote_endpoint);
     }
 }
 
@@ -14123,6 +14156,76 @@ void ice_udp_server::erase_candidate_pairs_for_endpoint_locked(std::string_view 
 
         ++iterator;
     }
+}
+std::vector<std::pair<std::string, boost::asio::ip::udp::endpoint>> ice_udp_server::collect_session_endpoint_snapshots_locked(
+    std::string_view session_id) const
+{
+    std::vector<std::pair<std::string, boost::asio::ip::udp::endpoint>> snapshots;
+
+    if (session_id.empty())
+    {
+        return snapshots;
+    }
+
+    const std::string session_key(session_id);
+
+    auto remember_remote_address = [&](std::string_view remote_address)
+    {
+        if (remote_address.empty())
+        {
+            return;
+        }
+
+        const std::string remote_key(remote_address);
+
+        for (const auto& snapshot : snapshots)
+        {
+            if (snapshot.first == remote_key)
+            {
+                return;
+            }
+        }
+
+        const auto endpoint_iterator = endpoints_by_address_.find(remote_key);
+
+        if (endpoint_iterator == endpoints_by_address_.end())
+        {
+            return;
+        }
+
+        snapshots.emplace_back(remote_key, endpoint_iterator->second);
+    };
+
+    const auto forward_iterator = endpoint_address_by_session_id_.find(session_key);
+
+    if (forward_iterator != endpoint_address_by_session_id_.end())
+    {
+        remember_remote_address(forward_iterator->second);
+    }
+
+    for (const auto& [remote_address, current_session_id] : session_id_by_endpoint_address_)
+    {
+        if (current_session_id != session_key)
+        {
+            continue;
+        }
+
+        remember_remote_address(remote_address);
+    }
+
+    for (const auto& [key, pair] : candidate_pairs_by_key_)
+    {
+        (void)key;
+
+        if (pair.session_id != session_key)
+        {
+            continue;
+        }
+
+        remember_remote_address(pair.remote_address);
+    }
+
+    return snapshots;
 }
 
 std::vector<std::string> ice_udp_server::erase_endpoint_indexes_for_session_locked(std::string_view session_id)
@@ -15263,7 +15366,7 @@ std::optional<dtls_peer_identity> ice_udp_server::current_dtls_identity_for_sess
 
     return std::nullopt;
 }
-std::optional<ice_udp_server::udp::endpoint> ice_udp_server::find_remote_endpoint(std::string_view remote_address) const
+std::optional<boost::asio::ip::udp::endpoint> ice_udp_server::find_remote_endpoint(std::string_view remote_address) const
 {
     std::lock_guard lock(endpoint_mutex_);
 
@@ -15363,5 +15466,5 @@ std::string ice_udp_server::extract_local_ufrag(std::string_view username)
     return std::string(username_parts->recipient_ufrag);
 }
 
-std::string ice_udp_server::endpoint_ip(const udp::endpoint& endpoint) { return get_endpoint_ip(endpoint); }
+std::string ice_udp_server::endpoint_ip(const boost::asio::ip::udp::endpoint& endpoint) { return get_endpoint_ip(endpoint); }
 }    // namespace webrtc
