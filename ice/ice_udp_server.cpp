@@ -1801,6 +1801,46 @@ bool payload_type_mapping_matches_track_resolution_kind_fallback(const media_pay
 
     return true;
 }
+bool payload_type_mapping_matches_track_resolution_exact_identity(const media_payload_type_mapping& mapping,
+                                                                  const media_track_resolution& track_resolution)
+{
+    if (!track_resolution.resolved)
+    {
+        return false;
+    }
+
+    if (track_resolution.mid.empty())
+    {
+        return false;
+    }
+
+    if (mapping.publisher_mid.empty() || mapping.subscriber_mid.empty() || mapping.kind.empty())
+    {
+        return false;
+    }
+
+    if (mapping.publisher_mid != track_resolution.mid)
+    {
+        return false;
+    }
+
+    if (!track_resolution.kind.empty() && mapping.kind != track_resolution.kind)
+    {
+        return false;
+    }
+
+    if (mapping.publisher_payload_type != track_resolution.payload_type)
+    {
+        return false;
+    }
+
+    if (mapping.rtx != track_resolution.rtx)
+    {
+        return false;
+    }
+
+    return true;
+}
 
 std::optional<media_payload_type_mapping> find_unique_payload_type_mapping_by_track_resolution_kind(const media_payload_type_mapping_table& table,
                                                                                                     const media_track_resolution& track_resolution)
@@ -9944,30 +9984,31 @@ std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapp
 
         if (mapping.has_value())
         {
-            if (mapping->rtx != track_resolution->rtx)
+            if (!payload_type_mapping_matches_track_resolution_exact_identity(*mapping, *track_resolution))
             {
                 WEBRTC_LOG_WARN(
-                    "payload type mapping exact mid rtx mismatch stream={} publisher_session={} subscriber_session={} publisher_mid={} "
-                    "subscriber_mid={} kind={} publisher_payload_type={} ssrc={} rid={} repaired_rid={} mapping_rtx={} track_rtx={}",
+                    "payload type mapping exact mid identity mismatch stream={} publisher_session={} subscriber_session={} publisher_mid={} "
+                    "subscriber_mid={} mapping_kind={} track_kind={} publisher_payload_type={} mapping_rtx={} track_rtx={} ssrc={} rid={} "
+                    "repaired_rid={}",
                     route.source.stream_id,
                     route.source.session_id,
                     subscriber.session_id,
                     mapping->publisher_mid,
                     mapping->subscriber_mid,
                     mapping->kind,
+                    track_resolution->kind,
                     static_cast<unsigned int>(track_resolution->payload_type),
+                    mapping->rtx ? 1 : 0,
+                    track_resolution->rtx ? 1 : 0,
                     track_resolution->ssrc,
                     track_resolution->rid.has_value() ? *track_resolution->rid : "",
-                    track_resolution->repaired_rid.has_value() ? *track_resolution->repaired_rid : "",
-                    mapping->rtx ? 1 : 0,
-                    track_resolution->rtx ? 1 : 0);
+                    track_resolution->repaired_rid.has_value() ? *track_resolution->repaired_rid : "");
 
                 return std::nullopt;
             }
 
             return mapping;
         }
-
         WEBRTC_LOG_WARN(
             "payload type mapping exact mid not found stream={} publisher_session={} subscriber_session={} publisher_mid={} kind={} "
             "publisher_payload_type={} ssrc={} rid={} repaired_rid={} rtx={}",
