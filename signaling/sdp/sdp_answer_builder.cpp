@@ -839,6 +839,31 @@ bool answer_media_has_inactive_direction(const media_description& media)
 
     return !inactive_attributes.empty();
 }
+bool answer_media_has_send_direction(const media_description& media)
+{
+    for (const auto& attribute : media.attributes)
+    {
+        if (attribute.key == k_attribute_send_only || attribute.key == k_attribute_send_recv)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool answer_media_has_receive_only_direction(const media_description& media)
+{
+    for (const auto& attribute : media.attributes)
+    {
+        if (attribute.key == k_attribute_recv_only)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 bool rejected_answer_media_attribute_is_allowed(std::string_view key)
 {
@@ -1496,7 +1521,20 @@ std::expected<void, std::string> validate_answer_simulcast_rids(const media_desc
 
     return {};
 }
+std::size_t count_msid_attributes(const media_description& media)
+{
+    std::size_t count = 0;
 
+    for (const auto& attribute : media.attributes)
+    {
+        if (attribute.key == "msid")
+        {
+            count += 1;
+        }
+    }
+
+    return count;
+}
 std::expected<void, std::string> validate_answer_msid_attributes(const media_description& answer_media)
 {
     std::set<std::string> msid_values;
@@ -1524,6 +1562,32 @@ std::expected<void, std::string> validate_answer_msid_attributes(const media_des
         {
             return make_error("answer media has duplicate msid attribute");
         }
+    }
+
+    return {};
+}
+std::expected<void, std::string> validate_answer_msid_direction_consistency(const media_description& answer_media)
+{
+    if (is_answer_media_rejected(answer_media))
+    {
+        return {};
+    }
+
+    const std::size_t msid_count = count_msid_attributes(answer_media);
+
+    if (answer_media_has_send_direction(answer_media))
+    {
+        if (msid_count != 1)
+        {
+            return make_error("sending answer media must have exactly one msid attribute");
+        }
+
+        return {};
+    }
+
+    if (msid_count != 0)
+    {
+        return make_error("non sending answer media must not have msid attribute");
     }
 
     return {};
@@ -1643,10 +1707,15 @@ std::expected<void, std::string> validate_accepted_answer_media_identity(const m
     }
 
     auto msid_result = validate_answer_msid_attributes(answer_media);
-
     if (!msid_result)
     {
         return std::unexpected(msid_result.error());
+    }
+
+    auto msid_direction_result = validate_answer_msid_direction_consistency(answer_media);
+    if (!msid_direction_result)
+    {
+        return std::unexpected(msid_direction_result.error());
     }
 
     return {};
