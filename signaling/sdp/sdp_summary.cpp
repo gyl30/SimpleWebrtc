@@ -17,7 +17,223 @@ namespace webrtc::sdp
 namespace
 {
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+std::unexpected<std::string> make_media_restart_error(const media_summary& media, std::string_view message)
+{
+    std::string error;
 
+    error.reserve(media.mid.size() + message.size() + 16);
+
+    error.append("media mid ");
+
+    error.append(media.mid);
+
+    error.push_back(' ');
+
+    error.append(message);
+
+    return std::unexpected(std::move(error));
+}
+
+bool fingerprint_equal(const fingerprint_info& left, const fingerprint_info& right)
+{
+    return left.algorithm == right.algorithm && left.value == right.value;
+}
+
+bool codec_equal(const codec_info& left, const codec_info& right)
+{
+    return left.payload_type == right.payload_type && left.name == right.name && left.clock_rate == right.clock_rate &&
+           left.encoding_parameters == right.encoding_parameters && left.fmtp == right.fmtp && left.rtcp_feedback == right.rtcp_feedback;
+}
+
+bool codec_list_equal(const std::vector<codec_info>& left, const std::vector<codec_info>& right)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < left.size(); ++index)
+    {
+        if (!codec_equal(left[index], right[index]))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool header_extension_equal(const rtp_header_extension& left, const rtp_header_extension& right)
+{
+    return left.id == right.id && left.direction == right.direction && left.uri == right.uri &&
+           left.extension_attributes == right.extension_attributes;
+}
+
+bool header_extension_list_equal(const std::vector<rtp_header_extension>& left, const std::vector<rtp_header_extension>& right)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < left.size(); ++index)
+    {
+        if (!header_extension_equal(left[index], right[index]))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool ssrc_group_equal(const ssrc_group_summary& left, const ssrc_group_summary& right)
+{
+    return left.semantics == right.semantics && left.ssrcs == right.ssrcs;
+}
+
+bool ssrc_group_list_equal(const std::vector<ssrc_group_summary>& left, const std::vector<ssrc_group_summary>& right)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < left.size(); ++index)
+    {
+        if (!ssrc_group_equal(left[index], right[index]))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool rid_equal(const rid_summary& left, const rid_summary& right) { return left.id == right.id && left.direction == right.direction; }
+
+bool rid_list_equal(const std::vector<rid_summary>& left, const std::vector<rid_summary>& right)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < left.size(); ++index)
+    {
+        if (!rid_equal(left[index], right[index]))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool simulcast_equal(const std::optional<simulcast_summary>& left, const std::optional<simulcast_summary>& right)
+{
+    if (left.has_value() != right.has_value())
+    {
+        return false;
+    }
+
+    if (!left.has_value())
+    {
+        return true;
+    }
+
+    return left->send_rids == right->send_rids && left->recv_rids == right->recv_rids;
+}
+
+bool msid_equal(const msid_summary& left, const msid_summary& right) { return left.stream_id == right.stream_id && left.track_id == right.track_id; }
+
+bool msid_list_equal(const std::vector<msid_summary>& left, const std::vector<msid_summary>& right)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < left.size(); ++index)
+    {
+        if (!msid_equal(left[index], right[index]))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::expected<void, std::string> validate_media_restart_compatibility(const media_summary& previous_media, const media_summary& next_media)
+{
+    if (previous_media.mid != next_media.mid)
+    {
+        return make_media_restart_error(previous_media, "mid changed");
+    }
+
+    if (previous_media.kind != next_media.kind)
+    {
+        return make_media_restart_error(previous_media, "kind changed");
+    }
+
+    if (previous_media.direction != next_media.direction)
+    {
+        return make_media_restart_error(previous_media, "direction changed");
+    }
+
+    if (previous_media.rtcp_mux != next_media.rtcp_mux)
+    {
+        return make_media_restart_error(previous_media, "rtcp mux changed");
+    }
+
+    if (previous_media.ptime != next_media.ptime)
+    {
+        return make_media_restart_error(previous_media, "ptime changed");
+    }
+
+    if (previous_media.maxptime != next_media.maxptime)
+    {
+        return make_media_restart_error(previous_media, "maxptime changed");
+    }
+
+    if (previous_media.payload_types != next_media.payload_types)
+    {
+        return make_media_restart_error(previous_media, "payload types changed");
+    }
+
+    if (!codec_list_equal(previous_media.codecs, next_media.codecs))
+    {
+        return make_media_restart_error(previous_media, "codecs changed");
+    }
+
+    if (!header_extension_list_equal(previous_media.header_extensions, next_media.header_extensions))
+    {
+        return make_media_restart_error(previous_media, "rtp header extensions changed");
+    }
+
+    if (!ssrc_group_list_equal(previous_media.ssrc_groups, next_media.ssrc_groups))
+    {
+        return make_media_restart_error(previous_media, "ssrc groups changed");
+    }
+
+    if (!rid_list_equal(previous_media.rids, next_media.rids))
+    {
+        return make_media_restart_error(previous_media, "rids changed");
+    }
+
+    if (!simulcast_equal(previous_media.simulcast, next_media.simulcast))
+    {
+        return make_media_restart_error(previous_media, "simulcast changed");
+    }
+
+    if (!msid_list_equal(previous_media.msids, next_media.msids))
+    {
+        return make_media_restart_error(previous_media, "msid changed");
+    }
+
+    return {};
+}
 bool is_space(char value) { return value == ' ' || value == '\t'; }
 
 std::string_view trim_left(std::string_view value)
@@ -1164,6 +1380,47 @@ bool offer_has_ice_restart(const webrtc_offer_summary& previous_offer, const web
     }
 
     return !offer_ice_credentials_equal(previous_offer, next_offer);
+}
+
+std::expected<void, std::string> validate_ice_restart_offer_compatibility(const webrtc_offer_summary& previous_offer,
+                                                                          const webrtc_offer_summary& next_offer)
+{
+    if (!offer_has_ice_restart(previous_offer, next_offer))
+    {
+        return make_error("offer does not contain ice restart");
+    }
+
+    if (!fingerprint_equal(previous_offer.fingerprint, next_offer.fingerprint))
+    {
+        return make_error("dtls fingerprint changed");
+    }
+
+    if (previous_offer.setup != next_offer.setup)
+    {
+        return make_error("dtls setup changed");
+    }
+
+    if (previous_offer.bundle_mids != next_offer.bundle_mids)
+    {
+        return make_error("bundle mids changed");
+    }
+
+    if (previous_offer.media.size() != next_offer.media.size())
+    {
+        return make_error("media count changed");
+    }
+
+    for (std::size_t index = 0; index < previous_offer.media.size(); ++index)
+    {
+        auto media_result = validate_media_restart_compatibility(previous_offer.media[index], next_offer.media[index]);
+
+        if (!media_result)
+        {
+            return std::unexpected(media_result.error());
+        }
+    }
+
+    return {};
 }
 
 std::string offer_ice_credentials_to_string(const webrtc_offer_summary& offer)

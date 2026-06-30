@@ -39,6 +39,8 @@ constexpr std::string_view k_whep_runtime_offer_filter_failed_error = "whep_runt
 constexpr std::string_view k_whep_create_session_failed_error = "whep_create_session_failed";
 constexpr std::string_view k_whep_session_not_found_error = "whep_session_not_found";
 constexpr std::string_view k_whep_delete_session_failed_error = "whep_delete_session_failed";
+constexpr std::string_view k_whep_ice_restart_incompatible_offer_error = "whep_ice_restart_incompatible_offer";
+
 std::string make_prefixed_error(std::string_view prefix, std::string_view error)
 {
     std::string message;
@@ -390,7 +392,6 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
     }
 
     auto runtime_offer_filter = make_runtime_offer_filter_result(*offer_summary, answer->sdp);
-
     if (!runtime_offer_filter)
     {
         WEBRTC_LOG_WARN("WHEP runtime restart offer summary failed session={} error={}", session_id, runtime_offer_filter.error());
@@ -398,7 +399,17 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
         return json_error_response(
             request, 400, make_prefixed_error("failed to build runtime subscriber offer summary: ", runtime_offer_filter.error()));
     }
+    auto restart_compatibility = sdp::validate_ice_restart_offer_compatibility(session->remote_offer_summary(), runtime_offer_filter->offer_summary);
 
+    if (!restart_compatibility)
+    {
+        WEBRTC_LOG_WARN("WHEP SDP ICE restart incompatible offer session={} error={}", session_id, restart_compatibility.error());
+
+        return json_error_response(request,
+                                   409,
+                                   k_whep_ice_restart_incompatible_offer_error,
+                                   make_prefixed_error("invalid ice restart offer: ", restart_compatibility.error()));
+    }
     generated_sdp_answer generated_answer = std::move(*answer);
 
     stream_restarted_session restarted_session;
