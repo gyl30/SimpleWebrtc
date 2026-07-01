@@ -78,6 +78,7 @@ constexpr uint64_t k_retired_endpoint_retention_milliseconds = 15000;
 
 constexpr uint64_t k_lifecycle_fast_convergence_check_delay_milliseconds = 3000;
 constexpr uint64_t k_lifecycle_final_convergence_check_delay_milliseconds = k_retired_endpoint_retention_milliseconds + 1000;
+constexpr uint64_t k_selected_rid_keyframe_request_pending_timeout_milliseconds = 10000;
 
 constexpr uint64_t k_default_endpoint_idle_timeout_milliseconds = 120000;
 
@@ -4516,8 +4517,24 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             entry.primary_ssrc = state.primary_ssrc;
             entry.repair_ssrc = state.repair_ssrc;
 
-            entry.pending_keyframe_request =
-                pending_selected_rid_keyframe_request_keys_.find(key) != pending_selected_rid_keyframe_request_keys_.end();
+            const auto pending_iterator = pending_selected_rid_keyframe_request_keys_.find(key);
+
+            entry.pending_keyframe_request = pending_iterator != pending_selected_rid_keyframe_request_keys_.end();
+
+            if (entry.pending_keyframe_request)
+            {
+                const auto pending_state_iterator = pending_selected_rid_keyframe_request_state_by_key_.find(key);
+
+                if (pending_state_iterator != pending_selected_rid_keyframe_request_state_by_key_.end())
+                {
+                    entry.pending_keyframe_request_since_milliseconds = pending_state_iterator->second.pending_since_milliseconds;
+                    entry.pending_keyframe_request_expires_at_milliseconds = pending_state_iterator->second.expires_at_milliseconds;
+                    entry.pending_keyframe_request_remaining_ttl_milliseconds =
+                        pending_state_iterator->second.expires_at_milliseconds > current_time_milliseconds
+                            ? pending_state_iterator->second.expires_at_milliseconds - current_time_milliseconds
+                            : 0;
+                }
+            }
 
             entry.packet_count = state.packet_count;
 
@@ -7027,6 +7044,18 @@ void ice_udp_server::on_ice_consent_check(boost::system::error_code ec)
     }
 
     const uint64_t current_time_milliseconds = now_milliseconds();
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        const std::size_t expired_selected_rid_keyframe_pending_count =
+            expire_selected_rid_keyframe_request_pending_locked(current_time_milliseconds);
+
+        if (expired_selected_rid_keyframe_pending_count != 0)
+        {
+            WEBRTC_LOG_WARN("simulcast selected rid keyframe pending expired count={}", expired_selected_rid_keyframe_pending_count);
+        }
+    }
 
     send_ice_consent_requests(current_time_milliseconds);
 
@@ -14010,7 +14039,32 @@ void ice_udp_server::mark_republish_keyframe_request_pending(std::string_view st
     WEBRTC_LOG_INFO(
         "publisher republish keyframe request pending stream={} publisher_session={} scope=subscribers", stream_id, new_publisher_session_id);
 }
+void ice_udp_server::remember_selected_rid_keyframe_request_pending_locked(std::string_view key,
+                                                                           selected_rid_layer_runtime_state& state,
+                                                                           uint64_t current_time_milliseconds,
+                                                                           std::string_view reason)
+{
+    if (key.empty())
+    {
+        return;
+    }
 
+    pending_selected_rid_keyframe_request_keys_.insert(std::string(key));
+
+    selected_rid_keyframe_request_pending_state& pending_state = pending_selected_rid_keyframe_request_state_by_key_[std::string(key)];
+
+    if (pending_state.pending_since_milliseconds != 0)
+    {
+        pending_state.restore_count += 1;
+    }
+
+    pending_state.pending_since_milliseconds = current_time_milliseconds;
+    pending_state.expires_at_milliseconds = current_time_milliseconds + k_selected_rid_keyframe_request_pending_timeout_milliseconds;
+
+    state.last_keyframe_request_milliseconds = current_time_milliseconds;
+    state.last_keyframe_request_result = "pending";
+    state.last_keyframe_request_reason = std::string(reason);
+}
 void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_route_result& route,
                                                                 const media_peer_info& target_peer,
                                                                 const media_track_resolution& track_resolution,
@@ -14124,7 +14178,7 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
         state.last_keyframe_request_result.clear();
         state.last_keyframe_request_reason.clear();
 
-        pending_selected_rid_keyframe_request_keys_.insert(key);
+        remember_selected_rid_keyframe_request_pending_locked(key, state, now_milliseconds(), "selected rid changed");
 
         WEBRTC_LOG_INFO(
             "simulcast selected rid changed stream={} publisher_session={} subscriber_session={} mid={} kind={} selected_rid={} primary_ssrc={} "
@@ -14159,12 +14213,11 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
 
     state.repair_ssrc = selected_layer.repair_ssrc;
 
-    state.packet_count = 1;
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    remember_selected_rid_keyframe_request_pending_locked(key, state, current_time_milliseconds, "selected rid established");
 
     selected_rid_layer_state_by_key_.emplace(key, std::move(state));
-
-    pending_selected_rid_keyframe_request_keys_.insert(key);
-
     WEBRTC_LOG_INFO(
         "simulcast selected rid established stream={} publisher_session={} subscriber_session={} mid={} kind={} selected_rid={} primary_ssrc={} "
         "repair_ssrc={}",
@@ -14226,7 +14279,7 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
     if (state_iterator == selected_rid_layer_state_by_key_.end())
     {
         pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
-
+        pending_selected_rid_keyframe_request_state_by_key_.erase(key);
         return false;
     }
 
@@ -14235,13 +14288,14 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
     if (state.rid.empty() || state.kind.empty())
     {
         pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
-
+        pending_selected_rid_keyframe_request_state_by_key_.erase(key);
         return false;
     }
 
     if (state.kind != track_resolution->kind)
     {
         pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
+        pending_selected_rid_keyframe_request_state_by_key_.erase(key);
 
         return false;
     }
@@ -14264,6 +14318,7 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
     }
 
     pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
+    pending_selected_rid_keyframe_request_state_by_key_.erase(key);
 
     WEBRTC_LOG_INFO(
         "simulcast selected rid keyframe request consumed stream={} publisher_session={} subscriber_session={} mid={} kind={} selected_rid={} "
@@ -14328,11 +14383,11 @@ void ice_udp_server::restore_selected_rid_keyframe_request_pending_for_subscribe
 
     mutable_state.keyframe_request_attempt_count += 1;
     mutable_state.keyframe_request_restore_count += 1;
-    mutable_state.last_keyframe_request_milliseconds = now_milliseconds();
+
+    remember_selected_rid_keyframe_request_pending_locked(key, mutable_state, now_milliseconds(), reason);
+
     mutable_state.last_keyframe_request_result = "restored";
     mutable_state.last_keyframe_request_reason = std::string(reason);
-
-    pending_selected_rid_keyframe_request_keys_.insert(key);
 
     WEBRTC_LOG_INFO(
         "simulcast selected rid keyframe request restored stream={} publisher_session={} subscriber_session={} mid={} kind={} selected_rid={} "
@@ -14539,16 +14594,67 @@ void ice_udp_server::forget_selected_rid_layer_states_for_session(std::string_vi
         if (state.publisher_session_id == session_id || state.subscriber_session_id == session_id)
         {
             pending_selected_rid_keyframe_request_keys_.erase(iterator->first);
+            pending_selected_rid_keyframe_request_state_by_key_.erase(iterator->first);
 
             iterator = selected_rid_layer_state_by_key_.erase(iterator);
 
             continue;
         }
-
         ++iterator;
     }
 }
 
+std::size_t ice_udp_server::expire_selected_rid_keyframe_request_pending_locked(uint64_t current_time_milliseconds)
+{
+    std::size_t expired_count = 0;
+
+    for (auto iterator = pending_selected_rid_keyframe_request_state_by_key_.begin();
+         iterator != pending_selected_rid_keyframe_request_state_by_key_.end();)
+    {
+        const std::string key = iterator->first;
+        const selected_rid_keyframe_request_pending_state& pending_state = iterator->second;
+
+        if (pending_state.expires_at_milliseconds == 0 || current_time_milliseconds < pending_state.expires_at_milliseconds)
+        {
+            ++iterator;
+
+            continue;
+        }
+
+        pending_selected_rid_keyframe_request_keys_.erase(key);
+
+        auto state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+        if (state_iterator != selected_rid_layer_state_by_key_.end())
+        {
+            selected_rid_layer_runtime_state& state = state_iterator->second;
+
+            state.last_keyframe_request_milliseconds = current_time_milliseconds;
+            state.last_keyframe_request_result = "expired";
+            state.last_keyframe_request_reason = "selected rid keyframe pending timeout";
+
+            WEBRTC_LOG_WARN(
+                "simulcast selected rid keyframe request expired stream={} publisher_session={} subscriber_session={} mid={} kind={} "
+                "selected_rid={} pending_ms={} restore_count={}",
+                state.stream_id,
+                state.publisher_session_id,
+                state.subscriber_session_id,
+                state.mid,
+                state.kind,
+                state.rid,
+                current_time_milliseconds > pending_state.pending_since_milliseconds
+                    ? current_time_milliseconds - pending_state.pending_since_milliseconds
+                    : 0,
+                pending_state.restore_count);
+        }
+
+        iterator = pending_selected_rid_keyframe_request_state_by_key_.erase(iterator);
+
+        expired_count += 1;
+    }
+
+    return expired_count;
+}
 std::size_t ice_udp_server::erase_selected_rid_layer_states_for_stream_locked(std::string_view stream_id)
 {
     if (stream_id.empty())
@@ -14563,6 +14669,7 @@ std::size_t ice_udp_server::erase_selected_rid_layer_states_for_stream_locked(st
         if (iterator->second.stream_id == stream_id)
         {
             pending_selected_rid_keyframe_request_keys_.erase(iterator->first);
+            pending_selected_rid_keyframe_request_state_by_key_.erase(iterator->first);
 
             iterator = selected_rid_layer_state_by_key_.erase(iterator);
 
