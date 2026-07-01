@@ -441,6 +441,13 @@ std::expected<std::vector<uint8_t>, std::string> write_transport_cc_feedback_pac
 
     return packet;
 }
+bool source_identity_matches_observed_packet(const rtcp_transport_cc_feedback_service::source_state& source,
+                                             const rtcp_transport_cc_observed_packet& packet)
+{
+    return source.stream_id == packet.stream_id && source.session_id == packet.session_id && source.remote_endpoint == packet.remote_endpoint &&
+           source.mid == packet.mid && source.kind == packet.kind && source.sender_ssrc == packet.sender_ssrc &&
+           source.media_ssrc == packet.media_ssrc;
+}
 }    // namespace
 
 rtcp_transport_cc_feedback_service::rtcp_transport_cc_feedback_service() : config_() {}
@@ -508,6 +515,16 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::validate_o
         return make_error("transport cc observed packet remote endpoint is empty");
     }
 
+    if (packet.mid.empty())
+    {
+        return make_error("transport cc observed packet mid is empty");
+    }
+
+    if (packet.kind.empty())
+    {
+        return make_error("transport cc observed packet kind is empty");
+    }
+
     if (packet.sender_ssrc == 0)
     {
         return make_error("transport cc observed packet sender ssrc is zero");
@@ -563,15 +580,42 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_re
 
         source.remote_endpoint = packet.remote_endpoint;
 
+        source.mid = packet.mid;
+
+        source.kind = packet.kind;
+
         source.sender_ssrc = packet.sender_ssrc;
 
         source.media_ssrc = packet.media_ssrc;
 
         source.next_due_milliseconds = packet.arrival_time_milliseconds + config_.feedback_interval_milliseconds;
     }
+    else if (source.stream_id != packet.stream_id || source.session_id != packet.session_id || source.remote_endpoint != packet.remote_endpoint ||
+             source.mid != packet.mid || source.kind != packet.kind || source.sender_ssrc != packet.sender_ssrc ||
+             source.media_ssrc != packet.media_ssrc)
+    {
+        source.stream_id = packet.stream_id;
+
+        source.session_id = packet.session_id;
+
+        source.remote_endpoint = packet.remote_endpoint;
+
+        source.mid = packet.mid;
+
+        source.kind = packet.kind;
+
+        source.sender_ssrc = packet.sender_ssrc;
+
+        source.media_ssrc = packet.media_ssrc;
+
+        source.feedback_packet_count = 0;
+
+        source.packets.clear();
+
+        source.next_due_milliseconds = packet.arrival_time_milliseconds + config_.feedback_interval_milliseconds;
+    }
 
     source.last_active_milliseconds = packet.arrival_time_milliseconds;
-
     for (const auto& observed_packet : source.packets)
     {
         if (observed_packet.transport_sequence_number == packet.transport_sequence_number)
@@ -641,23 +685,16 @@ std::expected<rtcp_transport_cc_feedback_packet, std::string> rtcp_transport_cc_
     rtcp_transport_cc_feedback_packet result;
 
     result.stream_id = source.stream_id;
-
     result.session_id = source.session_id;
-
     result.remote_endpoint = source.remote_endpoint;
-
+    result.mid = source.mid;
+    result.kind = source.kind;
     result.sender_ssrc = source.sender_ssrc;
-
     result.media_ssrc = source.media_ssrc;
-
     result.base_sequence_number = plan->base_sequence_number;
-
     result.packet_status_count = plan->packet_status_count;
-
     result.feedback_packet_count = source.feedback_packet_count;
-
     result.packet = std::move(*packet);
-
     source.packets.erase(
         std::remove_if(source.packets.begin(),
                        source.packets.end(),

@@ -18,18 +18,22 @@ struct rtcp_transport_cc_observed_packet
     std::string session_id;
     std::string remote_endpoint;
 
+    std::string mid;
+    std::string kind;
+
     uint32_t sender_ssrc = 0;
     uint32_t media_ssrc = 0;
 
     uint16_t transport_sequence_number = 0;
     uint64_t arrival_time_milliseconds = 0;
 };
-
 struct rtcp_transport_cc_feedback_packet
 {
     std::string stream_id;
     std::string session_id;
     std::string remote_endpoint;
+    std::string mid;
+    std::string kind;
 
     uint32_t sender_ssrc = 0;
     uint32_t media_ssrc = 0;
@@ -109,12 +113,14 @@ class rtcp_transport_cc_feedback_service
         uint64_t arrival_time_milliseconds = 0;
     };
 
-   private:
     struct source_state
     {
         std::string stream_id;
         std::string session_id;
         std::string remote_endpoint;
+
+        std::string mid;
+        std::string kind;
 
         uint32_t sender_ssrc = 0;
         uint32_t media_ssrc = 0;
