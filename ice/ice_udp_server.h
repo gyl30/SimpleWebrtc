@@ -472,6 +472,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                                const std::optional<media_ssrc_mapping>& ssrc_mapping);
 
     [[nodiscard]]
+    bool subscriber_feedback_targets_selected_rid_layer(const rtcp_feedback_route_event& event,
+                                                        const media_ssrc_mapping& primary_mapping,
+                                                        uint32_t feedback_media_ssrc,
+                                                        bool allow_rtx_feedback,
+                                                        std::string_view feedback_reason) const;
+    [[nodiscard]]
     std::optional<nack_retransmit_resolution> resolve_nack_retransmit_resolution(const rtcp_feedback_route_event& event,
                                                                                  uint32_t feedback_media_ssrc,
                                                                                  const std::vector<uint16_t>& feedback_sequence_numbers) const;

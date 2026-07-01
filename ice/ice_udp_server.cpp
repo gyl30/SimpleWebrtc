@@ -11562,6 +11562,21 @@ std::optional<media_ssrc_mapping> ice_udp_server::resolve_keyframe_feedback_prim
 
     if (media_ssrc_mapping_is_primary_video(*mapping))
     {
+        if (!subscriber_feedback_targets_selected_rid_layer(event, *mapping, event.media_ssrc, false, "keyframe"))
+        {
+            WEBRTC_LOG_DEBUG(
+                "keyframe feedback skipped non selected rid primary stream={} subscriber_session={} feedback_ssrc={} publisher_ssrc={} "
+                "subscriber_ssrc={} mid={} kind={}",
+                event.source.stream_id,
+                event.source.session_id,
+                event.media_ssrc,
+                mapping->publisher_ssrc,
+                mapping->subscriber_ssrc,
+                mapping->publisher_mid,
+                mapping->kind);
+
+            return std::nullopt;
+        }
         return mapping;
     }
 
@@ -11650,6 +11665,21 @@ std::optional<media_ssrc_mapping> ice_udp_server::resolve_keyframe_feedback_prim
         return std::nullopt;
     }
 
+    if (!subscriber_feedback_targets_selected_rid_layer(event, *primary_mapping, event.media_ssrc, false, "keyframe_rtx"))
+    {
+        WEBRTC_LOG_DEBUG(
+            "keyframe feedback skipped rtx media ssrc stream={} subscriber_session={} feedback_ssrc={} publisher_primary_ssrc={} "
+            "subscriber_primary_ssrc={} mid={} kind={}",
+            event.source.stream_id,
+            event.source.session_id,
+            event.media_ssrc,
+            primary_mapping->publisher_ssrc,
+            primary_mapping->subscriber_ssrc,
+            primary_mapping->publisher_mid,
+            primary_mapping->kind);
+
+        return std::nullopt;
+    }
     return primary_mapping;
 }
 
@@ -13521,6 +13551,148 @@ void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event&
         mapping->rid.value_or(""),
         mapping->repaired_rid.value_or(""));
 }
+bool ice_udp_server::subscriber_feedback_targets_selected_rid_layer(const rtcp_feedback_route_event& event,
+                                                                    const media_ssrc_mapping& primary_mapping,
+                                                                    uint32_t feedback_media_ssrc,
+                                                                    bool allow_rtx_feedback,
+                                                                    std::string_view feedback_reason) const
+{
+    if (!media_ssrc_mapping_is_primary_video(primary_mapping))
+    {
+        return false;
+    }
+
+    if (event.source.role != media_peer_role::subscriber)
+    {
+        return true;
+    }
+
+    if (primary_mapping.stream_id.empty() || primary_mapping.publisher_session_id.empty() || primary_mapping.subscriber_session_id.empty() ||
+        primary_mapping.publisher_mid.empty() || primary_mapping.kind.empty())
+    {
+        WEBRTC_LOG_WARN(
+            "simulcast feedback selected rid check skipped invalid mapping feedback={} stream={} subscriber_session={} feedback_ssrc={} "
+            "publisher_session={} publisher_mid={} kind={}",
+            feedback_reason,
+            event.source.stream_id,
+            event.source.session_id,
+            feedback_media_ssrc,
+            primary_mapping.publisher_session_id,
+            primary_mapping.publisher_mid,
+            primary_mapping.kind);
+
+        return false;
+    }
+
+    if (primary_mapping.stream_id != event.source.stream_id || primary_mapping.subscriber_session_id != event.source.session_id)
+    {
+        WEBRTC_LOG_WARN(
+            "simulcast feedback selected rid check ownership mismatch feedback={} event_stream={} mapping_stream={} event_subscriber_session={} "
+            "mapping_subscriber_session={} feedback_ssrc={} publisher_session={} publisher_mid={} kind={}",
+            feedback_reason,
+            event.source.stream_id,
+            primary_mapping.stream_id,
+            event.source.session_id,
+            primary_mapping.subscriber_session_id,
+            feedback_media_ssrc,
+            primary_mapping.publisher_session_id,
+            primary_mapping.publisher_mid,
+            primary_mapping.kind);
+
+        return false;
+    }
+
+    if (!allow_rtx_feedback && feedback_media_ssrc != 0 && primary_mapping.subscriber_ssrc != 0 &&
+        feedback_media_ssrc != primary_mapping.subscriber_ssrc)
+    {
+        WEBRTC_LOG_WARN(
+            "simulcast keyframe feedback rejected non primary ssrc stream={} subscriber_session={} feedback_ssrc={} subscriber_primary_ssrc={} "
+            "publisher_primary_ssrc={} publisher_mid={} kind={}",
+            event.source.stream_id,
+            event.source.session_id,
+            feedback_media_ssrc,
+            primary_mapping.subscriber_ssrc,
+            primary_mapping.publisher_ssrc,
+            primary_mapping.publisher_mid,
+            primary_mapping.kind);
+
+        return false;
+    }
+
+    const std::string key = make_selected_rid_layer_key(primary_mapping.stream_id,
+                                                        primary_mapping.publisher_session_id,
+                                                        primary_mapping.subscriber_session_id,
+                                                        primary_mapping.publisher_mid,
+                                                        primary_mapping.kind);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+    if (state_iterator == selected_rid_layer_state_by_key_.end())
+    {
+        return true;
+    }
+
+    const selected_rid_layer_runtime_state& state = state_iterator->second;
+
+    if (state.rid.empty() || state.kind.empty())
+    {
+        WEBRTC_LOG_WARN(
+            "simulcast feedback selected rid state invalid feedback={} stream={} publisher_session={} subscriber_session={} mid={} kind={} "
+            "feedback_ssrc={}",
+            feedback_reason,
+            primary_mapping.stream_id,
+            primary_mapping.publisher_session_id,
+            primary_mapping.subscriber_session_id,
+            primary_mapping.publisher_mid,
+            primary_mapping.kind,
+            feedback_media_ssrc);
+
+        return false;
+    }
+
+    if (state.kind != primary_mapping.kind || state.mid != primary_mapping.publisher_mid)
+    {
+        WEBRTC_LOG_WARN(
+            "simulcast feedback selected rid media mismatch feedback={} stream={} publisher_session={} subscriber_session={} state_mid={} "
+            "mapping_mid={} state_kind={} mapping_kind={} selected_rid={} feedback_ssrc={}",
+            feedback_reason,
+            primary_mapping.stream_id,
+            primary_mapping.publisher_session_id,
+            primary_mapping.subscriber_session_id,
+            state.mid,
+            primary_mapping.publisher_mid,
+            state.kind,
+            primary_mapping.kind,
+            state.rid,
+            feedback_media_ssrc);
+
+        return false;
+    }
+
+    if (state.primary_ssrc != 0 && primary_mapping.publisher_ssrc != 0 && state.primary_ssrc != primary_mapping.publisher_ssrc)
+    {
+        WEBRTC_LOG_DEBUG(
+            "simulcast feedback rejected non selected rid feedback={} stream={} publisher_session={} subscriber_session={} mid={} kind={} "
+            "selected_rid={} selected_primary_ssrc={} feedback_primary_ssrc={} feedback_ssrc={} allow_rtx={}",
+            feedback_reason,
+            primary_mapping.stream_id,
+            primary_mapping.publisher_session_id,
+            primary_mapping.subscriber_session_id,
+            primary_mapping.publisher_mid,
+            primary_mapping.kind,
+            state.rid,
+            state.primary_ssrc,
+            primary_mapping.publisher_ssrc,
+            feedback_media_ssrc,
+            allow_rtx_feedback ? 1 : 0);
+
+        return false;
+    }
+
+    return true;
+}
 
 std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolve_nack_retransmit_resolution(
     const rtcp_feedback_route_event& event, uint32_t feedback_media_ssrc, const std::vector<uint16_t>& feedback_sequence_numbers) const
@@ -13552,6 +13724,22 @@ std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolv
 
     if (media_ssrc_mapping_is_primary_video(*feedback_mapping))
     {
+        if (!subscriber_feedback_targets_selected_rid_layer(event, *feedback_mapping, feedback_media_ssrc, true, "nack"))
+        {
+            WEBRTC_LOG_DEBUG(
+                "rtp nack retransmit skipped non selected rid primary feedback stream={} subscriber={} feedback_ssrc={} publisher_ssrc={} "
+                "subscriber_ssrc={} mid={} kind={}",
+                event.source.stream_id,
+                event.source.remote_endpoint,
+                feedback_media_ssrc,
+                feedback_mapping->publisher_ssrc,
+                feedback_mapping->subscriber_ssrc,
+                feedback_mapping->publisher_mid,
+                feedback_mapping->kind);
+
+            return std::nullopt;
+        }
+
         resolution.ssrc_mapping = feedback_mapping;
 
         resolution.cache_media_ssrc = feedback_mapping->publisher_ssrc;
@@ -13576,7 +13764,6 @@ std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolv
 
         return resolution;
     }
-
     if (!media_ssrc_mapping_is_rtx(*feedback_mapping))
     {
         WEBRTC_LOG_WARN(
@@ -13642,6 +13829,21 @@ std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolv
             primary_mapping->publisher_ssrc,
             primary_mapping->kind,
             media_ssrc_mapping_is_rtx(*primary_mapping) ? 1 : 0);
+
+        return std::nullopt;
+    }
+    if (!subscriber_feedback_targets_selected_rid_layer(event, *primary_mapping, feedback_media_ssrc, true, "nack_rtx"))
+    {
+        WEBRTC_LOG_DEBUG(
+            "rtp nack retransmit skipped non selected rid rtx feedback stream={} subscriber={} feedback_ssrc={} publisher_primary_ssrc={} "
+            "subscriber_primary_ssrc={} mid={} kind={}",
+            event.source.stream_id,
+            event.source.remote_endpoint,
+            feedback_media_ssrc,
+            primary_mapping->publisher_ssrc,
+            primary_mapping->subscriber_ssrc,
+            primary_mapping->publisher_mid,
+            primary_mapping->kind);
 
         return std::nullopt;
     }
