@@ -3729,6 +3729,8 @@ void ice_udp_server::stop()
 
         pending_selected_rid_keyframe_request_keys_.clear();
 
+        pending_selected_rid_keyframe_request_state_by_key_.clear();
+
         extmap_rewrite_state_by_key_.clear();
 
         endpoint_last_seen_milliseconds_by_address_.clear();
@@ -8494,6 +8496,19 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const boo
 
         if (selection_changed || media_peer_refresh_required || transport_peer_refresh_required)
         {
+            if (transport_peer_refresh_required && !selection_changed && !selection_result->remote_address_reused_by_different_session)
+            {
+                /*
+                 * Same selected five-tuple, but DTLS identity changed because ICE
+                 * credentials changed. Drop old local transport/runtime state before
+                 * remembering the peer again for the new ICE generation.
+                 */
+                forget_peer_transport_state(remote_address);
+
+                WEBRTC_LOG_INFO(
+                    "ice selected candidate pair transport refreshed stream={} session={} remote={}", stream_id, session_id, remote_address);
+            }
+
             if (publisher != nullptr)
             {
                 publisher->set_state(session_state::ice_connected);
@@ -15506,13 +15521,6 @@ std::expected<ice_udp_server::candidate_pair_selection_result, std::string> ice_
     candidate_pair_selection_result result;
 
     std::lock_guard lock(endpoint_mutex_);
-
-    const auto endpoint_owner = session_id_by_endpoint_address_.find(remote_address);
-
-    if (endpoint_owner != session_id_by_endpoint_address_.end() && endpoint_owner->second != session_id)
-    {
-        return make_error("ice endpoint is already selected by another session");
-    }
 
     const auto reused_remote_owner = session_id_by_endpoint_address_.find(remote_address);
 
