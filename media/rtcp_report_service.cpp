@@ -733,6 +733,46 @@ rtcp_report_service_runtime_snapshot rtcp_report_service::runtime_snapshot() con
 
     return snapshot;
 }
+
+std::vector<rtcp_report_source_snapshot> rtcp_report_service::source_snapshot() const
+{
+    std::vector<rtcp_report_source_snapshot> snapshot;
+
+    std::lock_guard lock(mutex_);
+
+    snapshot.reserve(sources_by_key_.size());
+
+    for (const auto& [key, record] : sources_by_key_)
+    {
+        (void)key;
+
+        rtcp_report_source_snapshot entry;
+
+        entry.stream_id = record.source.stream_id;
+        entry.session_id = record.source.session_id;
+        entry.remote_endpoint = record.source.remote_endpoint;
+
+        entry.mid = record.source.mid;
+        entry.kind = record.source.kind;
+        entry.rid = record.source.rid;
+        entry.repaired_rid = record.source.repaired_rid;
+
+        entry.local_ssrc = record.source.local_ssrc;
+        entry.cname = record.source.cname;
+
+        entry.sender_report_enabled = record.source.sender_report_enabled;
+        entry.receiver_report_enabled = record.source.receiver_report_enabled;
+
+        entry.max_report_blocks = record.source.max_report_blocks;
+
+        entry.next_due_milliseconds = record.next_due_milliseconds;
+        entry.last_active_milliseconds = record.last_active_milliseconds;
+
+        snapshot.push_back(std::move(entry));
+    }
+
+    return snapshot;
+}
 rtcp_session_stats& rtcp_report_service::stats() { return stats_; }
 
 const rtcp_session_stats& rtcp_report_service::stats() const { return stats_; }

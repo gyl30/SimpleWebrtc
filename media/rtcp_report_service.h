@@ -137,6 +137,29 @@ struct rtcp_report_service_rtcp_observation
     uint64_t max_remb_bitrate_bps = 0;
 };
 
+struct rtcp_report_source_snapshot
+{
+    std::string stream_id;
+    std::string session_id;
+    std::string remote_endpoint;
+
+    std::string mid;
+    std::string kind;
+    std::optional<std::string> rid;
+    std::optional<std::string> repaired_rid;
+
+    uint32_t local_ssrc = 0;
+    std::string cname;
+
+    bool sender_report_enabled = false;
+    bool receiver_report_enabled = false;
+
+    std::size_t max_report_blocks = 0;
+
+    uint64_t next_due_milliseconds = 0;
+    uint64_t last_active_milliseconds = 0;
+};
+
 using rtcp_report_service_result = std::expected<void, std::string>;
 
 using rtcp_report_service_packet_result = std::expected<rtcp_report_service_packet, std::string>;
@@ -220,6 +243,9 @@ class rtcp_report_service
 
     [[nodiscard]]
     rtcp_report_service_runtime_snapshot runtime_snapshot() const;
+
+    [[nodiscard]]
+    std::vector<rtcp_report_source_snapshot> source_snapshot() const;
 
     [[nodiscard]]
     rtcp_session_stats& stats();

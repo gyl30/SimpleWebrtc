@@ -883,4 +883,39 @@ std::size_t rtcp_transport_cc_feedback_service::pending_packet_count() const
 
     return pending_packet_count_locked();
 }
+std::vector<rtcp_transport_cc_feedback_source_snapshot> rtcp_transport_cc_feedback_service::source_snapshot() const
+{
+    std::vector<rtcp_transport_cc_feedback_source_snapshot> snapshot;
+
+    std::lock_guard lock(mutex_);
+
+    snapshot.reserve(sources_by_key_.size());
+
+    for (const auto& [key, source] : sources_by_key_)
+    {
+        (void)key;
+
+        rtcp_transport_cc_feedback_source_snapshot entry;
+
+        entry.stream_id = source.stream_id;
+        entry.session_id = source.session_id;
+        entry.remote_endpoint = source.remote_endpoint;
+
+        entry.mid = source.mid;
+        entry.kind = source.kind;
+
+        entry.sender_ssrc = source.sender_ssrc;
+        entry.media_ssrc = source.media_ssrc;
+
+        entry.feedback_packet_count = source.feedback_packet_count;
+        entry.pending_packet_count = source.packets.size();
+
+        entry.next_due_milliseconds = source.next_due_milliseconds;
+        entry.last_active_milliseconds = source.last_active_milliseconds;
+
+        snapshot.push_back(std::move(entry));
+    }
+
+    return snapshot;
+}
 }    // namespace webrtc

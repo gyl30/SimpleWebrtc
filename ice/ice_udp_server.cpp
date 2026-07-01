@@ -457,6 +457,90 @@ std::vector<lifecycle_debug_subscriber_forward_group_entry> make_subscriber_forw
 
     return groups;
 }
+std::string make_subscriber_rtcp_group_key(std::string_view stream_id, std::string_view subscriber_session_id)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + subscriber_session_id.size() + 1);
+
+    key.append(stream_id);
+    key.push_back('|');
+    key.append(subscriber_session_id);
+
+    return key;
+}
+
+lifecycle_debug_subscriber_rtcp_group_entry& get_or_create_subscriber_rtcp_group(std::vector<lifecycle_debug_subscriber_rtcp_group_entry>& groups,
+                                                                                 std::vector<std::string>& keys,
+                                                                                 std::string_view stream_id,
+                                                                                 std::string_view subscriber_session_id)
+{
+    const std::string key = make_subscriber_rtcp_group_key(stream_id, subscriber_session_id);
+
+    auto iterator = std::find(keys.begin(), keys.end(), key);
+
+    if (iterator != keys.end())
+    {
+        const std::size_t index = static_cast<std::size_t>(std::distance(keys.begin(), iterator));
+
+        return groups[index];
+    }
+
+    lifecycle_debug_subscriber_rtcp_group_entry group;
+
+    group.stream_id = std::string(stream_id);
+    group.subscriber_session_id = std::string(subscriber_session_id);
+
+    keys.push_back(key);
+    groups.push_back(std::move(group));
+
+    return groups.back();
+}
+
+bool lifecycle_debug_kind_is_audio(std::string_view kind) { return kind == "audio"; }
+
+bool lifecycle_debug_kind_is_video(std::string_view kind) { return kind == "video"; }
+
+void update_subscriber_rtcp_group_from_report_source(lifecycle_debug_subscriber_rtcp_group_entry& group, const rtcp_report_source_snapshot& source)
+{
+    group.rtcp_report_source_count += 1;
+
+    if (lifecycle_debug_kind_is_audio(source.kind))
+    {
+        group.audio_rtcp_report_source_count += 1;
+    }
+    else if (lifecycle_debug_kind_is_video(source.kind))
+    {
+        group.video_rtcp_report_source_count += 1;
+    }
+
+    if (source.sender_report_enabled)
+    {
+        group.sender_report_enabled_count += 1;
+    }
+
+    if (source.receiver_report_enabled)
+    {
+        group.receiver_report_enabled_count += 1;
+    }
+}
+
+void update_subscriber_rtcp_group_from_twcc_source(lifecycle_debug_subscriber_rtcp_group_entry& group,
+                                                   const rtcp_transport_cc_feedback_source_snapshot& source)
+{
+    group.twcc_feedback_source_count += 1;
+
+    if (lifecycle_debug_kind_is_audio(source.kind))
+    {
+        group.audio_twcc_feedback_source_count += 1;
+    }
+    else if (lifecycle_debug_kind_is_video(source.kind))
+    {
+        group.video_twcc_feedback_source_count += 1;
+    }
+
+    group.twcc_pending_packet_count += source.pending_packet_count;
+}
 void append_lifecycle_debug_drop_reason(lifecycle_debug_snapshot& snapshot, std::string_view category, std::string_view reason, uint64_t count)
 {
     if (count == 0)
@@ -4485,6 +4569,99 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.subscriber_forward_groups = make_subscriber_forward_groups(forward_bindings);
 
         snapshot.subscriber_forward_group_count = to_debug_count(snapshot.subscriber_forward_groups.size());
+        std::vector<lifecycle_debug_subscriber_rtcp_group_entry> subscriber_rtcp_groups;
+        std::vector<std::string> subscriber_rtcp_group_keys;
+
+        if (rtcp_report_service_ != nullptr)
+        {
+            const std::vector<rtcp_report_source_snapshot> report_sources = rtcp_report_service_->source_snapshot();
+
+            snapshot.rtcp_report_source_count = to_debug_count(report_sources.size());
+
+            snapshot.rtcp_report_sources.reserve(report_sources.size());
+
+            for (const auto& source : report_sources)
+            {
+                lifecycle_debug_rtcp_report_source_entry entry;
+
+                entry.stream_id = source.stream_id;
+                entry.session_id = source.session_id;
+                entry.remote_endpoint = source.remote_endpoint;
+
+                entry.mid = source.mid;
+                entry.kind = source.kind;
+                entry.rid = optional_string_or_empty(source.rid);
+                entry.repaired_rid = optional_string_or_empty(source.repaired_rid);
+
+                entry.local_ssrc = source.local_ssrc;
+
+                entry.sender_report_enabled = source.sender_report_enabled;
+                entry.receiver_report_enabled = source.receiver_report_enabled;
+
+                entry.max_report_blocks = to_debug_count(source.max_report_blocks);
+
+                entry.next_due_milliseconds = source.next_due_milliseconds;
+                entry.last_active_milliseconds = source.last_active_milliseconds;
+
+                snapshot.rtcp_report_sources.push_back(std::move(entry));
+
+                const auto subscriber = registry_ != nullptr ? registry_->find_subscriber_by_session_id(source.session_id) : nullptr;
+
+                if (subscriber != nullptr)
+                {
+                    auto& group =
+                        get_or_create_subscriber_rtcp_group(subscriber_rtcp_groups, subscriber_rtcp_group_keys, source.stream_id, source.session_id);
+
+                    update_subscriber_rtcp_group_from_report_source(group, source);
+                }
+            }
+        }
+
+        if (rtcp_transport_cc_feedback_service_ != nullptr)
+        {
+            const std::vector<rtcp_transport_cc_feedback_source_snapshot> twcc_sources = rtcp_transport_cc_feedback_service_->source_snapshot();
+
+            snapshot.twcc_feedback_source_count = to_debug_count(twcc_sources.size());
+
+            snapshot.twcc_feedback_sources.reserve(twcc_sources.size());
+
+            for (const auto& source : twcc_sources)
+            {
+                lifecycle_debug_twcc_feedback_source_entry entry;
+
+                entry.stream_id = source.stream_id;
+                entry.session_id = source.session_id;
+                entry.remote_endpoint = source.remote_endpoint;
+
+                entry.mid = source.mid;
+                entry.kind = source.kind;
+
+                entry.sender_ssrc = source.sender_ssrc;
+                entry.media_ssrc = source.media_ssrc;
+
+                entry.feedback_packet_count = source.feedback_packet_count;
+                entry.pending_packet_count = source.pending_packet_count;
+
+                entry.next_due_milliseconds = source.next_due_milliseconds;
+                entry.last_active_milliseconds = source.last_active_milliseconds;
+
+                snapshot.twcc_feedback_sources.push_back(std::move(entry));
+
+                const auto subscriber = registry_ != nullptr ? registry_->find_subscriber_by_session_id(source.session_id) : nullptr;
+
+                if (subscriber != nullptr)
+                {
+                    auto& group =
+                        get_or_create_subscriber_rtcp_group(subscriber_rtcp_groups, subscriber_rtcp_group_keys, source.stream_id, source.session_id);
+
+                    update_subscriber_rtcp_group_from_twcc_source(group, source);
+                }
+            }
+        }
+
+        snapshot.subscriber_rtcp_groups = std::move(subscriber_rtcp_groups);
+
+        snapshot.subscriber_rtcp_group_count = to_debug_count(snapshot.subscriber_rtcp_groups.size());
     }
     if (rtcp_report_service_ != nullptr)
     {

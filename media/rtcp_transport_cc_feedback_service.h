@@ -56,6 +56,25 @@ struct rtcp_transport_cc_feedback_generation
     std::size_t skipped_sources = 0;
 };
 
+struct rtcp_transport_cc_feedback_source_snapshot
+{
+    std::string stream_id;
+    std::string session_id;
+    std::string remote_endpoint;
+
+    std::string mid;
+    std::string kind;
+
+    uint32_t sender_ssrc = 0;
+    uint32_t media_ssrc = 0;
+
+    uint64_t feedback_packet_count = 0;
+    uint64_t pending_packet_count = 0;
+
+    uint64_t next_due_milliseconds = 0;
+    uint64_t last_active_milliseconds = 0;
+};
+
 struct rtcp_transport_cc_feedback_config
 {
     uint64_t feedback_interval_milliseconds = 100;
@@ -105,6 +124,9 @@ class rtcp_transport_cc_feedback_service
 
     [[nodiscard]]
     std::size_t pending_packet_count() const;
+
+    [[nodiscard]]
+    std::vector<rtcp_transport_cc_feedback_source_snapshot> source_snapshot() const;
 
    public:
     struct observed_packet_state
