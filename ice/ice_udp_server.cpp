@@ -1917,6 +1917,64 @@ std::size_t count_payload_type_mapping_candidates_by_track_resolution_kind(const
 
     return count;
 }
+bool payload_type_mapping_kind_fallback_has_single_media_pair(const media_payload_type_mapping_table& table,
+                                                              const media_track_resolution& track_resolution)
+{
+    if (!track_resolution.resolved)
+    {
+        return false;
+    }
+
+    if (track_resolution.kind.empty())
+    {
+        return false;
+    }
+
+    std::optional<std::size_t> publisher_media_ordinal;
+    std::optional<std::size_t> subscriber_media_ordinal;
+
+    bool has_matching_kind = false;
+
+    for (const auto& mapping : table.mappings)
+    {
+        if (mapping.kind != track_resolution.kind)
+        {
+            continue;
+        }
+
+        if (mapping.rtx != track_resolution.rtx)
+        {
+            continue;
+        }
+
+        if (mapping.publisher_mid.empty() || mapping.subscriber_mid.empty())
+        {
+            return false;
+        }
+
+        has_matching_kind = true;
+
+        if (!publisher_media_ordinal.has_value())
+        {
+            publisher_media_ordinal = mapping.publisher_media_ordinal;
+        }
+        else if (*publisher_media_ordinal != mapping.publisher_media_ordinal)
+        {
+            return false;
+        }
+
+        if (!subscriber_media_ordinal.has_value())
+        {
+            subscriber_media_ordinal = mapping.subscriber_media_ordinal;
+        }
+        else if (*subscriber_media_ordinal != mapping.subscriber_media_ordinal)
+        {
+            return false;
+        }
+    }
+
+    return has_matching_kind && publisher_media_ordinal.has_value() && subscriber_media_ordinal.has_value();
+}
 bool accepted_offer_media_has_transport_cc(const sdp::webrtc_offer_summary& offer,
                                            const std::vector<int>& accepted_mline_indexes,
                                            std::string_view mid,
@@ -10110,6 +10168,26 @@ std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapp
     {
         const std::size_t candidate_count = count_payload_type_mapping_candidates_by_track_resolution_kind(*table, *track_resolution);
 
+        if (!payload_type_mapping_kind_fallback_has_single_media_pair(*table, *track_resolution))
+        {
+            WEBRTC_LOG_WARN(
+                "payload type mapping fallback by kind disabled by multi track identity stream={} publisher_session={} subscriber_session={} "
+                "kind={} publisher_payload_type={} ssrc={} rid={} repaired_rid={} rtx={} candidates={} table_mappings={}",
+                route.source.stream_id,
+                route.source.session_id,
+                subscriber.session_id,
+                track_resolution->kind,
+                static_cast<unsigned int>(track_resolution->payload_type),
+                track_resolution->ssrc,
+                track_resolution->rid.has_value() ? *track_resolution->rid : "",
+                track_resolution->repaired_rid.has_value() ? *track_resolution->repaired_rid : "",
+                track_resolution->rtx ? 1 : 0,
+                candidate_count,
+                table->mappings.size());
+
+            return std::nullopt;
+        }
+
         if (candidate_count == 1)
         {
             auto mapping = find_unique_payload_type_mapping_by_track_resolution_kind(*table, *track_resolution);
@@ -10118,12 +10196,15 @@ std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapp
             {
                 WEBRTC_LOG_DEBUG(
                     "payload type mapping fallback by kind resolved stream={} publisher_session={} subscriber_session={} publisher_mid={} "
-                    "subscriber_mid={} kind={} publisher_payload_type={} ssrc={} rid={} repaired_rid={} rtx={}",
+                    "subscriber_mid={} publisher_ordinal={} subscriber_ordinal={} kind={} publisher_payload_type={} ssrc={} rid={} repaired_rid={} "
+                    "rtx={}",
                     route.source.stream_id,
                     route.source.session_id,
                     subscriber.session_id,
                     mapping->publisher_mid,
                     mapping->subscriber_mid,
+                    mapping->publisher_media_ordinal,
+                    mapping->subscriber_media_ordinal,
                     mapping->kind,
                     static_cast<unsigned int>(track_resolution->payload_type),
                     track_resolution->ssrc,
@@ -10152,7 +10233,6 @@ std::optional<media_payload_type_mapping> ice_udp_server::find_payload_type_mapp
 
         return std::nullopt;
     }
-
     WEBRTC_LOG_WARN(
         "payload type mapping skipped unresolved media identity stream={} publisher_session={} subscriber_session={} publisher_payload_type={} "
         "ssrc={} rid={} repaired_rid={} rtx={}",
