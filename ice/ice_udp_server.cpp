@@ -4393,6 +4393,33 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.pending_selected_rid_keyframe_request_count = to_debug_count(pending_selected_rid_keyframe_request_keys_.size());
         snapshot.extmap_rewrite_state_count = to_debug_count(extmap_rewrite_state_by_key_.size());
 
+        snapshot.selected_rid_layers.reserve(selected_rid_layer_state_by_key_.size());
+
+        for (const auto& [key, state] : selected_rid_layer_state_by_key_)
+        {
+            lifecycle_debug_selected_rid_layer_entry entry;
+
+            entry.stream_id = state.stream_id;
+
+            entry.publisher_session_id = state.publisher_session_id;
+            entry.subscriber_session_id = state.subscriber_session_id;
+
+            entry.mid = state.mid;
+            entry.kind = state.kind;
+
+            entry.selected_rid = state.rid;
+
+            entry.primary_ssrc = state.primary_ssrc;
+            entry.repair_ssrc = state.repair_ssrc;
+
+            entry.pending_keyframe_request =
+                pending_selected_rid_keyframe_request_keys_.find(key) != pending_selected_rid_keyframe_request_keys_.end();
+
+            entry.packet_count = state.packet_count;
+
+            snapshot.selected_rid_layers.push_back(std::move(entry));
+        }
+
         for (const auto& [endpoint, value] : endpoints_by_address_)
         {
             (void)value;

@@ -266,6 +266,25 @@ struct lifecycle_debug_subscriber_runtime_residual_entry
 
     uint64_t residual_count = 0;
 };
+struct lifecycle_debug_selected_rid_layer_entry
+{
+    std::string stream_id;
+
+    std::string publisher_session_id;
+    std::string subscriber_session_id;
+
+    std::string mid;
+    std::string kind;
+
+    std::string selected_rid;
+
+    uint64_t primary_ssrc = 0;
+    uint64_t repair_ssrc = 0;
+
+    bool pending_keyframe_request = false;
+
+    uint64_t packet_count = 0;
+};
 struct lifecycle_debug_drop_reason_entry
 {
     std::string category;
@@ -396,6 +415,8 @@ struct lifecycle_debug_snapshot
     std::vector<lifecycle_debug_identity_forward_binding_entry> identity_forward_bindings;
     std::vector<lifecycle_debug_subscriber_forward_group_entry> subscriber_forward_groups;
 
+    std::vector<lifecycle_debug_selected_rid_layer_entry> selected_rid_layers;
+
     std::vector<lifecycle_debug_rtcp_report_source_entry> rtcp_report_sources;
     std::vector<lifecycle_debug_twcc_feedback_source_entry> twcc_feedback_sources;
     std::vector<lifecycle_debug_subscriber_rtcp_group_entry> subscriber_rtcp_groups;
@@ -454,6 +475,10 @@ REFLECT_STRUCT(
     webrtc::lifecycle_debug_subscriber_runtime_residual_entry,
     (stream_id)(subscriber_session_id)(media_router_peer_count)(track_binding_count)(ssrc_mapping_count)(identity_track_binding_count)(identity_rid_layer_binding_count)(identity_forward_binding_count)(rtcp_report_source_count)(twcc_feedback_source_count)(rtx_retransmission_index_count)(nack_retransmit_throttle_count)(residual_count));
 
+REFLECT_STRUCT(
+    webrtc::lifecycle_debug_selected_rid_layer_entry,
+    (stream_id)(publisher_session_id)(subscriber_session_id)(mid)(kind)(selected_rid)(primary_ssrc)(repair_ssrc)(pending_keyframe_request)(packet_count));
+
 REFLECT_STRUCT(webrtc::lifecycle_debug_retired_endpoint_entry,
                (remote_address)(session_id)(reason)(expires_at_milliseconds)(remaining_ttl_milliseconds)(suppressed_packets));
 
@@ -464,7 +489,7 @@ REFLECT_STRUCT(
 REFLECT_STRUCT(
     webrtc::lifecycle_debug_snapshot,
     (
-        registry_stream_count)(registry_publisher_count)(registry_subscriber_count)(registry_session_count)(registry_pending_session_count)(registry_removed_session_tombstone_count)(registry_removed_publisher_tombstone_count)(registry_removed_subscriber_tombstone_count)(endpoint_count)(endpoint_session_index_count)(endpoint_reverse_index_count)(endpoint_last_seen_count)(retired_endpoint_count)(retired_endpoint_suppressed_packet_count)(retired_ice_credential_count)(retired_ice_credential_suppressed_stun_packet_count)(candidate_pair_count)(selected_candidate_pair_count)(candidate_pair_consent_in_flight_count)(candidate_pair_consent_failure_count)(candidate_pair_consent_stale_count)(payload_type_mapping_count)(keyframe_request_state_count)(fir_sequence_number_state_count)(publisher_video_ssrc_state_count)(pending_republish_keyframe_request_count)(selected_rid_layer_state_count)(pending_selected_rid_keyframe_request_count)(extmap_rewrite_state_count)(dtls_peer_count)(srtp_peer_count)(media_router_peer_count)(media_router_stream_count)(media_router_active_publisher_count)(media_router_active_subscriber_count)(track_binding_count)(ssrc_mapping_count)(identity_authority_track_binding_count)(identity_authority_rid_layer_binding_count)(identity_authority_forward_binding_count)(subscriber_forward_group_count)(rtcp_report_source_count)(twcc_feedback_source_count)(subscriber_rtcp_group_count)(subscriber_runtime_residual_count)(rtcp_report_stats_source_count)(rtcp_transport_cc_source_count)(rtcp_transport_cc_pending_packet_count)(rtp_cache_packet_count)(rtx_retransmission_index_count)(nack_retransmit_throttle_count)(rtp_rtcp_drop_total)(rtp_rtcp_drop_reason_count)(rtp_rtcp_drop_reasons)(active_runtime_clean)(delayed_runtime_clean)(full_idle_clean)(idle_clean)(consistent)(inconsistency_count)(delayed_residual_count)(inconsistencies)(sessions)(removed_session_tombstones)(endpoints)(candidate_pairs)(track_bindings)(identity_track_bindings)(identity_rid_layers)(identity_forward_bindings)(subscriber_forward_groups)(rtcp_report_sources)(twcc_feedback_sources)(subscriber_rtcp_groups)(subscriber_runtime_residuals)(retired_endpoints)(retired_ice_credentials)(residuals)(delayed_residuals));
+        registry_stream_count)(registry_publisher_count)(registry_subscriber_count)(registry_session_count)(registry_pending_session_count)(registry_removed_session_tombstone_count)(registry_removed_publisher_tombstone_count)(registry_removed_subscriber_tombstone_count)(endpoint_count)(endpoint_session_index_count)(endpoint_reverse_index_count)(endpoint_last_seen_count)(retired_endpoint_count)(retired_endpoint_suppressed_packet_count)(retired_ice_credential_count)(retired_ice_credential_suppressed_stun_packet_count)(candidate_pair_count)(selected_candidate_pair_count)(candidate_pair_consent_in_flight_count)(candidate_pair_consent_failure_count)(candidate_pair_consent_stale_count)(payload_type_mapping_count)(keyframe_request_state_count)(fir_sequence_number_state_count)(publisher_video_ssrc_state_count)(pending_republish_keyframe_request_count)(selected_rid_layer_state_count)(pending_selected_rid_keyframe_request_count)(extmap_rewrite_state_count)(dtls_peer_count)(srtp_peer_count)(media_router_peer_count)(media_router_stream_count)(media_router_active_publisher_count)(media_router_active_subscriber_count)(track_binding_count)(ssrc_mapping_count)(identity_authority_track_binding_count)(identity_authority_rid_layer_binding_count)(identity_authority_forward_binding_count)(subscriber_forward_group_count)(rtcp_report_source_count)(twcc_feedback_source_count)(subscriber_rtcp_group_count)(subscriber_runtime_residual_count)(rtcp_report_stats_source_count)(rtcp_transport_cc_source_count)(rtcp_transport_cc_pending_packet_count)(rtp_cache_packet_count)(rtx_retransmission_index_count)(nack_retransmit_throttle_count)(rtp_rtcp_drop_total)(rtp_rtcp_drop_reason_count)(rtp_rtcp_drop_reasons)(active_runtime_clean)(delayed_runtime_clean)(full_idle_clean)(idle_clean)(consistent)(inconsistency_count)(delayed_residual_count)(inconsistencies)(sessions)(removed_session_tombstones)(endpoints)(candidate_pairs)(track_bindings)(identity_track_bindings)(identity_rid_layers)(identity_forward_bindings)(subscriber_forward_groups)(selected_rid_layers)(rtcp_report_sources)(twcc_feedback_sources)(subscriber_rtcp_groups)(subscriber_runtime_residuals)(retired_endpoints)(retired_ice_credentials)(residuals)(delayed_residuals));
 
 inline std::string lifecycle_debug_snapshot_to_json(const lifecycle_debug_snapshot& snapshot) { return serialize_struct(snapshot); }
 }    // namespace webrtc
