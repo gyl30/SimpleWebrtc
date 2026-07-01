@@ -2902,7 +2902,7 @@ sdp_answer_result build_answer(answer_endpoint_role role,
 
     push_attribute(answer.attributes, k_attribute_setup, *setup_text);
 
-    push_attribute(answer.attributes, "msid-semantic", "WMS " + options.local_stream_id);
+    push_attribute(answer.attributes, "msid-semantic", "WMS *");
 
     auto media_result = append_answer_media_descriptions(answer, role, options, offer, whep_publisher_offer);
     if (!media_result)
