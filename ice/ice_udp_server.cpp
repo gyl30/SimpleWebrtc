@@ -14256,8 +14256,18 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
         return false;
     }
 
+    if (track_resolution->rtx)
+    {
+        return false;
+    }
+
     if (track_resolution->mid.empty() || track_resolution->kind.empty() || route.source.stream_id.empty() || route.source.session_id.empty() ||
         target_peer.session_id.empty())
+    {
+        return false;
+    }
+
+    if (packet.ssrc == 0 || track_resolution->ssrc == 0)
     {
         return false;
     }
@@ -14280,6 +14290,7 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
     {
         pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
         pending_selected_rid_keyframe_request_state_by_key_.erase(key);
+
         return false;
     }
 
@@ -14289,6 +14300,7 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
     {
         pending_selected_rid_keyframe_request_keys_.erase(pending_iterator);
         pending_selected_rid_keyframe_request_state_by_key_.erase(key);
+
         return false;
     }
 
@@ -14300,19 +14312,12 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
         return false;
     }
 
-    if (track_resolution->rtx)
+    if (state.primary_ssrc != 0 && track_resolution->ssrc != state.primary_ssrc)
     {
-        if (state.repair_ssrc != 0 && track_resolution->ssrc != state.repair_ssrc)
-        {
-            return false;
-        }
-
-        if (state.repair_ssrc == 0 && track_resolution->rtx_primary_ssrc != state.primary_ssrc)
-        {
-            return false;
-        }
+        return false;
     }
-    else if (state.primary_ssrc != 0 && track_resolution->ssrc != state.primary_ssrc)
+
+    if (state.primary_ssrc != 0 && packet.ssrc != state.primary_ssrc)
     {
         return false;
     }
@@ -14322,15 +14327,14 @@ bool ice_udp_server::consume_selected_rid_keyframe_request_pending_for_subscribe
 
     WEBRTC_LOG_INFO(
         "simulcast selected rid keyframe request consumed stream={} publisher_session={} subscriber_session={} mid={} kind={} selected_rid={} "
-        "media_ssrc={} rtx={}",
+        "media_ssrc={}",
         route.source.stream_id,
         route.source.session_id,
         target_peer.session_id,
         track_resolution->mid,
         track_resolution->kind,
         state.rid,
-        packet.ssrc,
-        track_resolution->rtx ? 1 : 0);
+        packet.ssrc);
 
     return true;
 }
