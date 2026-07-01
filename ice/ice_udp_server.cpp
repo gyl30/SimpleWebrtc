@@ -3214,8 +3214,193 @@ std::vector<std::string> make_simulcast_rid_preference(const sdp::media_summary&
     return apply_simulcast_rid_preference_policy(make_default_simulcast_rid_preference(publisher_media), policy);
 }
 
-bool rtcp_feedback_value_matches(std::string_view feedback, std::string_view expected) { return lower_ascii_copy(feedback) == expected; }
+struct simulcast_rid_preference_result
+{
+    std::string policy;
+    std::vector<std::string> preferred_rids;
+};
 
+std::string_view trim_simulcast_env_token(std::string_view value)
+{
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0)
+    {
+        value.remove_prefix(1);
+    }
+
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())) != 0)
+    {
+        value.remove_suffix(1);
+    }
+
+    return value;
+}
+
+std::optional<std::string> simulcast_rid_target_from_env()
+{
+    const char* value = std::getenv("WEBRTC_SIMULCAST_RID_TARGET");
+
+    if (value == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    const std::string_view target = trim_simulcast_env_token(value);
+
+    if (target.empty())
+    {
+        return std::nullopt;
+    }
+
+    return std::string(target);
+}
+
+std::optional<std::string> simulcast_rid_target_for_subscriber_from_env(std::string_view subscriber_session_id)
+{
+    if (subscriber_session_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    const char* value = std::getenv("WEBRTC_SIMULCAST_RID_TARGET_BY_SUBSCRIBER");
+
+    if (value == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    std::string_view config(value);
+
+    while (!config.empty())
+    {
+        const std::size_t comma_position = config.find(',');
+
+        std::string_view item = comma_position == std::string_view::npos ? config : config.substr(0, comma_position);
+
+        item = trim_simulcast_env_token(item);
+
+        if (!item.empty())
+        {
+            const std::size_t colon_position = item.find(':');
+
+            if (colon_position != std::string_view::npos)
+            {
+                const std::string_view session_id = trim_simulcast_env_token(item.substr(0, colon_position));
+                const std::string_view target_rid = trim_simulcast_env_token(item.substr(colon_position + 1));
+
+                if (session_id == subscriber_session_id && !target_rid.empty())
+                {
+                    return std::string(target_rid);
+                }
+            }
+        }
+
+        if (comma_position == std::string_view::npos)
+        {
+            break;
+        }
+
+        config.remove_prefix(comma_position + 1);
+    }
+
+    return std::nullopt;
+}
+
+bool simulcast_rid_preference_contains(const std::vector<std::string>& preferred_rids, std::string_view rid)
+{
+    for (const auto& current : preferred_rids)
+    {
+        if (current == rid)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::vector<std::string> make_simulcast_target_first_preference(std::vector<std::string> preferred_rids, std::string_view target_rid)
+{
+    if (target_rid.empty() || preferred_rids.empty())
+    {
+        return preferred_rids;
+    }
+
+    if (!simulcast_rid_preference_contains(preferred_rids, target_rid))
+    {
+        return preferred_rids;
+    }
+
+    std::vector<std::string> result;
+
+    result.reserve(preferred_rids.size());
+
+    result.emplace_back(target_rid);
+
+    for (const auto& rid : preferred_rids)
+    {
+        if (rid == target_rid)
+        {
+            continue;
+        }
+
+        result.push_back(rid);
+    }
+
+    return result;
+}
+
+simulcast_rid_preference_result make_simulcast_rid_preference_for_subscriber(const sdp::media_summary& publisher_media,
+                                                                             const media_peer_info& target_peer)
+{
+    const simulcast_rid_preference_policy policy = simulcast_rid_preference_policy_from_env();
+
+    simulcast_rid_preference_result result;
+
+    result.policy = std::string(simulcast_rid_preference_policy_to_string(policy));
+    result.preferred_rids = make_simulcast_rid_preference(publisher_media, policy);
+
+    const std::optional<std::string> subscriber_target = simulcast_rid_target_for_subscriber_from_env(target_peer.session_id);
+
+    if (subscriber_target.has_value())
+    {
+        const bool target_available = simulcast_rid_preference_contains(result.preferred_rids, *subscriber_target);
+
+        if (target_available)
+        {
+            result.preferred_rids = make_simulcast_target_first_preference(std::move(result.preferred_rids), *subscriber_target);
+            result.policy = "subscriber_target:" + *subscriber_target;
+        }
+        else
+        {
+            result.policy.append("+subscriber_target_missing:");
+            result.policy.append(*subscriber_target);
+        }
+
+        return result;
+    }
+
+    const std::optional<std::string> global_target = simulcast_rid_target_from_env();
+
+    if (global_target.has_value())
+    {
+        const bool target_available = simulcast_rid_preference_contains(result.preferred_rids, *global_target);
+
+        if (target_available)
+        {
+            result.preferred_rids = make_simulcast_target_first_preference(std::move(result.preferred_rids), *global_target);
+            result.policy = "target:" + *global_target;
+        }
+        else
+        {
+            result.policy.append("+target_missing:");
+            result.policy.append(*global_target);
+        }
+    }
+
+    return result;
+}
+
+bool rtcp_feedback_value_matches(std::string_view feedback, std::string_view expected) { return lower_ascii_copy(feedback) == expected; }
 bool codec_supports_rtcp_feedback(const sdp::codec_info& codec, std::string_view feedback)
 {
     for (const auto& value : codec.rtcp_feedback)
@@ -4513,6 +4698,9 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             entry.kind = state.kind;
 
             entry.selected_rid = state.rid;
+
+            entry.selection_policy = state.selection_policy;
+            entry.rid_preference = state.rid_preference;
 
             entry.primary_ssrc = state.primary_ssrc;
             entry.repair_ssrc = state.repair_ssrc;
@@ -10865,8 +11053,13 @@ std::optional<media_identity_rid_layer_binding> find_selected_rid_layer_for_subs
     const std::shared_ptr<media_identity_authority>& identity_authority,
     const media_route_result& route,
     const media_peer_info& target_peer,
-    const media_track_resolution& track_resolution)
+    const media_track_resolution& track_resolution,
+    std::vector<std::string>& selected_rid_preference,
+    std::string& selected_rid_policy)
 {
+    selected_rid_preference.clear();
+    selected_rid_policy.clear();
+
     if (identity_authority == nullptr)
     {
         return std::nullopt;
@@ -10894,17 +11087,18 @@ std::optional<media_identity_rid_layer_binding> find_selected_rid_layer_for_subs
         return std::nullopt;
     }
 
-    const simulcast_rid_preference_policy policy = simulcast_rid_preference_policy_from_env();
+    const simulcast_rid_preference_result preference = make_simulcast_rid_preference_for_subscriber(*publisher_media, target_peer);
 
-    const std::vector<std::string> preferred_rids = make_simulcast_rid_preference(*publisher_media, policy);
+    selected_rid_preference = preference.preferred_rids;
+    selected_rid_policy = preference.policy;
 
-    if (preferred_rids.empty())
+    if (selected_rid_preference.empty())
     {
         return std::nullopt;
     }
 
     std::optional<media_identity_rid_layer_binding> selected_layer =
-        identity_authority->find_preferred_rid_layer(route.source.stream_id, route.source.session_id, track_resolution.mid, preferred_rids);
+        identity_authority->find_preferred_rid_layer(route.source.stream_id, route.source.session_id, track_resolution.mid, selected_rid_preference);
 
     if (selected_layer.has_value())
     {
@@ -10916,9 +11110,9 @@ std::optional<media_identity_rid_layer_binding> find_selected_rid_layer_for_subs
             target_peer.session_id,
             track_resolution.mid,
             track_resolution.kind,
-            simulcast_rid_preference_policy_to_string(policy),
+            selected_rid_policy,
             selected_layer->rid,
-            preferred_rids.size());
+            selected_rid_preference.size());
     }
 
     return selected_layer;
@@ -10981,9 +11175,12 @@ bool publisher_rtp_rid_is_selected_for_subscriber(const sdp::webrtc_offer_summar
                                                   const media_route_result& route,
                                                   const media_peer_info& target_peer,
                                                   const media_track_resolution& track_resolution,
-                                                  std::optional<media_identity_rid_layer_binding>& selected_layer)
+                                                  std::optional<media_identity_rid_layer_binding>& selected_layer,
+                                                  std::vector<std::string>& selected_rid_preference,
+                                                  std::string& selected_rid_policy)
 {
-    selected_layer = find_selected_rid_layer_for_subscriber(publisher_offer, identity_authority, route, target_peer, track_resolution);
+    selected_layer = find_selected_rid_layer_for_subscriber(
+        publisher_offer, identity_authority, route, target_peer, track_resolution, selected_rid_preference, selected_rid_policy);
 
     if (!selected_layer.has_value())
     {
@@ -12370,16 +12567,25 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
         }
 
         std::optional<media_identity_rid_layer_binding> selected_layer;
+        std::vector<std::string> selected_rid_preference;
+        std::string selected_rid_policy;
 
-        if (!publisher_rtp_rid_is_selected_for_subscriber(
-                publisher->remote_offer_summary(), identity_authority_, route, target_peer, *track_resolution, selected_layer))
+        if (!publisher_rtp_rid_is_selected_for_subscriber(publisher->remote_offer_summary(),
+                                                          identity_authority_,
+                                                          route,
+                                                          target_peer,
+                                                          *track_resolution,
+                                                          selected_layer,
+                                                          selected_rid_preference,
+                                                          selected_rid_policy))
         {
             return std::nullopt;
         }
 
         if (selected_layer.has_value())
         {
-            remember_selected_rid_layer_for_subscriber(route, target_peer, *track_resolution, *selected_layer);
+            remember_selected_rid_layer_for_subscriber(
+                route, target_peer, *track_resolution, *selected_layer, selected_rid_policy, selected_rid_preference);
         }
     }
 
@@ -14068,7 +14274,9 @@ void ice_udp_server::remember_selected_rid_keyframe_request_pending_locked(std::
 void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_route_result& route,
                                                                 const media_peer_info& target_peer,
                                                                 const media_track_resolution& track_resolution,
-                                                                const media_identity_rid_layer_binding& selected_layer)
+                                                                const media_identity_rid_layer_binding& selected_layer,
+                                                                std::string_view selection_policy,
+                                                                const std::vector<std::string>& rid_preference)
 {
     if (route.source.stream_id.empty() || route.source.session_id.empty() || target_peer.session_id.empty())
     {
@@ -14156,6 +14364,9 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
         if (state.kind == selected_layer.kind && state.rid == selected_layer.rid && state.primary_ssrc == selected_layer.primary_ssrc &&
             state.repair_ssrc == selected_layer.repair_ssrc)
         {
+            state.selection_policy = std::string(selection_policy);
+            state.rid_preference = rid_preference;
+
             state.packet_count += 1;
 
             return;
@@ -14164,6 +14375,9 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
         state.kind = selected_layer.kind;
 
         state.rid = selected_layer.rid;
+
+        state.selection_policy = std::string(selection_policy);
+        state.rid_preference = rid_preference;
 
         state.primary_ssrc = selected_layer.primary_ssrc;
 

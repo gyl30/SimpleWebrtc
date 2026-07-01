@@ -279,10 +279,16 @@ struct lifecycle_debug_selected_rid_layer_entry
 
     std::string selected_rid;
 
+    std::string selection_policy;
+    std::vector<std::string> rid_preference;
+
     uint64_t primary_ssrc = 0;
     uint64_t repair_ssrc = 0;
 
     bool pending_keyframe_request = false;
+    uint64_t pending_keyframe_request_since_milliseconds = 0;
+    uint64_t pending_keyframe_request_expires_at_milliseconds = 0;
+    uint64_t pending_keyframe_request_remaining_ttl_milliseconds = 0;
 
     uint64_t packet_count = 0;
 
@@ -487,7 +493,8 @@ REFLECT_STRUCT(
 
 REFLECT_STRUCT(
     webrtc::lifecycle_debug_selected_rid_layer_entry,
-    (stream_id)(publisher_session_id)(subscriber_session_id)(mid)(kind)(selected_rid)(primary_ssrc)(repair_ssrc)(pending_keyframe_request)(packet_count)(keyframe_request_attempt_count)(keyframe_request_success_count)(keyframe_request_restore_count)(last_keyframe_request_milliseconds)(last_keyframe_request_result)(last_keyframe_request_reason));
+    (
+        stream_id)(publisher_session_id)(subscriber_session_id)(mid)(kind)(selected_rid)(selection_policy)(rid_preference)(primary_ssrc)(repair_ssrc)(pending_keyframe_request)(pending_keyframe_request_since_milliseconds)(pending_keyframe_request_expires_at_milliseconds)(pending_keyframe_request_remaining_ttl_milliseconds)(packet_count)(keyframe_request_attempt_count)(keyframe_request_success_count)(keyframe_request_restore_count)(last_keyframe_request_milliseconds)(last_keyframe_request_result)(last_keyframe_request_reason));
 
 REFLECT_STRUCT(webrtc::lifecycle_debug_retired_endpoint_entry,
                (remote_address)(session_id)(reason)(expires_at_milliseconds)(remaining_ttl_milliseconds)(suppressed_packets));
