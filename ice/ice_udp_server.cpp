@@ -3060,6 +3060,13 @@ const sdp::media_summary* find_offer_media_by_mid(const sdp::webrtc_offer_summar
 
     return nullptr;
 }
+enum class simulcast_rid_preference_policy
+{
+    offer_order,
+    reverse_order,
+    first,
+    last,
+};
 
 std::vector<std::string> make_default_simulcast_rid_preference(const sdp::media_summary& publisher_media)
 {
@@ -3107,6 +3114,103 @@ std::string lower_ascii_copy(std::string_view value)
     }
 
     return result;
+}
+simulcast_rid_preference_policy parse_simulcast_rid_preference_policy(std::string_view value)
+{
+    const std::string normalized = lower_ascii_copy(value);
+
+    if (normalized == "reverse" || normalized == "reverse_order")
+    {
+        return simulcast_rid_preference_policy::reverse_order;
+    }
+
+    if (normalized == "first")
+    {
+        return simulcast_rid_preference_policy::first;
+    }
+
+    if (normalized == "last")
+    {
+        return simulcast_rid_preference_policy::last;
+    }
+
+    return simulcast_rid_preference_policy::offer_order;
+}
+
+simulcast_rid_preference_policy simulcast_rid_preference_policy_from_env()
+{
+    const char* value = std::getenv("WEBRTC_SIMULCAST_RID_PREFERENCE");
+
+    if (value == nullptr)
+    {
+        return simulcast_rid_preference_policy::offer_order;
+    }
+
+    return parse_simulcast_rid_preference_policy(value);
+}
+
+std::string_view simulcast_rid_preference_policy_to_string(simulcast_rid_preference_policy policy)
+{
+    switch (policy)
+    {
+        case simulcast_rid_preference_policy::offer_order:
+            return "offer";
+
+        case simulcast_rid_preference_policy::reverse_order:
+            return "reverse";
+
+        case simulcast_rid_preference_policy::first:
+            return "first";
+
+        case simulcast_rid_preference_policy::last:
+            return "last";
+    }
+
+    return "offer";
+}
+
+std::vector<std::string> apply_simulcast_rid_preference_policy(std::vector<std::string> preferred_rids, simulcast_rid_preference_policy policy)
+{
+    if (preferred_rids.empty())
+    {
+        return preferred_rids;
+    }
+
+    switch (policy)
+    {
+        case simulcast_rid_preference_policy::offer_order:
+            return preferred_rids;
+
+        case simulcast_rid_preference_policy::reverse_order:
+            std::reverse(preferred_rids.begin(), preferred_rids.end());
+
+            return preferred_rids;
+
+        case simulcast_rid_preference_policy::first:
+        {
+            std::vector<std::string> result;
+
+            result.push_back(preferred_rids.front());
+
+            return result;
+        }
+
+        case simulcast_rid_preference_policy::last:
+        {
+            std::vector<std::string> result;
+
+            result.push_back(preferred_rids.back());
+
+            return result;
+        }
+    }
+
+    return preferred_rids;
+}
+
+std::vector<std::string> make_simulcast_rid_preference(const sdp::media_summary& publisher_media, simulcast_rid_preference_policy policy)
+{
+    return apply_simulcast_rid_preference_policy(make_default_simulcast_rid_preference(publisher_media), policy);
 }
 
 bool rtcp_feedback_value_matches(std::string_view feedback, std::string_view expected) { return lower_ascii_copy(feedback) == expected; }
@@ -10744,14 +10848,34 @@ std::optional<media_identity_rid_layer_binding> find_selected_rid_layer_for_subs
         return std::nullopt;
     }
 
-    const std::vector<std::string> preferred_rids = make_default_simulcast_rid_preference(*publisher_media);
+    const simulcast_rid_preference_policy policy = simulcast_rid_preference_policy_from_env();
+
+    const std::vector<std::string> preferred_rids = make_simulcast_rid_preference(*publisher_media, policy);
 
     if (preferred_rids.empty())
     {
         return std::nullopt;
     }
 
-    return identity_authority->find_preferred_rid_layer(route.source.stream_id, route.source.session_id, track_resolution.mid, preferred_rids);
+    std::optional<media_identity_rid_layer_binding> selected_layer =
+        identity_authority->find_preferred_rid_layer(route.source.stream_id, route.source.session_id, track_resolution.mid, preferred_rids);
+
+    if (selected_layer.has_value())
+    {
+        WEBRTC_LOG_DEBUG(
+            "simulcast rid preference selected stream={} publisher_session={} subscriber_session={} mid={} kind={} policy={} selected_rid={} "
+            "candidate_count={}",
+            route.source.stream_id,
+            route.source.session_id,
+            target_peer.session_id,
+            track_resolution.mid,
+            track_resolution.kind,
+            simulcast_rid_preference_policy_to_string(policy),
+            selected_layer->rid,
+            preferred_rids.size());
+    }
+
+    return selected_layer;
 }
 
 std::optional<std::string> resolve_packet_rid_for_selection(const std::shared_ptr<media_identity_authority>& identity_authority,
