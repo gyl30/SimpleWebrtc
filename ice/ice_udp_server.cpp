@@ -3486,7 +3486,92 @@ void ice_udp_server::stop()
         media_router_->clear();
     }
 }
+lifecycle_debug_subscriber_runtime_residual_entry ice_udp_server::make_subscriber_runtime_residual_entry(
+    std::string_view stream_id,
+    std::string_view subscriber_session_id) const
+{
+    lifecycle_debug_subscriber_runtime_residual_entry entry;
 
+    entry.stream_id = std::string(stream_id);
+    entry.subscriber_session_id = std::string(subscriber_session_id);
+
+    if (track_resolver_ != nullptr)
+    {
+        const std::vector<media_track_resolver::media_track_binding> bindings = track_resolver_->binding_snapshot();
+
+        for (const auto& binding : bindings)
+        {
+            if (binding.session_id == subscriber_session_id)
+            {
+                entry.track_binding_count += 1;
+            }
+        }
+    }
+
+    if (identity_authority_ != nullptr)
+    {
+        const std::vector<media_identity_track_binding> track_bindings = identity_authority_->track_binding_snapshot();
+
+        for (const auto& binding : track_bindings)
+        {
+            if (binding.session_id == subscriber_session_id)
+            {
+                entry.identity_track_binding_count += 1;
+            }
+        }
+
+        const std::vector<media_identity_rid_layer_binding> rid_layers = identity_authority_->rid_layer_binding_snapshot();
+
+        for (const auto& binding : rid_layers)
+        {
+            if (binding.session_id == subscriber_session_id)
+            {
+                entry.identity_rid_layer_binding_count += 1;
+            }
+        }
+
+        const std::vector<media_identity_forward_binding> forward_bindings = identity_authority_->forward_binding_snapshot();
+
+        for (const auto& binding : forward_bindings)
+        {
+            if (binding.subscriber_session_id == subscriber_session_id)
+            {
+                entry.identity_forward_binding_count += 1;
+            }
+        }
+    }
+
+    entry.residual_count = entry.track_binding_count + entry.identity_track_binding_count + entry.identity_rid_layer_binding_count +
+                           entry.identity_forward_binding_count;
+
+    return entry;
+}
+
+void ice_udp_server::schedule_subscriber_runtime_residual_check(std::string_view stream_id, std::string_view subscriber_session_id)
+{
+    if (stream_id.empty() || subscriber_session_id.empty())
+    {
+        return;
+    }
+
+    pending_subscriber_runtime_residual_check check;
+
+    check.stream_id = std::string(stream_id);
+    check.subscriber_session_id = std::string(subscriber_session_id);
+    check.scheduled_at_milliseconds = now_milliseconds();
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    for (const auto& pending : pending_subscriber_runtime_residual_checks_)
+    {
+        if (pending.subscriber_session_id == check.subscriber_session_id)
+        {
+            return;
+        }
+    }
+
+    pending_subscriber_runtime_residual_checks_.push_back(std::move(check));
+}
 void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
 {
     if (session_id.empty())
@@ -4676,6 +4761,33 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
         snapshot.rtcp_transport_cc_pending_packet_count = to_debug_count(rtcp_transport_cc_feedback_service_->pending_packet_count());
     }
+    {
+        std::vector<pending_subscriber_runtime_residual_check> pending_checks;
+
+        {
+            std::lock_guard lock(endpoint_mutex_);
+
+            pending_checks = pending_subscriber_runtime_residual_checks_;
+        }
+
+        snapshot.subscriber_runtime_residuals.reserve(pending_checks.size());
+
+        for (const auto& check : pending_checks)
+        {
+            lifecycle_debug_subscriber_runtime_residual_entry entry =
+                make_subscriber_runtime_residual_entry(check.stream_id, check.subscriber_session_id);
+
+            if (entry.residual_count == 0)
+            {
+                continue;
+            }
+
+            snapshot.subscriber_runtime_residual_count += 1;
+
+            snapshot.subscriber_runtime_residuals.push_back(std::move(entry));
+        }
+    }
+
     if (rtp_packet_cache_ != nullptr)
     {
         snapshot.rtp_cache_packet_count = to_debug_count(rtp_packet_cache_->size());
@@ -6391,6 +6503,10 @@ void ice_udp_server::register_session_removed_callback()
             if (removed_session.kind == stream_session_kind::publisher)
             {
                 self->cleanup_stream_runtime_state(removed_session.stream_id);
+            }
+            if (removed_session.kind == stream_session_kind::subscriber)
+            {
+                self->schedule_subscriber_runtime_residual_check(removed_session.stream_id, removed_session.session_id);
             }
             self->schedule_lifecycle_snapshot_log("registry removal callback", removed_session.stream_id, removed_session.session_id);
         });

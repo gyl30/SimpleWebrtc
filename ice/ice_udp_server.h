@@ -112,6 +112,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     }
     [[nodiscard]]
     lifecycle_debug_snapshot debug_state_snapshot() const;
+    void schedule_subscriber_runtime_residual_check(std::string_view stream_id, std::string_view subscriber_session_id);
+
+    [[nodiscard]]
+    lifecycle_debug_subscriber_runtime_residual_entry make_subscriber_runtime_residual_entry(std::string_view stream_id,
+                                                                                             std::string_view subscriber_session_id) const;
 
     void schedule_lifecycle_snapshot_log(std::string reason, std::string stream_id, std::string session_id);
 
@@ -316,6 +321,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint8_t target_id = 0;
 
         uint64_t packet_count = 0;
+    };
+    struct pending_subscriber_runtime_residual_check
+    {
+        std::string stream_id;
+        std::string subscriber_session_id;
+        uint64_t scheduled_at_milliseconds = 0;
     };
 
    private:
@@ -796,7 +807,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::array<uint8_t, 4096> receive_buffer_{};
 
     mutable std::mutex endpoint_mutex_;
-
+    std::vector<pending_subscriber_runtime_residual_check> pending_subscriber_runtime_residual_checks_;
     std::unordered_map<std::string, boost::asio::ip::udp::endpoint> endpoints_by_address_;
     std::unordered_map<std::string, std::string> endpoint_address_by_session_id_;
     std::unordered_map<std::string, std::string> session_id_by_endpoint_address_;
