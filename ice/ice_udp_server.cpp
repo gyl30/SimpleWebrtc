@@ -4916,6 +4916,12 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             entry.initial_resolution_state = media_track_resolution_state_to_string(binding.initial_resolution_state);
             entry.fallback_resolution = binding.fallback_resolution;
 
+            entry.has_audio_level = binding.audio_level.has_value();
+            entry.audio_level = binding.audio_level.has_value() ? static_cast<uint64_t>(*binding.audio_level) : 0;
+
+            entry.has_voice_activity = binding.voice_activity.has_value();
+            entry.voice_activity = binding.voice_activity.value_or(false);
+
             entry.ssrc = binding.ssrc;
             entry.payload_type = static_cast<uint64_t>(binding.payload_type);
 
@@ -5011,6 +5017,9 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             entry.publisher_mid = binding.publisher_mid;
             entry.subscriber_mid = binding.subscriber_mid;
             entry.kind = binding.kind;
+
+            entry.publisher_media_ordinal = static_cast<uint64_t>(binding.publisher_media_ordinal);
+            entry.subscriber_media_ordinal = static_cast<uint64_t>(binding.subscriber_media_ordinal);
 
             entry.publisher_ssrc = binding.publisher_ssrc;
             entry.subscriber_ssrc = binding.subscriber_ssrc;

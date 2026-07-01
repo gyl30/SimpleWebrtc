@@ -58,6 +58,7 @@ struct media_identity_rid_layer_binding
     uint64_t packet_count = 0;
 };
 
+
 struct media_identity_forward_binding
 {
     std::string stream_id;
@@ -71,6 +72,9 @@ struct media_identity_forward_binding
     std::string publisher_mid;
     std::string subscriber_mid;
     std::string kind;
+
+    std::size_t publisher_media_ordinal = 0;
+    std::size_t subscriber_media_ordinal = 0;
 
     uint32_t publisher_ssrc = 0;
     uint32_t subscriber_ssrc = 0;
@@ -91,6 +95,7 @@ struct media_identity_forward_binding
 
     uint64_t packet_count = 0;
 };
+
 using media_identity_result = std::expected<void, std::string>;
 
 class media_identity_authority

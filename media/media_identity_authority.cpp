@@ -649,6 +649,10 @@ media_identity_result media_identity_authority::remember_forward_mapping(const m
 
     binding.kind = ssrc_mapping.kind;
 
+    binding.publisher_media_ordinal = payload_mapping.publisher_media_ordinal;
+
+    binding.subscriber_media_ordinal = payload_mapping.subscriber_media_ordinal;
+
     binding.publisher_ssrc = ssrc_mapping.publisher_ssrc;
 
     binding.subscriber_ssrc = ssrc_mapping.subscriber_ssrc;
@@ -687,7 +691,9 @@ media_identity_result media_identity_authority::remember_forward_mapping(const m
     }
 
     if (payload_mapping.stream_id != binding.stream_id || payload_mapping.publisher_mid != binding.publisher_mid ||
-        payload_mapping.subscriber_mid != binding.subscriber_mid || payload_mapping.kind != binding.kind)
+        payload_mapping.subscriber_mid != binding.subscriber_mid || payload_mapping.kind != binding.kind ||
+        payload_mapping.publisher_media_ordinal != binding.publisher_media_ordinal ||
+        payload_mapping.subscriber_media_ordinal != binding.subscriber_media_ordinal)
     {
         return make_error("media identity forward mapping payload identity mismatched");
     }
@@ -1371,6 +1377,16 @@ std::string media_identity_forward_binding_to_string(const media_identity_forwar
     result.append(" kind=");
 
     result.append(binding.kind);
+
+    result.append(" publisher_media_ordinal=");
+
+    result.append(std::to_string(binding.publisher_media_ordinal));
+
+    result.append(" subscriber_media_ordinal=");
+
+    result.append(std::to_string(binding.subscriber_media_ordinal));
+
+    result.append(" publisher_ssrc=");
 
     result.append(" publisher_ssrc=");
 
