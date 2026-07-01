@@ -4495,8 +4495,8 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.pending_republish_keyframe_request_count = to_debug_count(pending_republish_keyframe_state_by_stream_.size());
         snapshot.selected_rid_layer_state_count = to_debug_count(selected_rid_layer_state_by_key_.size());
         snapshot.pending_selected_rid_keyframe_request_count = to_debug_count(pending_selected_rid_keyframe_request_keys_.size());
+        snapshot.simulcast_rid_preference_policy = std::string(simulcast_rid_preference_policy_to_string(simulcast_rid_preference_policy_from_env()));
         snapshot.extmap_rewrite_state_count = to_debug_count(extmap_rewrite_state_by_key_.size());
-
         snapshot.selected_rid_layers.reserve(selected_rid_layer_state_by_key_.size());
 
         for (const auto& [key, state] : selected_rid_layer_state_by_key_)
