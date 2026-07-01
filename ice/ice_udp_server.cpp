@@ -3486,9 +3486,8 @@ void ice_udp_server::stop()
         media_router_->clear();
     }
 }
-lifecycle_debug_subscriber_runtime_residual_entry ice_udp_server::make_subscriber_runtime_residual_entry(
-    std::string_view stream_id,
-    std::string_view subscriber_session_id) const
+lifecycle_debug_subscriber_runtime_residual_entry ice_udp_server::make_subscriber_runtime_residual_entry(std::string_view stream_id,
+                                                                                                         std::string_view subscriber_session_id) const
 {
     lifecycle_debug_subscriber_runtime_residual_entry entry;
 
@@ -3507,7 +3506,38 @@ lifecycle_debug_subscriber_runtime_residual_entry ice_udp_server::make_subscribe
             }
         }
     }
+    if (ssrc_mapper_ != nullptr)
+    {
+        const std::vector<media_ssrc_mapping> mappings = ssrc_mapper_->find_by_subscriber_session(subscriber_session_id);
 
+        entry.ssrc_mapping_count = to_debug_count(mappings.size());
+    }
+
+    if (rtcp_report_service_ != nullptr)
+    {
+        const std::vector<rtcp_report_source_snapshot> sources = rtcp_report_service_->source_snapshot();
+
+        for (const auto& source : sources)
+        {
+            if (source.session_id == subscriber_session_id)
+            {
+                entry.rtcp_report_source_count += 1;
+            }
+        }
+    }
+
+    if (rtcp_transport_cc_feedback_service_ != nullptr)
+    {
+        const std::vector<rtcp_transport_cc_feedback_source_snapshot> sources = rtcp_transport_cc_feedback_service_->source_snapshot();
+
+        for (const auto& source : sources)
+        {
+            if (source.session_id == subscriber_session_id)
+            {
+                entry.twcc_feedback_source_count += 1;
+            }
+        }
+    }
     if (identity_authority_ != nullptr)
     {
         const std::vector<media_identity_track_binding> track_bindings = identity_authority_->track_binding_snapshot();
@@ -3541,8 +3571,9 @@ lifecycle_debug_subscriber_runtime_residual_entry ice_udp_server::make_subscribe
         }
     }
 
-    entry.residual_count = entry.track_binding_count + entry.identity_track_binding_count + entry.identity_rid_layer_binding_count +
-                           entry.identity_forward_binding_count;
+    entry.residual_count = entry.media_router_peer_count + entry.track_binding_count + entry.ssrc_mapping_count + entry.identity_track_binding_count +
+                           entry.identity_rid_layer_binding_count + entry.identity_forward_binding_count + entry.rtcp_report_source_count +
+                           entry.twcc_feedback_source_count + entry.rtx_retransmission_index_count + entry.nack_retransmit_throttle_count;
 
     return entry;
 }
@@ -3550,6 +3581,13 @@ lifecycle_debug_subscriber_runtime_residual_entry ice_udp_server::make_subscribe
 void ice_udp_server::schedule_subscriber_runtime_residual_check(std::string_view stream_id, std::string_view subscriber_session_id)
 {
     if (stream_id.empty() || subscriber_session_id.empty())
+    {
+        return;
+    }
+
+    const lifecycle_debug_subscriber_runtime_residual_entry residual = make_subscriber_runtime_residual_entry(stream_id, subscriber_session_id);
+
+    if (residual.residual_count == 0)
     {
         return;
     }
@@ -3572,6 +3610,7 @@ void ice_udp_server::schedule_subscriber_runtime_residual_check(std::string_view
 
     pending_subscriber_runtime_residual_checks_.push_back(std::move(check));
 }
+
 void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
 {
     if (session_id.empty())
