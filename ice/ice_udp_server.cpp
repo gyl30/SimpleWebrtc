@@ -362,6 +362,101 @@ bool contains_string(const std::vector<std::string>& values, std::string_view va
 }
 
 uint64_t to_debug_count(std::size_t value) { return static_cast<uint64_t>(value); }
+std::string make_subscriber_forward_group_key(std::string_view stream_id,
+                                              std::string_view publisher_session_id,
+                                              std::string_view subscriber_session_id)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + publisher_session_id.size() + subscriber_session_id.size() + 2);
+
+    key.append(stream_id);
+    key.push_back('|');
+    key.append(publisher_session_id);
+    key.push_back('|');
+    key.append(subscriber_session_id);
+
+    return key;
+}
+
+void update_subscriber_forward_group(lifecycle_debug_subscriber_forward_group_entry& group, const media_identity_forward_binding& binding)
+{
+    group.forward_binding_count += 1;
+
+    if (binding.kind == "audio")
+    {
+        group.audio_forward_binding_count += 1;
+    }
+    else if (binding.kind == "video")
+    {
+        group.video_forward_binding_count += 1;
+    }
+
+    if (binding.rtx)
+    {
+        group.rtx_forward_binding_count += 1;
+    }
+    else
+    {
+        group.primary_forward_binding_count += 1;
+    }
+
+    if (binding.payload_type_rewrite_required)
+    {
+        group.payload_type_rewrite_required_count += 1;
+    }
+
+    if (binding.mid_rewrite_required)
+    {
+        group.mid_rewrite_required_count += 1;
+    }
+
+    if (binding.ssrc_rewrite_required)
+    {
+        group.ssrc_rewrite_required_count += 1;
+    }
+
+    group.packet_count += binding.packet_count;
+}
+
+std::vector<lifecycle_debug_subscriber_forward_group_entry> make_subscriber_forward_groups(
+    const std::vector<media_identity_forward_binding>& forward_bindings)
+{
+    std::vector<lifecycle_debug_subscriber_forward_group_entry> groups;
+    std::vector<std::string> keys;
+
+    groups.reserve(forward_bindings.size());
+    keys.reserve(forward_bindings.size());
+
+    for (const auto& binding : forward_bindings)
+    {
+        const std::string key = make_subscriber_forward_group_key(binding.stream_id, binding.publisher_session_id, binding.subscriber_session_id);
+
+        auto iterator = std::find(keys.begin(), keys.end(), key);
+
+        if (iterator == keys.end())
+        {
+            lifecycle_debug_subscriber_forward_group_entry group;
+
+            group.stream_id = binding.stream_id;
+            group.publisher_session_id = binding.publisher_session_id;
+            group.subscriber_session_id = binding.subscriber_session_id;
+
+            update_subscriber_forward_group(group, binding);
+
+            keys.push_back(key);
+            groups.push_back(std::move(group));
+
+            continue;
+        }
+
+        const std::size_t index = static_cast<std::size_t>(std::distance(keys.begin(), iterator));
+
+        update_subscriber_forward_group(groups[index], binding);
+    }
+
+    return groups;
+}
 void append_lifecycle_debug_drop_reason(lifecycle_debug_snapshot& snapshot, std::string_view category, std::string_view reason, uint64_t count)
 {
     if (count == 0)
@@ -4387,6 +4482,9 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
             snapshot.identity_forward_bindings.push_back(std::move(entry));
         }
+        snapshot.subscriber_forward_groups = make_subscriber_forward_groups(forward_bindings);
+
+        snapshot.subscriber_forward_group_count = to_debug_count(snapshot.subscriber_forward_groups.size());
     }
     if (rtcp_report_service_ != nullptr)
     {
