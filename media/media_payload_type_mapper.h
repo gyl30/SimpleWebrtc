@@ -1,6 +1,7 @@
 #ifndef SIMPLE_WEBRTC_MEDIA_MEDIA_PAYLOAD_TYPE_MAPPER_H
 #define SIMPLE_WEBRTC_MEDIA_MEDIA_PAYLOAD_TYPE_MAPPER_H
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <optional>
@@ -20,6 +21,9 @@ struct media_payload_type_mapping
 
     std::string publisher_mid;
     std::string subscriber_mid;
+
+    std::size_t publisher_media_ordinal = 0;
+    std::size_t subscriber_media_ordinal = 0;
 
     uint16_t publisher_payload_type = 0;
     uint16_t subscriber_payload_type = 0;

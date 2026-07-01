@@ -162,6 +162,32 @@ std::optional<std::size_t> find_send_capable_media_ordinal_by_kind(const sdp::we
 
     return std::nullopt;
 }
+std::optional<std::size_t> find_receive_capable_media_ordinal_by_kind(const sdp::webrtc_offer_summary& offer, const sdp::media_summary& target_media)
+{
+    std::size_t ordinal = 0;
+
+    for (const auto& media : offer.media)
+    {
+        if (media.kind != target_media.kind)
+        {
+            continue;
+        }
+
+        if (!media_can_receive(media))
+        {
+            continue;
+        }
+
+        if (&media == &target_media)
+        {
+            return ordinal;
+        }
+
+        ordinal += 1;
+    }
+
+    return std::nullopt;
+}
 
 const sdp::media_summary* find_receive_capable_media_by_kind_ordinal(const sdp::webrtc_offer_summary& offer,
                                                                      std::string_view kind,
@@ -553,7 +579,9 @@ const sdp::codec_info* find_rtx_codec_for_apt(const sdp::media_summary& media, u
 
 void append_rtx_mappings(media_payload_type_mapping_table& table,
                          const sdp::media_summary& publisher_media,
-                         const sdp::media_summary& subscriber_media)
+                         const sdp::media_summary& subscriber_media,
+                         std::size_t publisher_media_ordinal,
+                         std::size_t subscriber_media_ordinal)
 {
     for (const auto& publisher_codec : publisher_media.codecs)
     {
@@ -600,6 +628,9 @@ void append_rtx_mappings(media_payload_type_mapping_table& table,
 
         mapping.publisher_mid = publisher_media.mid;
         mapping.subscriber_mid = subscriber_media.mid;
+        mapping.publisher_media_ordinal = publisher_media_ordinal;
+
+        mapping.subscriber_media_ordinal = subscriber_media_ordinal;
 
         mapping.publisher_payload_type = publisher_codec.payload_type;
         mapping.subscriber_payload_type = subscriber_rtx_codec->payload_type;
@@ -981,7 +1012,9 @@ std::optional<sdp::codec_info> find_compatible_subscriber_codec(const sdp::media
 
 void append_media_mappings(media_payload_type_mapping_table& table,
                            const sdp::media_summary& publisher_media,
-                           const sdp::media_summary& subscriber_media)
+                           const sdp::media_summary& subscriber_media,
+                           std::size_t publisher_media_ordinal,
+                           std::size_t subscriber_media_ordinal)
 {
     for (const auto& publisher_codec : publisher_media.codecs)
     {
@@ -1017,6 +1050,10 @@ void append_media_mappings(media_payload_type_mapping_table& table,
 
         mapping.subscriber_mid = subscriber_media.mid;
 
+        mapping.publisher_media_ordinal = publisher_media_ordinal;
+
+        mapping.subscriber_media_ordinal = subscriber_media_ordinal;
+
         mapping.publisher_payload_type = publisher_codec.payload_type;
 
         mapping.subscriber_payload_type = subscriber_codec->payload_type;
@@ -1035,7 +1072,7 @@ void append_media_mappings(media_payload_type_mapping_table& table,
         table.mappings.push_back(std::move(mapping));
     }
 
-    append_rtx_mappings(table, publisher_media, subscriber_media);
+    append_rtx_mappings(table, publisher_media, subscriber_media, publisher_media_ordinal, subscriber_media_ordinal);
 }
 
 }    // namespace
@@ -1081,7 +1118,21 @@ media_payload_type_mapping_table_result build_media_payload_type_mapping_table(s
             continue;
         }
 
-        append_media_mappings(table, publisher_media, *subscriber_media);
+        const std::optional<std::size_t> publisher_media_ordinal = find_send_capable_media_ordinal_by_kind(publisher_offer, publisher_media);
+
+        if (!publisher_media_ordinal.has_value())
+        {
+            continue;
+        }
+
+        const std::optional<std::size_t> subscriber_media_ordinal = find_receive_capable_media_ordinal_by_kind(subscriber_offer, *subscriber_media);
+
+        if (!subscriber_media_ordinal.has_value())
+        {
+            continue;
+        }
+
+        append_media_mappings(table, publisher_media, *subscriber_media, *publisher_media_ordinal, *subscriber_media_ordinal);
     }
 
     if (table.mappings.empty())
@@ -1299,6 +1350,11 @@ std::string media_payload_type_mapping_to_string(const media_payload_type_mappin
     result.append(" subscriber_mid=");
     result.append(mapping.subscriber_mid);
 
+    result.append(" publisher_ordinal=");
+    result.append(std::to_string(mapping.publisher_media_ordinal));
+
+    result.append(" subscriber_ordinal=");
+    result.append(std::to_string(mapping.subscriber_media_ordinal));
     result.append(" publisher_pt=");
     result.append(std::to_string(mapping.publisher_payload_type));
 
