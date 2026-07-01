@@ -162,11 +162,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         bool nominated = false;
         bool selected = false;
     };
-    struct ice_candidate_pair_selection_result
+    struct candidate_pair_selection_result
     {
         bool changed = false;
-
         std::string previous_remote_address;
+        std::string replaced_session_id;
+        bool remote_address_reused_by_different_session = false;
     };
     struct ice_consent_request
     {
@@ -409,6 +410,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                                    uint32_t publisher_ssrc) const;
     [[nodiscard]]
     bool selected_media_peer_needs_refresh(std::string_view remote_address, std::string_view session_id) const;
+    [[nodiscard]]
+    bool selected_transport_peer_needs_refresh(std::string_view remote_address,
+                                               std::string_view session_id,
+                                               std::string_view local_ice_ufrag,
+                                               std::string_view remote_ice_ufrag) const;
 
     void observe_inbound_rtp_stats(const media_peer_info& peer,
                                    const srtp_packet_process_result& packet,
@@ -571,12 +577,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                  bool nominated);
 
     [[nodiscard]]
-    std::expected<ice_candidate_pair_selection_result, std::string> select_candidate_pair(std::string_view session_id,
-                                                                                          std::string_view stream_id,
-                                                                                          const boost::asio::ip::udp::endpoint& remote_endpoint,
-                                                                                          uint32_t remote_priority,
-                                                                                          uint64_t remote_tie_breaker);
-
+    std::expected<candidate_pair_selection_result, std::string> select_candidate_pair(std::string_view session_id,
+                                                                                      std::string_view stream_id,
+                                                                                      const boost::asio::ip::udp::endpoint& remote_endpoint,
+                                                                                      uint32_t remote_priority,
+                                                                                      uint64_t remote_tie_breaker);
     [[nodiscard]]
     std::vector<ice_consent_request> collect_due_ice_consent_requests(uint64_t current_time_milliseconds);
 
