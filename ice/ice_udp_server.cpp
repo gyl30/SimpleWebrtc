@@ -4521,6 +4521,13 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
             entry.packet_count = state.packet_count;
 
+            entry.keyframe_request_attempt_count = state.keyframe_request_attempt_count;
+            entry.keyframe_request_success_count = state.keyframe_request_success_count;
+            entry.keyframe_request_restore_count = state.keyframe_request_restore_count;
+            entry.last_keyframe_request_milliseconds = state.last_keyframe_request_milliseconds;
+            entry.last_keyframe_request_result = state.last_keyframe_request_result;
+            entry.last_keyframe_request_reason = state.last_keyframe_request_reason;
+
             snapshot.selected_rid_layers.push_back(std::move(entry));
         }
 
@@ -8567,6 +8574,12 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
 
     if (feedback_type == keyframe_request_feedback_type::none)
     {
+        if (selected_rid_keyframe_request)
+        {
+            remember_selected_rid_keyframe_request_result(
+                route, track_resolution, target_peer, "unsupported", "publisher keyframe feedback unsupported", false);
+        }
+
         WEBRTC_LOG_DEBUG(
             "keyframe request skipped publisher unsupported stream={} publisher_session={} subscriber_session={} mid={} kind={} rid={} "
             "repaired_rid={} media_ssrc={} selected_rid_pending={}",
@@ -8581,7 +8594,6 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
             selected_rid_keyframe_request ? 1 : 0);
         return;
     }
-
     const uint32_t sender_ssrc = make_rtcp_report_local_ssrc(route.source, packet.ssrc);
 
     auto plain_packet = make_keyframe_request_packet(feedback_type, route.source.stream_id, sender_ssrc, packet.ssrc);
@@ -8654,6 +8666,11 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
         }
 
         return;
+    }
+
+    if (selected_rid_keyframe_request)
+    {
+        remember_selected_rid_keyframe_request_result(route, track_resolution, target_peer, "sent", "keyframe request sent", true);
     }
 
     WEBRTC_LOG_INFO(
@@ -14100,6 +14117,13 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
 
         state.packet_count = 1;
 
+        state.keyframe_request_attempt_count = 0;
+        state.keyframe_request_success_count = 0;
+        state.keyframe_request_restore_count = 0;
+        state.last_keyframe_request_milliseconds = 0;
+        state.last_keyframe_request_result.clear();
+        state.last_keyframe_request_reason.clear();
+
         pending_selected_rid_keyframe_request_keys_.insert(key);
 
         WEBRTC_LOG_INFO(
@@ -14300,6 +14324,14 @@ void ice_udp_server::restore_selected_rid_keyframe_request_pending_for_subscribe
         return;
     }
 
+    selected_rid_layer_runtime_state& mutable_state = state_iterator->second;
+
+    mutable_state.keyframe_request_attempt_count += 1;
+    mutable_state.keyframe_request_restore_count += 1;
+    mutable_state.last_keyframe_request_milliseconds = now_milliseconds();
+    mutable_state.last_keyframe_request_result = "restored";
+    mutable_state.last_keyframe_request_reason = std::string(reason);
+
     pending_selected_rid_keyframe_request_keys_.insert(key);
 
     WEBRTC_LOG_INFO(
@@ -14314,6 +14346,64 @@ void ice_udp_server::restore_selected_rid_keyframe_request_pending_for_subscribe
         state.primary_ssrc,
         state.repair_ssrc,
         reason);
+}
+void ice_udp_server::remember_selected_rid_keyframe_request_result(const media_route_result& route,
+                                                                   const std::optional<media_track_resolution>& track_resolution,
+                                                                   const media_peer_info& target_peer,
+                                                                   std::string_view result,
+                                                                   std::string_view reason,
+                                                                   bool success)
+{
+    if (route.action != media_route_action::fanout_to_subscribers)
+    {
+        return;
+    }
+
+    if (route.source.role != media_peer_role::publisher || target_peer.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (!track_resolution.has_value() || !track_resolution->resolved || !is_video_media_kind(track_resolution->kind))
+    {
+        return;
+    }
+
+    if (track_resolution->mid.empty() || track_resolution->kind.empty() || route.source.stream_id.empty() || route.source.session_id.empty() ||
+        target_peer.session_id.empty())
+    {
+        return;
+    }
+
+    const std::string key = make_selected_rid_layer_key(
+        route.source.stream_id, route.source.session_id, target_peer.session_id, track_resolution->mid, track_resolution->kind);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    auto state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+    if (state_iterator == selected_rid_layer_state_by_key_.end())
+    {
+        return;
+    }
+
+    selected_rid_layer_runtime_state& state = state_iterator->second;
+
+    if (state.rid.empty() || state.kind.empty())
+    {
+        return;
+    }
+
+    state.keyframe_request_attempt_count += 1;
+
+    if (success)
+    {
+        state.keyframe_request_success_count += 1;
+    }
+
+    state.last_keyframe_request_milliseconds = now_milliseconds();
+    state.last_keyframe_request_result = std::string(result);
+    state.last_keyframe_request_reason = std::string(reason);
 }
 
 bool ice_udp_server::remember_extmap_header_extension_id_rewrite(std::string_view stream_id,

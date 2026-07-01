@@ -304,10 +304,21 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string kind;
         std::string rid;
 
+        std::string selection_policy;
+        std::vector<std::string> rid_preference;
+
         uint32_t primary_ssrc = 0;
         uint32_t repair_ssrc = 0;
 
         uint64_t packet_count = 0;
+
+        uint64_t keyframe_request_attempt_count = 0;
+        uint64_t keyframe_request_success_count = 0;
+        uint64_t keyframe_request_restore_count = 0;
+        uint64_t last_keyframe_request_milliseconds = 0;
+
+        std::string last_keyframe_request_result;
+        std::string last_keyframe_request_reason;
     };
     struct extmap_rewrite_runtime_state
     {
@@ -500,6 +511,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                       const media_peer_info& target_peer,
                                                                       std::string_view reason);
 
+    void remember_selected_rid_keyframe_request_result(const media_route_result& route,
+                                                       const std::optional<media_track_resolution>& track_resolution,
+                                                       const media_peer_info& target_peer,
+                                                       std::string_view result,
+                                                       std::string_view reason,
+                                                       bool success);
     void forget_selected_rid_layer_states_for_session(std::string_view session_id);
 
     [[nodiscard]]
