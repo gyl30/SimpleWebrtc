@@ -83,6 +83,9 @@ struct lifecycle_debug_track_binding_entry
     std::string rid;
     std::string repaired_rid;
 
+    std::string initial_resolution_state;
+    bool fallback_resolution = false;
+
     uint32_t ssrc = 0;
     uint64_t payload_type = 0;
 
@@ -307,7 +310,7 @@ REFLECT_STRUCT(
 
 REFLECT_STRUCT(
     webrtc::lifecycle_debug_track_binding_entry,
-    (remote_endpoint)(stream_id)(session_id)(mid)(kind)(rid)(repaired_rid)(ssrc)(payload_type)(rtx)(rtx_primary_ssrc)(rtx_repair_ssrc)(packet_count));
+    (remote_endpoint)(stream_id)(session_id)(mid)(kind)(rid)(repaired_rid)(initial_resolution_state)(fallback_resolution)(ssrc)(payload_type)(rtx)(rtx_primary_ssrc)(rtx_repair_ssrc)(packet_count));
 
 REFLECT_STRUCT(webrtc::lifecycle_debug_identity_track_binding_entry,
                (remote_endpoint)(stream_id)(session_id)(track_key)(mid)(kind)(rid)(repaired_rid)(ssrc)(payload_type)(rtx)(packet_count));

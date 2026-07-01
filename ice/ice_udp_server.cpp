@@ -4267,6 +4267,9 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             entry.rid = optional_string_or_empty(binding.rid);
             entry.repaired_rid = optional_string_or_empty(binding.repaired_rid);
 
+            entry.initial_resolution_state = media_track_resolution_state_to_string(binding.initial_resolution_state);
+            entry.fallback_resolution = binding.fallback_resolution;
+
             entry.ssrc = binding.ssrc;
             entry.payload_type = static_cast<uint64_t>(binding.payload_type);
 
@@ -8327,13 +8330,15 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     if (track_resolution.has_value() && track_resolution->resolved)
     {
         WEBRTC_LOG_DEBUG(
-            "media track resolved remote={} action={} stream={} session={} state={} mid={} kind={} ssrc={} sequence={} payload_type={} "
-            "newly_bound={} has_twcc={} twcc={} rtx={} rtx_primary_ssrc={} rtx_repair_ssrc={}",
+            "media track resolved remote={} action={} stream={} session={} state={} initial_state={} fallback={} mid={} kind={} ssrc={} "
+            "sequence={} payload_type={} newly_bound={} has_twcc={} twcc={} rtx={} rtx_primary_ssrc={} rtx_repair_ssrc={}",
             remote_address,
             media_route_action_to_string(route.action),
             track_resolution->stream_id,
             track_resolution->session_id,
             media_track_resolution_state_to_string(track_resolution->state),
+            media_track_resolution_state_to_string(track_resolution->initial_resolution_state),
+            track_resolution->fallback_resolution ? 1 : 0,
             track_resolution->mid,
             track_resolution->kind,
             track_resolution->ssrc,

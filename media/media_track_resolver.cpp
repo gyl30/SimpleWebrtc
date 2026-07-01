@@ -333,6 +333,28 @@ void fill_resolution_from_media(media_track_resolution& resolution, const sdp::m
 
     fill_resolution_rtx_from_media(resolution, media);
 }
+bool media_track_resolution_state_is_fallback(media_track_resolution_state state)
+{
+    return state == media_track_resolution_state::resolved_by_payload_type || state == media_track_resolution_state::resolved_by_single_media;
+}
+
+void mark_resolution_source(media_track_resolution& resolution, media_track_resolution_state state)
+{
+    resolution.state = state;
+
+    if (resolution.initial_resolution_state == media_track_resolution_state::unresolved)
+    {
+        resolution.initial_resolution_state = state;
+    }
+
+    resolution.fallback_resolution = media_track_resolution_state_is_fallback(resolution.initial_resolution_state);
+}
+
+void mark_binding_source(media_track_resolver::media_track_binding& binding, media_track_resolution_state state)
+{
+    binding.initial_resolution_state = state;
+    binding.fallback_resolution = media_track_resolution_state_is_fallback(state);
+}
 
 void fill_resolution_from_values(media_track_resolution& resolution, const rtp_header_extension_values& values)
 {
@@ -583,6 +605,9 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
                 {
                     resolution.state = media_track_resolution_state::resolved_by_ssrc;
 
+                    resolution.initial_resolution_state = binding->initial_resolution_state;
+                    resolution.fallback_resolution = binding->fallback_resolution;
+
                     resolution.resolved = true;
                     resolution.newly_bound = false;
 
@@ -593,7 +618,8 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
                     media_track_binding updated_binding = *binding;
 
                     updated_binding.payload_type = header->payload_type;
-
+                    updated_binding.initial_resolution_state = binding->initial_resolution_state;
+                    updated_binding.fallback_resolution = binding->fallback_resolution;
                     fill_binding_from_values(updated_binding, values);
 
                     fill_binding_rtx_from_media(updated_binding, *media);
@@ -637,7 +663,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
             binding.ssrc = header->ssrc;
 
             binding.payload_type = header->payload_type;
-
+            mark_binding_source(binding, media_track_resolution_state::resolved_by_mid);
             fill_binding_from_values(binding, match->values);
 
             fill_binding_rtx_from_media(binding, *match->media);
@@ -650,7 +676,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
                 remember_binding_locked(binding);
             }
 
-            resolution.state = media_track_resolution_state::resolved_by_mid;
+            mark_resolution_source(resolution, media_track_resolution_state::resolved_by_mid);
 
             resolution.resolved = true;
             resolution.newly_bound = true;
@@ -697,6 +723,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
         binding.ssrc = header->ssrc;
 
         binding.payload_type = header->payload_type;
+        mark_binding_source(binding, media_track_resolution_state::resolved_by_payload_type);
 
         fill_binding_from_values(binding, values);
 
@@ -709,7 +736,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
             remember_binding_locked(binding);
         }
-        resolution.state = media_track_resolution_state::resolved_by_payload_type;
+        mark_resolution_source(resolution, media_track_resolution_state::resolved_by_payload_type);
 
         resolution.resolved = true;
 
@@ -718,6 +745,13 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
         fill_resolution_from_media(resolution, *payload_media);
 
         fill_resolution_from_values(resolution, values);
+
+        auto identity_rejection = validate_resolved_track_identity(*payload_media, values, *header, resolution);
+
+        if (identity_rejection.has_value())
+        {
+            return *identity_rejection;
+        }
 
         WEBRTC_LOG_INFO(
             "media track bound by mid remote={} stream={} session={} mid={} kind={} ssrc={} payload_type={} rtx={} rtx_primary_ssrc={} "
@@ -766,6 +800,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
         binding.ssrc = header->ssrc;
 
         binding.payload_type = header->payload_type;
+        mark_binding_source(binding, media_track_resolution_state::resolved_by_single_media);
 
         fill_binding_from_values(binding, values);
 
@@ -778,7 +813,7 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
             remember_binding_locked(binding);
         }
-        resolution.state = media_track_resolution_state::resolved_by_single_media;
+        mark_resolution_source(resolution, media_track_resolution_state::resolved_by_single_media);
 
         resolution.resolved = true;
         resolution.newly_bound = true;
@@ -938,15 +973,17 @@ std::string media_track_resolution_state_to_string(media_track_resolution_state 
         case media_track_resolution_state::resolved_by_mid:
             return "resolved_by_mid";
 
+        case media_track_resolution_state::resolved_by_payload_type:
+            return "resolved_by_payload_type";
+
         case media_track_resolution_state::resolved_by_single_media:
             return "resolved_by_single_media";
 
         case media_track_resolution_state::unresolved:
             return "unresolved";
-        case media_track_resolution_state::resolved_by_payload_type:
-            return "resolved_by_payload_type";
     }
 
     return "unresolved";
 }
+
 }    // namespace webrtc

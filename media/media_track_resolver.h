@@ -29,9 +29,11 @@ enum class media_track_resolution_state
 struct media_track_resolution
 {
     media_track_resolution_state state = media_track_resolution_state::unresolved;
+    media_track_resolution_state initial_resolution_state = media_track_resolution_state::unresolved;
 
     bool resolved = false;
     bool newly_bound = false;
+    bool fallback_resolution = false;
 
     std::string stream_id;
     std::string session_id;
@@ -86,6 +88,9 @@ class media_track_resolver
         std::string session_id;
         std::string mid;
         std::string kind;
+
+        media_track_resolution_state initial_resolution_state = media_track_resolution_state::unresolved;
+        bool fallback_resolution = false;
 
         std::optional<std::string> rid;
         std::optional<std::string> repaired_rid;
