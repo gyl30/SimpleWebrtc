@@ -600,7 +600,8 @@ bool lifecycle_active_runtime_state_is_empty(const lifecycle_debug_snapshot& sna
            snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0 &&
            snapshot.fir_sequence_number_state_count == 0 && snapshot.publisher_video_ssrc_state_count == 0 &&
            snapshot.pending_republish_keyframe_request_count == 0 && snapshot.selected_rid_layer_state_count == 0 &&
-           snapshot.pending_selected_rid_keyframe_request_count == 0 && snapshot.extmap_rewrite_state_count == 0;
+           snapshot.pending_selected_rid_keyframe_request_count == 0 && snapshot.selected_rid_keyframe_pending_metadata_count == 0 &&
+           snapshot.extmap_rewrite_state_count == 0;
 }
 
 bool lifecycle_delayed_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
@@ -4681,6 +4682,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.pending_republish_keyframe_request_count = to_debug_count(pending_republish_keyframe_state_by_stream_.size());
         snapshot.selected_rid_layer_state_count = to_debug_count(selected_rid_layer_state_by_key_.size());
         snapshot.pending_selected_rid_keyframe_request_count = to_debug_count(pending_selected_rid_keyframe_request_keys_.size());
+        snapshot.selected_rid_keyframe_pending_metadata_count = to_debug_count(pending_selected_rid_keyframe_request_state_by_key_.size());
         snapshot.simulcast_rid_preference_policy = std::string(simulcast_rid_preference_policy_to_string(simulcast_rid_preference_policy_from_env()));
         snapshot.extmap_rewrite_state_count = to_debug_count(extmap_rewrite_state_by_key_.size());
         snapshot.selected_rid_layers.reserve(selected_rid_layer_state_by_key_.size());
@@ -5453,6 +5455,13 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
                 "pending selected rid keyframe request remains count=" + std::to_string(snapshot.pending_selected_rid_keyframe_request_count));
         }
 
+        if (snapshot.selected_rid_keyframe_pending_metadata_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot,
+                "selected rid keyframe pending metadata remains count=" + std::to_string(snapshot.selected_rid_keyframe_pending_metadata_count));
+        }
+
         if (snapshot.extmap_rewrite_state_count != 0)
         {
             add_lifecycle_residual(snapshot, "extmap rewrite state remains count=" + std::to_string(snapshot.extmap_rewrite_state_count));
@@ -5560,7 +5569,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
             "candidate_pairs={} selected_candidate_pairs={} candidate_pair_consent_in_flight={} candidate_pair_consent_failures={} "
             "candidate_pair_consent_stale={} "
             "payload_type_mappings={} keyframe_states={} fir_sequence_states={} publisher_video_ssrc_states={} pending_republish_keyframes={} "
-            "selected_rid_layer_states={} pending_selected_rid_keyframes={} extmap_rewrite_states={} "
+            "selected_rid_layer_states={} pending_selected_rid_keyframes={} selected_rid_pending_metadata={} extmap_rewrite_states={} "
             "dtls_peers={} srtp_peers={} "
             "media_router_peers={} media_router_streams={} media_router_active_publishers={} media_router_active_subscribers={} "
             "track_bindings={} ssrc_mappings={} "
@@ -5598,6 +5607,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
             snapshot.pending_republish_keyframe_request_count,
             snapshot.selected_rid_layer_state_count,
             snapshot.pending_selected_rid_keyframe_request_count,
+            snapshot.selected_rid_keyframe_pending_metadata_count,
             snapshot.extmap_rewrite_state_count,
             snapshot.dtls_peer_count,
             snapshot.srtp_peer_count,
@@ -5637,7 +5647,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
         "candidate_pairs={} selected_candidate_pairs={} candidate_pair_consent_in_flight={} candidate_pair_consent_failures={} "
         "candidate_pair_consent_stale={} "
         "payload_type_mappings={} keyframe_states={} fir_sequence_states={} publisher_video_ssrc_states={} pending_republish_keyframes={} "
-        "selected_rid_layer_states={} pending_selected_rid_keyframes={} extmap_rewrite_states={} "
+        "selected_rid_layer_states={} pending_selected_rid_keyframes={} selected_rid_pending_metadata={} extmap_rewrite_states={} "
         "dtls_peers={} srtp_peers={} "
         "media_router_peers={} media_router_streams={} media_router_active_publishers={} media_router_active_subscribers={} "
         "track_bindings={} ssrc_mappings={} "
@@ -5675,6 +5685,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
         snapshot.pending_republish_keyframe_request_count,
         snapshot.selected_rid_layer_state_count,
         snapshot.pending_selected_rid_keyframe_request_count,
+        snapshot.selected_rid_keyframe_pending_metadata_count,
         snapshot.extmap_rewrite_state_count,
         snapshot.dtls_peer_count,
         snapshot.srtp_peer_count,
@@ -5767,6 +5778,15 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
 
         const uint64_t current_time_milliseconds = now_milliseconds();
 
+        const std::size_t expired_selected_rid_keyframe_pending_count =
+            expire_selected_rid_keyframe_request_pending_locked(current_time_milliseconds);
+
+        if (expired_selected_rid_keyframe_pending_count != 0)
+        {
+            WEBRTC_LOG_INFO("simulcast selected rid keyframe pending expired during lifecycle convergence check count={}",
+                            expired_selected_rid_keyframe_pending_count);
+        }
+
         const std::size_t expired_retired_endpoint_count = expire_retired_endpoints_locked(current_time_milliseconds);
 
         if (expired_retired_endpoint_count != 0)
@@ -5781,7 +5801,6 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             WEBRTC_LOG_INFO("ice retired credentials expired during lifecycle convergence check count={}", expired_ice_credential_count);
         }
     }
-
     const lifecycle_debug_snapshot snapshot = debug_state_snapshot();
 
     const bool retired_state_clean = !require_retired_endpoints_empty || snapshot.delayed_runtime_clean;
@@ -5797,7 +5816,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             "candidate_pairs={} selected_candidate_pairs={} candidate_pair_consent_in_flight={} candidate_pair_consent_failures={} "
             "candidate_pair_consent_stale={} "
             "payload_type_mappings={} keyframe_states={} fir_sequence_states={} publisher_video_ssrc_states={} pending_republish_keyframes={} "
-            "selected_rid_layer_states={} pending_selected_rid_keyframes={} extmap_rewrite_states={} "
+            "selected_rid_layer_states={} pending_selected_rid_keyframes={} selected_rid_pending_metadata={} extmap_rewrite_states={} "
             "dtls_peers={} srtp_peers={} "
             "media_router_peers={} media_router_streams={} media_router_active_publishers={} media_router_active_subscribers={} "
             "track_bindings={} ssrc_mappings={} "
@@ -5838,6 +5857,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             snapshot.pending_republish_keyframe_request_count,
             snapshot.selected_rid_layer_state_count,
             snapshot.pending_selected_rid_keyframe_request_count,
+            snapshot.selected_rid_keyframe_pending_metadata_count,
             snapshot.extmap_rewrite_state_count,
             snapshot.dtls_peer_count,
             snapshot.srtp_peer_count,
@@ -5881,7 +5901,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             "candidate_pairs={} selected_candidate_pairs={} candidate_pair_consent_in_flight={} candidate_pair_consent_failures={} "
             "candidate_pair_consent_stale={} "
             "payload_type_mappings={} keyframe_states={} fir_sequence_states={} publisher_video_ssrc_states={} pending_republish_keyframes={} "
-            "selected_rid_layer_states={} pending_selected_rid_keyframes={} extmap_rewrite_states={} "
+            "selected_rid_layer_states={} pending_selected_rid_keyframes={} selected_rid_pending_metadata={} extmap_rewrite_states={} "
             "dtls_peers={} srtp_peers={} "
             "media_router_peers={} media_router_streams={} media_router_active_publishers={} media_router_active_subscribers={} "
             "track_bindings={} ssrc_mappings={} "
@@ -5922,6 +5942,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
             snapshot.pending_republish_keyframe_request_count,
             snapshot.selected_rid_layer_state_count,
             snapshot.pending_selected_rid_keyframe_request_count,
+            snapshot.selected_rid_keyframe_pending_metadata_count,
             snapshot.extmap_rewrite_state_count,
             snapshot.dtls_peer_count,
             snapshot.srtp_peer_count,
@@ -5962,7 +5983,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
         "candidate_pairs={} selected_candidate_pairs={} candidate_pair_consent_in_flight={} candidate_pair_consent_failures={} "
         "candidate_pair_consent_stale={} "
         "payload_type_mappings={} keyframe_states={} fir_sequence_states={} publisher_video_ssrc_states={} pending_republish_keyframes={} "
-        "selected_rid_layer_states={} pending_selected_rid_keyframes={} extmap_rewrite_states={} "
+        "selected_rid_layer_states={} pending_selected_rid_keyframes={} selected_rid_pending_metadata={} extmap_rewrite_states={} "
         "dtls_peers={} srtp_peers={} "
         "media_router_peers={} media_router_streams={} media_router_active_publishers={} media_router_active_subscribers={} "
         "track_bindings={} ssrc_mappings={} "
@@ -6003,6 +6024,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
         snapshot.pending_republish_keyframe_request_count,
         snapshot.selected_rid_layer_state_count,
         snapshot.pending_selected_rid_keyframe_request_count,
+        snapshot.selected_rid_keyframe_pending_metadata_count,
         snapshot.extmap_rewrite_state_count,
         snapshot.dtls_peer_count,
         snapshot.srtp_peer_count,
