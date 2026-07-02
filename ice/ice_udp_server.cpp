@@ -3305,6 +3305,84 @@ std::optional<std::string> simulcast_rid_target_for_subscriber_from_env(std::str
 
     return std::nullopt;
 }
+bool simulcast_adaptive_enabled_from_env()
+{
+    const char* value = std::getenv("WEBRTC_SIMULCAST_ADAPTIVE_ENABLED");
+
+    if (value == nullptr)
+    {
+        return false;
+    }
+
+    const std::string normalized = lower_ascii_copy(trim_simulcast_env_token(value));
+
+    return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+}
+
+uint64_t simulcast_uint64_from_env(std::string_view name, uint64_t default_value)
+{
+    const std::string env_name(name);
+
+    const char* value = std::getenv(env_name.c_str());
+
+    if (value == nullptr)
+    {
+        return default_value;
+    }
+
+    const std::string_view trimmed = trim_simulcast_env_token(value);
+
+    if (trimmed.empty())
+    {
+        return default_value;
+    }
+
+    uint64_t result = 0;
+
+    const auto parse_result = std::from_chars(trimmed.data(), trimmed.data() + trimmed.size(), result);
+
+    if (parse_result.ec != std::errc{} || parse_result.ptr != trimmed.data() + trimmed.size())
+    {
+        return default_value;
+    }
+
+    return result;
+}
+
+uint64_t simulcast_adaptive_check_interval_milliseconds_from_env()
+{
+    return simulcast_uint64_from_env("WEBRTC_SIMULCAST_ADAPTIVE_CHECK_INTERVAL_MS", 5000);
+}
+
+uint64_t simulcast_adaptive_switch_cooldown_milliseconds_from_env()
+{
+    return simulcast_uint64_from_env("WEBRTC_SIMULCAST_SWITCH_COOLDOWN_MS", 10000);
+}
+
+uint64_t simulcast_adaptive_downgrade_nack_ratio_per_mille_from_env()
+{
+    return simulcast_uint64_from_env("WEBRTC_SIMULCAST_DOWNGRADE_NACK_RATIO_PERMILLE", 80);
+}
+
+uint64_t simulcast_adaptive_min_packets_per_window_from_env() { return simulcast_uint64_from_env("WEBRTC_SIMULCAST_ADAPTIVE_MIN_PACKETS", 50); }
+
+uint64_t simulcast_adaptive_upgrade_stable_window_milliseconds_from_env()
+{
+    return simulcast_uint64_from_env("WEBRTC_SIMULCAST_UPGRADE_STABLE_WINDOW_MS", 15000);
+}
+
+std::optional<std::size_t> find_simulcast_rid_preference_index(const std::vector<std::string>& preferred_rids, std::string_view rid)
+{
+    for (std::size_t index = 0; index < preferred_rids.size(); ++index)
+    {
+        if (preferred_rids[index] == rid)
+        {
+            return index;
+        }
+    }
+
+    return std::nullopt;
+}
 
 bool simulcast_rid_preference_contains(const std::vector<std::string>& preferred_rids, std::string_view rid)
 {
@@ -3726,6 +3804,8 @@ void ice_udp_server::stop()
         pending_republish_keyframe_state_by_stream_.clear();
 
         selected_rid_layer_state_by_key_.clear();
+
+        runtime_selected_rid_targets_by_key_.clear();
 
         pending_selected_rid_keyframe_request_keys_.clear();
 
@@ -4702,6 +4782,25 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             entry.kind = state.kind;
 
             entry.selected_rid = state.rid;
+            entry.previous_rid = state.previous_rid;
+            entry.target_rid = state.target_rid;
+            entry.target_policy = state.target_policy;
+
+            entry.switch_count = state.switch_count;
+            entry.last_switch_milliseconds = state.last_switch_milliseconds;
+            entry.last_switch_reason = state.last_switch_reason;
+
+            entry.adaptive_enabled = state.adaptive_enabled;
+            entry.last_adaptive_decision = state.last_adaptive_decision;
+            entry.last_adaptive_decision_reason = state.last_adaptive_decision_reason;
+            entry.last_adaptive_decision_milliseconds = state.last_adaptive_decision_milliseconds;
+
+            const uint64_t cooldown_milliseconds = simulcast_adaptive_switch_cooldown_milliseconds_from_env();
+
+            entry.switch_cooldown_remaining_milliseconds =
+                state.last_switch_milliseconds != 0 && current_time_milliseconds < state.last_switch_milliseconds + cooldown_milliseconds
+                    ? state.last_switch_milliseconds + cooldown_milliseconds - current_time_milliseconds
+                    : 0;
 
             entry.selection_policy = state.selection_policy;
             entry.rid_preference = state.rid_preference;
@@ -11180,6 +11279,7 @@ std::optional<media_identity_rid_layer_binding> find_selected_rid_layer_for_subs
     const media_route_result& route,
     const media_peer_info& target_peer,
     const media_track_resolution& track_resolution,
+    const std::optional<std::string>& runtime_target_rid,
     std::vector<std::string>& selected_rid_preference,
     std::string& selected_rid_policy)
 {
@@ -11218,6 +11318,22 @@ std::optional<media_identity_rid_layer_binding> find_selected_rid_layer_for_subs
     selected_rid_preference = preference.preferred_rids;
     selected_rid_policy = preference.policy;
 
+    if (runtime_target_rid.has_value() && !runtime_target_rid->empty())
+    {
+        const bool target_available = simulcast_rid_preference_contains(selected_rid_preference, *runtime_target_rid);
+
+        if (target_available)
+        {
+            selected_rid_preference = make_simulcast_target_first_preference(std::move(selected_rid_preference), *runtime_target_rid);
+            selected_rid_policy = "runtime_target:" + *runtime_target_rid + "+" + selected_rid_policy;
+        }
+        else
+        {
+            selected_rid_policy.append("+runtime_target_missing:");
+            selected_rid_policy.append(*runtime_target_rid);
+        }
+    }
+
     if (selected_rid_preference.empty())
     {
         return std::nullopt;
@@ -11225,7 +11341,6 @@ std::optional<media_identity_rid_layer_binding> find_selected_rid_layer_for_subs
 
     std::optional<media_identity_rid_layer_binding> selected_layer =
         identity_authority->find_preferred_rid_layer(route.source.stream_id, route.source.session_id, track_resolution.mid, selected_rid_preference);
-
     if (selected_layer.has_value())
     {
         WEBRTC_LOG_DEBUG(
@@ -11301,13 +11416,13 @@ bool publisher_rtp_rid_is_selected_for_subscriber(const sdp::webrtc_offer_summar
                                                   const media_route_result& route,
                                                   const media_peer_info& target_peer,
                                                   const media_track_resolution& track_resolution,
+                                                  const std::optional<std::string>& runtime_target_rid,
                                                   std::optional<media_identity_rid_layer_binding>& selected_layer,
                                                   std::vector<std::string>& selected_rid_preference,
                                                   std::string& selected_rid_policy)
 {
     selected_layer = find_selected_rid_layer_for_subscriber(
-        publisher_offer, identity_authority, route, target_peer, track_resolution, selected_rid_preference, selected_rid_policy);
-
+        publisher_offer, identity_authority, route, target_peer, track_resolution, runtime_target_rid, selected_rid_preference, selected_rid_policy);
     if (!selected_layer.has_value())
     {
         return true;
@@ -12726,11 +12841,14 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
         std::vector<std::string> selected_rid_preference;
         std::string selected_rid_policy;
 
+        const std::optional<std::string> runtime_target_rid = runtime_selected_rid_target_for_subscriber(route, target_peer, *track_resolution);
+
         if (!publisher_rtp_rid_is_selected_for_subscriber(publisher->remote_offer_summary(),
                                                           identity_authority_,
                                                           route,
                                                           target_peer,
                                                           *track_resolution,
+                                                          runtime_target_rid,
                                                           selected_layer,
                                                           selected_rid_preference,
                                                           selected_rid_policy))
@@ -14641,6 +14759,207 @@ void ice_udp_server::remember_selected_rid_keyframe_request_pending_locked(std::
     state.last_keyframe_request_result = "pending";
     state.last_keyframe_request_reason = std::string(reason);
 }
+std::optional<std::string> ice_udp_server::runtime_selected_rid_target_for_subscriber(const media_route_result& route,
+                                                                                      const media_peer_info& target_peer,
+                                                                                      const media_track_resolution& track_resolution) const
+{
+    if (route.source.stream_id.empty() || route.source.session_id.empty() || target_peer.session_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (!track_resolution.resolved || track_resolution.mid.empty() || track_resolution.kind.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (!is_video_media_kind(track_resolution.kind))
+    {
+        return std::nullopt;
+    }
+
+    const std::string key = make_selected_rid_layer_key(
+        route.source.stream_id, route.source.session_id, target_peer.session_id, track_resolution.mid, track_resolution.kind);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto iterator = runtime_selected_rid_targets_by_key_.find(key);
+
+    if (iterator == runtime_selected_rid_targets_by_key_.end())
+    {
+        return std::nullopt;
+    }
+
+    if (iterator->second.target_rid.empty())
+    {
+        return std::nullopt;
+    }
+
+    return iterator->second.target_rid;
+}
+void ice_udp_server::remember_runtime_selected_rid_target_locked(std::string_view key,
+                                                                 selected_rid_layer_runtime_state& state,
+                                                                 std::string_view target_rid,
+                                                                 std::string_view policy,
+                                                                 std::string_view reason,
+                                                                 uint64_t current_time_milliseconds)
+{
+    if (key.empty() || target_rid.empty())
+    {
+        return;
+    }
+
+    runtime_selected_rid_target_state& target_state = runtime_selected_rid_targets_by_key_[std::string(key)];
+
+    target_state.stream_id = state.stream_id;
+    target_state.publisher_session_id = state.publisher_session_id;
+    target_state.subscriber_session_id = state.subscriber_session_id;
+    target_state.mid = state.mid;
+    target_state.kind = state.kind;
+    target_state.target_rid = std::string(target_rid);
+    target_state.policy = std::string(policy);
+    target_state.reason = std::string(reason);
+    target_state.updated_at_milliseconds = current_time_milliseconds;
+    target_state.applied_count += 1;
+
+    state.target_rid = std::string(target_rid);
+    state.target_policy = std::string(policy);
+    state.last_adaptive_decision = std::string(policy);
+    state.last_adaptive_decision_reason = std::string(reason);
+    state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+}
+void ice_udp_server::maybe_update_adaptive_selected_rid_target_locked(std::string_view key,
+                                                                      selected_rid_layer_runtime_state& state,
+                                                                      const std::vector<std::string>& rid_preference,
+                                                                      uint64_t current_time_milliseconds)
+{
+    state.adaptive_enabled = simulcast_adaptive_enabled_from_env();
+
+    if (!state.adaptive_enabled)
+    {
+        return;
+    }
+
+    if (state.rid.empty() || rid_preference.size() < 2)
+    {
+        return;
+    }
+
+    const uint64_t check_interval_milliseconds = simulcast_adaptive_check_interval_milliseconds_from_env();
+
+    if (state.last_adaptive_check_milliseconds != 0 &&
+        current_time_milliseconds < state.last_adaptive_check_milliseconds + check_interval_milliseconds)
+    {
+        return;
+    }
+
+    const uint64_t cooldown_milliseconds = simulcast_adaptive_switch_cooldown_milliseconds_from_env();
+
+    if (state.last_switch_milliseconds != 0 && current_time_milliseconds < state.last_switch_milliseconds + cooldown_milliseconds)
+    {
+        state.last_adaptive_check_milliseconds = current_time_milliseconds;
+        state.last_adaptive_decision = "cooldown";
+        state.last_adaptive_decision_reason = "switch cooldown active";
+        state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+
+        return;
+    }
+
+    const std::optional<std::size_t> current_index = find_simulcast_rid_preference_index(rid_preference, state.rid);
+
+    if (!current_index.has_value())
+    {
+        state.last_adaptive_check_milliseconds = current_time_milliseconds;
+        state.last_adaptive_decision = "skip";
+        state.last_adaptive_decision_reason = "selected rid not found in preference";
+        state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+
+        return;
+    }
+
+    const uint64_t delta_primary_packets = state.primary_packet_count >= state.last_adaptive_primary_packet_count
+                                               ? state.primary_packet_count - state.last_adaptive_primary_packet_count
+                                               : 0;
+
+    const uint64_t delta_nack_sequences = state.nack_sequence_count >= state.last_adaptive_nack_sequence_count
+                                              ? state.nack_sequence_count - state.last_adaptive_nack_sequence_count
+                                              : 0;
+
+    state.last_adaptive_check_milliseconds = current_time_milliseconds;
+    state.last_adaptive_primary_packet_count = state.primary_packet_count;
+    state.last_adaptive_nack_sequence_count = state.nack_sequence_count;
+
+    const uint64_t min_packets = simulcast_adaptive_min_packets_per_window_from_env();
+
+    if (delta_primary_packets < min_packets)
+    {
+        state.last_adaptive_decision = "skip";
+        state.last_adaptive_decision_reason = "insufficient packets";
+        state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+
+        return;
+    }
+
+    const uint64_t downgrade_ratio_per_mille = simulcast_adaptive_downgrade_nack_ratio_per_mille_from_env();
+
+    const bool downgrade_required = delta_nack_sequences * 1000U >= delta_primary_packets * downgrade_ratio_per_mille;
+
+    if (downgrade_required && *current_index + 1 < rid_preference.size())
+    {
+        const std::string& target_rid = rid_preference[*current_index + 1];
+
+        remember_runtime_selected_rid_target_locked(
+            key, state, target_rid, "adaptive_downgrade", "nack ratio exceeded threshold", current_time_milliseconds);
+
+        WEBRTC_LOG_INFO(
+            "simulcast adaptive downgrade target selected stream={} publisher_session={} subscriber_session={} mid={} kind={} current_rid={} "
+            "target_rid={} packets={} nack_sequences={} threshold_per_mille={}",
+            state.stream_id,
+            state.publisher_session_id,
+            state.subscriber_session_id,
+            state.mid,
+            state.kind,
+            state.rid,
+            target_rid,
+            delta_primary_packets,
+            delta_nack_sequences,
+            downgrade_ratio_per_mille);
+
+        return;
+    }
+
+    const uint64_t stable_window_milliseconds = simulcast_adaptive_upgrade_stable_window_milliseconds_from_env();
+
+    const bool stable_for_upgrade = delta_nack_sequences == 0 && state.last_switch_milliseconds != 0 &&
+                                    current_time_milliseconds >= state.last_switch_milliseconds + stable_window_milliseconds;
+
+    if (stable_for_upgrade && *current_index > 0)
+    {
+        const std::string& target_rid = rid_preference[*current_index - 1];
+
+        remember_runtime_selected_rid_target_locked(
+            key, state, target_rid, "adaptive_upgrade", "stable window without nack", current_time_milliseconds);
+
+        WEBRTC_LOG_INFO(
+            "simulcast adaptive upgrade target selected stream={} publisher_session={} subscriber_session={} mid={} kind={} current_rid={} "
+            "target_rid={} stable_window_ms={}",
+            state.stream_id,
+            state.publisher_session_id,
+            state.subscriber_session_id,
+            state.mid,
+            state.kind,
+            state.rid,
+            target_rid,
+            stable_window_milliseconds);
+
+        return;
+    }
+
+    state.last_adaptive_decision = "keep";
+    state.last_adaptive_decision_reason = "quality window healthy";
+    state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+}
+
 void ice_udp_server::remember_selected_rid_layer_quality_packet_locked(selected_rid_layer_runtime_state& state,
                                                                        const media_track_resolution& track_resolution,
                                                                        std::size_t packet_size,
@@ -14784,17 +15103,50 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
             state.rid_preference = rid_preference;
 
             remember_selected_rid_layer_quality_packet_locked(state, track_resolution, packet_size, now_milliseconds());
+            maybe_update_adaptive_selected_rid_target_locked(key, state, rid_preference, now_milliseconds());
 
             return;
         }
 
         state.kind = selected_layer.kind;
 
+        const std::string previous_rid = state.rid;
+
+        state.previous_rid = previous_rid;
         state.rid = selected_layer.rid;
         state.selection_policy = std::string(selection_policy);
         state.rid_preference = rid_preference;
         state.primary_ssrc = selected_layer.primary_ssrc;
         state.repair_ssrc = selected_layer.repair_ssrc;
+
+        state.switch_count += 1;
+
+        state.adaptive_enabled = simulcast_adaptive_enabled_from_env();
+
+        if (const auto target_iterator = runtime_selected_rid_targets_by_key_.find(key);
+            target_iterator != runtime_selected_rid_targets_by_key_.end())
+        {
+            state.target_rid = target_iterator->second.target_rid;
+            state.target_policy = target_iterator->second.policy;
+        }
+
+        state.last_switch_milliseconds = now_milliseconds();
+
+        if (!state.target_rid.empty() && state.target_rid == selected_layer.rid)
+        {
+            state.last_switch_reason = "runtime target applied:" + state.target_policy;
+
+            auto target_iterator = runtime_selected_rid_targets_by_key_.find(key);
+
+            if (target_iterator != runtime_selected_rid_targets_by_key_.end())
+            {
+                target_iterator->second.applied_count += 1;
+            }
+        }
+        else
+        {
+            state.last_switch_reason = "selected rid changed by preference";
+        }
 
         state.packet_count = 0;
         state.byte_count = 0;
@@ -14818,6 +15170,7 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
         state.last_keyframe_request_milliseconds = 0;
         state.last_keyframe_request_result.clear();
         state.last_keyframe_request_reason.clear();
+        maybe_update_adaptive_selected_rid_target_locked(key, state, rid_preference, now_milliseconds());
 
         remember_selected_rid_keyframe_request_pending_locked(key, state, now_milliseconds(), "selected rid changed");
 
@@ -15241,6 +15594,7 @@ void ice_udp_server::forget_selected_rid_layer_states_for_session(std::string_vi
         {
             pending_selected_rid_keyframe_request_keys_.erase(iterator->first);
             pending_selected_rid_keyframe_request_state_by_key_.erase(iterator->first);
+            runtime_selected_rid_targets_by_key_.erase(iterator->first);
 
             iterator = selected_rid_layer_state_by_key_.erase(iterator);
 
@@ -15316,6 +15670,7 @@ std::size_t ice_udp_server::erase_selected_rid_layer_states_for_stream_locked(st
         {
             pending_selected_rid_keyframe_request_keys_.erase(iterator->first);
             pending_selected_rid_keyframe_request_state_by_key_.erase(iterator->first);
+            runtime_selected_rid_targets_by_key_.erase(iterator->first);
 
             iterator = selected_rid_layer_state_by_key_.erase(iterator);
 

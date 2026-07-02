@@ -305,6 +305,22 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string kind;
         std::string rid;
 
+        std::string previous_rid;
+        std::string target_rid;
+        std::string target_policy;
+
+        uint64_t switch_count = 0;
+        uint64_t last_switch_milliseconds = 0;
+        std::string last_switch_reason;
+
+        bool adaptive_enabled = false;
+        std::string last_adaptive_decision;
+        std::string last_adaptive_decision_reason;
+        uint64_t last_adaptive_decision_milliseconds = 0;
+        uint64_t last_adaptive_check_milliseconds = 0;
+        uint64_t last_adaptive_primary_packet_count = 0;
+        uint64_t last_adaptive_nack_sequence_count = 0;
+
         std::string selection_policy;
         std::vector<std::string> rid_preference;
 
@@ -343,6 +359,20 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t pending_since_milliseconds = 0;
         uint64_t expires_at_milliseconds = 0;
         uint64_t restore_count = 0;
+    };
+    struct runtime_selected_rid_target_state
+    {
+        std::string stream_id;
+        std::string publisher_session_id;
+        std::string subscriber_session_id;
+        std::string mid;
+        std::string kind;
+        std::string target_rid;
+        std::string policy;
+        std::string reason;
+
+        uint64_t updated_at_milliseconds = 0;
+        uint64_t applied_count = 0;
     };
     struct extmap_rewrite_runtime_state
     {
@@ -535,6 +565,23 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                            std::size_t packet_size,
                                                            uint64_t current_time_milliseconds);
 
+    [[nodiscard]]
+    std::optional<std::string> runtime_selected_rid_target_for_subscriber(const media_route_result& route,
+                                                                          const media_peer_info& target_peer,
+                                                                          const media_track_resolution& track_resolution) const;
+
+    void remember_runtime_selected_rid_target_locked(std::string_view key,
+                                                     selected_rid_layer_runtime_state& state,
+                                                     std::string_view target_rid,
+                                                     std::string_view policy,
+                                                     std::string_view reason,
+                                                     uint64_t current_time_milliseconds);
+
+    void maybe_update_adaptive_selected_rid_target_locked(std::string_view key,
+                                                          selected_rid_layer_runtime_state& state,
+                                                          const std::vector<std::string>& rid_preference,
+                                                          uint64_t current_time_milliseconds);
+
     void remember_selected_rid_layer_for_subscriber(const media_route_result& route,
                                                     const media_peer_info& target_peer,
                                                     const media_track_resolution& track_resolution,
@@ -542,7 +589,6 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                     std::string_view selection_policy,
                                                     const std::vector<std::string>& rid_preference,
                                                     std::size_t packet_size);
-
     void remember_selected_rid_layer_nack_quality(const media_ssrc_mapping& mapping, std::size_t feedback_count, std::size_t sequence_count);
 
     [[nodiscard]]
@@ -889,9 +935,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, uint32_t> publisher_video_ssrc_by_stream_;
     std::unordered_map<std::string, republish_keyframe_request_state> pending_republish_keyframe_state_by_stream_;
     std::unordered_map<std::string, selected_rid_layer_runtime_state> selected_rid_layer_state_by_key_;
+    std::unordered_map<std::string, runtime_selected_rid_target_state> runtime_selected_rid_targets_by_key_;
     std::unordered_set<std::string> pending_selected_rid_keyframe_request_keys_;
     std::unordered_map<std::string, selected_rid_keyframe_request_pending_state> pending_selected_rid_keyframe_request_state_by_key_;
     std::unordered_map<std::string, extmap_rewrite_runtime_state> extmap_rewrite_state_by_key_;
+
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
 
