@@ -304,8 +304,19 @@ struct lifecycle_debug_selected_rid_layer_entry
 
     std::string selected_rid;
     std::string previous_rid;
+
     std::string target_rid;
     std::string target_policy;
+
+    std::string effective_target_rid;
+    std::string effective_target_policy;
+
+    bool manual_target_active = false;
+
+    std::string adaptive_suggested_rid;
+    std::string adaptive_suggested_policy;
+    std::string adaptive_suggested_reason;
+    uint64_t adaptive_suggested_at_milliseconds = 0;
 
     uint64_t switch_count = 0;
     uint64_t last_switch_milliseconds = 0;
@@ -548,7 +559,8 @@ REFLECT_STRUCT(
     (stream_id)(subscriber_session_id)(media_router_peer_count)(track_binding_count)(ssrc_mapping_count)(identity_track_binding_count)(identity_rid_layer_binding_count)(identity_forward_binding_count)(rtcp_report_source_count)(twcc_feedback_source_count)(rtx_retransmission_index_count)(nack_retransmit_throttle_count)(residual_count));
 
 REFLECT_STRUCT(webrtc::lifecycle_debug_selected_rid_layer_entry,
-               (stream_id)(publisher_session_id)(subscriber_session_id)(mid)(kind)(selected_rid)(previous_rid)(target_rid)(target_policy)(switch_count)(last_switch_milliseconds)(last_switch_reason)(adaptive_enabled)(last_adaptive_decision)(last_adaptive_decision_reason)(last_adaptive_decision_milliseconds)(switch_cooldown_remaining_milliseconds)(selection_policy)(rid_preference)(primary_ssrc)(repair_ssrc)(pending_keyframe_request)(pending_keyframe_request_since_milliseconds)(pending_keyframe_request_expires_at_milliseconds)(pending_keyframe_request_remaining_ttl_milliseconds)(packet_count)(byte_count)(primary_packet_count)(primary_byte_count)(repair_packet_count)(repair_byte_count)(last_packet_milliseconds)(bitrate_bps)(nack_feedback_count)(nack_sequence_count)(last_nack_milliseconds)(keyframe_request_attempt_count)(keyframe_request_success_count)(keyframe_request_restore_count)(last_keyframe_request_milliseconds)(last_keyframe_request_result)(last_keyframe_request_reason));
+               (
+                   stream_id)(publisher_session_id)(subscriber_session_id)(mid)(kind)(selected_rid)(previous_rid)(target_rid)(target_policy)(effective_target_rid)(effective_target_policy)(manual_target_active)(adaptive_suggested_rid)(adaptive_suggested_policy)(adaptive_suggested_reason)(adaptive_suggested_at_milliseconds)(switch_count)(last_switch_milliseconds)(last_switch_reason)(adaptive_enabled)(last_adaptive_decision)(last_adaptive_decision_reason)(last_adaptive_decision_milliseconds)(switch_cooldown_remaining_milliseconds)(selection_policy)(rid_preference)(primary_ssrc)(repair_ssrc)(pending_keyframe_request)(pending_keyframe_request_since_milliseconds)(pending_keyframe_request_expires_at_milliseconds)(pending_keyframe_request_remaining_ttl_milliseconds)(packet_count)(byte_count)(primary_packet_count)(primary_byte_count)(repair_packet_count)(repair_byte_count)(last_packet_milliseconds)(bitrate_bps)(nack_feedback_count)(nack_sequence_count)(last_nack_milliseconds)(keyframe_request_attempt_count)(keyframe_request_success_count)(keyframe_request_restore_count)(last_keyframe_request_milliseconds)(last_keyframe_request_result)(last_keyframe_request_reason));
 
 REFLECT_STRUCT(webrtc::lifecycle_debug_retired_endpoint_entry,
                (remote_address)(session_id)(reason)(expires_at_milliseconds)(remaining_ttl_milliseconds)(suppressed_packets));

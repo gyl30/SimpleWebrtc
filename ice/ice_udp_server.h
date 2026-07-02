@@ -316,6 +316,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string target_rid;
         std::string target_policy;
 
+        bool manual_target_active = false;
+
+        std::string adaptive_suggested_rid;
+        std::string adaptive_suggested_policy;
+        std::string adaptive_suggested_reason;
+        uint64_t adaptive_suggested_at_milliseconds = 0;
+
         uint64_t switch_count = 0;
         uint64_t last_switch_milliseconds = 0;
         std::string last_switch_reason;
@@ -583,6 +590,15 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                      std::string_view policy,
                                                      std::string_view reason,
                                                      uint64_t current_time_milliseconds);
+
+    [[nodiscard]]
+    bool runtime_selected_rid_target_is_manual_locked(std::string_view key) const;
+
+    void remember_adaptive_selected_rid_suggestion_locked(selected_rid_layer_runtime_state& state,
+                                                          std::string_view suggested_rid,
+                                                          std::string_view policy,
+                                                          std::string_view reason,
+                                                          uint64_t current_time_milliseconds);
 
     void maybe_update_adaptive_selected_rid_target_locked(std::string_view key,
                                                           selected_rid_layer_runtime_state& state,

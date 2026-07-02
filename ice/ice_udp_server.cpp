@@ -4650,18 +4650,14 @@ simulcast_rid_target_expected ice_udp_server::set_runtime_selected_rid_target(co
     {
         selected_rid_layer_runtime_state& selected_state = selected_state_iterator->second;
 
-        selected_state.target_rid = request.target_rid;
-        selected_state.target_policy = "manual_api";
-        selected_state.last_adaptive_decision = "manual_target";
-        selected_state.last_adaptive_decision_reason = target_state.reason;
-        selected_state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+        remember_runtime_selected_rid_target_locked(
+            key, selected_state, request.target_rid, "manual_api", target_state.reason, current_time_milliseconds);
 
         if (selected_state.rid != request.target_rid)
         {
             selected_state.last_switch_reason = "manual target pending:" + request.target_rid;
         }
     }
-
     WEBRTC_LOG_INFO(
         "simulcast manual rid target set stream={} publisher_session={} subscriber_session={} mid={} kind={} target_rid={} changed={} "
         "selected_state_found={} reason={}",
@@ -4747,6 +4743,7 @@ simulcast_rid_target_expected ice_udp_server::clear_runtime_selected_rid_target(
 
         selected_state.target_rid.clear();
         selected_state.target_policy.clear();
+        selected_state.manual_target_active = false;
         selected_state.last_adaptive_decision = "manual_clear";
         selected_state.last_adaptive_decision_reason = result.reason;
         selected_state.last_adaptive_decision_milliseconds = current_time_milliseconds;
@@ -4993,6 +4990,15 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             entry.previous_rid = state.previous_rid;
             entry.target_rid = state.target_rid;
             entry.target_policy = state.target_policy;
+
+            entry.effective_target_rid = state.target_rid;
+            entry.effective_target_policy = state.target_policy;
+            entry.manual_target_active = state.manual_target_active;
+
+            entry.adaptive_suggested_rid = state.adaptive_suggested_rid;
+            entry.adaptive_suggested_policy = state.adaptive_suggested_policy;
+            entry.adaptive_suggested_reason = state.adaptive_suggested_reason;
+            entry.adaptive_suggested_at_milliseconds = state.adaptive_suggested_at_milliseconds;
 
             entry.switch_count = state.switch_count;
             entry.last_switch_milliseconds = state.last_switch_milliseconds;
@@ -15089,6 +15095,47 @@ void ice_udp_server::remember_runtime_selected_rid_target_locked(std::string_vie
 
     state.target_rid = std::string(target_rid);
     state.target_policy = std::string(policy);
+    state.manual_target_active = policy == "manual_api";
+
+    if (policy == "manual_api")
+    {
+        state.last_adaptive_decision = "manual_target";
+        state.last_adaptive_decision_reason = std::string(reason);
+        state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+
+        return;
+    }
+
+    remember_adaptive_selected_rid_suggestion_locked(state, target_rid, policy, reason, current_time_milliseconds);
+}
+bool ice_udp_server::runtime_selected_rid_target_is_manual_locked(std::string_view key) const
+{
+    if (key.empty())
+    {
+        return false;
+    }
+
+    const auto iterator = runtime_selected_rid_targets_by_key_.find(std::string(key));
+
+    if (iterator == runtime_selected_rid_targets_by_key_.end())
+    {
+        return false;
+    }
+
+    return iterator->second.policy == "manual_api" && !iterator->second.target_rid.empty();
+}
+
+void ice_udp_server::remember_adaptive_selected_rid_suggestion_locked(selected_rid_layer_runtime_state& state,
+                                                                      std::string_view suggested_rid,
+                                                                      std::string_view policy,
+                                                                      std::string_view reason,
+                                                                      uint64_t current_time_milliseconds)
+{
+    state.adaptive_suggested_rid = std::string(suggested_rid);
+    state.adaptive_suggested_policy = std::string(policy);
+    state.adaptive_suggested_reason = std::string(reason);
+    state.adaptive_suggested_at_milliseconds = current_time_milliseconds;
+
     state.last_adaptive_decision = std::string(policy);
     state.last_adaptive_decision_reason = std::string(reason);
     state.last_adaptive_decision_milliseconds = current_time_milliseconds;
@@ -15173,6 +15220,29 @@ void ice_udp_server::maybe_update_adaptive_selected_rid_target_locked(std::strin
     {
         const std::string& target_rid = rid_preference[*current_index + 1];
 
+        if (runtime_selected_rid_target_is_manual_locked(key))
+        {
+            remember_adaptive_selected_rid_suggestion_locked(
+                state, target_rid, "adaptive_downgrade", "nack ratio exceeded threshold but manual target is active", current_time_milliseconds);
+
+            WEBRTC_LOG_INFO(
+                "simulcast adaptive downgrade suggestion suppressed by manual target stream={} publisher_session={} subscriber_session={} mid={} "
+                "kind={} current_rid={} manual_target_rid={} suggested_rid={} packets={} nack_sequences={} threshold_per_mille={}",
+                state.stream_id,
+                state.publisher_session_id,
+                state.subscriber_session_id,
+                state.mid,
+                state.kind,
+                state.rid,
+                state.target_rid,
+                target_rid,
+                delta_primary_packets,
+                delta_nack_sequences,
+                downgrade_ratio_per_mille);
+
+            return;
+        }
+
         remember_runtime_selected_rid_target_locked(
             key, state, target_rid, "adaptive_downgrade", "nack ratio exceeded threshold", current_time_milliseconds);
 
@@ -15192,7 +15262,6 @@ void ice_udp_server::maybe_update_adaptive_selected_rid_target_locked(std::strin
 
         return;
     }
-
     const uint64_t stable_window_milliseconds = simulcast_adaptive_upgrade_stable_window_milliseconds_from_env();
 
     const bool stable_for_upgrade = delta_nack_sequences == 0 && state.last_switch_milliseconds != 0 &&
@@ -15201,6 +15270,27 @@ void ice_udp_server::maybe_update_adaptive_selected_rid_target_locked(std::strin
     if (stable_for_upgrade && *current_index > 0)
     {
         const std::string& target_rid = rid_preference[*current_index - 1];
+
+        if (runtime_selected_rid_target_is_manual_locked(key))
+        {
+            remember_adaptive_selected_rid_suggestion_locked(
+                state, target_rid, "adaptive_upgrade", "stable window without nack but manual target is active", current_time_milliseconds);
+
+            WEBRTC_LOG_INFO(
+                "simulcast adaptive upgrade suggestion suppressed by manual target stream={} publisher_session={} subscriber_session={} mid={} "
+                "kind={} current_rid={} manual_target_rid={} suggested_rid={} stable_window_ms={}",
+                state.stream_id,
+                state.publisher_session_id,
+                state.subscriber_session_id,
+                state.mid,
+                state.kind,
+                state.rid,
+                state.target_rid,
+                target_rid,
+                stable_window_milliseconds);
+
+            return;
+        }
 
         remember_runtime_selected_rid_target_locked(
             key, state, target_rid, "adaptive_upgrade", "stable window without nack", current_time_milliseconds);
@@ -15219,7 +15309,6 @@ void ice_udp_server::maybe_update_adaptive_selected_rid_target_locked(std::strin
 
         return;
     }
-
     state.last_adaptive_decision = "keep";
     state.last_adaptive_decision_reason = "quality window healthy";
     state.last_adaptive_decision_milliseconds = current_time_milliseconds;
@@ -15393,6 +15482,7 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
         {
             state.target_rid = target_iterator->second.target_rid;
             state.target_policy = target_iterator->second.policy;
+            state.manual_target_active = target_iterator->second.policy == "manual_api" && !target_iterator->second.target_rid.empty();
         }
 
         state.last_switch_milliseconds = now_milliseconds();
