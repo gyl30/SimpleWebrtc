@@ -312,6 +312,23 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint32_t repair_ssrc = 0;
 
         uint64_t packet_count = 0;
+        uint64_t byte_count = 0;
+
+        uint64_t primary_packet_count = 0;
+        uint64_t primary_byte_count = 0;
+
+        uint64_t repair_packet_count = 0;
+        uint64_t repair_byte_count = 0;
+
+        uint64_t last_packet_milliseconds = 0;
+
+        uint64_t bitrate_window_started_milliseconds = 0;
+        uint64_t bitrate_window_byte_count = 0;
+        uint64_t bitrate_bps = 0;
+
+        uint64_t nack_feedback_count = 0;
+        uint64_t nack_sequence_count = 0;
+        uint64_t last_nack_milliseconds = 0;
 
         uint64_t keyframe_request_attempt_count = 0;
         uint64_t keyframe_request_success_count = 0;
@@ -513,14 +530,23 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                    const std::optional<media_track_resolution>& track_resolution,
                                                                    const media_peer_info& target_peer);
 
+    void remember_selected_rid_layer_quality_packet_locked(selected_rid_layer_runtime_state& state,
+                                                           const media_track_resolution& track_resolution,
+                                                           std::size_t packet_size,
+                                                           uint64_t current_time_milliseconds);
+
     void remember_selected_rid_layer_for_subscriber(const media_route_result& route,
                                                     const media_peer_info& target_peer,
                                                     const media_track_resolution& track_resolution,
                                                     const media_identity_rid_layer_binding& selected_layer,
                                                     std::string_view selection_policy,
-                                                    const std::vector<std::string>& rid_preference);
+                                                    const std::vector<std::string>& rid_preference,
+                                                    std::size_t packet_size);
+
+    void remember_selected_rid_layer_nack_quality(const media_ssrc_mapping& mapping, std::size_t feedback_count, std::size_t sequence_count);
 
     [[nodiscard]]
+
     bool consume_selected_rid_keyframe_request_pending_for_subscriber(const srtp_packet_process_result& packet,
                                                                       const media_route_result& route,
                                                                       const std::optional<media_track_resolution>& track_resolution,

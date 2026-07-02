@@ -4729,6 +4729,20 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             }
 
             entry.packet_count = state.packet_count;
+            entry.byte_count = state.byte_count;
+
+            entry.primary_packet_count = state.primary_packet_count;
+            entry.primary_byte_count = state.primary_byte_count;
+
+            entry.repair_packet_count = state.repair_packet_count;
+            entry.repair_byte_count = state.repair_byte_count;
+
+            entry.last_packet_milliseconds = state.last_packet_milliseconds;
+            entry.bitrate_bps = state.bitrate_bps;
+
+            entry.nack_feedback_count = state.nack_feedback_count;
+            entry.nack_sequence_count = state.nack_sequence_count;
+            entry.last_nack_milliseconds = state.last_nack_milliseconds;
 
             entry.keyframe_request_attempt_count = state.keyframe_request_attempt_count;
             entry.keyframe_request_success_count = state.keyframe_request_success_count;
@@ -12727,7 +12741,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
         if (selected_layer.has_value())
         {
             remember_selected_rid_layer_for_subscriber(
-                route, target_peer, *track_resolution, *selected_layer, selected_rid_policy, selected_rid_preference);
+                route, target_peer, *track_resolution, *selected_layer, selected_rid_policy, selected_rid_preference, packet.plain_packet.size());
         }
     }
 
@@ -13806,6 +13820,44 @@ bool ice_udp_server::subscriber_feedback_targets_selected_rid_layer(const rtcp_f
     return true;
 }
 
+void ice_udp_server::remember_selected_rid_layer_nack_quality(const media_ssrc_mapping& mapping,
+                                                              std::size_t feedback_count,
+                                                              std::size_t sequence_count)
+{
+    if (!media_ssrc_mapping_is_primary_video(mapping))
+    {
+        return;
+    }
+
+    if (mapping.stream_id.empty() || mapping.publisher_session_id.empty() || mapping.subscriber_session_id.empty() || mapping.publisher_mid.empty() ||
+        mapping.kind.empty())
+    {
+        return;
+    }
+
+    const std::string key = make_selected_rid_layer_key(
+        mapping.stream_id, mapping.publisher_session_id, mapping.subscriber_session_id, mapping.publisher_mid, mapping.kind);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    auto state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+    if (state_iterator == selected_rid_layer_state_by_key_.end())
+    {
+        return;
+    }
+
+    selected_rid_layer_runtime_state& state = state_iterator->second;
+
+    if (state.primary_ssrc != 0 && mapping.publisher_ssrc != state.primary_ssrc)
+    {
+        return;
+    }
+
+    state.nack_feedback_count += static_cast<uint64_t>(feedback_count);
+    state.nack_sequence_count += static_cast<uint64_t>(sequence_count);
+    state.last_nack_milliseconds = now_milliseconds();
+}
 std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolve_nack_retransmit_resolution(
     const rtcp_feedback_route_event& event, uint32_t feedback_media_ssrc, const std::vector<uint16_t>& feedback_sequence_numbers) const
 {
@@ -14125,6 +14177,10 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
 
     const bool nack_mapping_is_primary_video = retransmit_resolution->primary_video;
 
+    if (ssrc_mapping.has_value())
+    {
+        remember_selected_rid_layer_nack_quality(*ssrc_mapping, 1, retransmit_resolution->sequences.size());
+    }
     if (nack_sequences.truncated || nack_sequences.duplicate_count != 0)
     {
         WEBRTC_LOG_DEBUG(
@@ -14585,12 +14641,58 @@ void ice_udp_server::remember_selected_rid_keyframe_request_pending_locked(std::
     state.last_keyframe_request_result = "pending";
     state.last_keyframe_request_reason = std::string(reason);
 }
+void ice_udp_server::remember_selected_rid_layer_quality_packet_locked(selected_rid_layer_runtime_state& state,
+                                                                       const media_track_resolution& track_resolution,
+                                                                       std::size_t packet_size,
+                                                                       uint64_t current_time_milliseconds)
+{
+    const uint64_t current_byte_count = static_cast<uint64_t>(packet_size);
+
+    state.packet_count += 1;
+    state.byte_count += current_byte_count;
+    state.last_packet_milliseconds = current_time_milliseconds;
+
+    if (track_resolution.rtx)
+    {
+        state.repair_packet_count += 1;
+        state.repair_byte_count += current_byte_count;
+    }
+    else
+    {
+        state.primary_packet_count += 1;
+        state.primary_byte_count += current_byte_count;
+    }
+
+    if (state.bitrate_window_started_milliseconds == 0)
+    {
+        state.bitrate_window_started_milliseconds = current_time_milliseconds;
+        state.bitrate_window_byte_count = current_byte_count;
+
+        return;
+    }
+
+    state.bitrate_window_byte_count += current_byte_count;
+
+    const uint64_t elapsed_milliseconds = current_time_milliseconds > state.bitrate_window_started_milliseconds
+                                              ? current_time_milliseconds - state.bitrate_window_started_milliseconds
+                                              : 0;
+
+    if (elapsed_milliseconds < 1000)
+    {
+        return;
+    }
+
+    state.bitrate_bps = (state.bitrate_window_byte_count * 8000U) / elapsed_milliseconds;
+    state.bitrate_window_started_milliseconds = current_time_milliseconds;
+    state.bitrate_window_byte_count = 0;
+}
 void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_route_result& route,
                                                                 const media_peer_info& target_peer,
                                                                 const media_track_resolution& track_resolution,
                                                                 const media_identity_rid_layer_binding& selected_layer,
                                                                 std::string_view selection_policy,
-                                                                const std::vector<std::string>& rid_preference)
+                                                                const std::vector<std::string>& rid_preference,
+                                                                std::size_t packet_size)
 {
     if (route.source.stream_id.empty() || route.source.session_id.empty() || target_peer.session_id.empty())
     {
@@ -14681,7 +14783,7 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
             state.selection_policy = std::string(selection_policy);
             state.rid_preference = rid_preference;
 
-            state.packet_count += 1;
+            remember_selected_rid_layer_quality_packet_locked(state, track_resolution, packet_size, now_milliseconds());
 
             return;
         }
@@ -14689,15 +14791,26 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
         state.kind = selected_layer.kind;
 
         state.rid = selected_layer.rid;
-
         state.selection_policy = std::string(selection_policy);
         state.rid_preference = rid_preference;
-
         state.primary_ssrc = selected_layer.primary_ssrc;
-
         state.repair_ssrc = selected_layer.repair_ssrc;
 
-        state.packet_count = 1;
+        state.packet_count = 0;
+        state.byte_count = 0;
+        state.primary_packet_count = 0;
+        state.primary_byte_count = 0;
+        state.repair_packet_count = 0;
+        state.repair_byte_count = 0;
+        state.last_packet_milliseconds = 0;
+        state.bitrate_window_started_milliseconds = 0;
+        state.bitrate_window_byte_count = 0;
+        state.bitrate_bps = 0;
+        state.nack_feedback_count = 0;
+        state.nack_sequence_count = 0;
+        state.last_nack_milliseconds = 0;
+
+        remember_selected_rid_layer_quality_packet_locked(state, track_resolution, packet_size, now_milliseconds());
 
         state.keyframe_request_attempt_count = 0;
         state.keyframe_request_success_count = 0;
@@ -14743,6 +14856,7 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
 
     const uint64_t current_time_milliseconds = now_milliseconds();
 
+    remember_selected_rid_layer_quality_packet_locked(state, track_resolution, packet_size, current_time_milliseconds);
     remember_selected_rid_keyframe_request_pending_locked(key, state, current_time_milliseconds, "selected rid established");
 
     selected_rid_layer_state_by_key_.emplace(key, std::move(state));

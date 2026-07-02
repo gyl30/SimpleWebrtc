@@ -79,6 +79,216 @@ std::string_view remove_query(std::string_view target)
     return target.substr(0, query_position);
 }
 
+std::string_view query_part(std::string_view target)
+{
+    const std::size_t query_position = target.find('?');
+
+    if (query_position == std::string_view::npos)
+    {
+        return {};
+    }
+
+    return target.substr(query_position + 1);
+}
+
+std::optional<std::string> query_parameter_value(std::string_view target, std::string_view name)
+{
+    std::string_view query = query_part(target);
+
+    while (!query.empty())
+    {
+        const std::size_t separator_position = query.find('&');
+
+        const std::string_view item = separator_position == std::string_view::npos ? query : query.substr(0, separator_position);
+
+        const std::size_t equal_position = item.find('=');
+
+        const std::string_view key = equal_position == std::string_view::npos ? item : item.substr(0, equal_position);
+
+        const std::string_view value = equal_position == std::string_view::npos ? std::string_view{} : item.substr(equal_position + 1);
+
+        if (key == name)
+        {
+            return std::string(value);
+        }
+
+        if (separator_position == std::string_view::npos)
+        {
+            break;
+        }
+
+        query = query.substr(separator_position + 1);
+    }
+
+    return std::nullopt;
+}
+
+struct debug_state_filter_options
+{
+    std::string section;
+    std::string stream_id;
+    std::string session_id;
+};
+
+debug_state_filter_options make_debug_state_filter_options(std::string_view target)
+{
+    debug_state_filter_options options;
+
+    if (const auto value = query_parameter_value(target, "section"); value.has_value())
+    {
+        options.section = *value;
+    }
+
+    if (const auto value = query_parameter_value(target, "stream_id"); value.has_value())
+    {
+        options.stream_id = *value;
+    }
+
+    if (const auto value = query_parameter_value(target, "session_id"); value.has_value())
+    {
+        options.session_id = *value;
+    }
+
+    return options;
+}
+
+bool debug_filter_stream_matches(std::string_view value, const debug_state_filter_options& options)
+{
+    return options.stream_id.empty() || value == options.stream_id;
+}
+
+bool debug_filter_session_matches(std::string_view value, const debug_state_filter_options& options)
+{
+    return options.session_id.empty() || value == options.session_id;
+}
+
+bool debug_filter_any_session_matches(std::initializer_list<std::string_view> values, const debug_state_filter_options& options)
+{
+    if (options.session_id.empty())
+    {
+        return true;
+    }
+
+    for (std::string_view value : values)
+    {
+        if (value == options.session_id)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool debug_filter_stream_and_session_matches(std::string_view stream_id,
+                                             std::initializer_list<std::string_view> session_ids,
+                                             const debug_state_filter_options& options)
+{
+    return debug_filter_stream_matches(stream_id, options) && debug_filter_any_session_matches(session_ids, options);
+}
+void filter_lifecycle_debug_snapshot_by_stream_session(lifecycle_debug_snapshot& snapshot, const debug_state_filter_options& options)
+{
+    if (options.stream_id.empty() && options.session_id.empty())
+    {
+        return;
+    }
+
+    std::erase_if(snapshot.sessions,
+                  [&options](const lifecycle_debug_session_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.session_id}, options); });
+
+    std::erase_if(snapshot.removed_session_tombstones,
+                  [&options](const lifecycle_debug_removed_session_tombstone_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.session_id}, options); });
+
+    std::erase_if(snapshot.endpoints,
+                  [&options](const lifecycle_debug_endpoint_entry& entry)
+                  { return !options.stream_id.empty() || !debug_filter_session_matches(entry.session_id, options); });
+
+    std::erase_if(snapshot.candidate_pairs,
+                  [&options](const lifecycle_debug_candidate_pair_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.session_id}, options); });
+
+    std::erase_if(snapshot.track_bindings,
+                  [&options](const lifecycle_debug_track_binding_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.session_id}, options); });
+
+    std::erase_if(snapshot.identity_track_bindings,
+                  [&options](const lifecycle_debug_identity_track_binding_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.session_id}, options); });
+
+    std::erase_if(snapshot.identity_rid_layers,
+                  [&options](const lifecycle_debug_identity_rid_layer_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.session_id}, options); });
+
+    std::erase_if(
+        snapshot.identity_forward_bindings,
+        [&options](const lifecycle_debug_identity_forward_binding_entry& entry)
+        { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.publisher_session_id, entry.subscriber_session_id}, options); });
+
+    std::erase_if(snapshot.subscriber_forward_groups,
+                  [&options](const lifecycle_debug_subscriber_forward_group_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.subscriber_session_id}, options); });
+
+    std::erase_if(
+        snapshot.selected_rid_layers,
+        [&options](const lifecycle_debug_selected_rid_layer_entry& entry)
+        { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.publisher_session_id, entry.subscriber_session_id}, options); });
+
+    std::erase_if(snapshot.rtcp_report_sources,
+                  [&options](const lifecycle_debug_rtcp_report_source_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.session_id}, options); });
+
+    std::erase_if(snapshot.twcc_feedback_sources,
+                  [&options](const lifecycle_debug_twcc_feedback_source_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.session_id}, options); });
+
+    std::erase_if(snapshot.subscriber_rtcp_groups,
+                  [&options](const lifecycle_debug_subscriber_rtcp_group_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.subscriber_session_id}, options); });
+
+    std::erase_if(snapshot.subscriber_runtime_residuals,
+                  [&options](const lifecycle_debug_subscriber_runtime_residual_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.subscriber_session_id}, options); });
+
+    std::erase_if(snapshot.retired_ice_credentials,
+                  [&options](const lifecycle_debug_retired_ice_credential_entry& entry)
+                  { return !debug_filter_stream_and_session_matches(entry.stream_id, {entry.session_id}, options); });
+
+    std::erase_if(snapshot.retired_endpoints,
+                  [&options](const lifecycle_debug_retired_endpoint_entry& entry)
+                  { return !options.stream_id.empty() || !debug_filter_session_matches(entry.session_id, options); });
+}
+bool debug_state_section_is_supported(std::string_view section) { return section.empty() || section == "all" || section == "simulcast"; }
+
+void filter_lifecycle_debug_snapshot_by_section(lifecycle_debug_snapshot& snapshot, std::string_view section)
+{
+    if (section.empty() || section == "all")
+    {
+        return;
+    }
+
+    if (section != "simulcast")
+    {
+        return;
+    }
+
+    snapshot.sessions.clear();
+    snapshot.removed_session_tombstones.clear();
+    snapshot.endpoints.clear();
+    snapshot.candidate_pairs.clear();
+    snapshot.track_bindings.clear();
+    snapshot.identity_track_bindings.clear();
+    snapshot.identity_rid_layers.clear();
+    snapshot.identity_forward_bindings.clear();
+    snapshot.subscriber_forward_groups.clear();
+    snapshot.rtcp_report_sources.clear();
+    snapshot.twcc_feedback_sources.clear();
+    snapshot.subscriber_rtcp_groups.clear();
+    snapshot.subscriber_runtime_residuals.clear();
+    snapshot.retired_endpoints.clear();
+    snapshot.retired_ice_credentials.clear();
+}
 bool match_single_value_path(std::string_view path, std::string_view prefix, std::string_view& value)
 {
     if (!boost::algorithm::starts_with(path, prefix))
@@ -746,7 +956,20 @@ http_response_ptr router::handle_debug_state(http_request_t& request)
         return json_response(request, 503, json_error_body("debug state provider unavailable"));
     }
 
-    const lifecycle_debug_snapshot snapshot = lifecycle_debug_snapshot_provider_();
+    const std::string_view target = beast_string_view_to_std_string_view(request.req.target());
+
+    const debug_state_filter_options filter_options = make_debug_state_filter_options(target);
+
+    if (!debug_state_section_is_supported(filter_options.section))
+    {
+        return json_response(request, 400, json_error_body("unsupported debug state section"));
+    }
+
+    lifecycle_debug_snapshot snapshot = lifecycle_debug_snapshot_provider_();
+
+    filter_lifecycle_debug_snapshot_by_stream_session(snapshot, filter_options);
+
+    filter_lifecycle_debug_snapshot_by_section(snapshot, filter_options.section);
 
     return json_response(request, 200, lifecycle_debug_snapshot_to_json(snapshot));
 }
