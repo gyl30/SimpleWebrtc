@@ -58,7 +58,6 @@ struct media_identity_rid_layer_binding
     uint64_t packet_count = 0;
 };
 
-
 struct media_identity_forward_binding
 {
     std::string stream_id;
@@ -95,6 +94,9 @@ struct media_identity_forward_binding
 
     uint64_t packet_count = 0;
 };
+
+[[nodiscard]]
+bool media_identity_forward_binding_has_audio_ordinal_mismatch(const media_identity_forward_binding& binding);
 
 using media_identity_result = std::expected<void, std::string>;
 

@@ -387,8 +387,14 @@ void update_subscriber_forward_group(lifecycle_debug_subscriber_forward_group_en
     if (binding.kind == "audio")
     {
         group.audio_forward_binding_count += 1;
+
+        if (media_identity_forward_binding_has_audio_ordinal_mismatch(binding))
+        {
+            group.audio_ordinal_mismatch_count += 1;
+        }
     }
-    else if (binding.kind == "video")
+
+    if (binding.kind == "video")
     {
         group.video_forward_binding_count += 1;
     }
@@ -5146,6 +5152,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
             entry.publisher_media_ordinal = static_cast<uint64_t>(binding.publisher_media_ordinal);
             entry.subscriber_media_ordinal = static_cast<uint64_t>(binding.subscriber_media_ordinal);
+            entry.audio_ordinal_mismatch = media_identity_forward_binding_has_audio_ordinal_mismatch(binding);
 
             entry.publisher_ssrc = binding.publisher_ssrc;
             entry.subscriber_ssrc = binding.subscriber_ssrc;
@@ -12950,10 +12957,36 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
         {
             return std::nullopt;
         }
+
+        if (identity_authority_ != nullptr)
+        {
+            const auto forward_binding = identity_authority_->find_forward_by_publisher_ssrc(ssrc_mapping->stream_id,
+                                                                                             ssrc_mapping->publisher_session_id,
+                                                                                             ssrc_mapping->subscriber_session_id,
+                                                                                             ssrc_mapping->publisher_mid,
+                                                                                             ssrc_mapping->publisher_ssrc);
+
+            if (forward_binding.has_value() && media_identity_forward_binding_has_audio_ordinal_mismatch(*forward_binding))
+            {
+                WEBRTC_LOG_WARN(
+                    "audio forward ordinal mismatch rejected stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} "
+                    "publisher_media_ordinal={} subscriber_media_ordinal={} publisher_ssrc={} subscriber_ssrc={}",
+                    forward_binding->stream_id,
+                    forward_binding->publisher_session_id,
+                    forward_binding->subscriber_session_id,
+                    forward_binding->publisher_mid,
+                    forward_binding->subscriber_mid,
+                    forward_binding->publisher_media_ordinal,
+                    forward_binding->subscriber_media_ordinal,
+                    forward_binding->publisher_ssrc,
+                    forward_binding->subscriber_ssrc);
+
+                return std::nullopt;
+            }
+        }
     }
 
     rtp_packet_rewrite_options options;
-
     bool rewrite_required = false;
 
     if (payload_type_mapping.has_value() && payload_type_mapping->payload_type_rewrite_required)

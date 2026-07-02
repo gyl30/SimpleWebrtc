@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <expected>
 #include <limits>
 #include <optional>
@@ -447,6 +448,30 @@ std::string optional_profile_to_string(const std::optional<h264_profile_level_id
 
     return profile_level_id->normalized_value;
 }
+
+bool h264_assume_level_asymmetry_allowed_when_missing_from_env()
+{
+    const char* value = std::getenv("WEBRTC_H264_ASSUME_LEVEL_ASYMMETRY_ALLOWED_WHEN_MISSING");
+
+    if (value == nullptr)
+    {
+        return false;
+    }
+
+    const std::string normalized = lower_copy(trim_copy(value));
+
+    return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+}
+
+bool h264_level_asymmetry_allowed_effective_value(const h264_fmtp_parameters& parameters)
+{
+    if (parameters.has_level_asymmetry_allowed)
+    {
+        return parameters.level_asymmetry_allowed;
+    }
+
+    return h264_assume_level_asymmetry_allowed_when_missing_from_env();
+}
 }    // namespace
 
 bool is_h264_codec_name(std::string_view codec_name)
@@ -576,7 +601,8 @@ std::expected<h264_fmtp_answer_negotiation, std::string> negotiate_h264_fmtp_for
         return make_error("h264 profile is not compatible");
     }
 
-    const bool level_asymmetry_allowed = offer_parameters->level_asymmetry_allowed && local_parameters->level_asymmetry_allowed;
+    const bool level_asymmetry_allowed =
+        h264_level_asymmetry_allowed_effective_value(*offer_parameters) && h264_level_asymmetry_allowed_effective_value(*local_parameters);
 
     h264_fmtp_answer_negotiation negotiation;
 

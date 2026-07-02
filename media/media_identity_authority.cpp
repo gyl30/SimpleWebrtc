@@ -632,6 +632,10 @@ std::string make_ssrc_track_identity_key(
 {
     return make_track_identity_key(stream_id, session_id, mid, kind, std::nullopt, std::nullopt, ssrc, rtx);
 }
+bool media_identity_forward_binding_has_audio_ordinal_mismatch(const media_identity_forward_binding& binding)
+{
+    return binding.kind == "audio" && binding.publisher_media_ordinal != binding.subscriber_media_ordinal;
+}
 media_identity_result media_identity_authority::remember_forward_mapping(const media_ssrc_mapping& ssrc_mapping,
                                                                          const media_payload_type_mapping& payload_mapping)
 {

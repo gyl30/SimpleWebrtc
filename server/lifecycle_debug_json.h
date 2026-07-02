@@ -158,6 +158,7 @@ struct lifecycle_debug_identity_forward_binding_entry
 
     uint64_t publisher_media_ordinal = 0;
     uint64_t subscriber_media_ordinal = 0;
+    bool audio_ordinal_mismatch = false;
 
     uint32_t publisher_ssrc = 0;
     uint32_t subscriber_ssrc = 0;
@@ -182,24 +183,21 @@ struct lifecycle_debug_identity_forward_binding_entry
 struct lifecycle_debug_subscriber_forward_group_entry
 {
     std::string stream_id;
-
     std::string publisher_session_id;
     std::string subscriber_session_id;
 
     uint64_t forward_binding_count = 0;
-
     uint64_t audio_forward_binding_count = 0;
     uint64_t video_forward_binding_count = 0;
-
+    uint64_t audio_ordinal_mismatch_count = 0;
     uint64_t primary_forward_binding_count = 0;
     uint64_t rtx_forward_binding_count = 0;
-
     uint64_t payload_type_rewrite_required_count = 0;
     uint64_t mid_rewrite_required_count = 0;
     uint64_t ssrc_rewrite_required_count = 0;
-
     uint64_t packet_count = 0;
 };
+
 struct lifecycle_debug_rtcp_report_source_entry
 {
     std::string stream_id;
@@ -525,13 +523,11 @@ REFLECT_STRUCT(
     (remote_endpoint)(stream_id)(session_id)(mid)(kind)(rid)(primary_ssrc)(repair_ssrc)(primary_payload_type)(repair_payload_type)(packet_count));
 
 REFLECT_STRUCT(
-    webrtc::lifecycle_debug_identity_forward_binding_entry,
-    (
-        stream_id)(publisher_session_id)(subscriber_session_id)(publisher_track_key)(subscriber_track_key)(publisher_mid)(subscriber_mid)(kind)(publisher_media_ordinal)(subscriber_media_ordinal)(publisher_ssrc)(subscriber_ssrc)(publisher_payload_type)(subscriber_payload_type)(rtx)(publisher_apt_payload_type)(subscriber_apt_payload_type)(publisher_rtx_primary_ssrc)(publisher_rtx_repair_ssrc)(payload_type_rewrite_required)(mid_rewrite_required)(ssrc_rewrite_required)(packet_count));
+    webrtc::lifecycle_debug_identity_forward_binding_entry, (stream_id)(publisher_session_id)(subscriber_session_id)(publisher_track_key)(subscriber_track_key)(publisher_mid)(subscriber_mid)(kind)(publisher_media_ordinal)(subscriber_media_ordinal)(audio_ordinal_mismatch)(publisher_ssrc)(subscriber_ssrc)(publisher_payload_type)(subscriber_payload_type)(rtx)(publisher_apt_payload_type)(subscriber_apt_payload_type)(publisher_rtx_primary_ssrc)(publisher_rtx_repair_ssrc)(payload_type_rewrite_required)(mid_rewrite_required)(ssrc_rewrite_required)(packet_count));
 
 REFLECT_STRUCT(
     webrtc::lifecycle_debug_subscriber_forward_group_entry,
-    (stream_id)(publisher_session_id)(subscriber_session_id)(forward_binding_count)(audio_forward_binding_count)(video_forward_binding_count)(primary_forward_binding_count)(rtx_forward_binding_count)(payload_type_rewrite_required_count)(mid_rewrite_required_count)(ssrc_rewrite_required_count)(packet_count));
+    (stream_id)(publisher_session_id)(subscriber_session_id)(forward_binding_count)(audio_forward_binding_count)(video_forward_binding_count)(audio_ordinal_mismatch_count)(primary_forward_binding_count)(rtx_forward_binding_count)(payload_type_rewrite_required_count)(mid_rewrite_required_count)(ssrc_rewrite_required_count)(packet_count));
 
 REFLECT_STRUCT(
     webrtc::lifecycle_debug_rtcp_report_source_entry,
