@@ -284,6 +284,7 @@ void filter_lifecycle_debug_snapshot_by_section(lifecycle_debug_snapshot& snapsh
     snapshot.subscriber_forward_groups.clear();
     snapshot.rtcp_report_sources.clear();
     snapshot.twcc_feedback_sources.clear();
+    snapshot.rtp_cache_streams.clear();
     snapshot.subscriber_rtcp_groups.clear();
     snapshot.subscriber_runtime_residuals.clear();
     snapshot.retired_endpoints.clear();

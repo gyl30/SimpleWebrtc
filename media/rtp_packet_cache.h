@@ -33,8 +33,18 @@ struct rtp_packet_cache_entry
     std::vector<uint8_t> plain_packet;
 };
 
-using rtp_packet_cache_result = std::expected<rtp_packet_cache_entry, std::string>;
+struct rtp_packet_cache_stream_snapshot
+{
+    std::string stream_id;
 
+    uint64_t packet_count = 0;
+    uint64_t byte_count = 0;
+
+    uint32_t min_ssrc = 0;
+    uint32_t max_ssrc = 0;
+};
+
+using rtp_packet_cache_result = std::expected<rtp_packet_cache_entry, std::string>;
 class rtp_packet_cache
 {
    public:
@@ -59,6 +69,9 @@ class rtp_packet_cache
     void clear();
 
     [[nodiscard]] std::size_t size() const;
+
+    [[nodiscard]]
+    std::vector<rtp_packet_cache_stream_snapshot> stream_snapshot() const;
 
    private:
     [[nodiscard]] static std::string make_key(std::string_view stream_id, uint32_t ssrc, uint16_t sequence_number);

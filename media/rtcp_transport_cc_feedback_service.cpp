@@ -610,6 +610,8 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_re
 
         source.feedback_packet_count = 0;
 
+        source.total_feedback_packet_count = 0;
+        source.last_feedback_milliseconds = 0;
         source.packets.clear();
 
         source.next_due_milliseconds = packet.arrival_time_milliseconds + config_.feedback_interval_milliseconds;
@@ -674,6 +676,7 @@ std::expected<rtcp_transport_cc_feedback_packet, std::string> rtcp_transport_cc_
     }
 
     source.feedback_packet_count = static_cast<uint8_t>(source.feedback_packet_count + 1U);
+    source.total_feedback_packet_count += 1;
 
     auto packet = write_transport_cc_feedback_packet(source.sender_ssrc, source.media_ssrc, source.feedback_packet_count, *plan);
 
@@ -764,7 +767,7 @@ rtcp_transport_cc_feedback_generation rtcp_transport_cc_feedback_service::genera
 
             continue;
         }
-
+        source.last_feedback_milliseconds = now_milliseconds;
         generation.packets.push_back(std::move(*packet));
     }
 
@@ -908,10 +911,28 @@ std::vector<rtcp_transport_cc_feedback_source_snapshot> rtcp_transport_cc_feedba
         entry.media_ssrc = source.media_ssrc;
 
         entry.feedback_packet_count = source.feedback_packet_count;
+        entry.total_feedback_packet_count = source.total_feedback_packet_count;
         entry.pending_packet_count = source.packets.size();
+
+        entry.feedback_interval_milliseconds = config_.feedback_interval_milliseconds;
+        entry.stale_source_milliseconds = config_.stale_source_milliseconds;
 
         entry.next_due_milliseconds = source.next_due_milliseconds;
         entry.last_active_milliseconds = source.last_active_milliseconds;
+        entry.last_feedback_milliseconds = source.last_feedback_milliseconds;
+
+        for (const auto& pending_packet : source.packets)
+        {
+            if (entry.oldest_pending_packet_milliseconds == 0 || pending_packet.arrival_time_milliseconds < entry.oldest_pending_packet_milliseconds)
+            {
+                entry.oldest_pending_packet_milliseconds = pending_packet.arrival_time_milliseconds;
+            }
+
+            if (pending_packet.arrival_time_milliseconds > entry.newest_pending_packet_milliseconds)
+            {
+                entry.newest_pending_packet_milliseconds = pending_packet.arrival_time_milliseconds;
+            }
+        }
 
         snapshot.push_back(std::move(entry));
     }

@@ -69,10 +69,18 @@ struct rtcp_transport_cc_feedback_source_snapshot
     uint32_t media_ssrc = 0;
 
     uint64_t feedback_packet_count = 0;
+    uint64_t total_feedback_packet_count = 0;
     uint64_t pending_packet_count = 0;
+
+    uint64_t feedback_interval_milliseconds = 0;
+    uint64_t stale_source_milliseconds = 0;
 
     uint64_t next_due_milliseconds = 0;
     uint64_t last_active_milliseconds = 0;
+    uint64_t last_feedback_milliseconds = 0;
+
+    uint64_t oldest_pending_packet_milliseconds = 0;
+    uint64_t newest_pending_packet_milliseconds = 0;
 };
 
 struct rtcp_transport_cc_feedback_config
@@ -148,8 +156,10 @@ class rtcp_transport_cc_feedback_service
         uint32_t media_ssrc = 0;
 
         uint8_t feedback_packet_count = 0;
+        uint64_t total_feedback_packet_count = 0;
         uint64_t next_due_milliseconds = 0;
         uint64_t last_active_milliseconds = 0;
+        uint64_t last_feedback_milliseconds = 0;
 
         std::vector<observed_packet_state> packets;
     };

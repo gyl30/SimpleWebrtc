@@ -1,5 +1,7 @@
 #include "media/rtp_packet_cache.h"
 
+#include <algorithm>
+#include <iterator>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -152,6 +154,49 @@ std::size_t rtp_packet_cache::size() const
     return cache_by_key_.size();
 }
 
+std::vector<rtp_packet_cache_stream_snapshot> rtp_packet_cache::stream_snapshot() const
+{
+    std::vector<rtp_packet_cache_stream_snapshot> snapshot;
+
+    std::lock_guard lock(mutex_);
+
+    for (const auto& [key, entry] : cache_by_key_)
+    {
+        (void)key;
+
+        auto iterator = std::find_if(snapshot.begin(),
+                                     snapshot.end(),
+                                     [&entry](const rtp_packet_cache_stream_snapshot& current) { return current.stream_id == entry.stream_id; });
+
+        if (iterator == snapshot.end())
+        {
+            rtp_packet_cache_stream_snapshot stream_entry;
+
+            stream_entry.stream_id = entry.stream_id;
+            stream_entry.min_ssrc = entry.ssrc;
+            stream_entry.max_ssrc = entry.ssrc;
+
+            snapshot.push_back(std::move(stream_entry));
+
+            iterator = std::prev(snapshot.end());
+        }
+
+        iterator->packet_count += 1;
+        iterator->byte_count += static_cast<uint64_t>(entry.plain_packet.size());
+
+        if (entry.ssrc < iterator->min_ssrc)
+        {
+            iterator->min_ssrc = entry.ssrc;
+        }
+
+        if (entry.ssrc > iterator->max_ssrc)
+        {
+            iterator->max_ssrc = entry.ssrc;
+        }
+    }
+
+    return snapshot;
+}
 std::string rtp_packet_cache::make_key(std::string_view stream_id, uint32_t ssrc, uint16_t sequence_number)
 {
     std::string key(stream_id);

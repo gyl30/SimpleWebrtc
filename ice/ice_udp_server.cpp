@@ -4057,17 +4057,23 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
     forget_session(old_publisher_session_id);
 
     bool cache_erased = false;
+    std::size_t cache_packets_before = 0;
+    std::size_t cache_packets_after = 0;
+    std::size_t cache_packets_erased = 0;
     std::size_t remaining_packets = 0;
 
     if (rtp_packet_cache_ != nullptr)
     {
+        cache_packets_before = rtp_packet_cache_->size();
+
         rtp_packet_cache_->erase_stream(stream_id);
 
-        remaining_packets = rtp_packet_cache_->size();
+        cache_packets_after = rtp_packet_cache_->size();
+        cache_packets_erased = cache_packets_before >= cache_packets_after ? cache_packets_before - cache_packets_after : 0;
+        remaining_packets = cache_packets_after;
 
         cache_erased = true;
     }
-
     if (rtx_retransmission_index_ != nullptr)
     {
         rtx_retransmission_index_->forget_stream(stream_id);
@@ -4113,11 +4119,14 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
         pending_republish_keyframe_state_by_stream_.erase(std::string(stream_id));
     }
     WEBRTC_LOG_INFO(
-        "publisher republish runtime state forgotten stream={} old_session={} cache_erased={} remaining_cache_packets={} "
+        "publisher republish runtime state forgotten stream={} old_session={} cache_erased={} cache_packets_before={} cache_packets_erased={} "
+        "remaining_cache_packets={} "
         "payload_type_mappings_erased={} keyframe_states_erased={}",
         stream_id,
         old_publisher_session_id,
         cache_erased ? 1 : 0,
+        cache_packets_before,
+        cache_packets_erased,
         remaining_packets,
         erased_payload_type_mappings,
         erased_keyframe_request_states);
@@ -5238,6 +5247,14 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
                 entry.next_due_milliseconds = source.next_due_milliseconds;
                 entry.last_active_milliseconds = source.last_active_milliseconds;
 
+                entry.total_feedback_packet_count = source.total_feedback_packet_count;
+                entry.feedback_interval_milliseconds = source.feedback_interval_milliseconds;
+                entry.stale_source_milliseconds = source.stale_source_milliseconds;
+                entry.next_due_milliseconds = source.next_due_milliseconds;
+                entry.last_feedback_milliseconds = source.last_feedback_milliseconds;
+                entry.oldest_pending_packet_milliseconds = source.oldest_pending_packet_milliseconds;
+                entry.newest_pending_packet_milliseconds = source.newest_pending_packet_milliseconds;
+
                 snapshot.twcc_feedback_sources.push_back(std::move(entry));
 
                 const auto subscriber = registry_ != nullptr ? registry_->find_subscriber_by_session_id(source.session_id) : nullptr;
@@ -5299,6 +5316,19 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
     if (rtp_packet_cache_ != nullptr)
     {
         snapshot.rtp_cache_packet_count = to_debug_count(rtp_packet_cache_->size());
+
+        for (const auto& cache_stream : rtp_packet_cache_->stream_snapshot())
+        {
+            lifecycle_debug_rtp_cache_stream_entry entry;
+
+            entry.stream_id = cache_stream.stream_id;
+            entry.packet_count = cache_stream.packet_count;
+            entry.byte_count = cache_stream.byte_count;
+            entry.min_ssrc = cache_stream.min_ssrc;
+            entry.max_ssrc = cache_stream.max_ssrc;
+
+            snapshot.rtp_cache_streams.push_back(std::move(entry));
+        }
     }
     if (rtx_retransmission_index_ != nullptr)
     {
@@ -14601,17 +14631,23 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
     }
 
     bool cache_erased = false;
+    std::size_t cache_packets_before = 0;
+    std::size_t cache_packets_after = 0;
+    std::size_t cache_packets_erased = 0;
     std::size_t remaining_packets = 0;
 
     if (rtp_packet_cache_ != nullptr)
     {
+        cache_packets_before = rtp_packet_cache_->size();
+
         rtp_packet_cache_->erase_stream(stream_id);
 
-        remaining_packets = rtp_packet_cache_->size();
+        cache_packets_after = rtp_packet_cache_->size();
+        cache_packets_erased = cache_packets_before >= cache_packets_after ? cache_packets_before - cache_packets_after : 0;
+        remaining_packets = cache_packets_after;
 
         cache_erased = true;
     }
-
     if (rtcp_report_service_ != nullptr)
     {
         rtcp_report_service_->forget_stream(stream_id);
@@ -14706,10 +14742,13 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         pending_republish_keyframe_state_by_stream_.erase(std::string(stream_id));
     }
     WEBRTC_LOG_INFO(
-        "ice udp stream runtime state cleanup stream={} cache_erased={} remaining_cache_packets={} media_router_streams_before={} "
-        "media_router_streams_after={} payload_type_mappings_erased={} keyframe_request_states_erased={}",
+        "ice udp stream runtime state cleanup stream={} cache_erased={} cache_packets_before={} cache_packets_erased={} "
+        "remaining_cache_packets={} media_router_streams_before={} media_router_streams_after={} payload_type_mappings_erased={} "
+        "keyframe_request_states_erased={}",
         stream_id,
         cache_erased ? 1 : 0,
+        cache_packets_before,
+        cache_packets_erased,
         remaining_packets,
         media_router_stream_count_before,
         media_router_stream_count_after,
