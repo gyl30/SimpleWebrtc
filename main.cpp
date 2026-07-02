@@ -376,6 +376,22 @@ int main(int argc, char* argv[])
             return ice_server->request_keyframe(stream_id);
         });
 
+    http_router->set_simulcast_rid_target_handler(
+        [ice_server](const webrtc::simulcast_rid_target_request& request) -> webrtc::simulcast_rid_target_expected
+        {
+            if (ice_server == nullptr)
+            {
+                return std::unexpected(std::string("ice udp server unavailable"));
+            }
+
+            if (request.clear)
+            {
+                return ice_server->clear_runtime_selected_rid_target(request);
+            }
+
+            return ice_server->set_runtime_selected_rid_target(request);
+        });
+
     version v;
 
     static const std::string version_str = R"({"name": "SimpleWebrtc", "version": "0.1"})";

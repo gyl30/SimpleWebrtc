@@ -24,6 +24,7 @@
 #include "media/media_payload_type_mapper.h"
 #include "media/media_router.h"
 #include "media/keyframe_request.h"
+#include "media/simulcast_rid_target.h"
 #include "media/media_ssrc_mapper.h"
 #include "media/media_track_resolver.h"
 #include "media/rtcp_feedback_router.h"
@@ -75,6 +76,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     keyframe_request_expected request_keyframe(std::string_view stream_id);
+
+    [[nodiscard]]
+    simulcast_rid_target_expected set_runtime_selected_rid_target(const simulcast_rid_target_request& request);
+
+    [[nodiscard]]
+    simulcast_rid_target_expected clear_runtime_selected_rid_target(const simulcast_rid_target_request& request);
 
     [[nodiscard]]
     rtcp_report_service_runtime_snapshot rtcp_report_runtime_snapshot() const

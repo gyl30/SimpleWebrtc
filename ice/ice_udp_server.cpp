@@ -4394,6 +4394,45 @@ void ice_udp_server::on_pending_session_cleanup(boost::system::error_code ec)
 
     schedule_pending_session_cleanup();
 }
+std::expected<void, std::string> validate_simulcast_rid_target_request(const simulcast_rid_target_request& request)
+{
+    if (request.stream_id.empty())
+    {
+        return std::unexpected(std::string("stream id is empty"));
+    }
+
+    if (request.publisher_session_id.empty())
+    {
+        return std::unexpected(std::string("publisher session id is empty"));
+    }
+
+    if (request.subscriber_session_id.empty())
+    {
+        return std::unexpected(std::string("subscriber session id is empty"));
+    }
+
+    if (request.mid.empty())
+    {
+        return std::unexpected(std::string("mid is empty"));
+    }
+
+    if (request.kind.empty())
+    {
+        return std::unexpected(std::string("kind is empty"));
+    }
+
+    if (!is_video_media_kind(request.kind))
+    {
+        return std::unexpected(std::string("only video simulcast rid target is supported"));
+    }
+
+    if (!request.clear && request.target_rid.empty())
+    {
+        return std::unexpected(std::string("target rid is empty"));
+    }
+
+    return {};
+}
 
 std::vector<std::string> ice_udp_server::collect_pending_session_ids(uint64_t current_time_milliseconds) const
 {
@@ -4573,6 +4612,160 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
 
 uint16_t ice_udp_server::local_port() const { return bind_port_; }
 
+simulcast_rid_target_expected ice_udp_server::set_runtime_selected_rid_target(const simulcast_rid_target_request& request)
+{
+    auto validation_result = validate_simulcast_rid_target_request(request);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
+    const std::string key =
+        make_selected_rid_layer_key(request.stream_id, request.publisher_session_id, request.subscriber_session_id, request.mid, request.kind);
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    runtime_selected_rid_target_state& target_state = runtime_selected_rid_targets_by_key_[key];
+
+    const bool changed = target_state.target_rid != request.target_rid || target_state.policy != "manual_api";
+
+    target_state.stream_id = request.stream_id;
+    target_state.publisher_session_id = request.publisher_session_id;
+    target_state.subscriber_session_id = request.subscriber_session_id;
+    target_state.mid = request.mid;
+    target_state.kind = request.kind;
+    target_state.target_rid = request.target_rid;
+    target_state.policy = "manual_api";
+    target_state.reason = request.reason.empty() ? "manual simulcast rid target" : request.reason;
+    target_state.updated_at_milliseconds = current_time_milliseconds;
+
+    auto selected_state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+    const bool selected_state_found = selected_state_iterator != selected_rid_layer_state_by_key_.end();
+
+    if (selected_state_found)
+    {
+        selected_rid_layer_runtime_state& selected_state = selected_state_iterator->second;
+
+        selected_state.target_rid = request.target_rid;
+        selected_state.target_policy = "manual_api";
+        selected_state.last_adaptive_decision = "manual_target";
+        selected_state.last_adaptive_decision_reason = target_state.reason;
+        selected_state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+
+        if (selected_state.rid != request.target_rid)
+        {
+            selected_state.last_switch_reason = "manual target pending:" + request.target_rid;
+        }
+    }
+
+    WEBRTC_LOG_INFO(
+        "simulcast manual rid target set stream={} publisher_session={} subscriber_session={} mid={} kind={} target_rid={} changed={} "
+        "selected_state_found={} reason={}",
+        request.stream_id,
+        request.publisher_session_id,
+        request.subscriber_session_id,
+        request.mid,
+        request.kind,
+        request.target_rid,
+        changed ? 1 : 0,
+        selected_state_found ? 1 : 0,
+        target_state.reason);
+
+    simulcast_rid_target_result result;
+
+    result.stream_id = target_state.stream_id;
+    result.publisher_session_id = target_state.publisher_session_id;
+    result.subscriber_session_id = target_state.subscriber_session_id;
+    result.mid = target_state.mid;
+    result.kind = target_state.kind;
+    result.target_rid = target_state.target_rid;
+    result.policy = target_state.policy;
+    result.reason = target_state.reason;
+    result.changed = changed;
+    result.cleared = false;
+    result.selected_state_found = selected_state_found;
+    result.updated_at_milliseconds = target_state.updated_at_milliseconds;
+    result.applied_count = target_state.applied_count;
+
+    return result;
+}
+
+simulcast_rid_target_expected ice_udp_server::clear_runtime_selected_rid_target(const simulcast_rid_target_request& request)
+{
+    simulcast_rid_target_request clear_request = request;
+
+    clear_request.clear = true;
+
+    auto validation_result = validate_simulcast_rid_target_request(clear_request);
+
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
+    const std::string key = make_selected_rid_layer_key(
+        clear_request.stream_id, clear_request.publisher_session_id, clear_request.subscriber_session_id, clear_request.mid, clear_request.kind);
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto target_iterator = runtime_selected_rid_targets_by_key_.find(key);
+
+    simulcast_rid_target_result result;
+
+    result.stream_id = clear_request.stream_id;
+    result.publisher_session_id = clear_request.publisher_session_id;
+    result.subscriber_session_id = clear_request.subscriber_session_id;
+    result.mid = clear_request.mid;
+    result.kind = clear_request.kind;
+    result.policy = "manual_api";
+    result.reason = clear_request.reason.empty() ? "manual simulcast rid target cleared" : clear_request.reason;
+    result.cleared = target_iterator != runtime_selected_rid_targets_by_key_.end();
+    result.changed = result.cleared;
+    result.updated_at_milliseconds = current_time_milliseconds;
+
+    if (target_iterator != runtime_selected_rid_targets_by_key_.end())
+    {
+        result.target_rid = target_iterator->second.target_rid;
+        result.applied_count = target_iterator->second.applied_count;
+
+        runtime_selected_rid_targets_by_key_.erase(target_iterator);
+    }
+
+    auto selected_state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+    result.selected_state_found = selected_state_iterator != selected_rid_layer_state_by_key_.end();
+
+    if (selected_state_iterator != selected_rid_layer_state_by_key_.end())
+    {
+        selected_rid_layer_runtime_state& selected_state = selected_state_iterator->second;
+
+        selected_state.target_rid.clear();
+        selected_state.target_policy.clear();
+        selected_state.last_adaptive_decision = "manual_clear";
+        selected_state.last_adaptive_decision_reason = result.reason;
+        selected_state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+    }
+
+    WEBRTC_LOG_INFO(
+        "simulcast manual rid target cleared stream={} publisher_session={} subscriber_session={} mid={} kind={} cleared={} selected_state_found={} "
+        "reason={}",
+        clear_request.stream_id,
+        clear_request.publisher_session_id,
+        clear_request.subscriber_session_id,
+        clear_request.mid,
+        clear_request.kind,
+        result.cleared ? 1 : 0,
+        result.selected_state_found ? 1 : 0,
+        result.reason);
+
+    return result;
+}
 lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 {
     lifecycle_debug_snapshot snapshot;

@@ -10,6 +10,7 @@
 
 #include "log/log.h"
 #include "net/http.h"
+#include "util/reflect.h"
 #include "media/media_router.h"
 #include "server/signaling_json.h"
 #include "server/trickle_ice_http.h"
@@ -64,6 +65,8 @@ inline constexpr std::string_view k_bearer_prefix = "Bearer ";
 inline constexpr std::string_view k_media_stats_path = "/api/stats/media";
 
 inline constexpr std::string_view k_debug_state_path = "/api/debug/state";
+
+inline constexpr std::string_view k_simulcast_rid_target_path = "/api/simulcast/rid-target";
 
 inline constexpr std::string_view k_prometheus_metrics_path = "/metrics";
 
@@ -319,6 +322,90 @@ std::string json_error_body(std::string_view message)
 
     return body;
 }
+struct simulcast_rid_target_response_body
+{
+    bool ok = true;
+
+    std::string stream_id;
+    std::string publisher_session_id;
+    std::string subscriber_session_id;
+    std::string mid;
+    std::string kind;
+    std::string target_rid;
+    std::string policy;
+    std::string reason;
+
+    bool changed = false;
+    bool cleared = false;
+    bool selected_state_found = false;
+
+    uint64_t updated_at_milliseconds = 0;
+    uint64_t applied_count = 0;
+};
+
+REFLECT_STRUCT(
+    simulcast_rid_target_response_body,
+    (ok)(stream_id)(publisher_session_id)(subscriber_session_id)(mid)(kind)(target_rid)(policy)(reason)(changed)(cleared)(selected_state_found)(updated_at_milliseconds)(applied_count));
+
+std::string make_simulcast_rid_target_response_body(const simulcast_rid_target_result& result)
+{
+    simulcast_rid_target_response_body body;
+
+    body.stream_id = result.stream_id;
+    body.publisher_session_id = result.publisher_session_id;
+    body.subscriber_session_id = result.subscriber_session_id;
+    body.mid = result.mid;
+    body.kind = result.kind;
+    body.target_rid = result.target_rid;
+    body.policy = result.policy;
+    body.reason = result.reason;
+    body.changed = result.changed;
+    body.cleared = result.cleared;
+    body.selected_state_found = result.selected_state_found;
+    body.updated_at_milliseconds = result.updated_at_milliseconds;
+    body.applied_count = result.applied_count;
+
+    return serialize_struct(body);
+}
+
+std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return std::string_view(value.data(), value.size()); }
+
+std::optional<simulcast_rid_target_request> make_simulcast_rid_target_request_from_query(http_request_t& request, bool clear)
+{
+    const std::string_view target = beast_string_view_to_std_string_view(request.req.target());
+
+    const auto stream_id = query_parameter_value(target, "stream_id");
+    const auto publisher_session_id = query_parameter_value(target, "publisher_session_id");
+    const auto subscriber_session_id = query_parameter_value(target, "subscriber_session_id");
+    const auto mid = query_parameter_value(target, "mid");
+    const auto kind = query_parameter_value(target, "kind");
+
+    if (!stream_id.has_value() || !publisher_session_id.has_value() || !subscriber_session_id.has_value() || !mid.has_value() || !kind.has_value())
+    {
+        return std::nullopt;
+    }
+
+    simulcast_rid_target_request target_request;
+
+    target_request.stream_id = *stream_id;
+    target_request.publisher_session_id = *publisher_session_id;
+    target_request.subscriber_session_id = *subscriber_session_id;
+    target_request.mid = *mid;
+    target_request.kind = *kind;
+    target_request.clear = clear;
+
+    if (const auto rid = query_parameter_value(target, "rid"); rid.has_value())
+    {
+        target_request.target_rid = *rid;
+    }
+
+    if (const auto reason = query_parameter_value(target, "reason"); reason.has_value())
+    {
+        target_request.reason = *reason;
+    }
+
+    return target_request;
+}
 bool constant_time_equals(std::string_view left, std::string_view right)
 {
     if (left.size() != right.size())
@@ -386,8 +473,6 @@ std::optional<stream_session_lifecycle_snapshot> find_session_snapshot(std::stri
 }
 
 std::string beast_string_view_to_string(boost::beast::string_view value) { return std::string(value.data(), value.size()); }
-
-std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return std::string_view(value.data(), value.size()); }
 
 void trim_trailing_space(std::string& value)
 {
@@ -606,7 +691,10 @@ http_response_ptr router::handle(http_request_t& request)
     {
         return handle_debug_state(request);
     }
-
+    if (path == k_simulcast_rid_target_path)
+    {
+        return handle_simulcast_rid_target(request);
+    }
     if (path == k_prometheus_metrics_path)
     {
         return handle_prometheus_metrics(request);
@@ -642,6 +730,7 @@ http_response_ptr router::handle(http_request_t& request)
 void router::set_media_router(std::shared_ptr<media_router> media_router) { media_router_ = std::move(media_router); }
 
 void router::set_keyframe_request_handler(keyframe_request_handler handler) { keyframe_request_handler_ = std::move(handler); }
+void router::set_simulcast_rid_target_handler(simulcast_rid_target_handler handler) { simulcast_rid_target_handler_ = std::move(handler); }
 
 void router::set_rtcp_report_runtime_snapshot_provider(rtcp_report_runtime_snapshot_provider provider)
 {
@@ -943,6 +1032,65 @@ http_response_ptr router::handle_stream_keyframe(http_request_t& request, std::s
     }
 
     return json_response(request, 200, make_keyframe_request_response_body(*result));
+}
+http_response_ptr router::handle_simulcast_rid_target(http_request_t& request)
+{
+    const auto method = request.req.method();
+
+    if (method != http::verb::post && method != http::verb::delete_)
+    {
+        return method_not_allowed(request);
+    }
+
+    if (!simulcast_rid_target_handler_)
+    {
+        return json_response(request, 503, json_error_body("simulcast rid target handler unavailable"));
+    }
+
+    const bool clear = method == http::verb::delete_;
+
+    const std::optional<simulcast_rid_target_request> target_request = make_simulcast_rid_target_request_from_query(request, clear);
+
+    if (!target_request.has_value())
+    {
+        return bad_request(request, "missing simulcast rid target query parameters");
+    }
+
+    if (!is_valid_resource_id(target_request->stream_id))
+    {
+        return bad_request(request, "invalid stream id");
+    }
+
+    if (!is_valid_resource_id(target_request->publisher_session_id))
+    {
+        return bad_request(request, "invalid publisher session id");
+    }
+
+    if (!is_valid_resource_id(target_request->subscriber_session_id))
+    {
+        return bad_request(request, "invalid subscriber session id");
+    }
+
+    if (!clear && !is_valid_resource_id(target_request->target_rid))
+    {
+        return bad_request(request, "invalid rid");
+    }
+
+    simulcast_rid_target_expected result = simulcast_rid_target_handler_(*target_request);
+
+    if (!result)
+    {
+        const std::string& error = result.error();
+
+        if (error.find("empty") != std::string::npos || error.find("unsupported") != std::string::npos)
+        {
+            return json_response(request, 400, json_error_body(error));
+        }
+
+        return json_response(request, 500, json_error_body(error));
+    }
+
+    return json_response(request, 200, make_simulcast_rid_target_response_body(*result));
 }
 
 http_response_ptr router::handle_debug_state(http_request_t& request)

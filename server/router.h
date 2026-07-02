@@ -5,8 +5,9 @@
 #include <memory>
 #include <string_view>
 
-#include "media/media_router.h"
 #include "net/http.h"
+#include "media/media_router.h"
+#include "media/simulcast_rid_target.h"
 #include "server/whip_handler.h"
 #include "server/whep_handler.h"
 #include "media/keyframe_request.h"
@@ -40,6 +41,8 @@ class router
 
     void set_keyframe_request_handler(keyframe_request_handler handler);
 
+    void set_simulcast_rid_target_handler(simulcast_rid_target_handler handler);
+
     void set_lifecycle_debug_snapshot_provider(lifecycle_debug_snapshot_provider provider);
 
     void set_admin_token(std::string token);
@@ -71,6 +74,9 @@ class router
 
     [[nodiscard]]
     http_response_ptr handle_media_stats(http_request_t& request);
+
+    [[nodiscard]]
+    http_response_ptr handle_simulcast_rid_target(http_request_t& request);
 
     [[nodiscard]]
     http_response_ptr handle_prometheus_metrics(http_request_t& request);
@@ -148,6 +154,7 @@ class router
     std::string admin_token_;
     keyframe_request_handler keyframe_request_handler_;
     rtcp_report_runtime_snapshot_provider rtcp_report_runtime_snapshot_provider_;
+    simulcast_rid_target_handler simulcast_rid_target_handler_;
     lifecycle_debug_snapshot_provider lifecycle_debug_snapshot_provider_;
 
     whip_handler whip_;
