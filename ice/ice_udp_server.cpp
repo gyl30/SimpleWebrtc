@@ -15558,13 +15558,35 @@ void ice_udp_server::remember_selected_rid_layer_for_subscriber(const media_rout
 
     state.rid = selected_layer.rid;
 
+    state.selection_policy = std::string(selection_policy);
+    state.rid_preference = rid_preference;
+
     state.primary_ssrc = selected_layer.primary_ssrc;
 
     state.repair_ssrc = selected_layer.repair_ssrc;
 
+    state.adaptive_enabled = simulcast_adaptive_enabled_from_env();
+
+    if (const auto target_iterator = runtime_selected_rid_targets_by_key_.find(key); target_iterator != runtime_selected_rid_targets_by_key_.end())
+    {
+        state.target_rid = target_iterator->second.target_rid;
+        state.target_policy = target_iterator->second.policy;
+        state.manual_target_active = target_iterator->second.policy == "manual_api" && !target_iterator->second.target_rid.empty();
+
+        if (!state.target_rid.empty() && state.target_rid == selected_layer.rid)
+        {
+            state.last_switch_reason = "runtime target applied:" + state.target_policy;
+
+            target_iterator->second.applied_count += 1;
+        }
+    }
+
     const uint64_t current_time_milliseconds = now_milliseconds();
 
     remember_selected_rid_layer_quality_packet_locked(state, track_resolution, packet_size, current_time_milliseconds);
+
+    maybe_update_adaptive_selected_rid_target_locked(key, state, rid_preference, current_time_milliseconds);
+
     remember_selected_rid_keyframe_request_pending_locked(key, state, current_time_milliseconds, "selected rid established");
 
     selected_rid_layer_state_by_key_.emplace(key, std::move(state));
