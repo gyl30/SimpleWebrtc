@@ -81,6 +81,21 @@ struct media_track_stats
     uint32_t last_rtp_sequence_number = 0;
     uint32_t last_rtp_timestamp = 0;
 };
+struct media_rtp_sequence_state
+{
+    bool has_sequence = false;
+    uint16_t expected_sequence_number = 0;
+
+    uint16_t last_sequence_number = 0;
+    uint32_t last_timestamp = 0;
+    uint8_t last_payload_type = 0;
+
+    uint64_t rtp_sequence_gap_events = 0;
+    uint64_t rtp_sequence_lost_packets = 0;
+    uint64_t rtp_out_of_order_packets = 0;
+    uint64_t rtp_duplicate_packets = 0;
+    uint64_t rtp_sequence_wraps = 0;
+};
 
 struct media_peer_stats
 {
@@ -139,6 +154,7 @@ struct media_peer_stats
     uint32_t last_rtcp_ssrc = 0;
     uint8_t last_rtcp_packet_type = 0;
     uint64_t last_remb_bitrate_bps = 0;
+    std::unordered_map<uint32_t, media_rtp_sequence_state> rtp_sequence_by_ssrc;
 };
 
 struct media_stream_stats

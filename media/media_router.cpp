@@ -55,6 +55,15 @@ bool is_rtp_sequence_wrap(uint16_t previous_sequence_number, uint16_t current_se
 {
     return previous_sequence_number >= k_rtp_sequence_wrap_high_threshold && current_sequence_number <= k_rtp_sequence_wrap_low_threshold;
 }
+void remember_peer_rtp_sequence_summary(media_peer_stats& peer_stats, uint32_t ssrc, const media_rtp_sequence_state& sequence_state)
+{
+    peer_stats.has_rtp_sequence = sequence_state.has_sequence;
+    peer_stats.expected_rtp_sequence_number = sequence_state.expected_sequence_number;
+    peer_stats.last_rtp_ssrc = ssrc;
+    peer_stats.last_rtp_sequence_number = sequence_state.last_sequence_number;
+    peer_stats.last_rtp_timestamp = sequence_state.last_timestamp;
+    peer_stats.last_rtp_payload_type = sequence_state.last_payload_type;
+}
 
 uint32_t current_ntp_compact()
 {
@@ -1007,77 +1016,120 @@ void media_router::update_rtp_quality_stats_locked(media_peer_stats& peer_stats,
                                                    media_stream_stats& stream_stats,
                                                    const srtp_packet_process_result& packet)
 {
-    if (!peer_stats.has_rtp_sequence)
+    media_rtp_sequence_state& sequence_state = peer_stats.rtp_sequence_by_ssrc[packet.ssrc];
+
+    if (!sequence_state.has_sequence)
     {
-        peer_stats.has_rtp_sequence = true;
-        peer_stats.expected_rtp_sequence_number = next_rtp_sequence_number(packet.sequence_number);
+        sequence_state.has_sequence = true;
+        sequence_state.expected_sequence_number = next_rtp_sequence_number(packet.sequence_number);
+        sequence_state.last_sequence_number = packet.sequence_number;
+        sequence_state.last_timestamp = packet.timestamp;
+        sequence_state.last_payload_type = packet.payload_type;
+
+        remember_peer_rtp_sequence_summary(peer_stats, packet.ssrc, sequence_state);
+
         return;
     }
 
-    const uint16_t expected_sequence_number = peer_stats.expected_rtp_sequence_number;
+    const uint16_t expected_sequence_number = sequence_state.expected_sequence_number;
 
     const int32_t delta = rtp_sequence_delta(packet.sequence_number, expected_sequence_number);
 
     if (delta == 0)
     {
-        if (is_rtp_sequence_wrap(peer_stats.last_rtp_sequence_number, packet.sequence_number))
+        if (is_rtp_sequence_wrap(sequence_state.last_sequence_number, packet.sequence_number))
         {
+            sequence_state.rtp_sequence_wraps += 1;
             peer_stats.rtp_sequence_wraps += 1;
             stream_stats.rtp_sequence_wraps += 1;
         }
 
-        peer_stats.expected_rtp_sequence_number = next_rtp_sequence_number(packet.sequence_number);
+        sequence_state.expected_sequence_number = next_rtp_sequence_number(packet.sequence_number);
+        sequence_state.last_sequence_number = packet.sequence_number;
+        sequence_state.last_timestamp = packet.timestamp;
+        sequence_state.last_payload_type = packet.payload_type;
+
+        remember_peer_rtp_sequence_summary(peer_stats, packet.ssrc, sequence_state);
 
         return;
     }
 
     if (delta > 0)
     {
+        const uint64_t missing_packets = static_cast<uint64_t>(delta);
+
+        sequence_state.rtp_sequence_gap_events += 1;
+        sequence_state.rtp_sequence_lost_packets += missing_packets;
+
         peer_stats.rtp_sequence_gap_events += 1;
-        peer_stats.rtp_sequence_lost_packets += static_cast<uint64_t>(delta);
+        peer_stats.rtp_sequence_lost_packets += missing_packets;
 
         stream_stats.rtp_sequence_gap_events += 1;
-        stream_stats.rtp_sequence_lost_packets += static_cast<uint64_t>(delta);
+        stream_stats.rtp_sequence_lost_packets += missing_packets;
 
         if (is_rtp_sequence_wrap(expected_sequence_number, packet.sequence_number))
         {
+            sequence_state.rtp_sequence_wraps += 1;
             peer_stats.rtp_sequence_wraps += 1;
             stream_stats.rtp_sequence_wraps += 1;
         }
 
-        peer_stats.expected_rtp_sequence_number = next_rtp_sequence_number(packet.sequence_number);
+        sequence_state.expected_sequence_number = next_rtp_sequence_number(packet.sequence_number);
+        sequence_state.last_sequence_number = packet.sequence_number;
+        sequence_state.last_timestamp = packet.timestamp;
+        sequence_state.last_payload_type = packet.payload_type;
 
-        WEBRTC_LOG_DEBUG("media router rtp sequence gap remote={} stream={} ssrc={} expected={} actual={} missing={}",
+        remember_peer_rtp_sequence_summary(peer_stats, packet.ssrc, sequence_state);
+
+        WEBRTC_LOG_DEBUG("media router rtp sequence gap remote={} stream={} session={} ssrc={} expected={} actual={} missing={}",
                          peer_stats.peer.remote_endpoint,
                          peer_stats.peer.stream_id,
+                         peer_stats.peer.session_id,
                          packet.ssrc,
                          expected_sequence_number,
                          packet.sequence_number,
-                         delta);
+                         missing_packets);
 
         return;
     }
 
-    if (packet.sequence_number == peer_stats.last_rtp_sequence_number)
+    if (packet.sequence_number == sequence_state.last_sequence_number)
     {
+        sequence_state.rtp_duplicate_packets += 1;
+
         peer_stats.rtp_duplicate_packets += 1;
         stream_stats.rtp_duplicate_packets += 1;
 
-        WEBRTC_LOG_DEBUG("media router rtp duplicate remote={} stream={} ssrc={} sequence={}",
+        sequence_state.last_timestamp = packet.timestamp;
+        sequence_state.last_payload_type = packet.payload_type;
+
+        remember_peer_rtp_sequence_summary(peer_stats, packet.ssrc, sequence_state);
+
+        WEBRTC_LOG_DEBUG("media router rtp duplicate remote={} stream={} session={} ssrc={} sequence={}",
                          peer_stats.peer.remote_endpoint,
                          peer_stats.peer.stream_id,
+                         peer_stats.peer.session_id,
                          packet.ssrc,
                          packet.sequence_number);
 
         return;
     }
 
+    sequence_state.rtp_out_of_order_packets += 1;
+
     peer_stats.rtp_out_of_order_packets += 1;
     stream_stats.rtp_out_of_order_packets += 1;
 
-    WEBRTC_LOG_DEBUG("media router rtp out of order remote={} stream={} ssrc={} expected={} actual={} delta={}",
+    sequence_state.last_sequence_number = packet.sequence_number;
+    sequence_state.last_timestamp = packet.timestamp;
+    sequence_state.last_payload_type = packet.payload_type;
+
+    remember_peer_rtp_sequence_summary(peer_stats, packet.ssrc, sequence_state);
+
+    WEBRTC_LOG_DEBUG("media router rtp out of order remote={} stream={} session={} ssrc={} expected={} actual={} delta={}",
                      peer_stats.peer.remote_endpoint,
                      peer_stats.peer.stream_id,
+                     peer_stats.peer.session_id,
                      packet.ssrc,
                      expected_sequence_number,
                      packet.sequence_number,
