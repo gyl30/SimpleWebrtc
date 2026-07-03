@@ -10,8 +10,9 @@
 #include <string_view>
 #include <utility>
 
-#include "signaling/sdp/h264_fmtp_compat.h"
+#include "log/log.h"
 #include "signaling/sdp/sdp_summary.h"
+#include "signaling/sdp/h264_fmtp_compat.h"
 
 namespace webrtc
 {
@@ -948,6 +949,141 @@ bool codecs_are_compatible(const sdp::codec_info& publisher_codec, const sdp::co
 
     return true;
 }
+bool codec_can_use_browser_payload_type_fallback(const sdp::codec_info& publisher_codec, const sdp::codec_info& subscriber_codec)
+{
+    if (!equals_ignore_case(publisher_codec.name, subscriber_codec.name))
+    {
+        return false;
+    }
+
+    if (publisher_codec.clock_rate != subscriber_codec.clock_rate)
+    {
+        return false;
+    }
+
+    if (codec_is_rtx(publisher_codec) || codec_is_rtx(subscriber_codec))
+    {
+        return false;
+    }
+
+    if (equals_ignore_case(publisher_codec.name, "vp8") || equals_ignore_case(publisher_codec.name, "vp9") ||
+        equals_ignore_case(publisher_codec.name, "av1"))
+    {
+        return true;
+    }
+
+    if (is_h264_codec(publisher_codec))
+    {
+        return h264_codecs_are_compatible(publisher_codec, subscriber_codec);
+    }
+
+    return false;
+}
+
+bool mapping_exists_for_publisher_payload_type(const media_payload_type_mapping_table& table,
+                                               std::string_view publisher_mid,
+                                               uint16_t publisher_payload_type)
+{
+    for (const auto& mapping : table.mappings)
+    {
+        if (mapping.publisher_mid == publisher_mid && mapping.publisher_payload_type == publisher_payload_type)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::optional<sdp::codec_info> find_browser_payload_type_fallback_subscriber_codec(const sdp::media_summary& subscriber_media,
+                                                                                   const sdp::codec_info& publisher_codec)
+{
+    if (codec_is_rtx(publisher_codec))
+    {
+        return std::nullopt;
+    }
+
+    for (const auto& subscriber_codec : subscriber_media.codecs)
+    {
+        if (!payload_type_exists(subscriber_media, subscriber_codec.payload_type))
+        {
+            continue;
+        }
+
+        if (!codec_can_use_browser_payload_type_fallback(publisher_codec, subscriber_codec))
+        {
+            continue;
+        }
+
+        return subscriber_codec;
+    }
+
+    return std::nullopt;
+}
+
+void append_browser_payload_type_fallback_mappings(media_payload_type_mapping_table& table,
+                                                   const sdp::media_summary& publisher_media,
+                                                   const sdp::media_summary& subscriber_media)
+{
+    if (publisher_media.kind != "video" || subscriber_media.kind != "video")
+    {
+        return;
+    }
+
+    for (const auto& publisher_codec : publisher_media.codecs)
+    {
+        if (!payload_type_exists(publisher_media, publisher_codec.payload_type))
+        {
+            continue;
+        }
+
+        if (codec_is_rtx(publisher_codec))
+        {
+            continue;
+        }
+
+        if (mapping_exists_for_publisher_payload_type(table, publisher_media.mid, publisher_codec.payload_type))
+        {
+            continue;
+        }
+
+        auto subscriber_codec = find_browser_payload_type_fallback_subscriber_codec(subscriber_media, publisher_codec);
+
+        if (!subscriber_codec.has_value())
+        {
+            continue;
+        }
+
+        media_payload_type_mapping mapping;
+
+        mapping.stream_id = table.stream_id;
+        mapping.kind = publisher_media.kind;
+        mapping.publisher_mid = publisher_media.mid;
+        mapping.subscriber_mid = subscriber_media.mid;
+        mapping.publisher_payload_type = publisher_codec.payload_type;
+        mapping.subscriber_payload_type = subscriber_codec->payload_type;
+        mapping.codec_name = publisher_codec.name;
+        mapping.clock_rate = publisher_codec.clock_rate;
+        mapping.encoding_parameters =
+            publisher_codec.encoding_parameters.empty() ? subscriber_codec->encoding_parameters : publisher_codec.encoding_parameters;
+        mapping.payload_type_rewrite_required = mapping.publisher_payload_type != mapping.subscriber_payload_type;
+        mapping.mid_rewrite_required = mapping.publisher_mid != mapping.subscriber_mid;
+
+        WEBRTC_LOG_INFO(
+            "payload type mapping browser fallback stream={} kind={} publisher_mid={} subscriber_mid={} publisher_pt={} subscriber_pt={} codec={} "
+            "clock={}",
+            table.stream_id,
+            mapping.kind,
+            mapping.publisher_mid,
+            mapping.subscriber_mid,
+            static_cast<unsigned int>(mapping.publisher_payload_type),
+            static_cast<unsigned int>(mapping.subscriber_payload_type),
+            mapping.codec_name,
+            mapping.clock_rate);
+
+        table.mappings.push_back(std::move(mapping));
+    }
+}
 
 const sdp::media_summary* find_matching_subscriber_media(const sdp::media_summary& publisher_media,
                                                          const sdp::webrtc_offer_summary& publisher_offer,
@@ -1072,6 +1208,7 @@ void append_media_mappings(media_payload_type_mapping_table& table,
         table.mappings.push_back(std::move(mapping));
     }
 
+    append_browser_payload_type_fallback_mappings(table, publisher_media, subscriber_media);
     append_rtx_mappings(table, publisher_media, subscriber_media, publisher_media_ordinal, subscriber_media_ordinal);
 }
 
