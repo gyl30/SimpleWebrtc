@@ -11726,36 +11726,6 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(con
 
     std::optional<std::string> mapping_repaired_rid = track_resolution->repaired_rid;
 
-    if (track_resolution->rtx && identity_authority_ != nullptr)
-    {
-        std::optional<media_identity_rid_layer_binding> layer;
-
-        if (track_resolution->ssrc != 0)
-        {
-            layer = identity_authority_->find_rid_layer_by_repair_ssrc(route.source.session_id, track_resolution->ssrc);
-        }
-
-        if (!layer.has_value() && track_resolution->rtx_repair_ssrc != 0)
-        {
-            layer = identity_authority_->find_rid_layer_by_repair_ssrc(route.source.session_id, track_resolution->rtx_repair_ssrc);
-        }
-
-        if (!layer.has_value() && track_resolution->rtx_primary_ssrc != 0)
-        {
-            layer = identity_authority_->find_rid_layer_by_primary_ssrc(route.source.session_id, track_resolution->rtx_primary_ssrc);
-        }
-
-        if (layer.has_value() && !layer->rid.empty())
-        {
-            if (!mapping_repaired_rid.has_value() || mapping_repaired_rid->empty())
-            {
-                mapping_repaired_rid = layer->rid;
-            }
-
-            mapping_rid.reset();
-        }
-    }
-
     auto mapping_result = ssrc_mapper_->get_or_create_mapping(route.source.stream_id,
                                                               route.source.session_id,
                                                               target_peer.session_id,
@@ -11780,19 +11750,6 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(con
                         mapping_result.error());
 
         return std::nullopt;
-    }
-
-    if (track_resolution->rtx && (!mapping_result->repaired_rid.has_value() || mapping_result->repaired_rid->empty()))
-    {
-        WEBRTC_LOG_DEBUG(
-            "media rtx ssrc mapping has no repaired rid stream={} publisher_session={} subscriber_session={} mid={} repair_ssrc={} "
-            "primary_ssrc={}",
-            route.source.stream_id,
-            route.source.session_id,
-            target_peer.session_id,
-            track_resolution->mid,
-            track_resolution->ssrc,
-            track_resolution->rtx_primary_ssrc);
     }
 
     if (mapping_result->packet_count == 1)
@@ -12198,6 +12155,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
         media_ssrc_mapping source_mapping;
         media_ssrc_mapping forward_mapping;
         bool source_was_rtx = false;
+        bool skipped_non_video = false;
     };
 
     const auto resolve_feedback_ssrc = [&](uint32_t subscriber_ssrc,
@@ -12240,6 +12198,26 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
 
         if (!is_video_media_kind(mapping->kind))
         {
+            if (event.has_remb && field_name == "remb_ssrc")
+            {
+                WEBRTC_LOG_DEBUG(
+                    "rtcp remb ssrc rewrite skipped non video media stream={} subscriber_session={} feedback={} field={} subscriber_ssrc={} kind={}",
+                    route.source.stream_id,
+                    route.source.session_id,
+                    event.feedback_name,
+                    field_name,
+                    subscriber_ssrc,
+                    mapping->kind);
+
+                feedback_ssrc_mapping_resolution resolution;
+
+                resolution.source_mapping = *mapping;
+                resolution.forward_mapping = *mapping;
+                resolution.source_was_rtx = media_ssrc_mapping_is_rtx(*mapping);
+                resolution.skipped_non_video = true;
+                return resolution;
+            }
+
             WEBRTC_LOG_WARN(
                 "rtcp feedback block rewrite skipped non video media stream={} subscriber_session={} feedback={} field={} subscriber_ssrc={} kind={}",
                 route.source.stream_id,
@@ -12417,7 +12395,12 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
 
             if (!remb_resolution.has_value())
             {
-                return std::nullopt;
+                continue;
+            }
+
+            if (remb_resolution->skipped_non_video)
+            {
+                continue;
             }
 
             rtcp_feedback_block_ssrc_rewrite fci_rewrite;
@@ -12428,7 +12411,6 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
 
             rewrite.fci_ssrc_rewrites.push_back(fci_rewrite);
         }
-
         if (rewrite.drop_block || rewrite.rewrite_media_ssrc || !rewrite.fci_ssrc_rewrites.empty())
         {
             rewrites.push_back(std::move(rewrite));
