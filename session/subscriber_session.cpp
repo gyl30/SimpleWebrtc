@@ -7,8 +7,9 @@
 #include <string_view>
 #include <utility>
 
-#include "ice/ice_candidate.h"
+#include "log/log.h"
 #include "util/timestamp.h"
+#include "ice/ice_candidate.h"
 
 namespace webrtc
 {
@@ -167,7 +168,18 @@ std::expected<void, std::string> subscriber_session::add_remote_ice_candidate(re
     {
         return {};
     }
-
+    if (!candidate.end_of_candidates)
+    {
+        WEBRTC_LOG_INFO("subscriber remote ice candidate session={} stream={} mid={} mline={} address={} port={} hostname={} mdns={}",
+                        session_id_,
+                        stream_id_,
+                        candidate.sdp_mid,
+                        candidate.sdp_mline_index,
+                        candidate.address,
+                        candidate.port,
+                        candidate.address_is_hostname,
+                        candidate.address_is_mdns_hostname);
+    }
     if (candidate.end_of_candidates)
     {
         if (remote_ice_completed_)

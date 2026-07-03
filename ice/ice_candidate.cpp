@@ -525,6 +525,33 @@ bool is_valid_candidate_address(std::string_view value)
 
     return is_valid_hostname(value);
 }
+bool is_ip_literal(std::string_view value)
+{
+    boost::system::error_code ec;
+
+    const auto address = boost::asio::ip::make_address(std::string(value), ec);
+
+    (void)address;
+
+    return !ec;
+}
+
+bool is_mdns_hostname(std::string_view value)
+{
+    if (value.empty())
+    {
+        return false;
+    }
+
+    std::string lowered = to_lower_ascii(value);
+
+    if (lowered.ends_with(".local"))
+    {
+        return true;
+    }
+
+    return lowered.ends_with(".local.");
+}
 
 std::expected<std::string, std::string> parse_candidate_address(std::string_view value, std::string_view field_name)
 {
@@ -819,6 +846,10 @@ std::expected<void, std::string> parse_candidate_fields(std::string_view candida
     candidate.address = std::move(*address);
 
     candidate.port = *port;
+
+    candidate.address_is_hostname = !is_ip_literal(candidate.address);
+
+    candidate.address_is_mdns_hostname = is_mdns_hostname(candidate.address);
 
     candidate.type = *type;
 

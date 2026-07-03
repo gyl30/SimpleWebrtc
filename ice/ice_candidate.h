@@ -55,6 +55,8 @@ struct remote_ice_candidate
 
     std::string address;
     uint16_t port = 0;
+    bool address_is_hostname = false;
+    bool address_is_mdns_hostname = false;
 
     ice_candidate_type type = ice_candidate_type::unknown;
 
