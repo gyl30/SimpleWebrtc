@@ -274,6 +274,77 @@ std::vector<sdp::sdp_answer_media_source> filter_whep_outbound_media_sources(con
 
     return filtered_sources;
 }
+const sdp::sdp_answer_media_source* find_previous_whep_outbound_media_source_by_kind(
+    const std::vector<sdp::sdp_answer_media_source>& previous_sources, std::string_view kind)
+{
+    for (const auto& source : previous_sources)
+    {
+        if (source.ssrc == 0)
+        {
+            continue;
+        }
+
+        if (source.kind != kind)
+        {
+            continue;
+        }
+
+        return &source;
+    }
+
+    return nullptr;
+}
+
+std::vector<sdp::sdp_answer_media_source> make_reconnected_whep_outbound_media_sources(
+    const std::vector<sdp::sdp_answer_media_source>& previous_sources, const sdp::webrtc_offer_summary& offer)
+{
+    if (previous_sources.empty())
+    {
+        return make_whep_outbound_media_sources(offer);
+    }
+
+    auto fresh_sources = make_whep_outbound_media_sources(offer);
+
+    std::vector<sdp::sdp_answer_media_source> reconnected_sources;
+
+    reconnected_sources.reserve(fresh_sources.size());
+
+    for (const auto& fresh_source : fresh_sources)
+    {
+        const auto* previous_source = find_previous_whep_outbound_media_source_by_kind(previous_sources, fresh_source.kind);
+
+        if (previous_source == nullptr)
+        {
+            reconnected_sources.push_back(fresh_source);
+
+            continue;
+        }
+
+        auto reconnected_source = *previous_source;
+
+        reconnected_source.mid = fresh_source.mid;
+
+        reconnected_source.kind = fresh_source.kind;
+
+        reconnected_source.stream_id = fresh_source.stream_id;
+
+        reconnected_source.track_id = fresh_source.track_id;
+
+        if (reconnected_source.cname.empty())
+        {
+            reconnected_source.cname = fresh_source.cname;
+        }
+
+        reconnected_sources.push_back(std::move(reconnected_source));
+    }
+
+    if (reconnected_sources.empty())
+    {
+        return fresh_sources;
+    }
+
+    return reconnected_sources;
+}
 }    // namespace
 
 whep_handler::whep_handler(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
@@ -380,15 +451,21 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         reconnected_session.old_local_ice_ufrag = reconnect_previous_session->local_ice().ufrag;
         reconnected_session.old_remote_ice_ufrag = reconnect_previous_session->remote_offer_summary().ice_ufrag;
     }
-    auto outbound_media_sources = make_whep_outbound_media_sources(*offer_summary);
+
+    auto outbound_media_sources = reconnect_previous_session != nullptr ? make_reconnected_whep_outbound_media_sources(
+                                                                              reconnect_previous_session->outbound_media_sources(), *offer_summary)
+                                                                        : make_whep_outbound_media_sources(*offer_summary);
+
     if (outbound_media_sources.empty())
     {
-        WEBRTC_LOG_WARN(
-            "WHEP create subscriber failed stream={} outbound media source empty offer_media_count={}", stream_id, offer_summary->media.size());
+        WEBRTC_LOG_WARN("WHEP create subscriber failed stream={} reconnect={} previous_session={} outbound media source empty offer_media_count={}",
+                        stream_id,
+                        reconnect_session_id.has_value() ? 1 : 0,
+                        reconnect_session_id.value_or(""),
+                        offer_summary->media.size());
 
         return json_error_response(request, 400, k_whep_sdp_answer_failed_error, "failed to build sdp answer: outbound media source empty");
     }
-
     auto generated_answer =
         answer_factory_->build_whep_answer(stream_id, *offer_summary, publisher->remote_offer_summary(), std::move(outbound_media_sources));
     if (!generated_answer)
@@ -490,7 +567,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     }
     WEBRTC_LOG_INFO(
         "WHEP create subscriber stream={} session={} reconnect={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={} "
-        "outbound_media_source_count={}",
+        "previous_outbound_media_source_count={} outbound_media_source_count={}",
         session->stream_id(),
         session->session_id(),
         reconnect_session_id.has_value() ? 1 : 0,
@@ -498,7 +575,9 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         session->local_sdp_answer().size(),
         session->remote_offer_summary().media.size(),
         runtime_offer_filter->accepted_mids.size(),
+        reconnect_previous_session != nullptr ? reconnect_previous_session->outbound_media_sources().size() : 0,
         session->outbound_media_sources().size());
+
     auto response = sdp_response(request, 201, session->local_sdp_answer());
     const std::string session_location_path = "/whep/session/" + session->session_id();
     response->set(http::field::location, make_absolute_resource_url(request, session_location_path));
