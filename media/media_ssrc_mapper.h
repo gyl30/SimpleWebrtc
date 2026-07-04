@@ -70,6 +70,22 @@ class media_ssrc_mapper
                                                     uint32_t publisher_rtx_repair_ssrc = 0,
                                                     const std::optional<std::string>& rid = std::nullopt,
                                                     const std::optional<std::string>& repaired_rid = std::nullopt);
+
+    [[nodiscard]]
+    media_ssrc_mapping_result get_or_create_mapping_with_subscriber_ssrc(std::string_view stream_id,
+                                                                         std::string_view publisher_session_id,
+                                                                         std::string_view subscriber_session_id,
+                                                                         std::string_view publisher_mid,
+                                                                         std::string_view subscriber_mid,
+                                                                         std::string_view kind,
+                                                                         uint32_t publisher_ssrc,
+                                                                         uint32_t preferred_subscriber_ssrc,
+                                                                         uint64_t now_milliseconds,
+                                                                         bool rtx = false,
+                                                                         uint32_t publisher_rtx_primary_ssrc = 0,
+                                                                         uint32_t publisher_rtx_repair_ssrc = 0,
+                                                                         const std::optional<std::string>& rid = std::nullopt,
+                                                                         const std::optional<std::string>& repaired_rid = std::nullopt);
     [[nodiscard]]
     std::optional<media_ssrc_mapping> find_by_publisher_ssrc(std::string_view stream_id,
                                                              std::string_view publisher_session_id,

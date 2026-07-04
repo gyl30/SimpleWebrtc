@@ -11763,6 +11763,48 @@ bool publisher_rtp_rid_is_selected_for_subscriber(const sdp::webrtc_offer_summar
 
     return false;
 }
+uint32_t find_whep_preferred_subscriber_ssrc(
+    const stream_registry& registry, const media_peer_info& target_peer, std::string_view subscriber_mid, std::string_view kind, bool rtx)
+{
+    if (rtx)
+    {
+        return 0;
+    }
+
+    if (target_peer.session_id.empty() || subscriber_mid.empty() || kind.empty())
+    {
+        return 0;
+    }
+
+    const auto subscriber = registry.find_subscriber_by_session_id(target_peer.session_id);
+
+    if (subscriber == nullptr)
+    {
+        return 0;
+    }
+
+    for (const auto& source : subscriber->outbound_media_sources())
+    {
+        if (source.ssrc == 0)
+        {
+            continue;
+        }
+
+        if (source.mid != subscriber_mid)
+        {
+            continue;
+        }
+
+        if (source.kind != kind)
+        {
+            continue;
+        }
+
+        return source.ssrc;
+    }
+
+    return 0;
+}
 
 std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(const media_route_result& route,
                                                                              const media_peer_info& target_peer,
@@ -11800,19 +11842,28 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(con
 
     std::optional<std::string> mapping_repaired_rid = track_resolution->repaired_rid;
 
-    auto mapping_result = ssrc_mapper_->get_or_create_mapping(route.source.stream_id,
-                                                              route.source.session_id,
-                                                              target_peer.session_id,
-                                                              track_resolution->mid,
-                                                              subscriber_mid,
-                                                              track_resolution->kind,
-                                                              track_resolution->ssrc,
-                                                              now_milliseconds(),
-                                                              track_resolution->rtx,
-                                                              track_resolution->rtx_primary_ssrc,
-                                                              track_resolution->rtx_repair_ssrc,
-                                                              mapping_rid,
-                                                              mapping_repaired_rid);
+    uint32_t preferred_subscriber_ssrc = 0;
+
+    if (registry_ != nullptr)
+    {
+        preferred_subscriber_ssrc =
+            find_whep_preferred_subscriber_ssrc(*registry_, target_peer, subscriber_mid, track_resolution->kind, track_resolution->rtx);
+    }
+
+    auto mapping_result = ssrc_mapper_->get_or_create_mapping_with_subscriber_ssrc(route.source.stream_id,
+                                                                                   route.source.session_id,
+                                                                                   target_peer.session_id,
+                                                                                   track_resolution->mid,
+                                                                                   subscriber_mid,
+                                                                                   track_resolution->kind,
+                                                                                   track_resolution->ssrc,
+                                                                                   preferred_subscriber_ssrc,
+                                                                                   now_milliseconds(),
+                                                                                   track_resolution->rtx,
+                                                                                   track_resolution->rtx_primary_ssrc,
+                                                                                   track_resolution->rtx_repair_ssrc,
+                                                                                   mapping_rid,
+                                                                                   mapping_repaired_rid);
     if (!mapping_result)
     {
         WEBRTC_LOG_WARN("media ssrc mapping failed stream={} publisher_session={} subscriber_session={} mid={} ssrc={} error={}",
@@ -11826,11 +11877,26 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(con
         return std::nullopt;
     }
 
+    if (mapping_result->packet_count == 1 && preferred_subscriber_ssrc != 0 && mapping_result->subscriber_ssrc != preferred_subscriber_ssrc)
+    {
+        WEBRTC_LOG_WARN(
+            "whep preferred subscriber ssrc fallback stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} "
+            "kind={} publisher_ssrc={} preferred_subscriber_ssrc={} actual_subscriber_ssrc={}",
+            route.source.stream_id,
+            route.source.session_id,
+            target_peer.session_id,
+            track_resolution->mid,
+            subscriber_mid,
+            track_resolution->kind,
+            track_resolution->ssrc,
+            preferred_subscriber_ssrc,
+            mapping_result->subscriber_ssrc);
+    }
+
     if (mapping_result->packet_count == 1)
     {
         WEBRTC_LOG_INFO("media ssrc mapping created {}", media_ssrc_mapping_to_string(*mapping_result));
     }
-
     return *mapping_result;
 }
 

@@ -381,10 +381,16 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         reconnected_session.old_remote_ice_ufrag = reconnect_previous_session->remote_offer_summary().ice_ufrag;
     }
     auto outbound_media_sources = make_whep_outbound_media_sources(*offer_summary);
+    if (outbound_media_sources.empty())
+    {
+        WEBRTC_LOG_WARN(
+            "WHEP create subscriber failed stream={} outbound media source empty offer_media_count={}", stream_id, offer_summary->media.size());
+
+        return json_error_response(request, 400, k_whep_sdp_answer_failed_error, "failed to build sdp answer: outbound media source empty");
+    }
 
     auto generated_answer =
         answer_factory_->build_whep_answer(stream_id, *offer_summary, publisher->remote_offer_summary(), std::move(outbound_media_sources));
-
     if (!generated_answer)
     {
         WEBRTC_LOG_WARN("WHEP build SDP answer failed stream={} error={}", stream_id, generated_answer.error());
@@ -483,15 +489,16 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         }
     }
     WEBRTC_LOG_INFO(
-        "WHEP create subscriber stream={} session={} reconnect={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={}",
+        "WHEP create subscriber stream={} session={} reconnect={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={} "
+        "outbound_media_source_count={}",
         session->stream_id(),
         session->session_id(),
         reconnect_session_id.has_value() ? 1 : 0,
         reconnect_session_id.value_or(""),
-        offer.size(),
-        offer_summary->media.size(),
-        session->remote_offer_summary().media.size());
-
+        session->local_sdp_answer().size(),
+        session->remote_offer_summary().media.size(),
+        runtime_offer_filter->accepted_mids.size(),
+        session->outbound_media_sources().size());
     auto response = sdp_response(request, 201, session->local_sdp_answer());
     const std::string session_location_path = "/whep/session/" + session->session_id();
     response->set(http::field::location, make_absolute_resource_url(request, session_location_path));

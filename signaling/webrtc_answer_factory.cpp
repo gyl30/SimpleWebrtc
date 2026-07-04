@@ -112,6 +112,7 @@ std::string make_local_stream_id(std::string_view prefix, std::string_view strea
 
     return value;
 }
+
 void normalize_answer_media_sources(std::vector<sdp::sdp_answer_media_source>& media_sources, std::string_view local_stream_id)
 {
     for (auto& source : media_sources)
@@ -130,6 +131,58 @@ void normalize_answer_media_sources(std::vector<sdp::sdp_answer_media_source>& m
         }
     }
 }
+
+bool answer_sdp_contains_media_source_attributes(std::string_view answer_sdp, const sdp::sdp_answer_media_source& source)
+{
+    if (source.ssrc == 0)
+    {
+        return true;
+    }
+
+    const std::string ssrc = std::to_string(source.ssrc);
+
+    std::string cname_line;
+
+    cname_line.reserve(ssrc.size() + 16);
+
+    cname_line.append("a=ssrc:");
+    cname_line.append(ssrc);
+    cname_line.append(" cname:");
+
+    if (answer_sdp.find(cname_line) == std::string_view::npos)
+    {
+        return false;
+    }
+
+    std::string msid_line;
+
+    msid_line.reserve(ssrc.size() + 15);
+
+    msid_line.append("a=ssrc:");
+    msid_line.append(ssrc);
+    msid_line.append(" msid:");
+
+    if (answer_sdp.find(msid_line) == std::string_view::npos)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool answer_sdp_contains_all_media_source_attributes(std::string_view answer_sdp, const std::vector<sdp::sdp_answer_media_source>& media_sources)
+{
+    for (const auto& source : media_sources)
+    {
+        if (!answer_sdp_contains_media_source_attributes(answer_sdp, source))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 validation_result validate_dtls_setup_role(sdp::dtls_connection_role setup)
 {
     switch (setup)
@@ -490,6 +543,11 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer_with_origin(bool
     if (!answer_sdp)
     {
         return std::unexpected(answer_sdp.error());
+    }
+
+    if (!is_whip && !options.media_sources.empty() && !answer_sdp_contains_all_media_source_attributes(*answer_sdp, options.media_sources))
+    {
+        return make_error("whep answer media sources were provided but ssrc attributes were not generated");
     }
 
     generated_sdp_answer answer;

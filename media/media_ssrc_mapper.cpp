@@ -120,6 +120,22 @@ std::expected<void, std::string> validate_mapping_input(std::string_view stream_
 
     return {};
 }
+
+bool preferred_subscriber_ssrc_is_usable(uint32_t preferred_subscriber_ssrc, uint32_t publisher_ssrc)
+{
+    if (preferred_subscriber_ssrc == 0)
+    {
+        return false;
+    }
+
+    if (preferred_subscriber_ssrc == publisher_ssrc)
+    {
+        return false;
+    }
+
+    return true;
+}
+
 }    // namespace
 
 media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping(std::string_view stream_id,
@@ -135,6 +151,37 @@ media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping(std::string_v
                                                                    uint32_t publisher_rtx_repair_ssrc,
                                                                    const std::optional<std::string>& rid,
                                                                    const std::optional<std::string>& repaired_rid)
+{
+    return get_or_create_mapping_with_subscriber_ssrc(stream_id,
+                                                      publisher_session_id,
+                                                      subscriber_session_id,
+                                                      publisher_mid,
+                                                      subscriber_mid,
+                                                      kind,
+                                                      publisher_ssrc,
+                                                      0,
+                                                      now_milliseconds,
+                                                      rtx,
+                                                      publisher_rtx_primary_ssrc,
+                                                      publisher_rtx_repair_ssrc,
+                                                      rid,
+                                                      repaired_rid);
+}
+
+media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping_with_subscriber_ssrc(std::string_view stream_id,
+                                                                                        std::string_view publisher_session_id,
+                                                                                        std::string_view subscriber_session_id,
+                                                                                        std::string_view publisher_mid,
+                                                                                        std::string_view subscriber_mid,
+                                                                                        std::string_view kind,
+                                                                                        uint32_t publisher_ssrc,
+                                                                                        uint32_t preferred_subscriber_ssrc,
+                                                                                        uint64_t now_milliseconds,
+                                                                                        bool rtx,
+                                                                                        uint32_t publisher_rtx_primary_ssrc,
+                                                                                        uint32_t publisher_rtx_repair_ssrc,
+                                                                                        const std::optional<std::string>& rid,
+                                                                                        const std::optional<std::string>& repaired_rid)
 {
     auto validation_result =
         validate_mapping_input(stream_id, publisher_session_id, subscriber_session_id, publisher_mid, subscriber_mid, publisher_ssrc);
@@ -195,8 +242,21 @@ media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping(std::string_v
 
     mapping.publisher_ssrc = publisher_ssrc;
 
-    mapping.subscriber_ssrc =
-        generate_subscriber_ssrc_locked(stream_id, publisher_session_id, subscriber_session_id, publisher_mid, subscriber_mid, kind, publisher_ssrc);
+    if (preferred_subscriber_ssrc_is_usable(preferred_subscriber_ssrc, publisher_ssrc))
+    {
+        const std::string preferred_subscriber_key = make_subscriber_key(subscriber_session_id, preferred_subscriber_ssrc);
+
+        if (!publisher_key_by_subscriber_key_.contains(preferred_subscriber_key))
+        {
+            mapping.subscriber_ssrc = preferred_subscriber_ssrc;
+        }
+    }
+
+    if (mapping.subscriber_ssrc == 0)
+    {
+        mapping.subscriber_ssrc = generate_subscriber_ssrc_locked(
+            stream_id, publisher_session_id, subscriber_session_id, publisher_mid, subscriber_mid, kind, publisher_ssrc);
+    }
 
     mapping.created_at_milliseconds = now_milliseconds;
 
