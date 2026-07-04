@@ -588,8 +588,19 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
 
     const uint64_t next_sdp_session_version = session->sdp_session_version() + 1U;
 
-    auto answer = answer_factory_->build_whep_restart_answer(
-        session->stream_id(), *offer_summary, publisher->remote_offer_summary(), session->sdp_session_id(), next_sdp_session_version);
+    auto restart_outbound_media_sources = session->outbound_media_sources();
+
+    if (restart_outbound_media_sources.empty())
+    {
+        restart_outbound_media_sources = make_whep_outbound_media_sources(*offer_summary);
+    }
+
+    auto answer = answer_factory_->build_whep_restart_answer(session->stream_id(),
+                                                             *offer_summary,
+                                                             publisher->remote_offer_summary(),
+                                                             session->sdp_session_id(),
+                                                             next_sdp_session_version,
+                                                             std::move(restart_outbound_media_sources));
     if (!answer)
     {
         WEBRTC_LOG_WARN("WHEP build SDP restart answer failed session={} error={}", session_id, answer.error());
@@ -618,8 +629,9 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
     }
     generated_sdp_answer generated_answer = std::move(*answer);
 
-    stream_restarted_session restarted_session;
+    auto accepted_outbound_media_sources = filter_whep_outbound_media_sources(generated_answer.media_sources, runtime_offer_filter->accepted_mids);
 
+    stream_restarted_session restarted_session;
     restarted_session.kind = stream_session_kind::subscriber;
 
     restarted_session.stream_id = session->stream_id();
@@ -637,24 +649,27 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
 
     session->set_accepted_remote_media_mline_indexes(std::move(runtime_offer_filter->accepted_mline_indexes));
 
+    session->set_outbound_media_sources(std::move(accepted_outbound_media_sources));
+
     session->set_local_answer(std::move(generated_answer.sdp),
                               std::move(generated_answer.local_ice),
                               std::move(generated_answer.local_fingerprint),
                               generated_answer.sdp_session_id,
                               generated_answer.sdp_session_version);
-
     if (registry_ != nullptr)
     {
         registry_->notify_session_ice_restart(std::move(restarted_session));
     }
-    WEBRTC_LOG_INFO("WHEP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={}",
-                    session->stream_id(),
-                    session->session_id(),
-                    offer.size(),
-                    session->local_sdp_answer().size(),
-                    session->remote_offer_summary().media.size(),
-                    session->accepted_remote_media_mline_indexes().size());
-
+    WEBRTC_LOG_INFO(
+        "WHEP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={} "
+        "outbound_media_source_count={}",
+        session->stream_id(),
+        session->session_id(),
+        offer.size(),
+        session->local_sdp_answer().size(),
+        session->remote_offer_summary().media.size(),
+        session->accepted_remote_media_mline_indexes().size(),
+        session->outbound_media_sources().size());
     auto response = sdp_response(request, 200, session->local_sdp_answer());
 
     set_session_resource_headers(response, *session);

@@ -163,8 +163,6 @@ void subscriber_session::apply_remote_ice_restart_offer(std::string remote_sdp_o
 
     remote_ice_candidates_.clear();
 
-    outbound_media_sources_.clear();
-
     remote_ice_completed_ = false;
 
     state_ = session_state::sdp_received;

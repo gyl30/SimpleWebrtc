@@ -112,6 +112,14 @@ class webrtc_answer_factory
                                                           uint64_t sdp_session_id,
                                                           uint64_t sdp_session_version);
 
+    [[nodiscard]]
+    generated_sdp_answer_result build_whep_restart_answer(std::string_view stream_id,
+                                                          const sdp::webrtc_offer_summary& subscriber_offer,
+                                                          const sdp::webrtc_offer_summary& publisher_offer,
+                                                          uint64_t sdp_session_id,
+                                                          uint64_t sdp_session_version,
+                                                          std::vector<sdp::sdp_answer_media_source> media_sources);
+
    private:
     [[nodiscard]]
     std::expected<void, std::string> validate_config() const;
