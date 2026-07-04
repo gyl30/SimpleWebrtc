@@ -11783,14 +11783,10 @@ bool publisher_rtp_rid_is_selected_for_subscriber(const sdp::webrtc_offer_summar
 
     return false;
 }
+
 uint32_t find_whep_preferred_subscriber_ssrc(
     const stream_registry& registry, const media_peer_info& target_peer, std::string_view subscriber_mid, std::string_view kind, bool rtx)
 {
-    if (rtx)
-    {
-        return 0;
-    }
-
     if (target_peer.session_id.empty() || subscriber_mid.empty() || kind.empty())
     {
         return 0;
@@ -11805,11 +11801,6 @@ uint32_t find_whep_preferred_subscriber_ssrc(
 
     for (const auto& source : subscriber->outbound_media_sources())
     {
-        if (source.ssrc == 0)
-        {
-            continue;
-        }
-
         if (source.mid != subscriber_mid)
         {
             continue;
@@ -11818,6 +11809,11 @@ uint32_t find_whep_preferred_subscriber_ssrc(
         if (source.kind != kind)
         {
             continue;
+        }
+
+        if (rtx)
+        {
+            return source.rtx_repair_ssrc;
         }
 
         return source.ssrc;

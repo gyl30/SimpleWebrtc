@@ -2600,21 +2600,58 @@ const sdp_answer_media_source* find_answer_media_source(const sdp_answer_options
     return find_unique_answer_media_source_by_kind(options, media.kind);
 }
 
-void append_media_source_attributes(media_description& answer_media, const sdp_answer_media_source& source, std::string_view answer_msid_value)
+void append_media_source_attributes(media_description& answer_media,
+                                    const sdp_answer_media_source& source,
+                                    std::string_view answer_msid_value,
+                                    bool include_rtx_repair_source)
 {
-    const std::string ssrc = std::to_string(source.ssrc);
+    const std::string primary_ssrc = std::to_string(source.ssrc);
 
-    push_attribute(answer_media.attributes, "ssrc", ssrc + " cname:" + source.cname);
+    push_attribute(answer_media.attributes, "ssrc", primary_ssrc + " cname:" + source.cname);
 
-    std::string msid_value;
+    std::string primary_msid_value;
 
-    msid_value.reserve(ssrc.size() + answer_msid_value.size() + 7);
+    primary_msid_value.reserve(primary_ssrc.size() + answer_msid_value.size() + 7);
 
-    msid_value.append(ssrc);
-    msid_value.append(" msid:");
-    msid_value.append(answer_msid_value);
+    primary_msid_value.append(primary_ssrc);
+    primary_msid_value.append(" msid:");
+    primary_msid_value.append(answer_msid_value);
 
-    push_attribute(answer_media.attributes, "ssrc", std::move(msid_value));
+    push_attribute(answer_media.attributes, "ssrc", std::move(primary_msid_value));
+
+    if (!include_rtx_repair_source || source.rtx_repair_ssrc == 0)
+    {
+        return;
+    }
+
+    const std::string repair_ssrc = std::to_string(source.rtx_repair_ssrc);
+
+    push_attribute(answer_media.attributes, k_attribute_ssrc_group, "FID " + primary_ssrc + " " + repair_ssrc);
+
+    push_attribute(answer_media.attributes, "ssrc", repair_ssrc + " cname:" + source.cname);
+
+    std::string repair_msid_value;
+
+    repair_msid_value.reserve(repair_ssrc.size() + answer_msid_value.size() + 7);
+
+    repair_msid_value.append(repair_ssrc);
+    repair_msid_value.append(" msid:");
+    repair_msid_value.append(answer_msid_value);
+
+    push_attribute(answer_media.attributes, "ssrc", std::move(repair_msid_value));
+}
+
+bool answer_codecs_include_rtx(const std::vector<codec_info>& codecs)
+{
+    for (const auto& codec : codecs)
+    {
+        if (codec.name == "rtx" || codec.name == "RTX")
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 std::string make_candidate_value(const sdp_ice_candidate_options& candidate)
@@ -2889,7 +2926,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 
             if (media_source != nullptr)
             {
-                append_media_source_attributes(answer_media, *media_source, answer_msid_value);
+                append_media_source_attributes(answer_media, *media_source, answer_msid_value, answer_codecs_include_rtx(codecs));
             }
         }
     }

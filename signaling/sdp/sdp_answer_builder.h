@@ -29,6 +29,8 @@ struct sdp_answer_media_source
 
     uint32_t ssrc = 0;
 
+    uint32_t rtx_repair_ssrc = 0;
+
     std::string cname;
     std::string stream_id;
     std::string track_id;

@@ -233,6 +233,11 @@ std::vector<sdp::sdp_answer_media_source> make_whep_outbound_media_sources(const
         source.mid = media.mid;
         source.kind = media.kind;
         source.ssrc = make_whep_outbound_ssrc(used_ssrcs);
+        if (media.kind == "video" && sdp::media_has_rtx_codec(media))
+        {
+            source.rtx_repair_ssrc = make_whep_outbound_ssrc(used_ssrcs);
+        }
+
         source.cname = cname;
         source.track_id = make_whep_outbound_track_id(media);
 
@@ -329,6 +334,11 @@ std::vector<sdp::sdp_answer_media_source> make_reconnected_whep_outbound_media_s
         reconnected_source.stream_id = fresh_source.stream_id;
 
         reconnected_source.track_id = fresh_source.track_id;
+
+        if (reconnected_source.rtx_repair_ssrc == 0)
+        {
+            reconnected_source.rtx_repair_ssrc = fresh_source.rtx_repair_ssrc;
+        }
 
         if (reconnected_source.cname.empty())
         {

@@ -99,6 +99,38 @@ bool is_vp8_codec(const codec_info& codec)
 
     return codec.clock_rate == 90000;
 }
+
+bool is_rtx_codec(const codec_info& codec)
+{
+    if (!equals_ignore_case(codec.name, "rtx"))
+    {
+        return false;
+    }
+
+    return codec.clock_rate == 90000;
+}
+
+std::optional<uint16_t> parse_payload_type_text(std::string_view value)
+{
+    value = trim(value);
+
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    uint32_t payload_type = 0;
+
+    const auto result = std::from_chars(value.data(), value.data() + value.size(), payload_type);
+
+    if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || payload_type > 127U)
+    {
+        return std::nullopt;
+    }
+
+    return static_cast<uint16_t>(payload_type);
+}
+
 std::optional<std::string> find_fmtp_parameter(std::string_view fmtp, std::string_view key)
 {
     std::size_t start = 0;
@@ -133,6 +165,17 @@ std::optional<std::string> find_fmtp_parameter(std::string_view fmtp, std::strin
     }
 
     return std::nullopt;
+}
+std::optional<uint16_t> find_codec_apt_payload_type(const codec_info& codec)
+{
+    const auto apt = find_fmtp_parameter(codec.fmtp, "apt");
+
+    if (!apt.has_value())
+    {
+        return std::nullopt;
+    }
+
+    return parse_payload_type_text(*apt);
 }
 
 std::expected<std::optional<std::string>, std::string> find_unique_fmtp_parameter(std::string_view fmtp,
@@ -812,6 +855,136 @@ bool has_compatible_publisher_codec(const media_summary& publisher_media, const 
 
     return false;
 }
+const codec_info* find_selected_codec_by_payload_type(const std::vector<codec_info>& codecs, uint16_t payload_type)
+{
+    for (const auto& codec : codecs)
+    {
+        if (codec.payload_type == payload_type)
+        {
+            return &codec;
+        }
+    }
+
+    return nullptr;
+}
+
+const codec_info* find_compatible_publisher_primary_codec(const media_summary& publisher_media, const codec_info& subscriber_codec)
+{
+    for (const auto& publisher_codec : publisher_media.codecs)
+    {
+        if (!payload_type_exists(publisher_media.payload_types, publisher_codec.payload_type))
+        {
+            continue;
+        }
+
+        if (is_rtx_codec(publisher_codec))
+        {
+            continue;
+        }
+
+        std::optional<codec_info> normalized_publisher_codec = normalize_supported_codec(publisher_media, publisher_codec);
+
+        if (!normalized_publisher_codec.has_value())
+        {
+            continue;
+        }
+
+        if (!codecs_are_compatible(*normalized_publisher_codec, subscriber_codec))
+        {
+            continue;
+        }
+
+        return &publisher_codec;
+    }
+
+    return nullptr;
+}
+
+bool media_has_rtx_codec_for_apt(const media_summary& media, uint16_t apt_payload_type)
+{
+    for (const auto& codec : media.codecs)
+    {
+        if (!payload_type_exists(media.payload_types, codec.payload_type))
+        {
+            continue;
+        }
+
+        if (!is_rtx_codec(codec))
+        {
+            continue;
+        }
+
+        const auto codec_apt = find_codec_apt_payload_type(codec);
+
+        if (!codec_apt.has_value() || *codec_apt != apt_payload_type)
+        {
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+bool rtx_codec_is_answerable(const media_summary& subscriber_media,
+                             const media_summary& publisher_media,
+                             const codec_info& subscriber_rtx_codec,
+                             const std::vector<codec_info>& selected_codecs)
+{
+    if (subscriber_media.kind != "video" || publisher_media.kind != "video")
+    {
+        return false;
+    }
+
+    if (!is_rtx_codec(subscriber_rtx_codec))
+    {
+        return false;
+    }
+
+    if (!payload_type_exists(subscriber_media.payload_types, subscriber_rtx_codec.payload_type))
+    {
+        return false;
+    }
+
+    const auto subscriber_apt = find_codec_apt_payload_type(subscriber_rtx_codec);
+
+    if (!subscriber_apt.has_value())
+    {
+        return false;
+    }
+
+    const codec_info* selected_primary_codec = find_selected_codec_by_payload_type(selected_codecs, *subscriber_apt);
+
+    if (selected_primary_codec == nullptr)
+    {
+        return false;
+    }
+
+    const codec_info* publisher_primary_codec = find_compatible_publisher_primary_codec(publisher_media, *selected_primary_codec);
+
+    if (publisher_primary_codec == nullptr)
+    {
+        return false;
+    }
+
+    return media_has_rtx_codec_for_apt(publisher_media, publisher_primary_codec->payload_type);
+}
+
+void append_answerable_rtx_codecs(const media_summary& subscriber_media,
+                                  const media_summary& publisher_media,
+                                  std::vector<codec_info>& selected_codecs)
+{
+    for (const auto& subscriber_codec : subscriber_media.codecs)
+    {
+        if (!rtx_codec_is_answerable(subscriber_media, publisher_media, subscriber_codec, selected_codecs))
+        {
+            continue;
+        }
+
+        selected_codecs.push_back(subscriber_codec);
+    }
+}
 
 std::expected<void, std::string> validate_offer_media(const media_summary& media)
 {
@@ -928,6 +1101,7 @@ codec_negotiation_result negotiate_codecs(const media_summary& subscriber_media,
     {
         return make_media_error(subscriber_media, "has no publisher-compatible codecs");
     }
+    append_answerable_rtx_codecs(subscriber_media, publisher_media, selected_codecs);
 
     return selected_codecs;
 }
