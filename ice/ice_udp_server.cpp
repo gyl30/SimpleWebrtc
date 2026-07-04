@@ -11821,6 +11821,39 @@ uint32_t find_whep_preferred_subscriber_ssrc(
 
     return 0;
 }
+uint32_t find_whep_preferred_rtx_retransmit_subscriber_ssrc(const stream_registry& registry,
+                                                            const media_ssrc_mapping& primary_mapping,
+                                                            const media_payload_type_mapping& rtx_payload_type_mapping)
+{
+    if (primary_mapping.subscriber_session_id.empty() || rtx_payload_type_mapping.subscriber_mid.empty() || primary_mapping.kind.empty())
+    {
+        return 0;
+    }
+
+    const auto subscriber = registry.find_subscriber_by_session_id(primary_mapping.subscriber_session_id);
+
+    if (subscriber == nullptr)
+    {
+        return 0;
+    }
+
+    for (const auto& source : subscriber->outbound_media_sources())
+    {
+        if (source.mid != rtx_payload_type_mapping.subscriber_mid)
+        {
+            continue;
+        }
+
+        if (source.kind != primary_mapping.kind)
+        {
+            continue;
+        }
+
+        return source.rtx_repair_ssrc;
+    }
+
+    return 0;
+}
 
 std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(const media_route_result& route,
                                                                              const media_peer_info& target_peer,
@@ -12652,18 +12685,25 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_rtx_ssrc_mapping
         return std::nullopt;
     }
 
-    auto mapping_result = ssrc_mapper_->get_or_create_mapping(primary_mapping.stream_id,
-                                                              primary_mapping.publisher_session_id,
-                                                              primary_mapping.subscriber_session_id,
-                                                              primary_mapping.publisher_mid,
-                                                              rtx_payload_type_mapping.subscriber_mid,
-                                                              primary_mapping.kind,
-                                                              primary_mapping.publisher_rtx_repair_ssrc,
-                                                              now_milliseconds(),
-                                                              true,
-                                                              primary_mapping.publisher_ssrc,
-                                                              primary_mapping.publisher_rtx_repair_ssrc);
+    uint32_t preferred_subscriber_ssrc = 0;
 
+    if (registry_ != nullptr)
+    {
+        preferred_subscriber_ssrc = find_whep_preferred_rtx_retransmit_subscriber_ssrc(*registry_, primary_mapping, rtx_payload_type_mapping);
+    }
+
+    auto mapping_result = ssrc_mapper_->get_or_create_mapping_with_subscriber_ssrc(primary_mapping.stream_id,
+                                                                                   primary_mapping.publisher_session_id,
+                                                                                   primary_mapping.subscriber_session_id,
+                                                                                   primary_mapping.publisher_mid,
+                                                                                   rtx_payload_type_mapping.subscriber_mid,
+                                                                                   primary_mapping.kind,
+                                                                                   primary_mapping.publisher_rtx_repair_ssrc,
+                                                                                   preferred_subscriber_ssrc,
+                                                                                   now_milliseconds(),
+                                                                                   true,
+                                                                                   primary_mapping.publisher_ssrc,
+                                                                                   primary_mapping.publisher_rtx_repair_ssrc);
     if (!mapping_result)
     {
         WEBRTC_LOG_WARN("rtx ssrc mapping failed stream={} publisher_session={} subscriber_session={} primary_ssrc={} repair_ssrc={} error={}",
@@ -12675,6 +12715,23 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_rtx_ssrc_mapping
                         mapping_result.error());
 
         return std::nullopt;
+    }
+
+    if (mapping_result->packet_count == 1 && preferred_subscriber_ssrc != 0 && mapping_result->subscriber_ssrc != preferred_subscriber_ssrc)
+    {
+        WEBRTC_LOG_WARN(
+            "whep preferred subscriber rtx ssrc fallback stream={} publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} "
+            "kind={} publisher_primary_ssrc={} publisher_repair_ssrc={} preferred_subscriber_rtx_ssrc={} actual_subscriber_rtx_ssrc={}",
+            primary_mapping.stream_id,
+            primary_mapping.publisher_session_id,
+            primary_mapping.subscriber_session_id,
+            primary_mapping.publisher_mid,
+            rtx_payload_type_mapping.subscriber_mid,
+            primary_mapping.kind,
+            primary_mapping.publisher_ssrc,
+            primary_mapping.publisher_rtx_repair_ssrc,
+            preferred_subscriber_ssrc,
+            mapping_result->subscriber_ssrc);
     }
 
     if (mapping_result->packet_count == 1)
