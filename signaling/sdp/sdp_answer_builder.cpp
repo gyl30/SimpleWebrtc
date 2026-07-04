@@ -2527,6 +2527,52 @@ std::string make_answer_msid_value(answer_endpoint_role role,
     return make_msid_value(options, media);
 }
 
+const sdp_answer_media_source* find_answer_media_source(const sdp_answer_options& options, const media_summary& media)
+{
+    for (const auto& source : options.media_sources)
+    {
+        if (source.mid != media.mid)
+        {
+            continue;
+        }
+
+        if (source.kind != media.kind)
+        {
+            continue;
+        }
+
+        if (source.ssrc == 0)
+        {
+            continue;
+        }
+
+        return &source;
+    }
+
+    return nullptr;
+}
+
+std::string make_media_source_msid_value(const sdp_answer_media_source& source)
+{
+    std::string value;
+
+    value.reserve(source.stream_id.size() + source.track_id.size() + 1);
+
+    value.append(source.stream_id);
+    value.push_back(' ');
+    value.append(source.track_id);
+
+    return value;
+}
+
+void append_media_source_attributes(media_description& answer_media, const sdp_answer_media_source& source)
+{
+    const std::string ssrc = std::to_string(source.ssrc);
+
+    push_attribute(answer_media.attributes, "ssrc", ssrc + " cname:" + source.cname);
+
+    push_attribute(answer_media.attributes, "ssrc", ssrc + " msid:" + make_media_source_msid_value(source));
+}
 std::string make_candidate_value(const sdp_ice_candidate_options& candidate)
 {
     std::string value;
@@ -2790,9 +2836,19 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
     if (*answer_direction == media_direction::send_only || *answer_direction == media_direction::send_recv)
     {
         push_attribute(answer_media.attributes, "msid", make_answer_msid_value(role, options, media, forwarded_publisher_media));
-    }
-    auto identity_result = validate_accepted_answer_media_identity(media, answer_media);
 
+        if (role == answer_endpoint_role::whep)
+        {
+            const auto* media_source = find_answer_media_source(options, media);
+
+            if (media_source != nullptr)
+            {
+                append_media_source_attributes(answer_media, *media_source);
+            }
+        }
+    }
+
+    auto identity_result = validate_accepted_answer_media_identity(media, answer_media);
     if (!identity_result)
     {
         return std::unexpected(identity_result.error());

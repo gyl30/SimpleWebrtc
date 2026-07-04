@@ -1,11 +1,15 @@
 #include "server/whep_handler.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <random>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
-#include <optional>
-#include <limits>
+#include <vector>
 
 #include <boost/beast/http.hpp>
 
@@ -125,6 +129,151 @@ std::optional<std::string> read_whep_reconnect_session_id(http_request_t& reques
 
     return std::string(value);
 }
+
+bool is_primary_whep_media_source_kind(std::string_view kind) { return kind == "audio" || kind == "video"; }
+
+uint32_t make_whep_outbound_ssrc(std::unordered_set<uint32_t>& used_ssrcs)
+{
+    thread_local std::mt19937 generator(std::random_device{}());
+
+    std::uniform_int_distribution<uint32_t> distribution(1U, std::numeric_limits<uint32_t>::max());
+
+    for (uint32_t attempt = 0; attempt < 4096; ++attempt)
+    {
+        const uint32_t candidate = distribution(generator);
+
+        if (candidate == 0)
+        {
+            continue;
+        }
+
+        if (used_ssrcs.insert(candidate).second)
+        {
+            return candidate;
+        }
+    }
+
+    for (uint32_t candidate = 1; candidate < std::numeric_limits<uint32_t>::max(); ++candidate)
+    {
+        if (used_ssrcs.insert(candidate).second)
+        {
+            return candidate;
+        }
+    }
+
+    return 1;
+}
+
+std::string make_whep_outbound_source_cname()
+{
+    thread_local std::mt19937 generator(std::random_device{}());
+
+    std::uniform_int_distribution<uint32_t> distribution(0U, 15U);
+
+    std::string cname;
+
+    cname.reserve(19);
+
+    cname.append("sw-");
+
+    for (std::size_t index = 0; index < 16; ++index)
+    {
+        const uint32_t value = distribution(generator);
+
+        if (value < 10)
+        {
+            cname.push_back(static_cast<char>('0' + value));
+        }
+        else
+        {
+            cname.push_back(static_cast<char>('a' + (value - 10)));
+        }
+    }
+
+    return cname;
+}
+
+std::string make_whep_outbound_track_id(const sdp::media_summary& media)
+{
+    std::string track_id;
+
+    track_id.reserve(media.kind.size() + media.mid.size() + 1);
+
+    track_id.append(media.kind);
+    track_id.push_back('-');
+    track_id.append(media.mid);
+
+    return track_id;
+}
+
+std::vector<sdp::sdp_answer_media_source> make_whep_outbound_media_sources(const sdp::webrtc_offer_summary& offer)
+{
+    std::vector<sdp::sdp_answer_media_source> sources;
+
+    sources.reserve(offer.media.size());
+
+    std::unordered_set<uint32_t> used_ssrcs;
+
+    const std::string cname = make_whep_outbound_source_cname();
+
+    for (const auto& media : offer.media)
+    {
+        if (!is_primary_whep_media_source_kind(media.kind))
+        {
+            continue;
+        }
+
+        if (media.mid.empty())
+        {
+            continue;
+        }
+
+        sdp::sdp_answer_media_source source;
+
+        source.mid = media.mid;
+        source.kind = media.kind;
+        source.ssrc = make_whep_outbound_ssrc(used_ssrcs);
+        source.cname = cname;
+        source.track_id = make_whep_outbound_track_id(media);
+
+        sources.push_back(std::move(source));
+    }
+
+    return sources;
+}
+
+bool whep_accepted_mids_contains(const std::vector<std::string>& accepted_mids, std::string_view mid)
+{
+    for (const auto& accepted_mid : accepted_mids)
+    {
+        if (accepted_mid == mid)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::vector<sdp::sdp_answer_media_source> filter_whep_outbound_media_sources(const std::vector<sdp::sdp_answer_media_source>& sources,
+                                                                             const std::vector<std::string>& accepted_mids)
+{
+    std::vector<sdp::sdp_answer_media_source> filtered_sources;
+
+    filtered_sources.reserve(sources.size());
+
+    for (const auto& source : sources)
+    {
+        if (!whep_accepted_mids_contains(accepted_mids, source.mid))
+        {
+            continue;
+        }
+
+        filtered_sources.push_back(source);
+    }
+
+    return filtered_sources;
+}
 }    // namespace
 
 whep_handler::whep_handler(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
@@ -231,7 +380,11 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         reconnected_session.old_local_ice_ufrag = reconnect_previous_session->local_ice().ufrag;
         reconnected_session.old_remote_ice_ufrag = reconnect_previous_session->remote_offer_summary().ice_ufrag;
     }
-    auto generated_answer = answer_factory_->build_whep_answer(stream_id, *offer_summary, publisher->remote_offer_summary());
+    auto outbound_media_sources = make_whep_outbound_media_sources(*offer_summary);
+
+    auto generated_answer =
+        answer_factory_->build_whep_answer(stream_id, *offer_summary, publisher->remote_offer_summary(), std::move(outbound_media_sources));
+
     if (!generated_answer)
     {
         WEBRTC_LOG_WARN("WHEP build SDP answer failed stream={} error={}", stream_id, generated_answer.error());
@@ -305,15 +458,19 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     const auto& session = *session_result;
 
-    session->set_accepted_remote_media_mline_indexes(std::move(runtime_offer_filter->accepted_mline_indexes));
     generated_sdp_answer generated = std::move(*generated_answer);
+
+    auto accepted_outbound_media_sources = filter_whep_outbound_media_sources(generated.media_sources, runtime_offer_filter->accepted_mids);
+
+    session->set_accepted_remote_media_mline_indexes(std::move(runtime_offer_filter->accepted_mline_indexes));
+
+    session->set_outbound_media_sources(std::move(accepted_outbound_media_sources));
 
     session->set_local_answer(std::move(generated.sdp),
                               std::move(generated.local_ice),
                               std::move(generated.local_fingerprint),
                               generated.sdp_session_id,
                               generated.sdp_session_version);
-
     if (reconnect_session_id.has_value())
     {
         reconnected_session.new_session_id = session->session_id();

@@ -6,6 +6,7 @@
 #include <expected>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "ice/ice_credentials.h"
 #include "signaling/sdp/sdp_answer_builder.h"
@@ -55,6 +56,8 @@ struct generated_sdp_answer
 
     uint64_t sdp_session_id = 0;
     uint64_t sdp_session_version = 0;
+
+    std::vector<sdp::sdp_answer_media_source> media_sources;
 };
 
 using webrtc_answer_factory_config_result = std::expected<webrtc_answer_factory_config, std::string>;
@@ -90,6 +93,12 @@ class webrtc_answer_factory
     generated_sdp_answer_result build_whep_answer(std::string_view stream_id,
                                                   const sdp::webrtc_offer_summary& subscriber_offer,
                                                   const sdp::webrtc_offer_summary& publisher_offer);
+
+    [[nodiscard]]
+    generated_sdp_answer_result build_whep_answer(std::string_view stream_id,
+                                                  const sdp::webrtc_offer_summary& subscriber_offer,
+                                                  const sdp::webrtc_offer_summary& publisher_offer,
+                                                  std::vector<sdp::sdp_answer_media_source> media_sources);
     [[nodiscard]]
     generated_sdp_answer_result build_whip_restart_answer(std::string_view stream_id,
                                                           const sdp::webrtc_offer_summary& offer,
@@ -117,14 +126,17 @@ class webrtc_answer_factory
     generated_sdp_answer_result build_answer(bool is_whip,
                                              std::string_view stream_id,
                                              const sdp::webrtc_offer_summary& offer,
-                                             const sdp::webrtc_offer_summary* whep_publisher_offer);
+                                             const sdp::webrtc_offer_summary* whep_publisher_offer,
+                                             std::vector<sdp::sdp_answer_media_source> media_sources);
+
     [[nodiscard]]
     generated_sdp_answer_result build_answer_with_origin(bool is_whip,
                                                          std::string_view stream_id,
                                                          const sdp::webrtc_offer_summary& offer,
                                                          const sdp::webrtc_offer_summary* whep_publisher_offer,
                                                          uint64_t sdp_session_id,
-                                                         uint64_t sdp_session_version);
+                                                         uint64_t sdp_session_version,
+                                                         std::vector<sdp::sdp_answer_media_source> media_sources);
     [[nodiscard]]
     static uint64_t make_initial_session_id();
 
