@@ -92,8 +92,9 @@ uint64_t subscriber_session::sdp_session_version() const { return sdp_session_ve
 const std::vector<remote_ice_candidate>& subscriber_session::remote_ice_candidates() const { return remote_ice_candidates_; }
 
 bool subscriber_session::remote_ice_completed() const { return remote_ice_completed_; }
-
 const std::vector<int>& subscriber_session::accepted_remote_media_mline_indexes() const { return accepted_remote_media_mline_indexes_; }
+
+const std::vector<sdp::sdp_answer_media_source>& subscriber_session::outbound_media_sources() const { return outbound_media_sources_; }
 
 session_state subscriber_session::state() const { return state_; }
 
@@ -147,6 +148,13 @@ void subscriber_session::set_accepted_remote_media_mline_indexes(std::vector<int
     updated_at_milliseconds_ = now_milliseconds();
 }
 
+void subscriber_session::set_outbound_media_sources(std::vector<sdp::sdp_answer_media_source> outbound_media_sources)
+{
+    outbound_media_sources_ = std::move(outbound_media_sources);
+
+    updated_at_milliseconds_ = now_milliseconds();
+}
+
 void subscriber_session::apply_remote_ice_restart_offer(std::string remote_sdp_offer, sdp::webrtc_offer_summary remote_offer_summary)
 {
     remote_sdp_offer_ = std::move(remote_sdp_offer);
@@ -154,6 +162,8 @@ void subscriber_session::apply_remote_ice_restart_offer(std::string remote_sdp_o
     remote_offer_summary_ = std::move(remote_offer_summary);
 
     remote_ice_candidates_.clear();
+
+    outbound_media_sources_.clear();
 
     remote_ice_completed_ = false;
 

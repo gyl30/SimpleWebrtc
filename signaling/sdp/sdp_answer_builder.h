@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <vector>
 
 #include "signaling/sdp/sdp_summary.h"
 #include "signaling/sdp/sdp_types.h"
@@ -20,6 +21,19 @@ struct sdp_ice_candidate_options
     uint16_t port = 0;
     std::string type = "host";
 };
+
+struct sdp_answer_media_source
+{
+    std::string mid;
+    std::string kind;
+
+    uint32_t ssrc = 0;
+
+    std::string cname;
+    std::string stream_id;
+    std::string track_id;
+};
+
 struct sdp_answer_options
 {
     std::string origin_username = "-";
@@ -55,6 +69,7 @@ struct sdp_answer_options
 
     bool end_of_candidates = true;
     std::string local_stream_id = "-";
+    std::vector<sdp_answer_media_source> media_sources;
 };
 
 using sdp_answer_result = std::expected<session_description, std::string>;

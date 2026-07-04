@@ -11,6 +11,7 @@
 #include "ice/ice_credentials.h"
 #include "session/session_state.h"
 #include "signaling/sdp/sdp_summary.h"
+#include "signaling/sdp/sdp_answer_builder.h"
 
 namespace webrtc
 {
@@ -58,6 +59,8 @@ class subscriber_session
 
     [[nodiscard]] const std::vector<int>& accepted_remote_media_mline_indexes() const;
 
+    [[nodiscard]] const std::vector<sdp::sdp_answer_media_source>& outbound_media_sources() const;
+
     [[nodiscard]] session_state state() const;
 
     [[nodiscard]] std::string state_string() const;
@@ -78,6 +81,7 @@ class subscriber_session
                           uint64_t sdp_session_version);
 
     void set_accepted_remote_media_mline_indexes(std::vector<int> accepted_remote_media_mline_indexes);
+    void set_outbound_media_sources(std::vector<sdp::sdp_answer_media_source> outbound_media_sources);
     void apply_remote_ice_restart_offer(std::string remote_sdp_offer, sdp::webrtc_offer_summary remote_offer_summary);
 
     [[nodiscard]] std::expected<void, std::string> add_remote_ice_candidate(remote_ice_candidate candidate);
@@ -98,6 +102,7 @@ class subscriber_session
 
     std::vector<remote_ice_candidate> remote_ice_candidates_;
     std::vector<int> accepted_remote_media_mline_indexes_;
+    std::vector<sdp::sdp_answer_media_source> outbound_media_sources_;
     bool remote_ice_completed_ = false;
 
     session_state state_ = session_state::created;
