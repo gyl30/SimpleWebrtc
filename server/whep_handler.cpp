@@ -695,12 +695,16 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
         return json_error_response(
             request, 400, make_prefixed_error("failed to build runtime subscriber offer summary: ", runtime_offer_filter.error()));
     }
-    auto restart_compatibility = sdp::validate_ice_restart_offer_compatibility(session->remote_offer_summary(), runtime_offer_filter->offer_summary);
+    sdp::ice_restart_offer_compatibility_options restart_options;
+
+    restart_options.allow_header_extension_changes = true;
+
+    auto restart_compatibility =
+        sdp::validate_ice_restart_offer_compatibility(session->remote_offer_summary(), runtime_offer_filter->offer_summary, restart_options);
 
     if (!restart_compatibility)
     {
         WEBRTC_LOG_WARN("WHEP SDP ICE restart incompatible offer session={} error={}", session_id, restart_compatibility.error());
-
         return json_error_response(request,
                                    409,
                                    k_whep_ice_restart_incompatible_offer_error,
