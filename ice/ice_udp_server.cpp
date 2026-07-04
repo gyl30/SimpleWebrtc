@@ -603,11 +603,11 @@ bool lifecycle_active_runtime_state_is_empty(const lifecycle_debug_snapshot& sna
            snapshot.identity_authority_forward_binding_count == 0 && snapshot.rtcp_report_source_count == 0 &&
            snapshot.rtcp_report_stats_source_count == 0 && snapshot.rtcp_transport_cc_source_count == 0 &&
            snapshot.rtcp_transport_cc_pending_packet_count == 0 && snapshot.rtp_cache_packet_count == 0 &&
-           snapshot.rtx_retransmission_index_count == 0 && snapshot.nack_retransmit_throttle_count == 0 &&
-           snapshot.fir_sequence_number_state_count == 0 && snapshot.publisher_video_ssrc_state_count == 0 &&
-           snapshot.pending_republish_keyframe_request_count == 0 && snapshot.selected_rid_layer_state_count == 0 &&
-           snapshot.pending_selected_rid_keyframe_request_count == 0 && snapshot.selected_rid_keyframe_pending_metadata_count == 0 &&
-           snapshot.extmap_rewrite_state_count == 0;
+           snapshot.rtx_sequence_allocator_count == 0 && snapshot.rtx_retransmission_index_count == 0 &&
+           snapshot.nack_retransmit_throttle_count == 0 && snapshot.fir_sequence_number_state_count == 0 &&
+           snapshot.publisher_video_ssrc_state_count == 0 && snapshot.pending_republish_keyframe_request_count == 0 &&
+           snapshot.selected_rid_layer_state_count == 0 && snapshot.pending_selected_rid_keyframe_request_count == 0 &&
+           snapshot.selected_rid_keyframe_pending_metadata_count == 0 && snapshot.extmap_rewrite_state_count == 0;
 }
 
 bool lifecycle_delayed_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
@@ -4154,6 +4154,11 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
 
         cache_erased = true;
     }
+    if (rtx_sequence_allocator_ != nullptr)
+    {
+        rtx_sequence_allocator_->forget_stream(stream_id);
+    }
+
     if (rtx_retransmission_index_ != nullptr)
     {
         rtx_retransmission_index_->forget_stream(stream_id);
@@ -5610,6 +5615,12 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             snapshot.rtp_cache_streams.push_back(std::move(entry));
         }
     }
+
+    if (rtx_sequence_allocator_ != nullptr)
+    {
+        snapshot.rtx_sequence_allocator_count = to_debug_count(rtx_sequence_allocator_->size());
+    }
+
     if (rtx_retransmission_index_ != nullptr)
     {
         snapshot.rtx_retransmission_index_count = to_debug_count(rtx_retransmission_index_->size());
@@ -5916,6 +5927,11 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         if (snapshot.rtp_cache_packet_count != 0)
         {
             add_lifecycle_residual(snapshot, "rtp cache packet remains count=" + std::to_string(snapshot.rtp_cache_packet_count));
+        }
+
+        if (snapshot.rtx_sequence_allocator_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "rtx sequence allocator remains count=" + std::to_string(snapshot.rtx_sequence_allocator_count));
         }
 
         if (snapshot.rtx_retransmission_index_count != 0)
