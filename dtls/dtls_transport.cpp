@@ -720,6 +720,89 @@ struct dtls_transport::impl
 
         peers_by_endpoint_.erase(std::string(remote_endpoint));
     }
+    bool move_peer(std::string_view old_remote_endpoint, std::string_view new_remote_endpoint, dtls_peer_identity identity)
+    {
+        if (old_remote_endpoint.empty() || new_remote_endpoint.empty())
+        {
+            return false;
+        }
+
+        const auto validation_result = validate_dtls_peer_identity(identity);
+
+        if (!validation_result)
+        {
+            WEBRTC_LOG_WARN("dtls peer move rejected old_remote={} new_remote={} session={} stream={} generation={} error={}",
+                            old_remote_endpoint,
+                            new_remote_endpoint,
+                            identity.session_id,
+                            identity.stream_id,
+                            identity.generation,
+                            validation_result.error());
+
+            return false;
+        }
+
+        std::lock_guard lock(mutex_);
+
+        auto old_iterator = peers_by_endpoint_.find(std::string(old_remote_endpoint));
+
+        if (old_iterator == peers_by_endpoint_.end())
+        {
+            return false;
+        }
+
+        const bool same_endpoint = old_remote_endpoint == new_remote_endpoint;
+
+        if (same_endpoint)
+        {
+            old_iterator->second.identity = std::move(identity);
+
+            WEBRTC_LOG_INFO(
+                "dtls peer identity migrated in place remote={} session={} stream={} generation={} handshake_done={} fingerprint_verified={} "
+                "keying_material={}",
+                new_remote_endpoint,
+                old_iterator->second.identity.session_id,
+                old_iterator->second.identity.stream_id,
+                old_iterator->second.identity.generation,
+                old_iterator->second.handshake_done ? 1 : 0,
+                old_iterator->second.fingerprint_verified ? 1 : 0,
+                old_iterator->second.keying_material.has_value() ? 1 : 0);
+
+            return true;
+        }
+
+        dtls_peer_context peer = std::move(old_iterator->second);
+
+        peers_by_endpoint_.erase(old_iterator);
+
+        peers_by_endpoint_.erase(std::string(new_remote_endpoint));
+
+        peer.identity = std::move(identity);
+
+        const bool handshake_done = peer.handshake_done;
+        const bool fingerprint_verified = peer.fingerprint_verified;
+        const bool keying_material_ready = peer.keying_material.has_value();
+
+        const std::string session_id = peer.identity.session_id;
+        const std::string stream_id = peer.identity.stream_id;
+        const std::string generation = peer.identity.generation;
+
+        peers_by_endpoint_[std::string(new_remote_endpoint)] = std::move(peer);
+
+        WEBRTC_LOG_INFO(
+            "dtls peer migrated old_remote={} new_remote={} session={} stream={} generation={} handshake_done={} fingerprint_verified={} "
+            "keying_material={}",
+            old_remote_endpoint,
+            new_remote_endpoint,
+            session_id,
+            stream_id,
+            generation,
+            handshake_done ? 1 : 0,
+            fingerprint_verified ? 1 : 0,
+            keying_material_ready ? 1 : 0);
+
+        return true;
+    }
 
     dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)
     {
@@ -1341,6 +1424,11 @@ void dtls_transport::remember_peer(std::string_view remote_endpoint, dtls_peer_i
 dtls_transport_packet_result dtls_transport::close_peer(std::string_view remote_endpoint) { return impl_->close_peer(remote_endpoint); }
 
 void dtls_transport::forget_peer(std::string_view remote_endpoint) { impl_->forget_peer(remote_endpoint); }
+
+bool dtls_transport::move_peer(std::string_view old_remote_endpoint, std::string_view new_remote_endpoint, dtls_peer_identity identity)
+{
+    return impl_->move_peer(old_remote_endpoint, new_remote_endpoint, std::move(identity));
+}
 
 dtls_transport_packet_result dtls_transport::handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)
 {

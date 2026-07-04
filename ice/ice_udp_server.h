@@ -714,6 +714,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void forget_peer_transport_state(std::string_view remote_address);
 
+    void forget_peer_runtime_state_without_dtls_srtp(std::string_view remote_address);
+
+    [[nodiscard]]
+    bool migrate_peer_transport_state_for_ice_restart(std::string_view old_remote_address,
+                                                      std::string_view new_remote_address,
+                                                      const dtls_peer_identity& identity);
+
     void touch_endpoint_activity(const boost::asio::ip::udp::endpoint& remote_endpoint);
 
     void schedule_endpoint_idle_cleanup();

@@ -504,6 +504,74 @@ struct srtp_transport::impl
         peers_by_endpoint_.erase(std::string(remote_endpoint));
     }
 
+    bool move_peer(std::string_view old_remote_endpoint, std::string_view new_remote_endpoint, const dtls_peer_identity& identity)
+    {
+        if (old_remote_endpoint.empty() || new_remote_endpoint.empty())
+        {
+            return false;
+        }
+
+        std::lock_guard lock(mutex_);
+
+        auto old_iterator = peers_by_endpoint_.find(std::string(old_remote_endpoint));
+
+        if (old_iterator == peers_by_endpoint_.end())
+        {
+            return false;
+        }
+
+        const bool same_endpoint = old_remote_endpoint == new_remote_endpoint;
+
+        if (same_endpoint)
+        {
+            bind_peer_identity(old_iterator->second, identity);
+
+            WEBRTC_LOG_INFO(
+                "srtp peer identity migrated in place remote={} session={} stream={} generation={} sessions_ready={} inbound_packets={} "
+                "outbound_packets={}",
+                new_remote_endpoint,
+                old_iterator->second.session_id,
+                old_iterator->second.stream_id,
+                old_iterator->second.generation,
+                old_iterator->second.sessions_ready ? 1 : 0,
+                old_iterator->second.inbound_packet_count,
+                old_iterator->second.outbound_packet_count);
+
+            return true;
+        }
+
+        srtp_peer_context peer = std::move(old_iterator->second);
+
+        peers_by_endpoint_.erase(old_iterator);
+
+        peers_by_endpoint_.erase(std::string(new_remote_endpoint));
+
+        bind_peer_identity(peer, identity);
+
+        const bool sessions_ready = peer.sessions_ready;
+        const uint64_t inbound_packet_count = peer.inbound_packet_count;
+        const uint64_t outbound_packet_count = peer.outbound_packet_count;
+
+        const std::string session_id = peer.session_id;
+        const std::string stream_id = peer.stream_id;
+        const std::string generation = peer.generation;
+
+        peers_by_endpoint_[std::string(new_remote_endpoint)] = std::move(peer);
+
+        WEBRTC_LOG_INFO(
+            "srtp peer migrated old_remote={} new_remote={} session={} stream={} generation={} sessions_ready={} inbound_packets={} "
+            "outbound_packets={}",
+            old_remote_endpoint,
+            new_remote_endpoint,
+            session_id,
+            stream_id,
+            generation,
+            sessions_ready ? 1 : 0,
+            inbound_packet_count,
+            outbound_packet_count);
+
+        return true;
+    }
     std::size_t peer_count() const
     {
         std::lock_guard lock(mutex_);
@@ -646,6 +714,11 @@ srtp_transport_result srtp_transport::protect_outbound_packet(std::span<const ui
 }
 
 void srtp_transport::forget_peer(std::string_view remote_endpoint) { impl_->forget_peer(remote_endpoint); }
+
+bool srtp_transport::move_peer(std::string_view old_remote_endpoint, std::string_view new_remote_endpoint, const dtls_peer_identity& identity)
+{
+    return impl_->move_peer(old_remote_endpoint, new_remote_endpoint, identity);
+}
 
 std::size_t srtp_transport::peer_count() const { return impl_->peer_count(); }
 

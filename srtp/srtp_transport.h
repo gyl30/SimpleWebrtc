@@ -122,6 +122,9 @@ class srtp_transport
 
     void forget_peer(std::string_view remote_endpoint);
 
+    [[nodiscard]]
+    bool move_peer(std::string_view old_remote_endpoint, std::string_view new_remote_endpoint, const dtls_peer_identity& identity);
+
     [[nodiscard]] std::size_t peer_count() const;
 
    private:

@@ -7374,8 +7374,6 @@ void ice_udp_server::register_session_removed_callback()
 
             self->retire_session_endpoint_for_ice_restart(restarted_session, "ice restart callback");
 
-            self->forget_session(restarted_session.session_id);
-
             self->schedule_lifecycle_snapshot_log("ice restart callback", restarted_session.stream_id, restarted_session.session_id);
         });
     registry_->set_publisher_republish_callback(
@@ -8884,15 +8882,28 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const boo
 
         if (!selection_result->previous_remote_address.empty())
         {
-            forget_peer_transport_state(selection_result->previous_remote_address);
+            bool transport_migrated = false;
 
-            WEBRTC_LOG_INFO("ice selected candidate pair replaced stream={} session={} old_remote={} new_remote={}",
+            auto expected_identity = current_dtls_identity_for_session(session_id);
+
+            if (expected_identity.has_value())
+            {
+                transport_migrated =
+                    migrate_peer_transport_state_for_ice_restart(selection_result->previous_remote_address, remote_address, *expected_identity);
+            }
+
+            if (!transport_migrated)
+            {
+                forget_peer_transport_state(selection_result->previous_remote_address);
+            }
+
+            WEBRTC_LOG_INFO("ice selected candidate pair replaced stream={} session={} old_remote={} new_remote={} transport_migrated={}",
                             stream_id,
                             session_id,
                             selection_result->previous_remote_address,
-                            remote_address);
+                            remote_address,
+                            transport_migrated ? 1 : 0);
         }
-
         if (selection_result->remote_address_reused_by_different_session && !selection_result->replaced_session_id.empty())
         {
             forget_session_runtime_state(selection_result->replaced_session_id);
@@ -8921,17 +8932,26 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const boo
         {
             if (transport_peer_refresh_required && !selection_changed && !selection_result->remote_address_reused_by_different_session)
             {
-                /*
-                 * Same selected five-tuple, but DTLS identity changed because ICE
-                 * credentials changed. Drop old local transport/runtime state before
-                 * remembering the peer again for the new ICE generation.
-                 */
-                forget_peer_transport_state(remote_address);
+                bool transport_migrated = false;
 
-                WEBRTC_LOG_INFO(
-                    "ice selected candidate pair transport refreshed stream={} session={} remote={}", stream_id, session_id, remote_address);
+                auto expected_identity = current_dtls_identity_for_session(session_id);
+
+                if (expected_identity.has_value())
+                {
+                    transport_migrated = migrate_peer_transport_state_for_ice_restart(remote_address, remote_address, *expected_identity);
+                }
+
+                if (!transport_migrated)
+                {
+                    forget_peer_transport_state(remote_address);
+                }
+
+                WEBRTC_LOG_INFO("ice selected candidate pair transport refreshed stream={} session={} remote={} transport_migrated={}",
+                                stream_id,
+                                session_id,
+                                remote_address,
+                                transport_migrated ? 1 : 0);
             }
-
             if (publisher != nullptr)
             {
                 publisher->set_state(session_state::ice_connected);
@@ -17164,6 +17184,109 @@ void ice_udp_server::forget_peer_transport_state(std::string_view remote_address
                     transport_cc_forgot ? 1 : 0);
 }
 
+void ice_udp_server::forget_peer_runtime_state_without_dtls_srtp(std::string_view remote_address)
+{
+    if (remote_address.empty())
+    {
+        return;
+    }
+
+    bool router_forgot = false;
+    bool track_forgot = false;
+    bool rtcp_forgot = false;
+    bool transport_cc_forgot = false;
+
+    if (media_router_ != nullptr)
+    {
+        media_router_->forget_peer(remote_address);
+
+        router_forgot = true;
+    }
+
+    if (track_resolver_ != nullptr)
+    {
+        track_resolver_->forget_peer(remote_address);
+
+        track_forgot = true;
+    }
+
+    if (identity_authority_ != nullptr)
+    {
+        identity_authority_->forget_peer(remote_address);
+    }
+
+    if (rtcp_report_service_ != nullptr)
+    {
+        rtcp_report_service_->forget_peer(remote_address);
+
+        rtcp_forgot = true;
+    }
+
+    if (rtcp_transport_cc_feedback_service_ != nullptr)
+    {
+        rtcp_transport_cc_feedback_service_->forget_peer(remote_address);
+
+        transport_cc_forgot = true;
+    }
+
+    WEBRTC_LOG_INFO("ice udp peer runtime state forgotten without dtls srtp remote={} router={} track={} rtcp={} transport_cc={}",
+                    remote_address,
+                    router_forgot ? 1 : 0,
+                    track_forgot ? 1 : 0,
+                    rtcp_forgot ? 1 : 0,
+                    transport_cc_forgot ? 1 : 0);
+}
+
+bool ice_udp_server::migrate_peer_transport_state_for_ice_restart(std::string_view old_remote_address,
+                                                                  std::string_view new_remote_address,
+                                                                  const dtls_peer_identity& identity)
+{
+    if (old_remote_address.empty() || new_remote_address.empty())
+    {
+        return false;
+    }
+
+    bool dtls_migrated = false;
+    bool srtp_migrated = false;
+
+    if (dtls_transport_ != nullptr)
+    {
+        dtls_migrated = dtls_transport_->move_peer(old_remote_address, new_remote_address, identity);
+    }
+
+    if (srtp_transport_ != nullptr)
+    {
+        srtp_migrated = srtp_transport_->move_peer(old_remote_address, new_remote_address, identity);
+    }
+
+    if (!dtls_migrated && !srtp_migrated)
+    {
+        WEBRTC_LOG_DEBUG("ice udp peer transport migration skipped old_remote={} new_remote={} session={} stream={} generation={}",
+                         old_remote_address,
+                         new_remote_address,
+                         identity.session_id,
+                         identity.stream_id,
+                         identity.generation);
+
+        return false;
+    }
+
+    if (old_remote_address != new_remote_address)
+    {
+        forget_peer_runtime_state_without_dtls_srtp(old_remote_address);
+    }
+
+    WEBRTC_LOG_INFO("ice udp peer transport state migrated old_remote={} new_remote={} session={} stream={} generation={} dtls={} srtp={}",
+                    old_remote_address,
+                    new_remote_address,
+                    identity.session_id,
+                    identity.stream_id,
+                    identity.generation,
+                    dtls_migrated ? 1 : 0,
+                    srtp_migrated ? 1 : 0);
+
+    return true;
+}
 void ice_udp_server::erase_candidate_pairs_for_session_locked(std::string_view session_id)
 {
     for (auto iterator = candidate_pairs_by_key_.begin(); iterator != candidate_pairs_by_key_.end();)

@@ -86,6 +86,9 @@ class dtls_transport
 
     void forget_peer(std::string_view remote_endpoint);
 
+    [[nodiscard]]
+    bool move_peer(std::string_view old_remote_endpoint, std::string_view new_remote_endpoint, dtls_peer_identity identity);
+
     [[nodiscard]] dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint);
 
     [[nodiscard]] dtls_timeout_event_list handle_timeouts();
