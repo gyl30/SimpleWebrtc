@@ -85,6 +85,28 @@ std::expected<void, std::string> validate_rewrite_options(const rtp_packet_rewri
         return make_error("rtp rewrite payload type is out of range");
     }
 
+    for (const auto& extension : options.ensured_header_extensions)
+    {
+        if (extension.id == 0)
+        {
+            return make_error("rtp ensure header extension id is zero");
+        }
+
+        if (extension.id >= 15)
+        {
+            return make_error("rtp ensure one-byte header extension id is out of range");
+        }
+
+        if (extension.payload.empty())
+        {
+            return make_error("rtp ensure header extension payload is empty");
+        }
+
+        if (extension.payload.size() > 16)
+        {
+            return make_error("rtp ensure one-byte header extension payload is too large");
+        }
+    }
     for (const auto& extension : options.header_extensions)
     {
         if (extension.id == 0)
@@ -148,6 +170,236 @@ std::expected<void, std::string> rewrite_header_extensions(std::vector<uint8_t>&
         if (!rewrite_result)
         {
             return std::unexpected(rewrite_result.error());
+        }
+    }
+
+    return {};
+}
+struct one_byte_header_extension_item
+{
+    uint8_t id = 0;
+
+    std::vector<uint8_t> payload;
+};
+
+std::size_t make_rtp_extension_insert_offset(const rtp_packet_header& header) { return 12 + static_cast<std::size_t>(header.csrc_count) * 4; }
+
+std::vector<uint8_t> build_one_byte_header_extension_payload(const std::vector<one_byte_header_extension_item>& items)
+{
+    std::vector<uint8_t> payload;
+
+    for (const auto& item : items)
+    {
+        if (item.id == 0 || item.id >= 15)
+        {
+            continue;
+        }
+
+        if (item.payload.empty() || item.payload.size() > 16)
+        {
+            continue;
+        }
+
+        payload.push_back(static_cast<uint8_t>((item.id << 4U) | static_cast<uint8_t>(item.payload.size() - 1)));
+
+        payload.insert(payload.end(), item.payload.begin(), item.payload.end());
+    }
+
+    const std::size_t padding_size = (4 - (payload.size() % 4)) % 4;
+
+    for (std::size_t index = 0; index < padding_size; ++index)
+    {
+        payload.push_back(0);
+    }
+
+    return payload;
+}
+
+std::expected<std::vector<one_byte_header_extension_item>, std::string> collect_one_byte_header_extensions(const std::vector<uint8_t>& packet,
+                                                                                                           const rtp_packet_header& header)
+{
+    std::vector<one_byte_header_extension_item> items;
+
+    if (!header.extension)
+    {
+        return items;
+    }
+
+    if (header.extension_format != rtp_header_extension_format::one_byte)
+    {
+        return make_error("rtp ensure collect only supports one-byte header extension");
+    }
+
+    for (const auto& extension : header.header_extensions)
+    {
+        if (extension.id == 0 || extension.id >= 15)
+        {
+            continue;
+        }
+
+        if (extension.offset + extension.size > packet.size())
+        {
+            return make_error("rtp ensure collect extension payload is truncated");
+        }
+
+        one_byte_header_extension_item item;
+
+        item.id = extension.id;
+        item.payload.assign(packet.begin() + static_cast<std::ptrdiff_t>(extension.offset),
+                            packet.begin() + static_cast<std::ptrdiff_t>(extension.offset + extension.size));
+
+        items.push_back(std::move(item));
+    }
+    return items;
+}
+
+std::expected<void, std::string> insert_new_one_byte_header_extension_block(std::vector<uint8_t>& packet,
+                                                                            const rtp_packet_header& header,
+                                                                            const rtp_header_extension_ensure& extension)
+{
+    const std::size_t insert_offset = make_rtp_extension_insert_offset(header);
+
+    if (insert_offset > packet.size())
+    {
+        return make_error("rtp ensure extension insert offset is truncated");
+    }
+
+    one_byte_header_extension_item item;
+
+    item.id = extension.id;
+    item.payload = extension.payload;
+
+    std::vector<one_byte_header_extension_item> items;
+
+    items.push_back(std::move(item));
+
+    std::vector<uint8_t> extension_payload = build_one_byte_header_extension_payload(items);
+
+    if (extension_payload.empty() || (extension_payload.size() % 4) != 0)
+    {
+        return make_error("rtp ensure new extension payload alignment is invalid");
+    }
+
+    const std::size_t extension_words = extension_payload.size() / 4;
+
+    if (extension_words > 0xffff)
+    {
+        return make_error("rtp ensure new extension payload is too large");
+    }
+
+    std::vector<uint8_t> extension_block;
+
+    extension_block.reserve(4 + extension_payload.size());
+
+    extension_block.push_back(0xbe);
+    extension_block.push_back(0xde);
+    extension_block.push_back(static_cast<uint8_t>((extension_words >> 8U) & 0xffU));
+    extension_block.push_back(static_cast<uint8_t>(extension_words & 0xffU));
+    extension_block.insert(extension_block.end(), extension_payload.begin(), extension_payload.end());
+
+    packet[0] = static_cast<uint8_t>(packet[0] | 0x10U);
+
+    packet.insert(packet.begin() + static_cast<std::ptrdiff_t>(insert_offset), extension_block.begin(), extension_block.end());
+
+    return {};
+}
+
+std::expected<void, std::string> replace_one_byte_header_extension_block(std::vector<uint8_t>& packet,
+                                                                         const rtp_packet_header& header,
+                                                                         const std::vector<one_byte_header_extension_item>& items)
+{
+    if (!header.extension)
+    {
+        return make_error("rtp ensure replace extension block is not present");
+    }
+
+    if (header.extension_format != rtp_header_extension_format::one_byte)
+    {
+        return make_error("rtp ensure replace only supports one-byte header extension");
+    }
+
+    if (header.extension_header_offset + 4 > packet.size() || header.extension_payload_offset > packet.size() ||
+        header.payload_offset > packet.size() || header.extension_payload_offset > header.payload_offset)
+    {
+        return make_error("rtp ensure replace extension offsets are invalid");
+    }
+
+    std::vector<uint8_t> extension_payload = build_one_byte_header_extension_payload(items);
+
+    if (extension_payload.empty() || (extension_payload.size() % 4) != 0)
+    {
+        return make_error("rtp ensure replace extension payload alignment is invalid");
+    }
+
+    const std::size_t extension_words = extension_payload.size() / 4;
+
+    if (extension_words > 0xffff)
+    {
+        return make_error("rtp ensure replace extension payload is too large");
+    }
+
+    packet.erase(packet.begin() + static_cast<std::ptrdiff_t>(header.extension_payload_offset),
+                 packet.begin() + static_cast<std::ptrdiff_t>(header.payload_offset));
+
+    packet.insert(packet.begin() + static_cast<std::ptrdiff_t>(header.extension_payload_offset), extension_payload.begin(), extension_payload.end());
+
+    write_u16(packet, header.extension_header_offset + 2, static_cast<uint16_t>(extension_words));
+
+    return {};
+}
+
+std::expected<void, std::string> ensure_header_extension(std::vector<uint8_t>& packet,
+                                                         const rtp_packet_header& header,
+                                                         const rtp_header_extension_ensure& extension)
+{
+    if (!header.extension)
+    {
+        return insert_new_one_byte_header_extension_block(packet, header, extension);
+    }
+
+    if (header.extension_format != rtp_header_extension_format::one_byte)
+    {
+        return make_error("rtp ensure only supports one-byte header extension");
+    }
+
+    auto items = collect_one_byte_header_extensions(packet, header);
+
+    if (!items)
+    {
+        return std::unexpected(items.error());
+    }
+
+    items->erase(std::remove_if(items->begin(), items->end(), [&](const one_byte_header_extension_item& item) { return item.id == extension.id; }),
+                 items->end());
+
+    one_byte_header_extension_item ensured_item;
+
+    ensured_item.id = extension.id;
+    ensured_item.payload = extension.payload;
+
+    items->push_back(std::move(ensured_item));
+
+    return replace_one_byte_header_extension_block(packet, header, *items);
+}
+
+std::expected<void, std::string> ensure_header_extensions(std::vector<uint8_t>& packet,
+                                                          const rtp_packet_header& header,
+                                                          const rtp_packet_rewrite_options& options)
+{
+    for (const auto& extension : options.ensured_header_extensions)
+    {
+        auto ensure_result = ensure_header_extension(packet, header, extension);
+
+        if (!ensure_result)
+        {
+            return std::unexpected(ensure_result.error());
+        }
+
+        auto reparsed_header = parse_rtp_packet_header(packet);
+
+        if (!reparsed_header)
+        {
+            return std::unexpected(reparsed_header.error());
         }
     }
 
@@ -514,6 +766,25 @@ rtp_packet_rewrite_result_type rewrite_rtp_packet(std::span<const uint8_t> packe
         result.changed = true;
     }
 
+    if (!options.ensured_header_extensions.empty())
+    {
+        auto ensure_result = ensure_header_extensions(result.packet, *header, options);
+
+        if (!ensure_result)
+        {
+            return std::unexpected(ensure_result.error());
+        }
+
+        result.changed = true;
+
+        header = parse_rtp_packet_header(result.packet);
+
+        if (!header)
+        {
+            return std::unexpected(header.error());
+        }
+    }
+
     if (!options.header_extensions.empty())
     {
         auto extension_result = rewrite_header_extensions(result.packet, *header, options);
@@ -540,7 +811,6 @@ rtp_packet_rewrite_result_type rewrite_rtp_packet(std::span<const uint8_t> packe
             result.changed = true;
         }
     }
-
     return result;
 }
 
