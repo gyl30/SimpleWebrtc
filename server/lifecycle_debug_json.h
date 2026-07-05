@@ -102,6 +102,34 @@ struct lifecycle_debug_track_binding_entry
 
     uint64_t packet_count = 0;
 };
+struct lifecycle_debug_transport_cc_feedback_window_entry
+{
+    std::string stream_id;
+    std::string subscriber_session_id;
+
+    uint64_t first_feedback_at_milliseconds = 0;
+    uint64_t last_feedback_at_milliseconds = 0;
+
+    uint64_t feedback_count = 0;
+    uint64_t feedback_packet_status_count = 0;
+
+    uint64_t lookup_hit_count = 0;
+    uint64_t lookup_miss_count = 0;
+    uint64_t lookup_hit_rate_ppm = 0;
+
+    uint64_t received_count = 0;
+    uint64_t lost_count = 0;
+    uint64_t loss_rate_ppm = 0;
+
+    uint64_t small_delta_count = 0;
+    uint64_t large_delta_count = 0;
+
+    int64_t avg_delta_microseconds = 0;
+    int64_t min_delta_microseconds = 0;
+    int64_t max_delta_microseconds = 0;
+
+    uint64_t observation_count = 0;
+};
 struct lifecycle_debug_identity_track_binding_entry
 {
     std::string remote_endpoint;
@@ -515,6 +543,7 @@ struct lifecycle_debug_snapshot
 
     std::vector<lifecycle_debug_rtcp_report_source_entry> rtcp_report_sources;
     std::vector<lifecycle_debug_twcc_feedback_source_entry> twcc_feedback_sources;
+    std::vector<lifecycle_debug_transport_cc_feedback_window_entry> outbound_transport_cc_feedback_windows;
     std::vector<lifecycle_debug_rtp_cache_stream_entry> rtp_cache_streams;
     std::vector<lifecycle_debug_subscriber_rtcp_group_entry> subscriber_rtcp_groups;
     std::vector<lifecycle_debug_subscriber_runtime_residual_entry> subscriber_runtime_residuals;
@@ -577,6 +606,9 @@ REFLECT_STRUCT(webrtc::lifecycle_debug_selected_rid_layer_entry,
                (
                    stream_id)(publisher_session_id)(subscriber_session_id)(mid)(kind)(selected_rid)(previous_rid)(target_rid)(target_policy)(effective_target_rid)(effective_target_policy)(manual_target_active)(adaptive_suggested_rid)(adaptive_suggested_policy)(adaptive_suggested_reason)(adaptive_suggested_at_milliseconds)(switch_count)(last_switch_milliseconds)(last_switch_reason)(adaptive_enabled)(last_adaptive_decision)(last_adaptive_decision_reason)(last_adaptive_decision_milliseconds)(switch_cooldown_remaining_milliseconds)(selection_policy)(rid_preference)(primary_ssrc)(repair_ssrc)(pending_keyframe_request)(pending_keyframe_request_since_milliseconds)(pending_keyframe_request_expires_at_milliseconds)(pending_keyframe_request_remaining_ttl_milliseconds)(packet_count)(byte_count)(primary_packet_count)(primary_byte_count)(repair_packet_count)(repair_byte_count)(last_packet_milliseconds)(bitrate_bps)(nack_feedback_count)(nack_sequence_count)(last_nack_milliseconds)(keyframe_request_attempt_count)(keyframe_request_success_count)(keyframe_request_restore_count)(last_keyframe_request_milliseconds)(last_keyframe_request_result)(last_keyframe_request_reason));
 
+REFLECT_STRUCT(webrtc::lifecycle_debug_transport_cc_feedback_window_entry,
+               (stream_id)(subscriber_session_id)(first_feedback_at_milliseconds)(last_feedback_at_milliseconds)(feedback_count)(feedback_packet_status_count)(lookup_hit_count)(lookup_miss_count)(lookup_hit_rate_ppm)(received_count)(lost_count)(loss_rate_ppm)(small_delta_count)(large_delta_count)(avg_delta_microseconds)(min_delta_microseconds)(max_delta_microseconds)(observation_count));
+
 REFLECT_STRUCT(webrtc::lifecycle_debug_retired_endpoint_entry,
                (remote_address)(session_id)(reason)(expires_at_milliseconds)(remaining_ttl_milliseconds)(suppressed_packets));
 
@@ -585,7 +617,7 @@ REFLECT_STRUCT(
     (stream_id)(session_id)(local_ice_ufrag)(remote_ice_ufrag)(reason)(expires_at_milliseconds)(remaining_ttl_milliseconds)(suppressed_stun_packets));
 
 REFLECT_STRUCT(
-    webrtc::lifecycle_debug_snapshot, (registry_stream_count)(registry_publisher_count)(registry_subscriber_count)(registry_session_count)(registry_pending_session_count)(registry_removed_session_tombstone_count)(registry_removed_publisher_tombstone_count)(registry_removed_subscriber_tombstone_count)(endpoint_count)(endpoint_session_index_count)(endpoint_reverse_index_count)(endpoint_last_seen_count)(retired_endpoint_count)(retired_endpoint_suppressed_packet_count)(retired_ice_credential_count)(retired_ice_credential_suppressed_stun_packet_count)(candidate_pair_count)(selected_candidate_pair_count)(candidate_pair_consent_in_flight_count)(candidate_pair_consent_failure_count)(candidate_pair_consent_stale_count)(payload_type_mapping_count)(keyframe_request_state_count)(fir_sequence_number_state_count)(publisher_video_ssrc_state_count)(pending_republish_keyframe_request_count)(selected_rid_layer_state_count)(pending_selected_rid_keyframe_request_count)(selected_rid_keyframe_pending_metadata_count)(simulcast_rid_preference_policy)(extmap_rewrite_state_count)(outbound_transport_cc_sequence_count)(outbound_transport_cc_packet_count)(outbound_transport_cc_feedback_window_count)(outbound_transport_cc_feedback_window_observation_count)(dtls_peer_count)(srtp_peer_count)(media_router_peer_count)(media_router_stream_count)(media_router_active_publisher_count)(media_router_active_subscriber_count)(track_binding_count)(ssrc_mapping_count)(identity_authority_track_binding_count)(identity_authority_rid_layer_binding_count)(identity_authority_forward_binding_count)(subscriber_forward_group_count)(rtcp_report_source_count)(twcc_feedback_source_count)(transport_cc_feedback_total)(transport_cc_feedback_packet_status_total)(transport_cc_feedback_lookup_hit_total)(transport_cc_feedback_lookup_miss_total)(transport_cc_feedback_received_packet_total)(transport_cc_feedback_not_received_packet_total)(transport_cc_feedback_small_delta_total)(transport_cc_feedback_large_delta_total)(subscriber_rtcp_group_count)(subscriber_runtime_residual_count)(rtcp_report_stats_source_count)(rtcp_transport_cc_source_count)(rtcp_transport_cc_pending_packet_count)(rtp_cache_packet_count)(rtx_sequence_allocator_count)(rtx_retransmission_index_count)(nack_retransmit_throttle_count)(rtp_rtcp_drop_total)(rtp_rtcp_drop_reason_count)(rtp_rtcp_drop_reasons)(active_runtime_clean)(delayed_runtime_clean)(full_idle_clean)(idle_clean)(consistent)(inconsistency_count)(delayed_residual_count)(inconsistencies)(sessions)(removed_session_tombstones)(endpoints)(candidate_pairs)(track_bindings)(identity_track_bindings)(identity_rid_layers)(identity_forward_bindings)(subscriber_forward_groups)(selected_rid_layers)(rtcp_report_sources)(twcc_feedback_sources)(rtp_cache_streams)(subscriber_rtcp_groups)(subscriber_runtime_residuals)(retired_endpoints)(retired_ice_credentials)(residuals)(delayed_residuals));
+    webrtc::lifecycle_debug_snapshot, (registry_stream_count)(registry_publisher_count)(registry_subscriber_count)(registry_session_count)(registry_pending_session_count)(registry_removed_session_tombstone_count)(registry_removed_publisher_tombstone_count)(registry_removed_subscriber_tombstone_count)(endpoint_count)(endpoint_session_index_count)(endpoint_reverse_index_count)(endpoint_last_seen_count)(retired_endpoint_count)(retired_endpoint_suppressed_packet_count)(retired_ice_credential_count)(retired_ice_credential_suppressed_stun_packet_count)(candidate_pair_count)(selected_candidate_pair_count)(candidate_pair_consent_in_flight_count)(candidate_pair_consent_failure_count)(candidate_pair_consent_stale_count)(payload_type_mapping_count)(keyframe_request_state_count)(fir_sequence_number_state_count)(publisher_video_ssrc_state_count)(pending_republish_keyframe_request_count)(selected_rid_layer_state_count)(pending_selected_rid_keyframe_request_count)(selected_rid_keyframe_pending_metadata_count)(simulcast_rid_preference_policy)(extmap_rewrite_state_count)(outbound_transport_cc_sequence_count)(outbound_transport_cc_packet_count)(outbound_transport_cc_feedback_window_count)(outbound_transport_cc_feedback_window_observation_count)(dtls_peer_count)(srtp_peer_count)(media_router_peer_count)(media_router_stream_count)(media_router_active_publisher_count)(media_router_active_subscriber_count)(track_binding_count)(ssrc_mapping_count)(identity_authority_track_binding_count)(identity_authority_rid_layer_binding_count)(identity_authority_forward_binding_count)(subscriber_forward_group_count)(rtcp_report_source_count)(twcc_feedback_source_count)(transport_cc_feedback_total)(transport_cc_feedback_packet_status_total)(transport_cc_feedback_lookup_hit_total)(transport_cc_feedback_lookup_miss_total)(transport_cc_feedback_received_packet_total)(transport_cc_feedback_not_received_packet_total)(transport_cc_feedback_small_delta_total)(transport_cc_feedback_large_delta_total)(subscriber_rtcp_group_count)(subscriber_runtime_residual_count)(rtcp_report_stats_source_count)(rtcp_transport_cc_source_count)(rtcp_transport_cc_pending_packet_count)(rtp_cache_packet_count)(rtx_sequence_allocator_count)(rtx_retransmission_index_count)(nack_retransmit_throttle_count)(rtp_rtcp_drop_total)(rtp_rtcp_drop_reason_count)(rtp_rtcp_drop_reasons)(active_runtime_clean)(delayed_runtime_clean)(full_idle_clean)(idle_clean)(consistent)(inconsistency_count)(delayed_residual_count)(inconsistencies)(sessions)(removed_session_tombstones)(endpoints)(candidate_pairs)(track_bindings)(identity_track_bindings)(identity_rid_layers)(identity_forward_bindings)(subscriber_forward_groups)(selected_rid_layers)(rtcp_report_sources)(twcc_feedback_sources)(outbound_transport_cc_feedback_windows)(rtp_cache_streams)(subscriber_rtcp_groups)(subscriber_runtime_residuals)(retired_endpoints)(retired_ice_credentials)(residuals)(delayed_residuals));
 
 inline std::string lifecycle_debug_snapshot_to_json(const lifecycle_debug_snapshot& snapshot) { return serialize_struct(snapshot); }
 }    // namespace webrtc
