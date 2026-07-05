@@ -429,6 +429,54 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
         uint64_t sent_at_milliseconds = 0;
     };
+    struct outbound_transport_cc_feedback_observation
+    {
+        uint16_t subscriber_transport_cc_sequence_number = 0;
+
+        bool lookup_hit = false;
+        bool received = false;
+        bool has_delta = false;
+
+        int32_t delta_ticks = 0;
+        int64_t delta_microseconds = 0;
+        int64_t arrival_offset_microseconds = 0;
+
+        uint64_t observed_at_milliseconds = 0;
+        uint64_t sent_at_milliseconds = 0;
+
+        uint32_t publisher_ssrc = 0;
+        uint32_t subscriber_ssrc = 0;
+
+        uint16_t publisher_rtp_sequence_number = 0;
+        uint16_t subscriber_rtp_sequence_number = 0;
+    };
+
+    struct outbound_transport_cc_feedback_window_state
+    {
+        std::string stream_id;
+        std::string subscriber_session_id;
+
+        uint64_t first_feedback_at_milliseconds = 0;
+        uint64_t last_feedback_at_milliseconds = 0;
+
+        uint64_t feedback_count = 0;
+        uint64_t feedback_packet_status_count = 0;
+
+        uint64_t lookup_hit_count = 0;
+        uint64_t lookup_miss_count = 0;
+
+        uint64_t received_count = 0;
+        uint64_t lost_count = 0;
+
+        uint64_t small_delta_count = 0;
+        uint64_t large_delta_count = 0;
+
+        int64_t delta_microseconds_sum = 0;
+        int64_t max_delta_microseconds = 0;
+        int64_t min_delta_microseconds = 0;
+
+        std::deque<outbound_transport_cc_feedback_observation> observations;
+    };
     struct pending_subscriber_runtime_residual_check
     {
         std::string stream_id;
@@ -507,6 +555,18 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::optional<outbound_transport_cc_packet_identity> find_outbound_transport_cc_packet(std::string_view stream_id,
                                                                                            std::string_view subscriber_session_id,
                                                                                            uint16_t subscriber_transport_cc_sequence_number) const;
+
+    void remember_outbound_transport_cc_feedback_observation(std::string_view stream_id,
+                                                             std::string_view subscriber_session_id,
+                                                             const outbound_transport_cc_feedback_observation& observation);
+
+    void forget_outbound_transport_cc_feedback_windows_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_outbound_transport_cc_feedback_windows_for_stream_locked(std::string_view stream_id);
+
+    [[nodiscard]]
+    std::size_t outbound_transport_cc_feedback_window_observation_count_locked() const;
 
     [[nodiscard]]
     std::optional<media_ssrc_mapping> find_identity_ssrc_mapping_by_subscriber_ssrc(std::string_view subscriber_session_id,
@@ -1021,6 +1081,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, uint16_t> outbound_transport_cc_sequence_by_key_;
     std::unordered_map<std::string, outbound_transport_cc_packet_identity> outbound_transport_cc_packets_by_key_;
     std::deque<std::string> outbound_transport_cc_packet_insertion_order_;
+    std::unordered_map<std::string, outbound_transport_cc_feedback_window_state> outbound_transport_cc_feedback_windows_by_key_;
 
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;

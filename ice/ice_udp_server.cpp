@@ -44,6 +44,7 @@ namespace webrtc
 {
 namespace
 {
+inline constexpr std::size_t k_max_outbound_transport_cc_feedback_observations_per_window = 512;
 constexpr std::size_t k_rtcp_bye_max_ssrcs_per_packet = 31;
 
 constexpr std::size_t k_max_ice_username_fragment_size = 256;
@@ -312,6 +313,84 @@ std::string make_outbound_transport_cc_sequence_key(std::string_view stream_id, 
     key.append(subscriber_session_id);
 
     return key;
+}
+std::string make_outbound_transport_cc_feedback_window_key(std::string_view stream_id, std::string_view subscriber_session_id)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + subscriber_session_id.size() + 1);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(subscriber_session_id);
+
+    return key;
+}
+
+bool outbound_transport_cc_feedback_window_key_matches_session(std::string_view key, std::string_view session_id)
+{
+    if (key.empty() || session_id.empty())
+    {
+        return false;
+    }
+
+    std::string marker;
+
+    marker.reserve(session_id.size() + 1);
+
+    marker.push_back('|');
+
+    marker.append(session_id);
+
+    return key.ends_with(marker);
+}
+
+bool outbound_transport_cc_feedback_window_key_matches_stream(std::string_view key, std::string_view stream_id)
+{
+    if (key.empty() || stream_id.empty())
+    {
+        return false;
+    }
+
+    std::string prefix;
+
+    prefix.reserve(stream_id.size() + 1);
+
+    prefix.append(stream_id);
+
+    prefix.push_back('|');
+
+    return key.starts_with(prefix);
+}
+void add_outbound_transport_cc_feedback_delta(ice_udp_server::outbound_transport_cc_feedback_window_state& window, int64_t delta_microseconds)
+{
+    if (window.small_delta_count + window.large_delta_count == 0)
+    {
+        window.min_delta_microseconds = delta_microseconds;
+        window.max_delta_microseconds = delta_microseconds;
+        window.delta_microseconds_sum = delta_microseconds;
+
+        return;
+    }
+
+    window.delta_microseconds_sum += delta_microseconds;
+
+    if (delta_microseconds < window.min_delta_microseconds)
+    {
+        window.min_delta_microseconds = delta_microseconds;
+    }
+
+    if (delta_microseconds > window.max_delta_microseconds)
+    {
+        window.max_delta_microseconds = delta_microseconds;
+    }
+}
+
+void subtract_outbound_transport_cc_feedback_delta(ice_udp_server::outbound_transport_cc_feedback_window_state& window, int64_t delta_microseconds)
+{
+    window.delta_microseconds_sum -= delta_microseconds;
 }
 
 std::string make_outbound_transport_cc_packet_key(std::string_view stream_id,
@@ -722,7 +801,8 @@ bool lifecycle_active_runtime_state_is_empty(const lifecycle_debug_snapshot& sna
            snapshot.publisher_video_ssrc_state_count == 0 && snapshot.pending_republish_keyframe_request_count == 0 &&
            snapshot.selected_rid_layer_state_count == 0 && snapshot.pending_selected_rid_keyframe_request_count == 0 &&
            snapshot.selected_rid_keyframe_pending_metadata_count == 0 && snapshot.extmap_rewrite_state_count == 0 &&
-           snapshot.outbound_transport_cc_sequence_count == 0 && snapshot.outbound_transport_cc_packet_count == 0;
+           snapshot.outbound_transport_cc_sequence_count == 0 && snapshot.outbound_transport_cc_packet_count == 0 &&
+           snapshot.outbound_transport_cc_feedback_window_count == 0 && snapshot.outbound_transport_cc_feedback_window_observation_count == 0;
 }
 
 bool lifecycle_delayed_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
@@ -4305,6 +4385,7 @@ void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
     forget_selected_rid_layer_states_for_session(session_id);
     forget_outbound_transport_cc_sequences_for_session(session_id);
     forget_outbound_transport_cc_packets_for_session(session_id);
+    forget_outbound_transport_cc_feedback_windows_for_session(session_id);
     if (track_resolver_ != nullptr)
     {
         track_resolver_->forget_session(session_id);
@@ -4416,6 +4497,8 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
         (void)erased_outbound_transport_cc_sequences;
         const std::size_t erased_outbound_transport_cc_packets = erase_outbound_transport_cc_packets_for_stream_locked(stream_id);
         (void)erased_outbound_transport_cc_packets;
+        const std::size_t erased_outbound_transport_cc_feedback_windows = erase_outbound_transport_cc_feedback_windows_for_stream_locked(stream_id);
+        (void)erased_outbound_transport_cc_feedback_windows;
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
             if (iterator->first.starts_with(std::string(stream_id) + "|"))
@@ -5290,6 +5373,9 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.selected_rid_layers.reserve(selected_rid_layer_state_by_key_.size());
         snapshot.outbound_transport_cc_sequence_count = to_debug_count(outbound_transport_cc_sequence_by_key_.size());
         snapshot.outbound_transport_cc_packet_count = to_debug_count(outbound_transport_cc_packets_by_key_.size());
+        snapshot.outbound_transport_cc_feedback_window_count = to_debug_count(outbound_transport_cc_feedback_windows_by_key_.size());
+        snapshot.outbound_transport_cc_feedback_window_observation_count =
+            to_debug_count(outbound_transport_cc_feedback_window_observation_count_locked());
 
         for (const auto& [key, state] : selected_rid_layer_state_by_key_)
         {
@@ -6160,6 +6246,19 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot,
                                    "outbound transport cc packet remains count=" + std::to_string(snapshot.outbound_transport_cc_packet_count));
+        }
+        if (snapshot.outbound_transport_cc_feedback_window_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot,
+                "outbound transport cc feedback window remains count=" + std::to_string(snapshot.outbound_transport_cc_feedback_window_count));
+        }
+
+        if (snapshot.outbound_transport_cc_feedback_window_observation_count != 0)
+        {
+            add_lifecycle_residual(snapshot,
+                                   "outbound transport cc feedback window observation remains count=" +
+                                       std::to_string(snapshot.outbound_transport_cc_feedback_window_observation_count));
         }
 
         if (snapshot.rtcp_report_source_count != 0)
@@ -14576,6 +14675,8 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
         return;
     }
 
+    const uint64_t observed_at_milliseconds = now_milliseconds();
+
     std::size_t hit_count = 0;
     std::size_t miss_count = 0;
     std::size_t received_hit_count = 0;
@@ -14585,9 +14686,26 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
     {
         auto identity = find_outbound_transport_cc_packet(event.source.stream_id, event.source.session_id, status.sequence_number);
 
+        outbound_transport_cc_feedback_observation observation;
+
+        observation.subscriber_transport_cc_sequence_number = status.sequence_number;
+        observation.lookup_hit = identity.has_value();
+        observation.received = status.received;
+        observation.has_delta = status.has_delta;
+        observation.delta_ticks = status.delta_ticks;
+        observation.delta_microseconds = status.delta_microseconds;
+        observation.arrival_offset_microseconds = status.arrival_offset_microseconds;
+        observation.observed_at_milliseconds = observed_at_milliseconds;
+
         if (identity.has_value())
         {
             hit_count += 1;
+
+            observation.sent_at_milliseconds = identity->sent_at_milliseconds;
+            observation.publisher_ssrc = identity->publisher_ssrc;
+            observation.subscriber_ssrc = identity->subscriber_ssrc;
+            observation.publisher_rtp_sequence_number = identity->publisher_rtp_sequence_number;
+            observation.subscriber_rtp_sequence_number = identity->subscriber_rtp_sequence_number;
 
             if (status.received)
             {
@@ -14597,11 +14715,13 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
             {
                 lost_hit_count += 1;
             }
-
-            continue;
+        }
+        else
+        {
+            miss_count += 1;
         }
 
-        miss_count += 1;
+        remember_outbound_transport_cc_feedback_observation(event.source.stream_id, event.source.session_id, observation);
     }
 
     if (event.transport_cc_packet_statuses.empty())
@@ -14612,14 +14732,30 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
 
             auto identity = find_outbound_transport_cc_packet(event.source.stream_id, event.source.session_id, sequence_number);
 
+            outbound_transport_cc_feedback_observation observation;
+
+            observation.subscriber_transport_cc_sequence_number = sequence_number;
+            observation.lookup_hit = identity.has_value();
+            observation.received = false;
+            observation.has_delta = false;
+            observation.observed_at_milliseconds = observed_at_milliseconds;
+
             if (identity.has_value())
             {
                 hit_count += 1;
 
-                continue;
+                observation.sent_at_milliseconds = identity->sent_at_milliseconds;
+                observation.publisher_ssrc = identity->publisher_ssrc;
+                observation.subscriber_ssrc = identity->subscriber_ssrc;
+                observation.publisher_rtp_sequence_number = identity->publisher_rtp_sequence_number;
+                observation.subscriber_rtp_sequence_number = identity->subscriber_rtp_sequence_number;
+            }
+            else
+            {
+                miss_count += 1;
             }
 
-            miss_count += 1;
+            remember_outbound_transport_cc_feedback_observation(event.source.stream_id, event.source.session_id, observation);
         }
     }
 
@@ -15599,6 +15735,9 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         const std::size_t erased_outbound_transport_cc_packets = erase_outbound_transport_cc_packets_for_stream_locked(stream_id);
         (void)erased_outbound_transport_cc_packets;
 
+        const std::size_t erased_outbound_transport_cc_feedback_windows = erase_outbound_transport_cc_feedback_windows_for_stream_locked(stream_id);
+        (void)erased_outbound_transport_cc_feedback_windows;
+
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
             if (iterator->first.starts_with(std::string(stream_id) + "|"))
@@ -16561,6 +16700,166 @@ std::optional<ice_udp_server::outbound_transport_cc_packet_identity> ice_udp_ser
     }
 
     return iterator->second;
+}
+void ice_udp_server::remember_outbound_transport_cc_feedback_observation(std::string_view stream_id,
+                                                                         std::string_view subscriber_session_id,
+                                                                         const outbound_transport_cc_feedback_observation& observation)
+{
+    if (stream_id.empty() || subscriber_session_id.empty())
+    {
+        return;
+    }
+
+    const std::string key = make_outbound_transport_cc_feedback_window_key(stream_id, subscriber_session_id);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    auto& window = outbound_transport_cc_feedback_windows_by_key_[key];
+
+    if (window.stream_id.empty())
+    {
+        window.stream_id = stream_id;
+        window.subscriber_session_id = subscriber_session_id;
+    }
+
+    const uint64_t now = observation.observed_at_milliseconds != 0 ? observation.observed_at_milliseconds : now_milliseconds();
+
+    if (window.first_feedback_at_milliseconds == 0)
+    {
+        window.first_feedback_at_milliseconds = now;
+    }
+
+    window.last_feedback_at_milliseconds = now;
+
+    window.feedback_packet_status_count += 1;
+
+    if (observation.lookup_hit)
+    {
+        window.lookup_hit_count += 1;
+    }
+    else
+    {
+        window.lookup_miss_count += 1;
+    }
+
+    if (observation.received)
+    {
+        window.received_count += 1;
+    }
+    else
+    {
+        window.lost_count += 1;
+    }
+
+    if (observation.has_delta)
+    {
+        if (observation.delta_microseconds >= -8192000 && observation.delta_microseconds <= 8192000)
+        {
+            add_outbound_transport_cc_feedback_delta(window, observation.delta_microseconds);
+        }
+    }
+
+    window.observations.push_back(observation);
+
+    while (window.observations.size() > k_max_outbound_transport_cc_feedback_observations_per_window)
+    {
+        const outbound_transport_cc_feedback_observation oldest = window.observations.front();
+
+        window.observations.pop_front();
+
+        if (oldest.lookup_hit && window.lookup_hit_count != 0)
+        {
+            window.lookup_hit_count -= 1;
+        }
+        else if (!oldest.lookup_hit && window.lookup_miss_count != 0)
+        {
+            window.lookup_miss_count -= 1;
+        }
+
+        if (oldest.received && window.received_count != 0)
+        {
+            window.received_count -= 1;
+        }
+        else if (!oldest.received && window.lost_count != 0)
+        {
+            window.lost_count -= 1;
+        }
+
+        if (oldest.has_delta)
+        {
+            if (oldest.delta_microseconds >= -8192000 && oldest.delta_microseconds <= 8192000)
+            {
+                subtract_outbound_transport_cc_feedback_delta(window, oldest.delta_microseconds);
+            }
+        }
+
+        if (window.feedback_packet_status_count != 0)
+        {
+            window.feedback_packet_status_count -= 1;
+        }
+    }
+}
+
+void ice_udp_server::forget_outbound_transport_cc_feedback_windows_for_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    for (auto iterator = outbound_transport_cc_feedback_windows_by_key_.begin(); iterator != outbound_transport_cc_feedback_windows_by_key_.end();)
+    {
+        if (outbound_transport_cc_feedback_window_key_matches_session(iterator->first, session_id))
+        {
+            iterator = outbound_transport_cc_feedback_windows_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
+std::size_t ice_udp_server::erase_outbound_transport_cc_feedback_windows_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = outbound_transport_cc_feedback_windows_by_key_.begin(); iterator != outbound_transport_cc_feedback_windows_by_key_.end();)
+    {
+        if (outbound_transport_cc_feedback_window_key_matches_stream(iterator->first, stream_id))
+        {
+            iterator = outbound_transport_cc_feedback_windows_by_key_.erase(iterator);
+
+            erased_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
+}
+
+std::size_t ice_udp_server::outbound_transport_cc_feedback_window_observation_count_locked() const
+{
+    std::size_t count = 0;
+
+    for (const auto& [key, window] : outbound_transport_cc_feedback_windows_by_key_)
+    {
+        (void)key;
+
+        count += window.observations.size();
+    }
+
+    return count;
 }
 
 void ice_udp_server::forget_outbound_transport_cc_packets_for_session(std::string_view session_id)
