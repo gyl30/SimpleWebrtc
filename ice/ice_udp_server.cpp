@@ -297,6 +297,75 @@ std::string make_extmap_rewrite_runtime_state_key(std::string_view stream_id,
     return key;
 }
 
+std::string make_outbound_transport_cc_sequence_key(std::string_view stream_id,
+                                                    std::string_view publisher_session_id,
+                                                    std::string_view subscriber_session_id,
+                                                    std::string_view subscriber_mid,
+                                                    std::string_view kind)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + publisher_session_id.size() + subscriber_session_id.size() + subscriber_mid.size() + kind.size() + 5);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(publisher_session_id);
+
+    key.push_back('|');
+
+    key.append(subscriber_session_id);
+
+    key.push_back('|');
+
+    key.append(subscriber_mid);
+
+    key.push_back('|');
+
+    key.append(kind);
+
+    return key;
+}
+
+bool outbound_transport_cc_sequence_key_matches_session(std::string_view key, std::string_view session_id)
+{
+    if (key.empty() || session_id.empty())
+    {
+        return false;
+    }
+
+    std::string marker;
+
+    marker.reserve(session_id.size() + 2);
+
+    marker.push_back('|');
+
+    marker.append(session_id);
+
+    marker.push_back('|');
+
+    return key.find(marker) != std::string_view::npos;
+}
+
+bool outbound_transport_cc_sequence_key_matches_stream(std::string_view key, std::string_view stream_id)
+{
+    if (key.empty() || stream_id.empty())
+    {
+        return false;
+    }
+
+    std::string prefix;
+
+    prefix.reserve(stream_id.size() + 1);
+
+    prefix.append(stream_id);
+
+    prefix.push_back('|');
+
+    return key.starts_with(prefix);
+}
+
 bool keyframe_request_key_matches_session(std::string_view key, std::string_view session_id)
 {
     if (key.empty() || session_id.empty())
@@ -607,7 +676,8 @@ bool lifecycle_active_runtime_state_is_empty(const lifecycle_debug_snapshot& sna
            snapshot.nack_retransmit_throttle_count == 0 && snapshot.fir_sequence_number_state_count == 0 &&
            snapshot.publisher_video_ssrc_state_count == 0 && snapshot.pending_republish_keyframe_request_count == 0 &&
            snapshot.selected_rid_layer_state_count == 0 && snapshot.pending_selected_rid_keyframe_request_count == 0 &&
-           snapshot.selected_rid_keyframe_pending_metadata_count == 0 && snapshot.extmap_rewrite_state_count == 0;
+           snapshot.selected_rid_keyframe_pending_metadata_count == 0 && snapshot.extmap_rewrite_state_count == 0 &&
+           snapshot.outbound_transport_cc_sequence_count == 0;
 }
 
 bool lifecycle_delayed_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
@@ -1850,6 +1920,7 @@ bool rtp_packet_header_extension_id_exists(std::span<const uint8_t> plain_packet
 }
 
 using optional_header_extension_id_rewrite_result = std::expected<std::optional<rtp_header_extension_id_rewrite>, std::string>;
+using optional_header_extension_rewrite_result = std::expected<std::optional<rtp_header_extension_rewrite>, std::string>;
 
 optional_header_extension_id_rewrite_result make_mid_header_extension_id_rewrite(const media_payload_type_mapping& mapping,
                                                                                  const sdp::webrtc_offer_summary& publisher_offer,
@@ -1932,6 +2003,18 @@ std::optional<uint8_t> find_transport_wide_cc_header_extension_id(const sdp::med
     }
 
     return std::nullopt;
+}
+std::vector<uint8_t> make_transport_wide_cc_sequence_payload(uint16_t sequence_number)
+{
+    std::vector<uint8_t> payload;
+
+    payload.reserve(2);
+
+    payload.push_back(static_cast<uint8_t>((sequence_number >> 8U) & 0xffU));
+
+    payload.push_back(static_cast<uint8_t>(sequence_number & 0xffU));
+
+    return payload;
 }
 bool accepted_mline_indexes_contains(const std::vector<int>& accepted_mline_indexes, std::size_t media_index)
 {
@@ -2331,6 +2414,77 @@ bool publisher_media_has_negotiated_transport_cc(const publisher_session& publis
     }
 
     return find_transport_wide_cc_header_extension_id(media).has_value();
+}
+
+optional_header_extension_rewrite_result make_transport_wide_cc_header_extension_rewrite(const media_payload_type_mapping& mapping,
+                                                                                         const sdp::webrtc_offer_summary& publisher_offer,
+                                                                                         const sdp::webrtc_offer_summary& subscriber_offer,
+                                                                                         std::span<const uint8_t> plain_packet,
+                                                                                         uint16_t outbound_sequence_number)
+{
+    const sdp::media_summary* publisher_media = find_media_summary_by_mid(publisher_offer, mapping.publisher_mid);
+
+    if (publisher_media == nullptr)
+    {
+        return make_error("transport-cc sequence rewrite publisher media not found");
+    }
+
+    const sdp::media_summary* subscriber_media = find_media_summary_by_mid(subscriber_offer, mapping.subscriber_mid);
+
+    if (subscriber_media == nullptr)
+    {
+        return make_error("transport-cc sequence rewrite subscriber media not found");
+    }
+
+    const std::optional<uint8_t> publisher_transport_cc_id = find_transport_wide_cc_header_extension_id(*publisher_media);
+
+    if (!publisher_transport_cc_id.has_value())
+    {
+        return std::optional<rtp_header_extension_rewrite>{};
+    }
+
+    const std::optional<uint8_t> subscriber_transport_cc_id = find_transport_wide_cc_header_extension_id(*subscriber_media);
+
+    if (!subscriber_transport_cc_id.has_value())
+    {
+        return std::optional<rtp_header_extension_rewrite>{};
+    }
+
+    auto header = parse_rtp_packet_header(plain_packet);
+
+    if (!header)
+    {
+        std::string message = "transport-cc sequence rewrite parse failed: ";
+
+        message.append(header.error());
+
+        return std::unexpected(std::move(message));
+    }
+
+    auto publisher_payload = find_rtp_header_extension(plain_packet, *header, *publisher_transport_cc_id);
+
+    if (!publisher_payload.has_value())
+    {
+        return std::optional<rtp_header_extension_rewrite>{};
+    }
+
+    if (publisher_payload->size() != 2)
+    {
+        return make_error("transport-cc sequence rewrite payload size is invalid");
+    }
+
+    rtp_header_extension_rewrite rewrite;
+
+    /*
+     * header_extensions are applied before header_extension_id_rewrites.
+     * Therefore payload rewrite must target the current publisher extmap id.
+     * The existing id rewrite then moves the extension to subscriber extmap id.
+     */
+    rewrite.id = *publisher_transport_cc_id;
+
+    rewrite.payload = make_transport_wide_cc_sequence_payload(outbound_sequence_number);
+
+    return std::optional<rtp_header_extension_rewrite>(std::move(rewrite));
 }
 
 optional_header_extension_id_rewrite_result make_transport_wide_cc_header_extension_id_rewrite(const media_payload_type_mapping& mapping,
@@ -4073,6 +4227,7 @@ void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
 
     forget_extmap_rewrite_states_for_session(session_id);
     forget_selected_rid_layer_states_for_session(session_id);
+    forget_outbound_transport_cc_sequences_for_session(session_id);
     if (track_resolver_ != nullptr)
     {
         track_resolver_->forget_session(session_id);
@@ -4180,6 +4335,8 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
         (void)erased_extmap_rewrite_states;
         const std::size_t erased_selected_rid_states = erase_selected_rid_layer_states_for_stream_locked(stream_id);
         (void)erased_selected_rid_states;
+        const std::size_t erased_outbound_transport_cc_sequences = erase_outbound_transport_cc_sequences_for_stream_locked(stream_id);
+        (void)erased_outbound_transport_cc_sequences;
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
             if (iterator->first.starts_with(std::string(stream_id) + "|"))
@@ -5052,6 +5209,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.simulcast_rid_preference_policy = std::string(simulcast_rid_preference_policy_to_string(simulcast_rid_preference_policy_from_env()));
         snapshot.extmap_rewrite_state_count = to_debug_count(extmap_rewrite_state_by_key_.size());
         snapshot.selected_rid_layers.reserve(selected_rid_layer_state_by_key_.size());
+        snapshot.outbound_transport_cc_sequence_count = to_debug_count(outbound_transport_cc_sequence_by_key_.size());
 
         for (const auto& [key, state] : selected_rid_layer_state_by_key_)
         {
@@ -5901,6 +6059,12 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         if (snapshot.extmap_rewrite_state_count != 0)
         {
             add_lifecycle_residual(snapshot, "extmap rewrite state remains count=" + std::to_string(snapshot.extmap_rewrite_state_count));
+        }
+
+        if (snapshot.outbound_transport_cc_sequence_count != 0)
+        {
+            add_lifecycle_residual(snapshot,
+                                   "outbound transport cc sequence remains count=" + std::to_string(snapshot.outbound_transport_cc_sequence_count));
         }
 
         if (snapshot.rtcp_report_source_count != 0)
@@ -13565,6 +13729,39 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
         }
         if (publisher_subscriber_media_has_negotiated_transport_cc(*publisher, *subscriber, *payload_type_mapping))
         {
+            const uint16_t outbound_transport_cc_sequence = next_outbound_transport_cc_sequence(payload_type_mapping->stream_id,
+                                                                                                route.source.session_id,
+                                                                                                target_peer.session_id,
+                                                                                                payload_type_mapping->subscriber_mid,
+                                                                                                payload_type_mapping->kind);
+
+            auto transport_cc_sequence_rewrite = make_transport_wide_cc_header_extension_rewrite(
+                *payload_type_mapping, publisher_offer, subscriber_offer, plain_packet_span, outbound_transport_cc_sequence);
+
+            if (!transport_cc_sequence_rewrite)
+            {
+                WEBRTC_LOG_WARN(
+                    "rtp transport-cc sequence rewrite failed stream={} publisher_session={} subscriber_session={} publisher_mid={} "
+                    "subscriber_mid={} kind={} sequence={} error={}",
+                    payload_type_mapping->stream_id,
+                    route.source.session_id,
+                    target_peer.session_id,
+                    payload_type_mapping->publisher_mid,
+                    payload_type_mapping->subscriber_mid,
+                    payload_type_mapping->kind,
+                    outbound_transport_cc_sequence,
+                    transport_cc_sequence_rewrite.error());
+
+                return std::nullopt;
+            }
+
+            if (transport_cc_sequence_rewrite->has_value())
+            {
+                options.header_extensions.push_back(std::move(**transport_cc_sequence_rewrite));
+
+                rewrite_required = true;
+            }
+
             if (!append_header_extension_id_rewrite(
                     "transport-cc",
                     sdp::k_rtp_header_extension_transport_cc_uri,
@@ -15180,6 +15377,8 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         (void)erased_extmap_rewrite_states;
         const std::size_t erased_selected_rid_states = erase_selected_rid_layer_states_for_stream_locked(stream_id);
         (void)erased_selected_rid_states;
+        const std::size_t erased_outbound_transport_cc_sequences = erase_outbound_transport_cc_sequences_for_stream_locked(stream_id);
+        (void)erased_outbound_transport_cc_sequences;
 
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
@@ -16072,6 +16271,77 @@ void ice_udp_server::remember_selected_rid_keyframe_request_result(const media_r
     state.last_keyframe_request_reason = std::string(reason);
 }
 
+uint16_t ice_udp_server::next_outbound_transport_cc_sequence(std::string_view stream_id,
+                                                             std::string_view publisher_session_id,
+                                                             std::string_view subscriber_session_id,
+                                                             std::string_view subscriber_mid,
+                                                             std::string_view kind)
+{
+    if (stream_id.empty() || publisher_session_id.empty() || subscriber_session_id.empty() || subscriber_mid.empty() || kind.empty())
+    {
+        return 0;
+    }
+
+    const std::string key = make_outbound_transport_cc_sequence_key(stream_id, publisher_session_id, subscriber_session_id, subscriber_mid, kind);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    uint16_t& next_sequence_number = outbound_transport_cc_sequence_by_key_[key];
+
+    const uint16_t sequence_number = next_sequence_number;
+
+    next_sequence_number = static_cast<uint16_t>(next_sequence_number + 1U);
+
+    return sequence_number;
+}
+
+void ice_udp_server::forget_outbound_transport_cc_sequences_for_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    for (auto iterator = outbound_transport_cc_sequence_by_key_.begin(); iterator != outbound_transport_cc_sequence_by_key_.end();)
+    {
+        if (outbound_transport_cc_sequence_key_matches_session(iterator->first, session_id))
+        {
+            iterator = outbound_transport_cc_sequence_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
+std::size_t ice_udp_server::erase_outbound_transport_cc_sequences_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = outbound_transport_cc_sequence_by_key_.begin(); iterator != outbound_transport_cc_sequence_by_key_.end();)
+    {
+        if (outbound_transport_cc_sequence_key_matches_stream(iterator->first, stream_id))
+        {
+            iterator = outbound_transport_cc_sequence_by_key_.erase(iterator);
+
+            erased_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
+}
 bool ice_udp_server::remember_extmap_header_extension_id_rewrite(std::string_view stream_id,
                                                                  std::string_view publisher_session_id,
                                                                  std::string_view subscriber_session_id,

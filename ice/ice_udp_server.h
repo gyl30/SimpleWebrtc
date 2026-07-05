@@ -460,6 +460,18 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     bool remember_media_identity_forward_mapping(const media_ssrc_mapping& ssrc_mapping, const media_payload_type_mapping& payload_type_mapping);
 
     [[nodiscard]]
+    uint16_t next_outbound_transport_cc_sequence(std::string_view stream_id,
+                                                 std::string_view publisher_session_id,
+                                                 std::string_view subscriber_session_id,
+                                                 std::string_view subscriber_mid,
+                                                 std::string_view kind);
+
+    void forget_outbound_transport_cc_sequences_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_outbound_transport_cc_sequences_for_stream_locked(std::string_view stream_id);
+
+    [[nodiscard]]
     std::optional<media_ssrc_mapping> find_identity_ssrc_mapping_by_subscriber_ssrc(std::string_view subscriber_session_id,
                                                                                     uint32_t subscriber_ssrc) const;
 
@@ -969,6 +981,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_set<std::string> pending_selected_rid_keyframe_request_keys_;
     std::unordered_map<std::string, selected_rid_keyframe_request_pending_state> pending_selected_rid_keyframe_request_state_by_key_;
     std::unordered_map<std::string, extmap_rewrite_runtime_state> extmap_rewrite_state_by_key_;
+    std::unordered_map<std::string, uint16_t> outbound_transport_cc_sequence_by_key_;
 
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
