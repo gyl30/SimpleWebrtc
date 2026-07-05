@@ -13330,6 +13330,8 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
 
         const auto& subscriber_offer = subscriber->remote_offer_summary();
 
+        const std::span<const uint8_t> cached_plain_packet_span(cached_packet.plain_packet.data(), cached_packet.plain_packet.size());
+
         rtp_packet_rewrite_options rewrite_options;
 
         bool rewrite_required = false;
@@ -13537,16 +13539,102 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
                 publisher->accepted_remote_media_mline_indexes().size(),
                 subscriber->accepted_remote_media_mline_indexes().size());
         }
-        if (!append_header_extension_id_rewrite(
-                "transport-cc",
-                sdp::k_rtp_header_extension_transport_cc_uri,
-                false,
-                make_transport_wide_cc_header_extension_id_rewrite(
-                    *rtx_payload_type_mapping, publisher_offer, subscriber_offer, std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()))))
-        {
-            return std::nullopt;
-        }
 
+        if (publisher_subscriber_media_has_negotiated_transport_cc(*publisher, *subscriber, *rtx_payload_type_mapping))
+        {
+            const std::optional<uint16_t> publisher_transport_cc_sequence =
+                read_publisher_transport_cc_sequence_number(primary_payload_type_mapping, publisher_offer, cached_plain_packet_span);
+
+            if (publisher_transport_cc_sequence.has_value())
+            {
+                const uint16_t outbound_transport_cc_sequence =
+                    next_outbound_transport_cc_sequence(primary_ssrc_mapping.stream_id, primary_ssrc_mapping.subscriber_session_id);
+
+                auto transport_cc_sequence_rewrite = make_transport_wide_cc_header_extension_rewrite(
+                    *rtx_payload_type_mapping, publisher_offer, subscriber_offer, make_rtx_packet_span(), outbound_transport_cc_sequence);
+
+                if (!transport_cc_sequence_rewrite)
+                {
+                    WEBRTC_LOG_WARN(
+                        "rtx retransmit transport-cc sequence rewrite failed stream={} subscriber={} publisher_session={} subscriber_session={} "
+                        "publisher_mid={} subscriber_mid={} kind={} primary_sequence={} rtx_sequence={} transport_cc_sequence={} error={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        primary_ssrc_mapping.publisher_session_id,
+                        primary_ssrc_mapping.subscriber_session_id,
+                        rtx_payload_type_mapping->publisher_mid,
+                        rtx_payload_type_mapping->subscriber_mid,
+                        rtx_payload_type_mapping->kind,
+                        cached_packet.sequence_number,
+                        rtx_sequence_number,
+                        outbound_transport_cc_sequence,
+                        transport_cc_sequence_rewrite.error());
+
+                    return std::nullopt;
+                }
+
+                if (transport_cc_sequence_rewrite->has_value())
+                {
+                    outbound_transport_cc_packet_identity identity;
+
+                    identity.stream_id = primary_ssrc_mapping.stream_id;
+                    identity.publisher_session_id = primary_ssrc_mapping.publisher_session_id;
+                    identity.subscriber_session_id = primary_ssrc_mapping.subscriber_session_id;
+                    identity.publisher_mid = rtx_payload_type_mapping->publisher_mid;
+                    identity.subscriber_mid = rtx_payload_type_mapping->subscriber_mid;
+                    identity.kind = rtx_payload_type_mapping->kind;
+
+                    identity.publisher_ssrc = primary_ssrc_mapping.publisher_ssrc;
+                    identity.subscriber_ssrc = rtx_ssrc_mapping->subscriber_ssrc;
+
+                    identity.publisher_payload_type = cached_packet.payload_type;
+                    identity.subscriber_payload_type = rtx_payload_type_mapping->subscriber_payload_type;
+
+                    identity.publisher_rtp_sequence_number = cached_packet.sequence_number;
+                    identity.subscriber_rtp_sequence_number = rtx_sequence_number;
+
+                    identity.publisher_transport_cc_sequence_number = *publisher_transport_cc_sequence;
+                    identity.subscriber_transport_cc_sequence_number = outbound_transport_cc_sequence;
+                    identity.sent_at_milliseconds = now_milliseconds();
+
+                    remember_outbound_transport_cc_packet(identity);
+
+                    rewrite_options.header_extensions.push_back(std::move(**transport_cc_sequence_rewrite));
+
+                    rewrite_required = true;
+                }
+            }
+
+            if (!append_header_extension_id_rewrite(
+                    "transport-cc",
+                    sdp::k_rtp_header_extension_transport_cc_uri,
+                    false,
+                    make_transport_wide_cc_header_extension_id_rewrite(*rtx_payload_type_mapping,
+                                                                       publisher_offer,
+                                                                       subscriber_offer,
+                                                                       std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()))))
+            {
+                return std::nullopt;
+            }
+        }
+        else
+        {
+            WEBRTC_LOG_DEBUG(
+                "rtp rtx retransmit transport-cc rewrite skipped not negotiated stream={} subscriber={} publisher_session={} subscriber_session={} "
+                "publisher_mid={} subscriber_mid={} kind={} primary_sequence={} rtx_sequence={} publisher_accepted_mlines={} "
+                "subscriber_accepted_mlines={}",
+                event.source.stream_id,
+                event.source.remote_endpoint,
+                primary_ssrc_mapping.publisher_session_id,
+                primary_ssrc_mapping.subscriber_session_id,
+                rtx_payload_type_mapping->publisher_mid,
+                rtx_payload_type_mapping->subscriber_mid,
+                rtx_payload_type_mapping->kind,
+                cached_packet.sequence_number,
+                rtx_sequence_number,
+                publisher->accepted_remote_media_mline_indexes().size(),
+                subscriber->accepted_remote_media_mline_indexes().size());
+        }
         if (publisher_subscriber_media_has_negotiated_absolute_send_time(*publisher, *subscriber, *rtx_payload_type_mapping))
         {
             if (!append_header_extension_id_rewrite(
@@ -14477,8 +14565,71 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
                 publisher->accepted_remote_media_mline_indexes().size(),
                 subscriber->accepted_remote_media_mline_indexes().size());
         }
+
         if (publisher_subscriber_media_has_negotiated_transport_cc(*publisher, *subscriber, *payload_type_mapping))
         {
+            const std::optional<uint16_t> publisher_transport_cc_sequence =
+                read_publisher_transport_cc_sequence_number(*payload_type_mapping, publisher_offer, cached_plain_packet_span);
+
+            if (publisher_transport_cc_sequence.has_value())
+            {
+                const uint16_t outbound_transport_cc_sequence =
+                    next_outbound_transport_cc_sequence(ssrc_mapping->stream_id, ssrc_mapping->subscriber_session_id);
+
+                auto transport_cc_sequence_rewrite = make_transport_wide_cc_header_extension_rewrite(
+                    *payload_type_mapping, publisher_offer, subscriber_offer, cached_plain_packet_span, outbound_transport_cc_sequence);
+
+                if (!transport_cc_sequence_rewrite)
+                {
+                    WEBRTC_LOG_WARN(
+                        "rtp nack retransmit transport-cc sequence rewrite failed stream={} subscriber={} publisher_session={} subscriber_session={} "
+                        "publisher_mid={} subscriber_mid={} kind={} sequence={} transport_cc_sequence={} error={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        ssrc_mapping->publisher_session_id,
+                        ssrc_mapping->subscriber_session_id,
+                        payload_type_mapping->publisher_mid,
+                        payload_type_mapping->subscriber_mid,
+                        payload_type_mapping->kind,
+                        cached_packet.sequence_number,
+                        outbound_transport_cc_sequence,
+                        transport_cc_sequence_rewrite.error());
+
+                    return std::nullopt;
+                }
+
+                if (transport_cc_sequence_rewrite->has_value())
+                {
+                    outbound_transport_cc_packet_identity identity;
+
+                    identity.stream_id = ssrc_mapping->stream_id;
+                    identity.publisher_session_id = ssrc_mapping->publisher_session_id;
+                    identity.subscriber_session_id = ssrc_mapping->subscriber_session_id;
+                    identity.publisher_mid = payload_type_mapping->publisher_mid;
+                    identity.subscriber_mid = payload_type_mapping->subscriber_mid;
+                    identity.kind = payload_type_mapping->kind;
+
+                    identity.publisher_ssrc = ssrc_mapping->publisher_ssrc;
+                    identity.subscriber_ssrc = ssrc_mapping->subscriber_ssrc;
+
+                    identity.publisher_payload_type = cached_packet.payload_type;
+                    identity.subscriber_payload_type = payload_type_mapping->subscriber_payload_type;
+
+                    identity.publisher_rtp_sequence_number = cached_packet.sequence_number;
+                    identity.subscriber_rtp_sequence_number = cached_packet.sequence_number;
+
+                    identity.publisher_transport_cc_sequence_number = *publisher_transport_cc_sequence;
+                    identity.subscriber_transport_cc_sequence_number = outbound_transport_cc_sequence;
+                    identity.sent_at_milliseconds = now_milliseconds();
+
+                    remember_outbound_transport_cc_packet(identity);
+
+                    options.header_extensions.push_back(std::move(**transport_cc_sequence_rewrite));
+
+                    rewrite_required = true;
+                }
+            }
+
             if (!append_header_extension_id_rewrite("transport-cc",
                                                     sdp::k_rtp_header_extension_transport_cc_uri,
                                                     false,
@@ -14491,8 +14642,8 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
         else
         {
             WEBRTC_LOG_DEBUG(
-                "rtp rtx retransmit transport-cc rewrite skipped not negotiated stream={} subscriber={} publisher_session={} subscriber_session={} "
-                "publisher_mid={} subscriber_mid={} kind={} publisher_accepted_mlines={} subscriber_accepted_mlines={}",
+                "rtp nack retransmit transport-cc rewrite skipped not negotiated stream={} subscriber={} publisher_session={} subscriber_session={} "
+                "publisher_mid={} subscriber_mid={} kind={} sequence={} publisher_accepted_mlines={} subscriber_accepted_mlines={}",
                 event.source.stream_id,
                 event.source.remote_endpoint,
                 ssrc_mapping->publisher_session_id,
@@ -14500,9 +14651,11 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
                 payload_type_mapping->publisher_mid,
                 payload_type_mapping->subscriber_mid,
                 payload_type_mapping->kind,
+                cached_packet.sequence_number,
                 publisher->accepted_remote_media_mline_indexes().size(),
                 subscriber->accepted_remote_media_mline_indexes().size());
         }
+
         if (publisher_subscriber_media_has_negotiated_rid_header_extension(*publisher, *subscriber, *payload_type_mapping))
         {
             const std::string_view rid_extension_uri = payload_type_mapping->rtx ? sdp::k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri
