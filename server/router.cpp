@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <boost/beast/http.hpp>
@@ -69,6 +71,288 @@ inline constexpr std::string_view k_debug_state_path = "/api/debug/state";
 inline constexpr std::string_view k_simulcast_rid_target_path = "/api/simulcast/rid-target";
 
 inline constexpr std::string_view k_prometheus_metrics_path = "/metrics";
+
+void append_router_prometheus_metric_header(std::string& output, std::string_view name, std::string_view help, std::string_view type)
+{
+    output.append("# HELP ");
+    output.append(name);
+    output.push_back(' ');
+    output.append(help);
+    output.push_back('\n');
+
+    output.append("# TYPE ");
+    output.append(name);
+    output.push_back(' ');
+    output.append(type);
+    output.push_back('\n');
+}
+
+void append_router_prometheus_metric_value(std::string& output, std::string_view name, uint64_t value)
+{
+    output.append(name);
+    output.push_back(' ');
+    output.append(std::to_string(value));
+    output.push_back('\n');
+}
+
+std::string escape_prometheus_label_value(std::string_view value)
+{
+    std::string result;
+
+    result.reserve(value.size());
+
+    for (char ch : value)
+    {
+        if (ch == '\\' || ch == '"')
+        {
+            result.push_back('\\');
+            result.push_back(ch);
+
+            continue;
+        }
+
+        if (ch == '\n')
+        {
+            result.append("\\n");
+
+            continue;
+        }
+
+        result.push_back(ch);
+    }
+
+    return result;
+}
+
+void append_prometheus_label(std::string& labels, std::string_view name, std::string_view value)
+{
+    if (!labels.empty())
+    {
+        labels.push_back(',');
+    }
+
+    labels.append(name);
+    labels.append("=\"");
+    labels.append(escape_prometheus_label_value(value));
+    labels.push_back('"');
+}
+
+void append_router_prometheus_labeled_metric_value(std::string& output, std::string_view name, std::string_view labels, uint64_t value)
+{
+    output.append(name);
+    output.push_back('{');
+    output.append(labels);
+    output.append("} ");
+    output.append(std::to_string(value));
+    output.push_back('\n');
+}
+
+void append_router_prometheus_labeled_metric_value(std::string& output, std::string_view name, std::string_view labels, int64_t value)
+{
+    output.append(name);
+    output.push_back('{');
+    output.append(labels);
+    output.append("} ");
+    output.append(std::to_string(value));
+    output.push_back('\n');
+}
+
+std::string make_transport_cc_feedback_window_labels(const lifecycle_debug_transport_cc_feedback_window_entry& window)
+{
+    std::string labels;
+
+    append_prometheus_label(labels, "stream_id", window.stream_id);
+    append_prometheus_label(labels, "subscriber_session_id", window.subscriber_session_id);
+
+    return labels;
+}
+
+void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lifecycle_debug_snapshot& snapshot)
+{
+    if (!output.empty() && output.back() != '\n')
+    {
+        output.push_back('\n');
+    }
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_runtime_active_clean", "whether active runtime state is clean", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_active_clean", snapshot.active_runtime_clean ? 1U : 0U);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_runtime_delayed_clean", "whether delayed runtime state is clean", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_delayed_clean", snapshot.delayed_runtime_clean ? 1U : 0U);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_runtime_consistent", "whether runtime consistency checks pass", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_consistent", snapshot.consistent ? 1U : 0U);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_transport_cc_feedback_total", "total subscriber transport cc feedback packets received", "counter");
+    append_router_prometheus_metric_value(output, "simplewebrtc_transport_cc_feedback_total", snapshot.transport_cc_feedback_total);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_transport_cc_feedback_packet_status_total", "total subscriber transport cc packet status entries received", "counter");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_transport_cc_feedback_packet_status_total", snapshot.transport_cc_feedback_packet_status_total);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_transport_cc_feedback_lookup_hit_total", "total transport cc feedback lookup hits", "counter");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_transport_cc_feedback_lookup_hit_total", snapshot.transport_cc_feedback_lookup_hit_total);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_transport_cc_feedback_lookup_miss_total", "total transport cc feedback lookup misses", "counter");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_transport_cc_feedback_lookup_miss_total", snapshot.transport_cc_feedback_lookup_miss_total);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_transport_cc_feedback_received_packet_total", "total received packet statuses in transport cc feedback", "counter");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_transport_cc_feedback_received_packet_total", snapshot.transport_cc_feedback_received_packet_total);
+
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_transport_cc_feedback_not_received_packet_total",
+                                           "total not received packet statuses in transport cc feedback",
+                                           "counter");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_transport_cc_feedback_not_received_packet_total", snapshot.transport_cc_feedback_not_received_packet_total);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_transport_cc_feedback_small_delta_total", "total small deltas in transport cc feedback", "counter");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_transport_cc_feedback_small_delta_total", snapshot.transport_cc_feedback_small_delta_total);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_transport_cc_feedback_large_delta_total", "total large or negative deltas in transport cc feedback", "counter");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_transport_cc_feedback_large_delta_total", snapshot.transport_cc_feedback_large_delta_total);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_outbound_transport_cc_sequences_current", "current outbound transport cc sequence states", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_outbound_transport_cc_sequences_current", static_cast<uint64_t>(snapshot.outbound_transport_cc_sequence_count));
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_outbound_transport_cc_packets_current", "current outbound transport cc packet identity entries", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_outbound_transport_cc_packets_current", static_cast<uint64_t>(snapshot.outbound_transport_cc_packet_count));
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_outbound_transport_cc_feedback_windows_current", "current outbound transport cc feedback windows", "gauge");
+    append_router_prometheus_metric_value(output,
+                                          "simplewebrtc_outbound_transport_cc_feedback_windows_current",
+                                          static_cast<uint64_t>(snapshot.outbound_transport_cc_feedback_window_count));
+
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_observations_current",
+                                           "current outbound transport cc feedback window observations",
+                                           "gauge");
+    append_router_prometheus_metric_value(output,
+                                          "simplewebrtc_outbound_transport_cc_feedback_window_observations_current",
+                                          static_cast<uint64_t>(snapshot.outbound_transport_cc_feedback_window_observation_count));
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_rtx_sequence_allocators_current", "current rtx sequence allocators", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_rtx_sequence_allocators_current", static_cast<uint64_t>(snapshot.rtx_sequence_allocator_count));
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_rtx_retransmission_index_entries_current", "current rtx retransmission index entries", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_rtx_retransmission_index_entries_current", static_cast<uint64_t>(snapshot.rtx_retransmission_index_count));
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_nack_retransmit_throttle_entries_current", "current nack retransmit throttle entries", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_nack_retransmit_throttle_entries_current", static_cast<uint64_t>(snapshot.nack_retransmit_throttle_count));
+
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_feedback_count",
+                                           "transport cc feedback packets tracked by current feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_packet_status_count",
+                                           "transport cc packet statuses tracked by current feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_lookup_hit_count",
+                                           "transport cc lookup hits tracked by current feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_lookup_miss_count",
+                                           "transport cc lookup misses tracked by current feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_lookup_hit_rate_ppm",
+                                           "transport cc lookup hit rate in parts per million for current feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_received_count",
+                                           "received packet statuses tracked by current transport cc feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_lost_count",
+                                           "lost packet statuses tracked by current transport cc feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_loss_rate_ppm",
+                                           "transport cc loss rate in parts per million for current feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_small_delta_count",
+                                           "small deltas tracked by current transport cc feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_large_delta_count",
+                                           "large or negative deltas tracked by current transport cc feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_avg_delta_microseconds",
+                                           "average transport cc delta in microseconds for current feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_min_delta_microseconds",
+                                           "minimum transport cc delta in microseconds for current feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_max_delta_microseconds",
+                                           "maximum transport cc delta in microseconds for current feedback window",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_outbound_transport_cc_feedback_window_observations",
+                                           "observations tracked by current transport cc feedback window",
+                                           "gauge");
+
+    for (const auto& window : snapshot.outbound_transport_cc_feedback_windows)
+    {
+        const std::string labels = make_transport_cc_feedback_window_labels(window);
+
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_feedback_count", labels, window.feedback_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_packet_status_count", labels, window.feedback_packet_status_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_lookup_hit_count", labels, window.lookup_hit_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_lookup_miss_count", labels, window.lookup_miss_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_lookup_hit_rate_ppm", labels, window.lookup_hit_rate_ppm);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_received_count", labels, window.received_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_lost_count", labels, window.lost_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_loss_rate_ppm", labels, window.loss_rate_ppm);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_small_delta_count", labels, window.small_delta_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_large_delta_count", labels, window.large_delta_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_avg_delta_microseconds", labels, window.avg_delta_microseconds);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_min_delta_microseconds", labels, window.min_delta_microseconds);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_max_delta_microseconds", labels, window.max_delta_microseconds);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_outbound_transport_cc_feedback_window_observations", labels, window.observation_count);
+    }
+}
 
 std::string_view remove_query(std::string_view target)
 {
@@ -1187,7 +1471,31 @@ http_response_ptr router::handle_prometheus_metrics(http_request_t& request)
     {
         WEBRTC_LOG_INFO("http prometheus metrics rtcp report provider mounted=0 has_data=0");
     }
+
+    if (lifecycle_debug_snapshot_provider_)
+    {
+        const lifecycle_debug_snapshot lifecycle_snapshot = lifecycle_debug_snapshot_provider_();
+
+        WEBRTC_LOG_DEBUG(
+            "http prometheus metrics lifecycle provider mounted=1 transport_cc_feedback_total={} lookup_hit={} lookup_miss={} "
+            "outbound_twcc_windows={} active_clean={} delayed_clean={} consistent={}",
+            lifecycle_snapshot.transport_cc_feedback_total,
+            lifecycle_snapshot.transport_cc_feedback_lookup_hit_total,
+            lifecycle_snapshot.transport_cc_feedback_lookup_miss_total,
+            lifecycle_snapshot.outbound_transport_cc_feedback_window_count,
+            lifecycle_snapshot.active_runtime_clean ? 1 : 0,
+            lifecycle_snapshot.delayed_runtime_clean ? 1 : 0,
+            lifecycle_snapshot.consistent ? 1 : 0);
+
+        append_lifecycle_recovery_prometheus_metrics(body, lifecycle_snapshot);
+    }
+    else
+    {
+        WEBRTC_LOG_DEBUG("http prometheus metrics lifecycle provider mounted=0");
+    }
+
     append_trickle_ice_metrics_prometheus(body, global_trickle_ice_metrics().snapshot());
+
     return prometheus_response(request, 200, body);
 }
 
