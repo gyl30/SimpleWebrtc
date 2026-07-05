@@ -549,6 +549,74 @@ uint64_t estimate_subscriber_downlink_target_bitrate_bps(const ice_udp_server::s
 
     return clamp_bitrate(target_bitrate_bps, state.min_bitrate_bps, state.max_bitrate_bps);
 }
+bool subscriber_downlink_state_enables_bitrate_gate(ice_udp_server::subscriber_downlink_control_state state)
+{
+    switch (state)
+    {
+        case ice_udp_server::subscriber_downlink_control_state::probing:
+            return false;
+
+        case ice_udp_server::subscriber_downlink_control_state::steady:
+        case ice_udp_server::subscriber_downlink_control_state::recovering:
+        case ice_udp_server::subscriber_downlink_control_state::constrained:
+            return true;
+    }
+
+    return false;
+}
+
+uint64_t subscriber_downlink_bitrate_gate_max_budget_bytes(uint64_t target_bitrate_bps)
+{
+    constexpr uint64_t k_min_burst_budget_bytes = 32000;
+    constexpr uint64_t k_burst_window_denominator = 16;
+
+    const uint64_t half_second_budget = target_bitrate_bps / 8U / k_burst_window_denominator;
+
+    return std::max<uint64_t>(half_second_budget, k_min_burst_budget_bytes);
+}
+
+uint64_t subscriber_downlink_bitrate_gate_refill_bytes(uint64_t target_bitrate_bps, uint64_t elapsed_milliseconds)
+{
+    constexpr uint64_t k_bits_per_byte = 8;
+    constexpr uint64_t k_milliseconds_per_second = 1000;
+
+    if (target_bitrate_bps == 0 || elapsed_milliseconds == 0)
+    {
+        return 0;
+    }
+
+    return static_cast<uint64_t>((static_cast<unsigned __int128>(target_bitrate_bps) * elapsed_milliseconds) /
+                                 (k_bits_per_byte * k_milliseconds_per_second));
+}
+
+void refill_subscriber_downlink_bitrate_gate_budget(ice_udp_server::subscriber_downlink_bandwidth_state& state, uint64_t current_time_milliseconds)
+{
+    constexpr uint64_t k_max_refill_elapsed_milliseconds = 500;
+
+    if (state.bitrate_gate_last_update_milliseconds == 0)
+    {
+        state.bitrate_gate_last_update_milliseconds = current_time_milliseconds;
+        state.bitrate_gate_budget_bytes = subscriber_downlink_bitrate_gate_max_budget_bytes(state.target_bitrate_bps);
+
+        return;
+    }
+
+    if (current_time_milliseconds <= state.bitrate_gate_last_update_milliseconds)
+    {
+        return;
+    }
+
+    const uint64_t elapsed_milliseconds =
+        std::min<uint64_t>(current_time_milliseconds - state.bitrate_gate_last_update_milliseconds, k_max_refill_elapsed_milliseconds);
+
+    state.bitrate_gate_last_update_milliseconds = current_time_milliseconds;
+
+    const uint64_t refill_bytes = subscriber_downlink_bitrate_gate_refill_bytes(state.target_bitrate_bps, elapsed_milliseconds);
+
+    const uint64_t max_budget_bytes = subscriber_downlink_bitrate_gate_max_budget_bytes(state.target_bitrate_bps);
+
+    state.bitrate_gate_budget_bytes = std::min<uint64_t>(state.bitrate_gate_budget_bytes + refill_bytes, max_budget_bytes);
+}
 
 void add_outbound_transport_cc_feedback_delta(ice_udp_server::outbound_transport_cc_feedback_window_state& window, int64_t delta_microseconds)
 {
@@ -669,6 +737,13 @@ lifecycle_debug_subscriber_downlink_bandwidth_entry make_subscriber_downlink_ban
     entry.avg_delta_microseconds = state.avg_delta_microseconds;
     entry.min_delta_microseconds = state.min_delta_microseconds;
     entry.max_delta_microseconds = state.max_delta_microseconds;
+
+    entry.bitrate_gate_last_update_milliseconds = state.bitrate_gate_last_update_milliseconds;
+    entry.bitrate_gate_budget_bytes = state.bitrate_gate_budget_bytes;
+    entry.bitrate_gate_allowed_packet_count = state.bitrate_gate_allowed_packet_count;
+    entry.bitrate_gate_dropped_packet_count = state.bitrate_gate_dropped_packet_count;
+    entry.bitrate_gate_allowed_byte_count = state.bitrate_gate_allowed_byte_count;
+    entry.bitrate_gate_dropped_byte_count = state.bitrate_gate_dropped_byte_count;
 
     return entry;
 }
@@ -6290,12 +6365,16 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot, "media_forward", "target peer missing", rtp_rtcp_drop_media_forward_target_peer_missing_total_.load(std::memory_order_relaxed));
     append_lifecycle_debug_drop_reason(
         snapshot, "media_forward", "rewrite failed", rtp_rtcp_drop_media_forward_rewrite_failed_total_.load(std::memory_order_relaxed));
+
     append_lifecycle_debug_drop_reason(
         snapshot, "media_forward", "rewrite empty", rtp_rtcp_drop_media_forward_rewrite_empty_total_.load(std::memory_order_relaxed));
     append_lifecycle_debug_drop_reason(
         snapshot, "media_forward", "outbound runtime gate", rtp_rtcp_drop_media_forward_runtime_gate_total_.load(std::memory_order_relaxed));
     append_lifecycle_debug_drop_reason(
+        snapshot, "media_forward", "subscriber bitrate gate", rtp_rtcp_drop_media_forward_bitrate_gate_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
         snapshot, "media_forward", "srtp protect failed", rtp_rtcp_drop_media_forward_protect_failed_total_.load(std::memory_order_relaxed));
+
     append_lifecycle_debug_drop_reason(
         snapshot, "media_forward", "srtp protect ignored", rtp_rtcp_drop_media_forward_protect_ignored_total_.load(std::memory_order_relaxed));
 
@@ -17421,6 +17500,110 @@ void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_lock
     state.min_delta_microseconds = window.min_delta_microseconds;
     state.max_delta_microseconds = window.max_delta_microseconds;
 }
+bool ice_udp_server::subscriber_downlink_bitrate_gate_allows_packet(const media_route_result& route,
+                                                                    const media_peer_info& target_peer,
+                                                                    const std::optional<media_track_resolution>& track_resolution,
+                                                                    const srtp_packet_process_result& packet,
+                                                                    std::span<const uint8_t> outbound_plain_packet,
+                                                                    const std::optional<media_ssrc_mapping>& outbound_mapping)
+{
+    if (packet.kind != srtp_packet_kind::rtp)
+    {
+        return true;
+    }
+
+    if (target_peer.role != media_peer_role::subscriber)
+    {
+        return true;
+    }
+
+    if (route.source.role != media_peer_role::publisher)
+    {
+        return true;
+    }
+
+    if (route.action != media_route_action::fanout_to_subscribers)
+    {
+        return true;
+    }
+
+    if (!track_resolution.has_value() || !track_resolution->resolved)
+    {
+        return true;
+    }
+
+    if (!outbound_mapping.has_value())
+    {
+        return true;
+    }
+
+    if (outbound_mapping->kind != "video")
+    {
+        return true;
+    }
+
+    if (outbound_mapping->rtx)
+    {
+        return true;
+    }
+
+    if (outbound_plain_packet.empty())
+    {
+        return true;
+    }
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const std::string key = make_subscriber_downlink_bandwidth_state_key(target_peer.stream_id, target_peer.session_id);
+
+    auto iterator = subscriber_downlink_bandwidth_by_key_.find(key);
+
+    if (iterator == subscriber_downlink_bandwidth_by_key_.end())
+    {
+        return true;
+    }
+
+    subscriber_downlink_bandwidth_state& state = iterator->second;
+
+    if (!subscriber_downlink_state_enables_bitrate_gate(state.control_state))
+    {
+        return true;
+    }
+
+    refill_subscriber_downlink_bitrate_gate_budget(state, current_time_milliseconds);
+
+    const uint64_t packet_size = static_cast<uint64_t>(outbound_plain_packet.size());
+
+    if (state.bitrate_gate_budget_bytes >= packet_size)
+    {
+        state.bitrate_gate_budget_bytes -= packet_size;
+        state.bitrate_gate_allowed_packet_count += 1;
+        state.bitrate_gate_allowed_byte_count += packet_size;
+
+        return true;
+    }
+
+    state.bitrate_gate_dropped_packet_count += 1;
+    state.bitrate_gate_dropped_byte_count += packet_size;
+
+    WEBRTC_LOG_DEBUG(
+        "subscriber downlink bitrate gate drop stream={} subscriber_session={} target_bitrate_bps={} control_state={} budget_bytes={} "
+        "packet_size={} dropped_packets={} dropped_bytes={} loss_rate_ppm={} lookup_hit_rate_ppm={}",
+        target_peer.stream_id,
+        target_peer.session_id,
+        state.target_bitrate_bps,
+        subscriber_downlink_control_state_to_string(state.control_state),
+        state.bitrate_gate_budget_bytes,
+        packet_size,
+        state.bitrate_gate_dropped_packet_count,
+        state.bitrate_gate_dropped_byte_count,
+        state.loss_rate_ppm,
+        state.lookup_hit_rate_ppm);
+
+    return false;
+}
 
 void ice_udp_server::forget_subscriber_downlink_bandwidth_states_for_session(std::string_view session_id)
 {
@@ -17965,6 +18148,23 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
 
             continue;
         }
+
+        std::optional<media_ssrc_mapping> outbound_mapping;
+
+        if (packet.kind == srtp_packet_kind::rtp)
+        {
+            const std::span<const uint8_t> outbound_span(outbound_plain_packet->data(), outbound_plain_packet->size());
+
+            outbound_mapping = find_outbound_ssrc_mapping(*target_peer, outbound_span);
+
+            if (!subscriber_downlink_bitrate_gate_allows_packet(route, *target_peer, track_resolution, packet, outbound_span, outbound_mapping))
+            {
+                rtp_rtcp_drop_media_forward_bitrate_gate_total_.fetch_add(1, std::memory_order_relaxed);
+
+                continue;
+            }
+        }
+
         auto protected_packet = srtp_transport_->protect_outbound_packet(
             std::span<const uint8_t>(outbound_plain_packet->data(), outbound_plain_packet->size()), target_address, packet.kind);
         if (!protected_packet)
@@ -17996,8 +18196,6 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
         if (packet.kind == srtp_packet_kind::rtp)
         {
             const std::span<const uint8_t> outbound_span(outbound_plain_packet->data(), outbound_plain_packet->size());
-
-            const std::optional<media_ssrc_mapping> outbound_mapping = find_outbound_ssrc_mapping(*target_peer, outbound_span);
 
             observe_outbound_rtp_stats(*target_peer, outbound_span, outbound_mapping);
 

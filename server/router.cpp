@@ -291,6 +291,16 @@ void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lif
         output, "simplewebrtc_subscriber_downlink_window_observations", "subscriber downlink transport cc window observation count", "gauge");
     append_router_prometheus_metric_header(
         output, "simplewebrtc_subscriber_downlink_transition_count", "subscriber downlink control state transition count", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_bitrate_gate_budget_bytes", "subscriber downlink bitrate gate current budget in bytes", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_bitrate_gate_allowed_packets", "subscriber downlink bitrate gate allowed packets", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_bitrate_gate_dropped_packets", "subscriber downlink bitrate gate dropped packets", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_bitrate_gate_allowed_bytes", "subscriber downlink bitrate gate allowed bytes", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_bitrate_gate_dropped_bytes", "subscriber downlink bitrate gate dropped bytes", "gauge");
 
     for (const auto& downlink_state : snapshot.subscriber_downlink_bandwidth_states)
     {
@@ -305,6 +315,16 @@ void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lif
             output, "simplewebrtc_subscriber_downlink_window_observations", labels, downlink_state.window_observation_count);
         append_router_prometheus_labeled_metric_value(
             output, "simplewebrtc_subscriber_downlink_transition_count", labels, downlink_state.transition_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_bitrate_gate_budget_bytes", labels, downlink_state.bitrate_gate_budget_bytes);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_bitrate_gate_allowed_packets", labels, downlink_state.bitrate_gate_allowed_packet_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_bitrate_gate_dropped_packets", labels, downlink_state.bitrate_gate_dropped_packet_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_bitrate_gate_allowed_bytes", labels, downlink_state.bitrate_gate_allowed_byte_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_bitrate_gate_dropped_bytes", labels, downlink_state.bitrate_gate_dropped_byte_count);
     }
 
     append_router_prometheus_metric_header(output,

@@ -523,8 +523,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         int64_t avg_delta_microseconds = 0;
         int64_t min_delta_microseconds = 0;
         int64_t max_delta_microseconds = 0;
-    };
 
+        uint64_t bitrate_gate_last_update_milliseconds = 0;
+        uint64_t bitrate_gate_budget_bytes = 0;
+        uint64_t bitrate_gate_allowed_packet_count = 0;
+        uint64_t bitrate_gate_dropped_packet_count = 0;
+        uint64_t bitrate_gate_allowed_byte_count = 0;
+        uint64_t bitrate_gate_dropped_byte_count = 0;
+    };
     struct pending_subscriber_runtime_residual_check
     {
         std::string stream_id;
@@ -620,6 +626,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                        std::string_view subscriber_session_id,
                                                                        const outbound_transport_cc_feedback_window_state& window,
                                                                        uint64_t current_time_milliseconds);
+
+    [[nodiscard]]
+    bool subscriber_downlink_bitrate_gate_allows_packet(const media_route_result& route,
+                                                        const media_peer_info& target_peer,
+                                                        const std::optional<media_track_resolution>& track_resolution,
+                                                        const srtp_packet_process_result& packet,
+                                                        std::span<const uint8_t> outbound_plain_packet,
+                                                        const std::optional<media_ssrc_mapping>& outbound_mapping);
 
     void forget_subscriber_downlink_bandwidth_states_for_session(std::string_view session_id);
 
@@ -1179,9 +1193,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_transport_missing_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_target_endpoint_missing_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_target_peer_missing_total_{0};
+
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_rewrite_failed_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_rewrite_empty_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_runtime_gate_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_bitrate_gate_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_protect_failed_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_protect_ignored_total_{0};
 
