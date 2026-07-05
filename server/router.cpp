@@ -167,6 +167,17 @@ std::string make_transport_cc_feedback_window_labels(const lifecycle_debug_trans
     return labels;
 }
 
+std::string make_subscriber_downlink_bandwidth_labels(const lifecycle_debug_subscriber_downlink_bandwidth_entry& state)
+{
+    std::string labels;
+
+    append_prometheus_label(labels, "stream_id", state.stream_id);
+    append_prometheus_label(labels, "subscriber_session_id", state.subscriber_session_id);
+    append_prometheus_label(labels, "control_state", state.control_state);
+
+    return labels;
+}
+
 void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lifecycle_debug_snapshot& snapshot)
 {
     if (!output.empty() && output.back() != '\n')
@@ -261,6 +272,40 @@ void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lif
         output, "simplewebrtc_nack_retransmit_throttle_entries_current", "current nack retransmit throttle entries", "gauge");
     append_router_prometheus_metric_value(
         output, "simplewebrtc_nack_retransmit_throttle_entries_current", static_cast<uint64_t>(snapshot.nack_retransmit_throttle_count));
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_bandwidth_states_current", "current subscriber downlink bandwidth states", "gauge");
+    append_router_prometheus_metric_value(output,
+                                          "simplewebrtc_subscriber_downlink_bandwidth_states_current",
+                                          static_cast<uint64_t>(snapshot.subscriber_downlink_bandwidth_state_count));
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_target_bitrate_bps", "observe-only subscriber downlink target bitrate in bps", "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_subscriber_downlink_lookup_hit_rate_ppm",
+                                           "subscriber downlink transport cc lookup hit rate in parts per million",
+                                           "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_loss_rate_ppm", "subscriber downlink loss rate in parts per million", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_window_observations", "subscriber downlink transport cc window observation count", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_transition_count", "subscriber downlink control state transition count", "gauge");
+
+    for (const auto& downlink_state : snapshot.subscriber_downlink_bandwidth_states)
+    {
+        const std::string labels = make_subscriber_downlink_bandwidth_labels(downlink_state);
+
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_target_bitrate_bps", labels, downlink_state.target_bitrate_bps);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_lookup_hit_rate_ppm", labels, downlink_state.lookup_hit_rate_ppm);
+        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_loss_rate_ppm", labels, downlink_state.loss_rate_ppm);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_window_observations", labels, downlink_state.window_observation_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_transition_count", labels, downlink_state.transition_count);
+    }
 
     append_router_prometheus_metric_header(output,
                                            "simplewebrtc_outbound_transport_cc_feedback_window_feedback_count",

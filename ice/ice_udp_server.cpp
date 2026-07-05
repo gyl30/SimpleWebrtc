@@ -328,6 +328,20 @@ std::string make_outbound_transport_cc_feedback_window_key(std::string_view stre
 
     return key;
 }
+std::string make_subscriber_downlink_bandwidth_state_key(std::string_view stream_id, std::string_view subscriber_session_id)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + subscriber_session_id.size() + 1);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(subscriber_session_id);
+
+    return key;
+}
 
 bool outbound_transport_cc_feedback_window_key_matches_session(std::string_view key, std::string_view session_id)
 {
@@ -364,6 +378,178 @@ bool outbound_transport_cc_feedback_window_key_matches_stream(std::string_view k
 
     return key.starts_with(prefix);
 }
+
+bool subscriber_downlink_bandwidth_state_key_matches_session(std::string_view key, std::string_view session_id)
+{
+    if (key.empty() || session_id.empty())
+    {
+        return false;
+    }
+
+    std::string marker;
+
+    marker.reserve(session_id.size() + 1);
+
+    marker.push_back('|');
+
+    marker.append(session_id);
+
+    return key.ends_with(marker);
+}
+
+bool subscriber_downlink_bandwidth_state_key_matches_stream(std::string_view key, std::string_view stream_id)
+{
+    if (key.empty() || stream_id.empty())
+    {
+        return false;
+    }
+
+    std::string prefix;
+
+    prefix.reserve(stream_id.size() + 1);
+
+    prefix.append(stream_id);
+
+    prefix.push_back('|');
+
+    return key.starts_with(prefix);
+}
+
+std::string_view subscriber_downlink_control_state_to_string(ice_udp_server::subscriber_downlink_control_state state)
+{
+    switch (state)
+    {
+        case ice_udp_server::subscriber_downlink_control_state::probing:
+            return "probing";
+
+        case ice_udp_server::subscriber_downlink_control_state::steady:
+            return "steady";
+
+        case ice_udp_server::subscriber_downlink_control_state::recovering:
+            return "recovering";
+
+        case ice_udp_server::subscriber_downlink_control_state::constrained:
+            return "constrained";
+    }
+
+    return "probing";
+}
+
+uint64_t scale_bitrate(uint64_t bitrate_bps, uint64_t numerator, uint64_t denominator)
+{
+    if (denominator == 0)
+    {
+        return bitrate_bps;
+    }
+
+    return static_cast<uint64_t>((static_cast<unsigned __int128>(bitrate_bps) * numerator) / denominator);
+}
+
+uint64_t clamp_bitrate(uint64_t bitrate_bps, uint64_t min_bitrate_bps, uint64_t max_bitrate_bps)
+{
+    if (bitrate_bps < min_bitrate_bps)
+    {
+        return min_bitrate_bps;
+    }
+
+    if (bitrate_bps > max_bitrate_bps)
+    {
+        return max_bitrate_bps;
+    }
+
+    return bitrate_bps;
+}
+
+ice_udp_server::subscriber_downlink_control_state select_subscriber_downlink_control_state(uint64_t observation_count,
+                                                                                           uint64_t lookup_hit_rate_ppm,
+                                                                                           uint64_t loss_rate_ppm)
+{
+    constexpr uint64_t k_probe_observation_count = 128;
+    constexpr uint64_t k_min_reliable_lookup_hit_rate_ppm = 950000;
+    constexpr uint64_t k_recovering_loss_rate_ppm = 30000;
+    constexpr uint64_t k_constrained_loss_rate_ppm = 100000;
+
+    if (observation_count < k_probe_observation_count)
+    {
+        return ice_udp_server::subscriber_downlink_control_state::probing;
+    }
+
+    if (lookup_hit_rate_ppm < k_min_reliable_lookup_hit_rate_ppm)
+    {
+        return ice_udp_server::subscriber_downlink_control_state::probing;
+    }
+
+    if (loss_rate_ppm >= k_constrained_loss_rate_ppm)
+    {
+        return ice_udp_server::subscriber_downlink_control_state::constrained;
+    }
+
+    if (loss_rate_ppm >= k_recovering_loss_rate_ppm)
+    {
+        return ice_udp_server::subscriber_downlink_control_state::recovering;
+    }
+
+    return ice_udp_server::subscriber_downlink_control_state::steady;
+}
+
+std::string make_subscriber_downlink_transition_reason(ice_udp_server::subscriber_downlink_control_state state,
+                                                       uint64_t observation_count,
+                                                       uint64_t lookup_hit_rate_ppm,
+                                                       uint64_t loss_rate_ppm)
+{
+    std::string reason;
+
+    reason.reserve(128);
+
+    reason.append("state=");
+
+    reason.append(subscriber_downlink_control_state_to_string(state));
+
+    reason.append(" observations=");
+
+    reason.append(std::to_string(observation_count));
+
+    reason.append(" lookup_hit_rate_ppm=");
+
+    reason.append(std::to_string(lookup_hit_rate_ppm));
+
+    reason.append(" loss_rate_ppm=");
+
+    reason.append(std::to_string(loss_rate_ppm));
+
+    return reason;
+}
+
+uint64_t estimate_subscriber_downlink_target_bitrate_bps(const ice_udp_server::subscriber_downlink_bandwidth_state& state,
+                                                         ice_udp_server::subscriber_downlink_control_state next_state)
+{
+    uint64_t target_bitrate_bps = state.target_bitrate_bps;
+
+    if (target_bitrate_bps == 0)
+    {
+        target_bitrate_bps = 2000000;
+    }
+
+    switch (next_state)
+    {
+        case ice_udp_server::subscriber_downlink_control_state::probing:
+            break;
+
+        case ice_udp_server::subscriber_downlink_control_state::steady:
+            target_bitrate_bps += std::max<uint64_t>(target_bitrate_bps / 20U, 50000U);
+            break;
+
+        case ice_udp_server::subscriber_downlink_control_state::recovering:
+            break;
+
+        case ice_udp_server::subscriber_downlink_control_state::constrained:
+            target_bitrate_bps = scale_bitrate(target_bitrate_bps, 85U, 100U);
+            break;
+    }
+
+    return clamp_bitrate(target_bitrate_bps, state.min_bitrate_bps, state.max_bitrate_bps);
+}
+
 void add_outbound_transport_cc_feedback_delta(ice_udp_server::outbound_transport_cc_feedback_window_state& window, int64_t delta_microseconds)
 {
     if (window.small_delta_count + window.large_delta_count == 0)
@@ -448,6 +634,45 @@ lifecycle_debug_transport_cc_feedback_window_entry make_transport_cc_feedback_wi
 
     return entry;
 }
+
+lifecycle_debug_subscriber_downlink_bandwidth_entry make_subscriber_downlink_bandwidth_debug_entry(
+    const ice_udp_server::subscriber_downlink_bandwidth_state& state)
+{
+    lifecycle_debug_subscriber_downlink_bandwidth_entry entry;
+
+    entry.stream_id = state.stream_id;
+    entry.subscriber_session_id = state.subscriber_session_id;
+    entry.control_state = subscriber_downlink_control_state_to_string(state.control_state);
+
+    entry.created_at_milliseconds = state.created_at_milliseconds;
+    entry.updated_at_milliseconds = state.updated_at_milliseconds;
+    entry.last_feedback_at_milliseconds = state.last_feedback_at_milliseconds;
+    entry.last_transition_at_milliseconds = state.last_transition_at_milliseconds;
+
+    entry.transition_count = state.transition_count;
+    entry.last_transition_reason = state.last_transition_reason;
+
+    entry.target_bitrate_bps = state.target_bitrate_bps;
+    entry.min_bitrate_bps = state.min_bitrate_bps;
+    entry.max_bitrate_bps = state.max_bitrate_bps;
+
+    entry.feedback_count = state.feedback_count;
+    entry.window_observation_count = state.window_observation_count;
+    entry.window_packet_status_count = state.window_packet_status_count;
+
+    entry.lookup_hit_rate_ppm = state.lookup_hit_rate_ppm;
+    entry.loss_rate_ppm = state.loss_rate_ppm;
+
+    entry.received_count = state.received_count;
+    entry.lost_count = state.lost_count;
+
+    entry.avg_delta_microseconds = state.avg_delta_microseconds;
+    entry.min_delta_microseconds = state.min_delta_microseconds;
+    entry.max_delta_microseconds = state.max_delta_microseconds;
+
+    return entry;
+}
+
 std::string make_outbound_transport_cc_packet_key(std::string_view stream_id,
                                                   std::string_view subscriber_session_id,
                                                   uint16_t subscriber_transport_cc_sequence_number)
@@ -856,7 +1081,8 @@ bool lifecycle_active_runtime_state_is_empty(const lifecycle_debug_snapshot& sna
            snapshot.selected_rid_layer_state_count == 0 && snapshot.pending_selected_rid_keyframe_request_count == 0 &&
            snapshot.selected_rid_keyframe_pending_metadata_count == 0 && snapshot.extmap_rewrite_state_count == 0 &&
            snapshot.outbound_transport_cc_sequence_count == 0 && snapshot.outbound_transport_cc_packet_count == 0 &&
-           snapshot.outbound_transport_cc_feedback_window_count == 0 && snapshot.outbound_transport_cc_feedback_window_observation_count == 0;
+           snapshot.outbound_transport_cc_feedback_window_count == 0 && snapshot.outbound_transport_cc_feedback_window_observation_count == 0 &&
+           snapshot.subscriber_downlink_bandwidth_state_count == 0;
 }
 
 bool lifecycle_delayed_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
@@ -4440,6 +4666,7 @@ void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
     forget_outbound_transport_cc_sequences_for_session(session_id);
     forget_outbound_transport_cc_packets_for_session(session_id);
     forget_outbound_transport_cc_feedback_windows_for_session(session_id);
+    forget_subscriber_downlink_bandwidth_states_for_session(session_id);
     if (track_resolver_ != nullptr)
     {
         track_resolver_->forget_session(session_id);
@@ -5430,6 +5657,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.outbound_transport_cc_feedback_window_count = to_debug_count(outbound_transport_cc_feedback_windows_by_key_.size());
         snapshot.outbound_transport_cc_feedback_window_observation_count =
             to_debug_count(outbound_transport_cc_feedback_window_observation_count_locked());
+        snapshot.subscriber_downlink_bandwidth_state_count = to_debug_count(subscriber_downlink_bandwidth_by_key_.size());
 
         snapshot.outbound_transport_cc_feedback_windows.reserve(outbound_transport_cc_feedback_windows_by_key_.size());
 
@@ -5438,6 +5666,15 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             (void)key;
 
             snapshot.outbound_transport_cc_feedback_windows.push_back(make_transport_cc_feedback_window_debug_entry(window));
+        }
+
+        snapshot.subscriber_downlink_bandwidth_states.reserve(subscriber_downlink_bandwidth_by_key_.size());
+
+        for (const auto& [key, state] : subscriber_downlink_bandwidth_by_key_)
+        {
+            (void)key;
+
+            snapshot.subscriber_downlink_bandwidth_states.push_back(make_subscriber_downlink_bandwidth_debug_entry(state));
         }
 
         for (const auto& [key, state] : selected_rid_layer_state_by_key_)
@@ -6322,6 +6559,12 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             add_lifecycle_residual(snapshot,
                                    "outbound transport cc feedback window observation remains count=" +
                                        std::to_string(snapshot.outbound_transport_cc_feedback_window_observation_count));
+        }
+
+        if (snapshot.subscriber_downlink_bandwidth_state_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot, "subscriber downlink bandwidth state remains count=" + std::to_string(snapshot.subscriber_downlink_bandwidth_state_count));
         }
 
         if (snapshot.rtcp_report_source_count != 0)
@@ -15966,6 +16209,9 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         const std::size_t erased_outbound_transport_cc_feedback_windows = erase_outbound_transport_cc_feedback_windows_for_stream_locked(stream_id);
         (void)erased_outbound_transport_cc_feedback_windows;
 
+        const std::size_t erased_subscriber_downlink_bandwidth_states = erase_subscriber_downlink_bandwidth_states_for_stream_locked(stream_id);
+        (void)erased_subscriber_downlink_bandwidth_states;
+
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
             if (iterator->first.starts_with(std::string(stream_id) + "|"))
@@ -17047,6 +17293,8 @@ void ice_udp_server::remember_outbound_transport_cc_feedback_observation(std::st
             window.feedback_packet_status_count -= 1;
         }
     }
+
+    remember_subscriber_downlink_bandwidth_feedback_window_locked(stream_id, subscriber_session_id, window, now);
 }
 
 void ice_udp_server::forget_outbound_transport_cc_feedback_windows_for_session(std::string_view session_id)
@@ -17110,6 +17358,119 @@ std::size_t ice_udp_server::outbound_transport_cc_feedback_window_observation_co
 
     return count;
 }
+void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_locked(std::string_view stream_id,
+                                                                                   std::string_view subscriber_session_id,
+                                                                                   const outbound_transport_cc_feedback_window_state& window,
+                                                                                   uint64_t current_time_milliseconds)
+{
+    if (stream_id.empty() || subscriber_session_id.empty())
+    {
+        return;
+    }
+
+    const std::string key = make_subscriber_downlink_bandwidth_state_key(stream_id, subscriber_session_id);
+
+    auto& state = subscriber_downlink_bandwidth_by_key_[key];
+
+    if (state.stream_id.empty())
+    {
+        state.stream_id = stream_id;
+        state.subscriber_session_id = subscriber_session_id;
+        state.created_at_milliseconds = current_time_milliseconds;
+        state.updated_at_milliseconds = current_time_milliseconds;
+        state.last_feedback_at_milliseconds = current_time_milliseconds;
+        state.last_transition_at_milliseconds = current_time_milliseconds;
+        state.last_transition_reason = "created";
+    }
+
+    const uint64_t observation_count = static_cast<uint64_t>(window.observations.size());
+    const uint64_t lookup_feedback_count = window.lookup_hit_count + window.lookup_miss_count;
+    const uint64_t packet_status_count = window.received_count + window.lost_count;
+
+    const uint64_t lookup_hit_rate_ppm = make_rate_ppm(window.lookup_hit_count, lookup_feedback_count);
+    const uint64_t loss_rate_ppm = make_rate_ppm(window.lost_count, packet_status_count);
+
+    const subscriber_downlink_control_state next_state =
+        select_subscriber_downlink_control_state(observation_count, lookup_hit_rate_ppm, loss_rate_ppm);
+
+    if (state.control_state != next_state)
+    {
+        state.control_state = next_state;
+        state.transition_count += 1;
+        state.last_transition_at_milliseconds = current_time_milliseconds;
+        state.last_transition_reason = make_subscriber_downlink_transition_reason(next_state, observation_count, lookup_hit_rate_ppm, loss_rate_ppm);
+    }
+
+    state.updated_at_milliseconds = current_time_milliseconds;
+    state.last_feedback_at_milliseconds =
+        window.last_feedback_at_milliseconds != 0 ? window.last_feedback_at_milliseconds : current_time_milliseconds;
+
+    state.target_bitrate_bps = estimate_subscriber_downlink_target_bitrate_bps(state, next_state);
+
+    state.feedback_count = window.feedback_count;
+    state.window_observation_count = observation_count;
+    state.window_packet_status_count = window.feedback_packet_status_count;
+
+    state.lookup_hit_rate_ppm = lookup_hit_rate_ppm;
+    state.loss_rate_ppm = loss_rate_ppm;
+
+    state.received_count = window.received_count;
+    state.lost_count = window.lost_count;
+
+    state.avg_delta_microseconds = make_average_delta_microseconds(window);
+    state.min_delta_microseconds = window.min_delta_microseconds;
+    state.max_delta_microseconds = window.max_delta_microseconds;
+}
+
+void ice_udp_server::forget_subscriber_downlink_bandwidth_states_for_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    for (auto iterator = subscriber_downlink_bandwidth_by_key_.begin(); iterator != subscriber_downlink_bandwidth_by_key_.end();)
+    {
+        if (subscriber_downlink_bandwidth_state_key_matches_session(iterator->first, session_id))
+        {
+            iterator = subscriber_downlink_bandwidth_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
+std::size_t ice_udp_server::erase_subscriber_downlink_bandwidth_states_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = subscriber_downlink_bandwidth_by_key_.begin(); iterator != subscriber_downlink_bandwidth_by_key_.end();)
+    {
+        if (subscriber_downlink_bandwidth_state_key_matches_stream(iterator->first, stream_id))
+        {
+            iterator = subscriber_downlink_bandwidth_by_key_.erase(iterator);
+
+            erased_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
+}
+
+std::size_t ice_udp_server::subscriber_downlink_bandwidth_state_count_locked() const { return subscriber_downlink_bandwidth_by_key_.size(); }
 
 void ice_udp_server::forget_outbound_transport_cc_packets_for_session(std::string_view session_id)
 {

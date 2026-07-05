@@ -481,6 +481,50 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
         std::deque<outbound_transport_cc_feedback_observation> observations;
     };
+
+    enum class subscriber_downlink_control_state
+    {
+        probing,
+        steady,
+        recovering,
+        constrained,
+    };
+
+    struct subscriber_downlink_bandwidth_state
+    {
+        std::string stream_id;
+        std::string subscriber_session_id;
+
+        subscriber_downlink_control_state control_state = subscriber_downlink_control_state::probing;
+
+        uint64_t created_at_milliseconds = 0;
+        uint64_t updated_at_milliseconds = 0;
+        uint64_t last_feedback_at_milliseconds = 0;
+        uint64_t last_transition_at_milliseconds = 0;
+
+        uint64_t transition_count = 0;
+
+        std::string last_transition_reason;
+
+        uint64_t target_bitrate_bps = 2000000;
+        uint64_t min_bitrate_bps = 150000;
+        uint64_t max_bitrate_bps = 5000000;
+
+        uint64_t feedback_count = 0;
+        uint64_t window_observation_count = 0;
+        uint64_t window_packet_status_count = 0;
+
+        uint64_t lookup_hit_rate_ppm = 0;
+        uint64_t loss_rate_ppm = 0;
+
+        uint64_t received_count = 0;
+        uint64_t lost_count = 0;
+
+        int64_t avg_delta_microseconds = 0;
+        int64_t min_delta_microseconds = 0;
+        int64_t max_delta_microseconds = 0;
+    };
+
     struct pending_subscriber_runtime_residual_check
     {
         std::string stream_id;
@@ -572,10 +616,22 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     std::size_t outbound_transport_cc_feedback_window_observation_count_locked() const;
 
+    void remember_subscriber_downlink_bandwidth_feedback_window_locked(std::string_view stream_id,
+                                                                       std::string_view subscriber_session_id,
+                                                                       const outbound_transport_cc_feedback_window_state& window,
+                                                                       uint64_t current_time_milliseconds);
+
+    void forget_subscriber_downlink_bandwidth_states_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_subscriber_downlink_bandwidth_states_for_stream_locked(std::string_view stream_id);
+
+    [[nodiscard]]
+    std::size_t subscriber_downlink_bandwidth_state_count_locked() const;
+
     [[nodiscard]]
     std::optional<media_ssrc_mapping> find_identity_ssrc_mapping_by_subscriber_ssrc(std::string_view subscriber_session_id,
                                                                                     uint32_t subscriber_ssrc) const;
-
     [[nodiscard]]
     std::optional<media_ssrc_mapping> find_identity_ssrc_mapping_by_publisher_ssrc(std::string_view stream_id,
                                                                                    std::string_view publisher_session_id,
@@ -1086,6 +1142,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, outbound_transport_cc_packet_identity> outbound_transport_cc_packets_by_key_;
     std::deque<std::string> outbound_transport_cc_packet_insertion_order_;
     std::unordered_map<std::string, outbound_transport_cc_feedback_window_state> outbound_transport_cc_feedback_windows_by_key_;
+    std::unordered_map<std::string, subscriber_downlink_bandwidth_state> subscriber_downlink_bandwidth_by_key_;
 
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
