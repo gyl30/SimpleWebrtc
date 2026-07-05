@@ -1079,6 +1079,10 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::atomic<uint64_t> transport_cc_feedback_packet_status_total_{0};
     std::atomic<uint64_t> transport_cc_feedback_lookup_hit_total_{0};
     std::atomic<uint64_t> transport_cc_feedback_lookup_miss_total_{0};
+    std::atomic<uint64_t> transport_cc_feedback_received_packet_total_{0};
+    std::atomic<uint64_t> transport_cc_feedback_not_received_packet_total_{0};
+    std::atomic<uint64_t> transport_cc_feedback_small_delta_total_{0};
+    std::atomic<uint64_t> transport_cc_feedback_large_delta_total_{0};
 };
 }    // namespace webrtc
 

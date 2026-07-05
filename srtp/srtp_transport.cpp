@@ -152,6 +152,11 @@ void fill_rtcp_fields_from_compound(const rtcp_compound_packet& compound, srtp_p
     result.rtcp_transport_cc_packet_status_count = compound.transport_cc_packet_status_count;
     result.rtcp_transport_cc_reference_time_64ms = compound.transport_cc_reference_time_64ms;
     result.rtcp_transport_cc_feedback_packet_count = compound.transport_cc_feedback_packet_count;
+    result.rtcp_transport_cc_received_packet_count = compound.transport_cc_received_packet_count;
+    result.rtcp_transport_cc_not_received_packet_count = compound.transport_cc_not_received_packet_count;
+    result.rtcp_transport_cc_small_delta_count = compound.transport_cc_small_delta_count;
+    result.rtcp_transport_cc_large_delta_count = compound.transport_cc_large_delta_count;
+    result.rtcp_transport_cc_packet_statuses = compound.transport_cc_packet_statuses;
 
     result.rtcp_has_remb = compound.has_remb;
     result.rtcp_remb_bitrate_bps = compound.remb_bitrate_bps;

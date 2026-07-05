@@ -59,6 +59,12 @@ struct rtcp_feedback_route_event
     uint32_t transport_cc_reference_time_64ms = 0;
     uint8_t transport_cc_feedback_packet_count = 0;
 
+    std::size_t transport_cc_received_packet_count = 0;
+    std::size_t transport_cc_not_received_packet_count = 0;
+    std::size_t transport_cc_small_delta_count = 0;
+    std::size_t transport_cc_large_delta_count = 0;
+
+    std::vector<rtcp_transport_cc_packet_status> transport_cc_packet_statuses;
     bool has_remb = false;
     uint64_t remb_bitrate_bps = 0;
     std::vector<uint32_t> remb_ssrcs;

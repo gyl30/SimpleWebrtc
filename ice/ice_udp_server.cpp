@@ -5754,6 +5754,11 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             snapshot.transport_cc_feedback_packet_status_total = transport_cc_feedback_packet_status_total_.load(std::memory_order_relaxed);
             snapshot.transport_cc_feedback_lookup_hit_total = transport_cc_feedback_lookup_hit_total_.load(std::memory_order_relaxed);
             snapshot.transport_cc_feedback_lookup_miss_total = transport_cc_feedback_lookup_miss_total_.load(std::memory_order_relaxed);
+            snapshot.transport_cc_feedback_received_packet_total = transport_cc_feedback_received_packet_total_.load(std::memory_order_relaxed);
+            snapshot.transport_cc_feedback_not_received_packet_total =
+                transport_cc_feedback_not_received_packet_total_.load(std::memory_order_relaxed);
+            snapshot.transport_cc_feedback_small_delta_total = transport_cc_feedback_small_delta_total_.load(std::memory_order_relaxed);
+            snapshot.transport_cc_feedback_large_delta_total = transport_cc_feedback_large_delta_total_.load(std::memory_order_relaxed);
 
             for (const auto& source : twcc_sources)
             {
@@ -14573,16 +14578,25 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
 
     std::size_t hit_count = 0;
     std::size_t miss_count = 0;
+    std::size_t received_hit_count = 0;
+    std::size_t lost_hit_count = 0;
 
-    for (uint16_t offset = 0; offset < event.transport_cc_packet_status_count; ++offset)
+    for (const auto& status : event.transport_cc_packet_statuses)
     {
-        const uint16_t sequence_number = advance_transport_cc_sequence(event.transport_cc_base_sequence_number, offset);
-
-        auto identity = find_outbound_transport_cc_packet(event.source.stream_id, event.source.session_id, sequence_number);
+        auto identity = find_outbound_transport_cc_packet(event.source.stream_id, event.source.session_id, status.sequence_number);
 
         if (identity.has_value())
         {
             hit_count += 1;
+
+            if (status.received)
+            {
+                received_hit_count += 1;
+            }
+            else
+            {
+                lost_hit_count += 1;
+            }
 
             continue;
         }
@@ -14590,14 +14604,39 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
         miss_count += 1;
     }
 
+    if (event.transport_cc_packet_statuses.empty())
+    {
+        for (uint16_t offset = 0; offset < event.transport_cc_packet_status_count; ++offset)
+        {
+            const uint16_t sequence_number = advance_transport_cc_sequence(event.transport_cc_base_sequence_number, offset);
+
+            auto identity = find_outbound_transport_cc_packet(event.source.stream_id, event.source.session_id, sequence_number);
+
+            if (identity.has_value())
+            {
+                hit_count += 1;
+
+                continue;
+            }
+
+            miss_count += 1;
+        }
+    }
+
     transport_cc_feedback_total_.fetch_add(1, std::memory_order_relaxed);
     transport_cc_feedback_packet_status_total_.fetch_add(event.transport_cc_packet_status_count, std::memory_order_relaxed);
     transport_cc_feedback_lookup_hit_total_.fetch_add(hit_count, std::memory_order_relaxed);
     transport_cc_feedback_lookup_miss_total_.fetch_add(miss_count, std::memory_order_relaxed);
 
+    transport_cc_feedback_received_packet_total_.fetch_add(event.transport_cc_received_packet_count, std::memory_order_relaxed);
+    transport_cc_feedback_not_received_packet_total_.fetch_add(event.transport_cc_not_received_packet_count, std::memory_order_relaxed);
+    transport_cc_feedback_small_delta_total_.fetch_add(event.transport_cc_small_delta_count, std::memory_order_relaxed);
+    transport_cc_feedback_large_delta_total_.fetch_add(event.transport_cc_large_delta_count, std::memory_order_relaxed);
+
     WEBRTC_LOG_DEBUG(
         "transport cc feedback resolved stream={} subscriber_session={} sender_ssrc={} media_ssrc={} base_sequence={} "
-        "packet_status_count={} feedback_packet_count={} hit={} miss={}",
+        "packet_status_count={} feedback_packet_count={} received={} not_received={} small_delta={} large_delta={} hit={} miss={} "
+        "received_hit={} lost_hit={}",
         event.source.stream_id,
         event.source.session_id,
         event.sender_ssrc,
@@ -14605,8 +14644,14 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
         event.transport_cc_base_sequence_number,
         event.transport_cc_packet_status_count,
         event.transport_cc_feedback_packet_count,
+        event.transport_cc_received_packet_count,
+        event.transport_cc_not_received_packet_count,
+        event.transport_cc_small_delta_count,
+        event.transport_cc_large_delta_count,
         hit_count,
-        miss_count);
+        miss_count,
+        received_hit_count,
+        lost_hit_count);
 }
 void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event& event)
 {

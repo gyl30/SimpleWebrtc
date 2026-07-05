@@ -162,6 +162,11 @@ std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const sr
     event.transport_cc_packet_status_count = packet.rtcp_transport_cc_packet_status_count;
     event.transport_cc_reference_time_64ms = packet.rtcp_transport_cc_reference_time_64ms;
     event.transport_cc_feedback_packet_count = packet.rtcp_transport_cc_feedback_packet_count;
+    event.transport_cc_received_packet_count = packet.rtcp_transport_cc_received_packet_count;
+    event.transport_cc_not_received_packet_count = packet.rtcp_transport_cc_not_received_packet_count;
+    event.transport_cc_small_delta_count = packet.rtcp_transport_cc_small_delta_count;
+    event.transport_cc_large_delta_count = packet.rtcp_transport_cc_large_delta_count;
+    event.transport_cc_packet_statuses = packet.rtcp_transport_cc_packet_statuses;
 
     event.has_remb = packet.rtcp_has_remb;
     event.remb_bitrate_bps = packet.rtcp_remb_bitrate_bps;
@@ -223,6 +228,11 @@ std::optional<rtcp_feedback_route_event> make_rtcp_feedback_route_event(const rt
     event.transport_cc_packet_status_count = block.transport_cc_packet_status_count;
     event.transport_cc_reference_time_64ms = block.transport_cc_reference_time_64ms;
     event.transport_cc_feedback_packet_count = block.transport_cc_feedback_packet_count;
+    event.transport_cc_received_packet_count = block.transport_cc_received_packet_count;
+    event.transport_cc_not_received_packet_count = block.transport_cc_not_received_packet_count;
+    event.transport_cc_small_delta_count = block.transport_cc_small_delta_count;
+    event.transport_cc_large_delta_count = block.transport_cc_large_delta_count;
+    event.transport_cc_packet_statuses = block.transport_cc_packet_statuses;
 
     event.has_remb = block.has_remb;
     event.remb_bitrate_bps = block.remb_bitrate_bps;

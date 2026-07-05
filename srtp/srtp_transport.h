@@ -77,6 +77,13 @@ struct srtp_packet_process_result
     uint32_t rtcp_transport_cc_reference_time_64ms = 0;
     uint8_t rtcp_transport_cc_feedback_packet_count = 0;
 
+    std::size_t rtcp_transport_cc_received_packet_count = 0;
+    std::size_t rtcp_transport_cc_not_received_packet_count = 0;
+    std::size_t rtcp_transport_cc_small_delta_count = 0;
+    std::size_t rtcp_transport_cc_large_delta_count = 0;
+
+    std::vector<rtcp_transport_cc_packet_status> rtcp_transport_cc_packet_statuses;
+
     bool rtcp_has_remb = false;
     uint64_t rtcp_remb_bitrate_bps = 0;
 

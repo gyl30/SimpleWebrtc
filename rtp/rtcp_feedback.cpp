@@ -29,6 +29,210 @@ uint32_t read_u32(std::span<const uint8_t> data, std::size_t offset)
            (static_cast<uint32_t>(data[offset + 2]) << 8U) | static_cast<uint32_t>(data[offset + 3]);
 }
 
+rtcp_transport_cc_packet_status_symbol make_transport_cc_status_symbol(uint8_t value)
+{
+    switch (value & 0x03U)
+    {
+        case 0:
+            return rtcp_transport_cc_packet_status_symbol::not_received;
+
+        case 1:
+            return rtcp_transport_cc_packet_status_symbol::small_delta;
+
+        case 2:
+            return rtcp_transport_cc_packet_status_symbol::large_or_negative_delta;
+
+        default:
+            return rtcp_transport_cc_packet_status_symbol::reserved;
+    }
+}
+
+bool transport_cc_status_symbol_has_delta(rtcp_transport_cc_packet_status_symbol symbol)
+{
+    return symbol == rtcp_transport_cc_packet_status_symbol::small_delta || symbol == rtcp_transport_cc_packet_status_symbol::large_or_negative_delta;
+}
+
+bool transport_cc_status_symbol_is_received(rtcp_transport_cc_packet_status_symbol symbol) { return transport_cc_status_symbol_has_delta(symbol); }
+
+uint32_t read_u24(std::span<const uint8_t> data, std::size_t offset)
+{
+    return (static_cast<uint32_t>(data[offset]) << 16U) | (static_cast<uint32_t>(data[offset + 1]) << 8U) | static_cast<uint32_t>(data[offset + 2]);
+}
+
+int16_t read_i16(std::span<const uint8_t> data, std::size_t offset)
+{
+    const uint16_t value = read_u16(data, offset);
+
+    return static_cast<int16_t>(value);
+}
+
+void append_transport_cc_status(rtcp_feedback_packet& packet, rtcp_transport_cc_packet_status_symbol symbol)
+{
+    rtcp_transport_cc_packet_status status;
+
+    status.sequence_number =
+        static_cast<uint16_t>(packet.transport_cc_base_sequence_number + static_cast<uint16_t>(packet.transport_cc_packet_statuses.size()));
+
+    status.symbol = symbol;
+    status.received = transport_cc_status_symbol_is_received(symbol);
+    status.has_delta = transport_cc_status_symbol_has_delta(symbol);
+
+    packet.transport_cc_packet_statuses.push_back(status);
+
+    if (symbol == rtcp_transport_cc_packet_status_symbol::not_received)
+    {
+        packet.transport_cc_not_received_packet_count += 1;
+
+        return;
+    }
+
+    if (symbol == rtcp_transport_cc_packet_status_symbol::small_delta)
+    {
+        packet.transport_cc_received_packet_count += 1;
+        packet.transport_cc_small_delta_count += 1;
+
+        return;
+    }
+
+    if (symbol == rtcp_transport_cc_packet_status_symbol::large_or_negative_delta)
+    {
+        packet.transport_cc_received_packet_count += 1;
+        packet.transport_cc_large_delta_count += 1;
+
+        return;
+    }
+
+    packet.transport_cc_not_received_packet_count += 1;
+}
+std::expected<void, std::string> parse_transport_cc_run_length_chunk(uint16_t chunk, rtcp_feedback_packet& packet)
+{
+    const uint8_t raw_symbol = static_cast<uint8_t>((chunk >> 13U) & 0x03U);
+    const uint16_t run_length = static_cast<uint16_t>(chunk & 0x1fffU);
+
+    const rtcp_transport_cc_packet_status_symbol symbol = make_transport_cc_status_symbol(raw_symbol);
+
+    for (uint16_t i = 0; i < run_length && packet.transport_cc_packet_statuses.size() < packet.transport_cc_packet_status_count; ++i)
+    {
+        append_transport_cc_status(packet, symbol);
+    }
+
+    return {};
+}
+
+std::expected<void, std::string> parse_transport_cc_status_vector_chunk(uint16_t chunk, rtcp_feedback_packet& packet)
+{
+    const bool two_bit_symbols = ((chunk & 0x4000U) != 0);
+
+    if (two_bit_symbols)
+    {
+        for (int bit_offset = 12; bit_offset >= 0 && packet.transport_cc_packet_statuses.size() < packet.transport_cc_packet_status_count;
+             bit_offset -= 2)
+        {
+            const uint8_t raw_symbol = static_cast<uint8_t>((chunk >> static_cast<unsigned>(bit_offset)) & 0x03U);
+
+            append_transport_cc_status(packet, make_transport_cc_status_symbol(raw_symbol));
+        }
+
+        return {};
+    }
+
+    for (int bit_offset = 13; bit_offset >= 0 && packet.transport_cc_packet_statuses.size() < packet.transport_cc_packet_status_count; --bit_offset)
+    {
+        const uint8_t raw_symbol = static_cast<uint8_t>((chunk >> static_cast<unsigned>(bit_offset)) & 0x01U);
+
+        append_transport_cc_status(packet, make_transport_cc_status_symbol(raw_symbol));
+    }
+
+    return {};
+}
+
+std::expected<std::size_t, std::string> parse_transport_cc_status_chunks(std::span<const uint8_t> data,
+                                                                         std::size_t offset,
+                                                                         std::size_t end,
+                                                                         rtcp_feedback_packet& packet)
+{
+    while (packet.transport_cc_packet_statuses.size() < packet.transport_cc_packet_status_count)
+    {
+        if (offset + k_transport_cc_status_chunk_size > end)
+        {
+            return make_error("rtcp transport cc status chunk is truncated");
+        }
+
+        const uint16_t chunk = read_u16(data, offset);
+
+        offset += k_transport_cc_status_chunk_size;
+
+        const bool status_vector_chunk = ((chunk & 0x8000U) != 0);
+
+        std::expected<void, std::string> parse_result = {};
+
+        if (status_vector_chunk)
+        {
+            parse_result = parse_transport_cc_status_vector_chunk(chunk, packet);
+        }
+        else
+        {
+            parse_result = parse_transport_cc_run_length_chunk(chunk, packet);
+        }
+
+        if (!parse_result)
+        {
+            return std::unexpected(parse_result.error());
+        }
+    }
+
+    return offset;
+}
+std::expected<std::size_t, std::string> parse_transport_cc_recv_deltas(std::span<const uint8_t> data,
+                                                                       std::size_t offset,
+                                                                       std::size_t end,
+                                                                       rtcp_feedback_packet& packet)
+{
+    int64_t arrival_offset_microseconds = 0;
+
+    for (auto& status : packet.transport_cc_packet_statuses)
+    {
+        if (!status.has_delta)
+        {
+            continue;
+        }
+
+        if (status.symbol == rtcp_transport_cc_packet_status_symbol::small_delta)
+        {
+            if (offset + k_transport_cc_small_delta_size > end)
+            {
+                return make_error("rtcp transport cc small delta is truncated");
+            }
+
+            status.delta_ticks = static_cast<int32_t>(data[offset]);
+
+            offset += k_transport_cc_small_delta_size;
+        }
+        else if (status.symbol == rtcp_transport_cc_packet_status_symbol::large_or_negative_delta)
+        {
+            if (offset + k_transport_cc_large_delta_size > end)
+            {
+                return make_error("rtcp transport cc large delta is truncated");
+            }
+
+            status.delta_ticks = static_cast<int32_t>(read_i16(data, offset));
+
+            offset += k_transport_cc_large_delta_size;
+        }
+        else
+        {
+            continue;
+        }
+
+        status.delta_microseconds = static_cast<int64_t>(status.delta_ticks) * k_transport_cc_delta_tick_microseconds;
+
+        arrival_offset_microseconds += status.delta_microseconds;
+
+        status.arrival_offset_microseconds = arrival_offset_microseconds;
+    }
+
+    return offset;
+}
 bool is_feedback_packet_type(uint8_t packet_type)
 {
     return packet_type == k_rtcp_packet_type_transport_feedback || packet_type == k_rtcp_packet_type_payload_feedback;
@@ -160,21 +364,40 @@ std::expected<void, std::string> parse_transport_feedback(std::span<const uint8_
 
         case k_rtcp_transport_feedback_transport_cc:
         {
-            constexpr std::size_t k_transport_cc_fixed_fci_size = 8;
-
             if (offset + k_transport_cc_fixed_fci_size > end)
             {
-                return make_error("rtcp transport cc feedback fci is truncated");
+                return make_error("rtcp transport cc fixed fci is truncated");
             }
 
             packet.has_transport_cc = true;
             packet.transport_cc_base_sequence_number = read_u16(data, offset);
             packet.transport_cc_packet_status_count = read_u16(data, offset + 2);
-
-            packet.transport_cc_reference_time_64ms = (static_cast<uint32_t>(data[offset + 4]) << 16U) |
-                                                      (static_cast<uint32_t>(data[offset + 5]) << 8U) | static_cast<uint32_t>(data[offset + 6]);
-
+            packet.transport_cc_reference_time_64ms = read_u24(data, offset + 4);
             packet.transport_cc_feedback_packet_count = data[offset + 7];
+
+            if (packet.transport_cc_packet_status_count > k_max_transport_cc_packet_status_count)
+            {
+                return make_error("rtcp transport cc packet status count exceeds limit");
+            }
+
+            packet.transport_cc_packet_statuses.clear();
+            packet.transport_cc_packet_statuses.reserve(packet.transport_cc_packet_status_count);
+
+            offset += k_transport_cc_fixed_fci_size;
+
+            auto chunk_offset = parse_transport_cc_status_chunks(data, offset, end, packet);
+
+            if (!chunk_offset)
+            {
+                return std::unexpected(chunk_offset.error());
+            }
+
+            auto delta_offset = parse_transport_cc_recv_deltas(data, *chunk_offset, end, packet);
+
+            if (!delta_offset)
+            {
+                return std::unexpected(delta_offset.error());
+            }
 
             return {};
         }

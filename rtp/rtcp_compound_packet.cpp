@@ -52,6 +52,12 @@ void fill_feedback_block(const rtcp_feedback_packet& feedback, rtcp_compound_blo
     block.transport_cc_reference_time_64ms = feedback.transport_cc_reference_time_64ms;
     block.transport_cc_feedback_packet_count = feedback.transport_cc_feedback_packet_count;
 
+    block.transport_cc_received_packet_count = feedback.transport_cc_received_packet_count;
+    block.transport_cc_not_received_packet_count = feedback.transport_cc_not_received_packet_count;
+    block.transport_cc_small_delta_count = feedback.transport_cc_small_delta_count;
+    block.transport_cc_large_delta_count = feedback.transport_cc_large_delta_count;
+    block.transport_cc_packet_statuses = feedback.transport_cc_packet_statuses;
+
     block.has_remb = feedback.remb.has_value();
     if (feedback.remb.has_value())
     {
@@ -88,8 +94,15 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
         packet.transport_cc_packet_status_count = block.transport_cc_packet_status_count;
         packet.transport_cc_reference_time_64ms = block.transport_cc_reference_time_64ms;
         packet.transport_cc_feedback_packet_count = block.transport_cc_feedback_packet_count;
-    }
 
+        packet.transport_cc_received_packet_count += block.transport_cc_received_packet_count;
+        packet.transport_cc_not_received_packet_count += block.transport_cc_not_received_packet_count;
+        packet.transport_cc_small_delta_count += block.transport_cc_small_delta_count;
+        packet.transport_cc_large_delta_count += block.transport_cc_large_delta_count;
+
+        packet.transport_cc_packet_statuses.insert(
+            packet.transport_cc_packet_statuses.end(), block.transport_cc_packet_statuses.begin(), block.transport_cc_packet_statuses.end());
+    }
     packet.has_remb = packet.has_remb || block.has_remb;
 
     packet.remb_bitrate_bps = std::max(packet.remb_bitrate_bps, block.remb_bitrate_bps);
