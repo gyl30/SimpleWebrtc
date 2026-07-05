@@ -299,64 +299,34 @@ std::string make_extmap_rewrite_runtime_state_key(std::string_view stream_id,
     return key;
 }
 
-std::string make_outbound_transport_cc_sequence_key(std::string_view stream_id,
-                                                    std::string_view publisher_session_id,
-                                                    std::string_view subscriber_session_id,
-                                                    std::string_view subscriber_mid,
-                                                    std::string_view kind)
+std::string make_outbound_transport_cc_sequence_key(std::string_view stream_id, std::string_view subscriber_session_id)
 {
     std::string key;
 
-    key.reserve(stream_id.size() + publisher_session_id.size() + subscriber_session_id.size() + subscriber_mid.size() + kind.size() + 5);
+    key.reserve(stream_id.size() + subscriber_session_id.size() + 1);
 
     key.append(stream_id);
 
     key.push_back('|');
 
-    key.append(publisher_session_id);
-
-    key.push_back('|');
-
     key.append(subscriber_session_id);
-
-    key.push_back('|');
-
-    key.append(subscriber_mid);
-
-    key.push_back('|');
-
-    key.append(kind);
 
     return key;
 }
+
 std::string make_outbound_transport_cc_packet_key(std::string_view stream_id,
-                                                  std::string_view publisher_session_id,
                                                   std::string_view subscriber_session_id,
-                                                  std::string_view subscriber_mid,
-                                                  std::string_view kind,
                                                   uint16_t subscriber_transport_cc_sequence_number)
 {
     std::string key;
 
-    key.reserve(stream_id.size() + publisher_session_id.size() + subscriber_session_id.size() + subscriber_mid.size() + kind.size() + 16);
+    key.reserve(stream_id.size() + subscriber_session_id.size() + 16);
 
     key.append(stream_id);
 
     key.push_back('|');
 
-    key.append(publisher_session_id);
-
-    key.push_back('|');
-
     key.append(subscriber_session_id);
-
-    key.push_back('|');
-
-    key.append(subscriber_mid);
-
-    key.push_back('|');
-
-    key.append(kind);
 
     key.push_back('|');
 
@@ -13840,12 +13810,8 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
         }
         if (publisher_subscriber_media_has_negotiated_transport_cc(*publisher, *subscriber, *payload_type_mapping))
         {
-            const uint16_t outbound_transport_cc_sequence = next_outbound_transport_cc_sequence(payload_type_mapping->stream_id,
-                                                                                                route.source.session_id,
-                                                                                                target_peer.session_id,
-                                                                                                payload_type_mapping->subscriber_mid,
-                                                                                                payload_type_mapping->kind);
-
+            const uint16_t outbound_transport_cc_sequence =
+                next_outbound_transport_cc_sequence(payload_type_mapping->stream_id, target_peer.session_id);
             auto transport_cc_sequence_rewrite = make_transport_wide_cc_header_extension_rewrite(
                 *payload_type_mapping, publisher_offer, subscriber_offer, plain_packet_span, outbound_transport_cc_sequence);
 
@@ -16415,18 +16381,14 @@ void ice_udp_server::remember_selected_rid_keyframe_request_result(const media_r
     state.last_keyframe_request_reason = std::string(reason);
 }
 
-uint16_t ice_udp_server::next_outbound_transport_cc_sequence(std::string_view stream_id,
-                                                             std::string_view publisher_session_id,
-                                                             std::string_view subscriber_session_id,
-                                                             std::string_view subscriber_mid,
-                                                             std::string_view kind)
+uint16_t ice_udp_server::next_outbound_transport_cc_sequence(std::string_view stream_id, std::string_view subscriber_session_id)
 {
-    if (stream_id.empty() || publisher_session_id.empty() || subscriber_session_id.empty() || subscriber_mid.empty() || kind.empty())
+    if (stream_id.empty() || subscriber_session_id.empty())
     {
         return 0;
     }
 
-    const std::string key = make_outbound_transport_cc_sequence_key(stream_id, publisher_session_id, subscriber_session_id, subscriber_mid, kind);
+    const std::string key = make_outbound_transport_cc_sequence_key(stream_id, subscriber_session_id);
 
     std::lock_guard lock(endpoint_mutex_);
 
@@ -16438,6 +16400,7 @@ uint16_t ice_udp_server::next_outbound_transport_cc_sequence(std::string_view st
 
     return sequence_number;
 }
+
 void ice_udp_server::remember_outbound_transport_cc_packet(const outbound_transport_cc_packet_identity& identity)
 {
     if (identity.stream_id.empty() || identity.publisher_session_id.empty() || identity.subscriber_session_id.empty() ||
@@ -16446,18 +16409,8 @@ void ice_udp_server::remember_outbound_transport_cc_packet(const outbound_transp
         return;
     }
 
-    if (identity.subscriber_transport_cc_sequence_number == 0 && identity.publisher_transport_cc_sequence_number == 0)
-    {
-        return;
-    }
-
-    const std::string key = make_outbound_transport_cc_packet_key(identity.stream_id,
-                                                                  identity.publisher_session_id,
-                                                                  identity.subscriber_session_id,
-                                                                  identity.subscriber_mid,
-                                                                  identity.kind,
-                                                                  identity.subscriber_transport_cc_sequence_number);
-
+    const std::string key =
+        make_outbound_transport_cc_packet_key(identity.stream_id, identity.subscriber_session_id, identity.subscriber_transport_cc_sequence_number);
     std::lock_guard lock(endpoint_mutex_);
 
     const bool inserted = !outbound_transport_cc_packets_by_key_.contains(key);
@@ -16478,6 +16431,27 @@ void ice_udp_server::remember_outbound_transport_cc_packet(const outbound_transp
 
         outbound_transport_cc_packets_by_key_.erase(oldest_key);
     }
+}
+std::optional<ice_udp_server::outbound_transport_cc_packet_identity> ice_udp_server::find_outbound_transport_cc_packet(
+    std::string_view stream_id, std::string_view subscriber_session_id, uint16_t subscriber_transport_cc_sequence_number) const
+{
+    if (stream_id.empty() || subscriber_session_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    const std::string key = make_outbound_transport_cc_packet_key(stream_id, subscriber_session_id, subscriber_transport_cc_sequence_number);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto iterator = outbound_transport_cc_packets_by_key_.find(key);
+
+    if (iterator == outbound_transport_cc_packets_by_key_.end())
+    {
+        return std::nullopt;
+    }
+
+    return iterator->second;
 }
 
 void ice_udp_server::forget_outbound_transport_cc_packets_for_session(std::string_view session_id)

@@ -488,12 +488,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     bool remember_media_identity_forward_mapping(const media_ssrc_mapping& ssrc_mapping, const media_payload_type_mapping& payload_type_mapping);
 
     [[nodiscard]]
-    uint16_t next_outbound_transport_cc_sequence(std::string_view stream_id,
-                                                 std::string_view publisher_session_id,
-                                                 std::string_view subscriber_session_id,
-                                                 std::string_view subscriber_mid,
-                                                 std::string_view kind);
-
+    uint16_t next_outbound_transport_cc_sequence(std::string_view stream_id, std::string_view subscriber_session_id);
     void forget_outbound_transport_cc_sequences_for_session(std::string_view session_id);
 
     [[nodiscard]]
@@ -505,6 +500,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     std::size_t erase_outbound_transport_cc_packets_for_stream_locked(std::string_view stream_id);
+
+    [[nodiscard]]
+    std::optional<outbound_transport_cc_packet_identity> find_outbound_transport_cc_packet(std::string_view stream_id,
+                                                                                           std::string_view subscriber_session_id,
+                                                                                           uint16_t subscriber_transport_cc_sequence_number) const;
 
     [[nodiscard]]
     std::optional<media_ssrc_mapping> find_identity_ssrc_mapping_by_subscriber_ssrc(std::string_view subscriber_session_id,
