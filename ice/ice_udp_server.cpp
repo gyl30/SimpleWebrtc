@@ -514,17 +514,16 @@ bool outbound_transport_cc_sequence_key_matches_session(std::string_view key, st
         return false;
     }
 
-    std::string marker;
+    const std::size_t separator = key.find('|');
 
-    marker.reserve(session_id.size() + 2);
+    if (separator == std::string_view::npos)
+    {
+        return false;
+    }
 
-    marker.push_back('|');
+    const std::string_view subscriber_session_id = key.substr(separator + 1);
 
-    marker.append(session_id);
-
-    marker.push_back('|');
-
-    return key.find(marker) != std::string_view::npos;
+    return subscriber_session_id == session_id;
 }
 
 bool outbound_transport_cc_sequence_key_matches_stream(std::string_view key, std::string_view stream_id)
@@ -14746,11 +14745,19 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
     std::size_t received_hit_count = 0;
     std::size_t lost_hit_count = 0;
 
+    bool feedback_packet_begin = true;
+
     for (const auto& status : event.transport_cc_packet_statuses)
     {
         auto identity = find_outbound_transport_cc_packet(event.source.stream_id, event.source.session_id, status.sequence_number);
 
         outbound_transport_cc_feedback_observation observation;
+
+        observation.feedback_packet_begin = feedback_packet_begin;
+        feedback_packet_begin = false;
+
+        observation.small_delta = status.symbol == rtcp_transport_cc_packet_status_symbol::small_delta;
+        observation.large_delta = status.symbol == rtcp_transport_cc_packet_status_symbol::large_or_negative_delta;
 
         observation.subscriber_transport_cc_sequence_number = status.sequence_number;
         observation.lookup_hit = identity.has_value();
@@ -14790,6 +14797,8 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
 
     if (event.transport_cc_packet_statuses.empty())
     {
+        bool fallback_feedback_packet_begin = true;
+
         for (uint16_t offset = 0; offset < event.transport_cc_packet_status_count; ++offset)
         {
             const uint16_t sequence_number = advance_transport_cc_sequence(event.transport_cc_base_sequence_number, offset);
@@ -14798,6 +14807,8 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
 
             outbound_transport_cc_feedback_observation observation;
 
+            observation.feedback_packet_begin = fallback_feedback_packet_begin;
+            fallback_feedback_packet_begin = false;
             observation.subscriber_transport_cc_sequence_number = sequence_number;
             observation.lookup_hit = identity.has_value();
             observation.received = false;
@@ -16793,11 +16804,13 @@ void ice_udp_server::remember_outbound_transport_cc_feedback_observation(std::st
         window.first_feedback_at_milliseconds = now;
     }
 
-    window.last_feedback_at_milliseconds = now;
-    if (window.last_feedback_at_milliseconds != now)
+    if (observation.feedback_packet_begin)
     {
         window.feedback_count += 1;
     }
+
+    window.last_feedback_at_milliseconds = now;
+
     window.feedback_packet_status_count += 1;
 
     if (observation.lookup_hit)
@@ -16823,9 +16836,17 @@ void ice_udp_server::remember_outbound_transport_cc_feedback_observation(std::st
         if (observation.delta_microseconds >= -8192000 && observation.delta_microseconds <= 8192000)
         {
             add_outbound_transport_cc_feedback_delta(window, observation.delta_microseconds);
+
+            if (observation.small_delta)
+            {
+                window.small_delta_count += 1;
+            }
+            else if (observation.large_delta)
+            {
+                window.large_delta_count += 1;
+            }
         }
     }
-
     window.observations.push_back(observation);
 
     while (window.observations.size() > k_max_outbound_transport_cc_feedback_observations_per_window)
@@ -16857,9 +16878,17 @@ void ice_udp_server::remember_outbound_transport_cc_feedback_observation(std::st
             if (oldest.delta_microseconds >= -8192000 && oldest.delta_microseconds <= 8192000)
             {
                 subtract_outbound_transport_cc_feedback_delta(window, oldest.delta_microseconds);
+
+                if (oldest.small_delta && window.small_delta_count != 0)
+                {
+                    window.small_delta_count -= 1;
+                }
+                else if (oldest.large_delta && window.large_delta_count != 0)
+                {
+                    window.large_delta_count -= 1;
+                }
             }
         }
-
         if (window.feedback_packet_status_count != 0)
         {
             window.feedback_packet_status_count -= 1;

@@ -437,6 +437,10 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         bool received = false;
         bool has_delta = false;
 
+        bool feedback_packet_begin = false;
+        bool small_delta = false;
+        bool large_delta = false;
+
         int32_t delta_ticks = 0;
         int64_t delta_microseconds = 0;
         int64_t arrival_offset_microseconds = 0;
