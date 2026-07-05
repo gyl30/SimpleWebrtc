@@ -65,11 +65,15 @@ struct rtcp_feedback_packet
     bool has_keyframe_request = false;
     bool has_transport_cc = false;
 
+    uint16_t transport_cc_base_sequence_number = 0;
+    uint16_t transport_cc_packet_status_count = 0;
+    uint32_t transport_cc_reference_time_64ms = 0;
+    uint8_t transport_cc_feedback_packet_count = 0;
+
     std::vector<rtcp_nack_item> nack_items;
     std::vector<rtcp_fir_item> fir_items;
     std::optional<rtcp_remb_info> remb;
 };
-
 struct rtcp_feedback_block_ssrc_rewrite
 {
     std::size_t offset = 0;

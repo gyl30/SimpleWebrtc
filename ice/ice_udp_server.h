@@ -437,6 +437,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     };
 
    private:
+    void handle_transport_cc_feedback_event(const rtcp_feedback_route_event& event);
+
     [[nodiscard]]
     ice_udp_server_result init_dtls_transport();
 
@@ -1072,6 +1074,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::atomic<uint64_t> rtp_rtcp_drop_twcc_protect_ignored_total_{0};
 
     std::atomic<uint64_t> lifecycle_convergence_check_generation_{0};
+
+    std::atomic<uint64_t> transport_cc_feedback_total_{0};
+    std::atomic<uint64_t> transport_cc_feedback_packet_status_total_{0};
+    std::atomic<uint64_t> transport_cc_feedback_lookup_hit_total_{0};
+    std::atomic<uint64_t> transport_cc_feedback_lookup_miss_total_{0};
 };
 }    // namespace webrtc
 

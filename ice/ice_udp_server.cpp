@@ -3894,6 +3894,10 @@ bool is_publisher_rtp_fanout_to_subscriber(const srtp_packet_process_result& pac
 
     return true;
 }
+uint16_t advance_transport_cc_sequence(uint16_t base_sequence_number, uint16_t offset)
+{
+    return static_cast<uint16_t>(base_sequence_number + offset);
+}
 }    // namespace
 
 ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
@@ -5745,6 +5749,11 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             snapshot.twcc_feedback_source_count = to_debug_count(twcc_sources.size());
 
             snapshot.twcc_feedback_sources.reserve(twcc_sources.size());
+
+            snapshot.transport_cc_feedback_total = transport_cc_feedback_total_.load(std::memory_order_relaxed);
+            snapshot.transport_cc_feedback_packet_status_total = transport_cc_feedback_packet_status_total_.load(std::memory_order_relaxed);
+            snapshot.transport_cc_feedback_lookup_hit_total = transport_cc_feedback_lookup_hit_total_.load(std::memory_order_relaxed);
+            snapshot.transport_cc_feedback_lookup_miss_total = transport_cc_feedback_lookup_miss_total_.load(std::memory_order_relaxed);
 
             for (const auto& source : twcc_sources)
             {
@@ -14548,14 +14557,69 @@ void ice_udp_server::handle_rtcp_bye_packet(const srtp_packet_process_result& pa
 
     remove_expired_session(route.source.session_id, "rtcp bye");
 }
+void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_route_event& event)
+{
+    if (!event.has_transport_cc || event.transport_cc_packet_status_count == 0)
+    {
+        return;
+    }
 
+    if (event.source.stream_id.empty() || event.source.session_id.empty())
+    {
+        transport_cc_feedback_lookup_miss_total_.fetch_add(event.transport_cc_packet_status_count, std::memory_order_relaxed);
+
+        return;
+    }
+
+    std::size_t hit_count = 0;
+    std::size_t miss_count = 0;
+
+    for (uint16_t offset = 0; offset < event.transport_cc_packet_status_count; ++offset)
+    {
+        const uint16_t sequence_number = advance_transport_cc_sequence(event.transport_cc_base_sequence_number, offset);
+
+        auto identity = find_outbound_transport_cc_packet(event.source.stream_id, event.source.session_id, sequence_number);
+
+        if (identity.has_value())
+        {
+            hit_count += 1;
+
+            continue;
+        }
+
+        miss_count += 1;
+    }
+
+    transport_cc_feedback_total_.fetch_add(1, std::memory_order_relaxed);
+    transport_cc_feedback_packet_status_total_.fetch_add(event.transport_cc_packet_status_count, std::memory_order_relaxed);
+    transport_cc_feedback_lookup_hit_total_.fetch_add(hit_count, std::memory_order_relaxed);
+    transport_cc_feedback_lookup_miss_total_.fetch_add(miss_count, std::memory_order_relaxed);
+
+    WEBRTC_LOG_DEBUG(
+        "transport cc feedback resolved stream={} subscriber_session={} sender_ssrc={} media_ssrc={} base_sequence={} "
+        "packet_status_count={} feedback_packet_count={} hit={} miss={}",
+        event.source.stream_id,
+        event.source.session_id,
+        event.sender_ssrc,
+        event.media_ssrc,
+        event.transport_cc_base_sequence_number,
+        event.transport_cc_packet_status_count,
+        event.transport_cc_feedback_packet_count,
+        hit_count,
+        miss_count);
+}
 void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event& event)
 {
     if (!event.valid)
     {
         return;
     }
+    if (event.event_type == rtcp_feedback_event_type::transport_cc)
+    {
+        handle_transport_cc_feedback_event(event);
 
+        return;
+    }
     if (event.has_generic_nack)
     {
         retransmit_cached_rtp_packets(event);

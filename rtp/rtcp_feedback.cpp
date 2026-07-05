@@ -159,8 +159,25 @@ std::expected<void, std::string> parse_transport_feedback(std::span<const uint8_
             return parse_generic_nack_items(data, offset, end, packet);
 
         case k_rtcp_transport_feedback_transport_cc:
+        {
+            constexpr std::size_t k_transport_cc_fixed_fci_size = 8;
+
+            if (offset + k_transport_cc_fixed_fci_size > end)
+            {
+                return make_error("rtcp transport cc feedback fci is truncated");
+            }
+
             packet.has_transport_cc = true;
+            packet.transport_cc_base_sequence_number = read_u16(data, offset);
+            packet.transport_cc_packet_status_count = read_u16(data, offset + 2);
+
+            packet.transport_cc_reference_time_64ms = (static_cast<uint32_t>(data[offset + 4]) << 16U) |
+                                                      (static_cast<uint32_t>(data[offset + 5]) << 8U) | static_cast<uint32_t>(data[offset + 6]);
+
+            packet.transport_cc_feedback_packet_count = data[offset + 7];
+
             return {};
+        }
 
         case k_rtcp_transport_feedback_tmmbr:
         case k_rtcp_transport_feedback_tmmbn:

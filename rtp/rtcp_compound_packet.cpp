@@ -46,8 +46,13 @@ void fill_feedback_block(const rtcp_feedback_packet& feedback, rtcp_compound_blo
     block.has_generic_nack = feedback.has_generic_nack;
     block.has_keyframe_request = feedback.has_keyframe_request;
     block.has_transport_cc = feedback.has_transport_cc;
-    block.has_remb = feedback.remb.has_value();
 
+    block.transport_cc_base_sequence_number = feedback.transport_cc_base_sequence_number;
+    block.transport_cc_packet_status_count = feedback.transport_cc_packet_status_count;
+    block.transport_cc_reference_time_64ms = feedback.transport_cc_reference_time_64ms;
+    block.transport_cc_feedback_packet_count = feedback.transport_cc_feedback_packet_count;
+
+    block.has_remb = feedback.remb.has_value();
     if (feedback.remb.has_value())
     {
         block.remb_bitrate_bps = feedback.remb->bitrate_bps;
@@ -76,7 +81,14 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
 
     packet.has_keyframe_request = packet.has_keyframe_request || block.has_keyframe_request;
 
-    packet.has_transport_cc = packet.has_transport_cc || block.has_transport_cc;
+    if (block.has_transport_cc)
+    {
+        packet.has_transport_cc = true;
+        packet.transport_cc_base_sequence_number = block.transport_cc_base_sequence_number;
+        packet.transport_cc_packet_status_count = block.transport_cc_packet_status_count;
+        packet.transport_cc_reference_time_64ms = block.transport_cc_reference_time_64ms;
+        packet.transport_cc_feedback_packet_count = block.transport_cc_feedback_packet_count;
+    }
 
     packet.has_remb = packet.has_remb || block.has_remb;
 

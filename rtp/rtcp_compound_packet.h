@@ -46,6 +46,12 @@ struct rtcp_compound_block
     bool has_generic_nack = false;
     bool has_keyframe_request = false;
     bool has_transport_cc = false;
+
+    uint16_t transport_cc_base_sequence_number = 0;
+    uint16_t transport_cc_packet_status_count = 0;
+    uint32_t transport_cc_reference_time_64ms = 0;
+    uint8_t transport_cc_feedback_packet_count = 0;
+
     bool has_remb = false;
     uint64_t remb_bitrate_bps = 0;
     std::vector<uint32_t> remb_ssrcs;
@@ -80,6 +86,12 @@ struct rtcp_compound_packet
     bool has_generic_nack = false;
     bool has_keyframe_request = false;
     bool has_transport_cc = false;
+
+    uint16_t transport_cc_base_sequence_number = 0;
+    uint16_t transport_cc_packet_status_count = 0;
+    uint32_t transport_cc_reference_time_64ms = 0;
+    uint8_t transport_cc_feedback_packet_count = 0;
+
     bool has_remb = false;
     uint64_t remb_bitrate_bps = 0;
 

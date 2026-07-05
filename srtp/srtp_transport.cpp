@@ -147,6 +147,12 @@ void fill_rtcp_fields_from_compound(const rtcp_compound_packet& compound, srtp_p
     result.rtcp_has_generic_nack = compound.has_generic_nack;
     result.rtcp_has_keyframe_request = compound.has_keyframe_request;
     result.rtcp_has_transport_cc = compound.has_transport_cc;
+
+    result.rtcp_transport_cc_base_sequence_number = compound.transport_cc_base_sequence_number;
+    result.rtcp_transport_cc_packet_status_count = compound.transport_cc_packet_status_count;
+    result.rtcp_transport_cc_reference_time_64ms = compound.transport_cc_reference_time_64ms;
+    result.rtcp_transport_cc_feedback_packet_count = compound.transport_cc_feedback_packet_count;
+
     result.rtcp_has_remb = compound.has_remb;
     result.rtcp_remb_bitrate_bps = compound.remb_bitrate_bps;
 
