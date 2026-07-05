@@ -835,6 +835,136 @@ lifecycle_debug_subscriber_downlink_bandwidth_entry make_subscriber_downlink_ban
 
     return entry;
 }
+std::string make_subscriber_recovery_runtime_debug_key(std::string_view stream_id, std::string_view subscriber_session_id)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + subscriber_session_id.size() + 1);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(subscriber_session_id);
+
+    return key;
+}
+
+lifecycle_debug_subscriber_recovery_runtime_entry& get_or_create_subscriber_recovery_runtime_entry(
+    lifecycle_debug_snapshot& snapshot,
+    std::unordered_map<std::string, std::size_t>& index_by_key,
+    std::string_view stream_id,
+    std::string_view subscriber_session_id)
+{
+    const std::string key = make_subscriber_recovery_runtime_debug_key(stream_id, subscriber_session_id);
+
+    const auto iterator = index_by_key.find(key);
+
+    if (iterator != index_by_key.end())
+    {
+        return snapshot.subscriber_recovery_runtimes[iterator->second];
+    }
+
+    lifecycle_debug_subscriber_recovery_runtime_entry entry;
+
+    entry.stream_id = stream_id;
+    entry.subscriber_session_id = subscriber_session_id;
+
+    snapshot.subscriber_recovery_runtimes.push_back(std::move(entry));
+
+    const std::size_t index = snapshot.subscriber_recovery_runtimes.size() - 1;
+
+    index_by_key.emplace(key, index);
+
+    return snapshot.subscriber_recovery_runtimes[index];
+}
+
+void finish_subscriber_recovery_runtime_entry(lifecycle_debug_subscriber_recovery_runtime_entry& entry)
+{
+    const uint64_t lookup_total = entry.transport_cc_lookup_hit_count + entry.transport_cc_lookup_miss_count;
+
+    entry.transport_cc_lookup_hit_rate_ppm = make_rate_ppm(entry.transport_cc_lookup_hit_count, lookup_total);
+
+    const uint64_t packet_status_total = entry.transport_cc_received_count + entry.transport_cc_lost_count;
+
+    entry.transport_cc_loss_rate_ppm = make_rate_ppm(entry.transport_cc_lost_count, packet_status_total);
+}
+
+uint64_t to_debug_count(std::size_t value) { return static_cast<uint64_t>(value); }
+
+void append_subscriber_recovery_runtime_debug_entries(lifecycle_debug_snapshot& snapshot)
+{
+    std::unordered_map<std::string, std::size_t> index_by_key;
+
+    snapshot.subscriber_recovery_runtimes.reserve(snapshot.subscriber_forward_groups.size());
+
+    for (const auto& group : snapshot.subscriber_forward_groups)
+    {
+        auto& entry = get_or_create_subscriber_recovery_runtime_entry(snapshot, index_by_key, group.stream_id, group.subscriber_session_id);
+
+        entry.publisher_session_id = group.publisher_session_id;
+        entry.forward_group_present = true;
+
+        entry.forward_binding_count = group.forward_binding_count;
+        entry.primary_forward_binding_count = group.primary_forward_binding_count;
+        entry.rtx_forward_binding_count = group.rtx_forward_binding_count;
+        entry.audio_forward_binding_count = group.audio_forward_binding_count;
+        entry.video_forward_binding_count = group.video_forward_binding_count;
+        entry.forwarded_packet_count = group.packet_count;
+    }
+
+    for (const auto& group : snapshot.subscriber_rtcp_groups)
+    {
+        auto& entry = get_or_create_subscriber_recovery_runtime_entry(snapshot, index_by_key, group.stream_id, group.subscriber_session_id);
+
+        entry.rtcp_group_present = true;
+
+        entry.rtcp_report_source_count = group.rtcp_report_source_count;
+        entry.twcc_feedback_source_count = group.twcc_feedback_source_count;
+        entry.twcc_pending_packet_count = group.twcc_pending_packet_count;
+    }
+
+    for (const auto& window : snapshot.outbound_transport_cc_feedback_windows)
+    {
+        auto& entry = get_or_create_subscriber_recovery_runtime_entry(snapshot, index_by_key, window.stream_id, window.subscriber_session_id);
+
+        entry.transport_cc_feedback_window_count += 1;
+        entry.transport_cc_feedback_observation_count += window.observation_count;
+
+        entry.transport_cc_lookup_hit_count += window.lookup_hit_count;
+        entry.transport_cc_lookup_miss_count += window.lookup_miss_count;
+
+        entry.transport_cc_received_count += window.received_count;
+        entry.transport_cc_lost_count += window.lost_count;
+    }
+
+    for (const auto& state : snapshot.subscriber_downlink_bandwidth_states)
+    {
+        auto& entry = get_or_create_subscriber_recovery_runtime_entry(snapshot, index_by_key, state.stream_id, state.subscriber_session_id);
+
+        entry.downlink_state_present = true;
+
+        entry.downlink_control_state = state.control_state;
+        entry.downlink_target_bitrate_bps = state.target_bitrate_bps;
+        entry.downlink_transition_count = state.transition_count;
+
+        entry.pacing_queue_packet_count = state.pacing_queue_packet_count;
+        entry.pacing_queue_byte_count = state.pacing_queue_byte_count;
+        entry.pacing_enqueued_packet_count = state.pacing_enqueued_packet_count;
+        entry.pacing_sent_packet_count = state.pacing_sent_packet_count;
+        entry.pacing_dropped_packet_count = state.pacing_dropped_packet_count;
+
+        entry.bitrate_gate_allowed_packet_count = state.bitrate_gate_allowed_packet_count;
+        entry.bitrate_gate_dropped_packet_count = state.bitrate_gate_dropped_packet_count;
+    }
+
+    for (auto& entry : snapshot.subscriber_recovery_runtimes)
+    {
+        finish_subscriber_recovery_runtime_entry(entry);
+    }
+
+    snapshot.subscriber_recovery_runtime_count = to_debug_count(snapshot.subscriber_recovery_runtimes.size());
+}
 
 std::string make_outbound_transport_cc_packet_key(std::string_view stream_id,
                                                   std::string_view subscriber_session_id,
@@ -997,7 +1127,6 @@ bool contains_string(const std::vector<std::string>& values, std::string_view va
     return false;
 }
 
-uint64_t to_debug_count(std::size_t value) { return static_cast<uint64_t>(value); }
 std::string make_subscriber_forward_group_key(std::string_view stream_id,
                                               std::string_view publisher_session_id,
                                               std::string_view subscriber_session_id)
@@ -6441,6 +6570,9 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
     {
         snapshot.nack_retransmit_throttle_count = to_debug_count(nack_retransmit_throttle_->size());
     }
+
+    append_subscriber_recovery_runtime_debug_entries(snapshot);
+
     append_lifecycle_debug_drop_reason(
         snapshot, "rtp_inbound", "current session gate", rtp_rtcp_drop_inbound_session_gate_total_.load(std::memory_order_relaxed));
     append_lifecycle_debug_drop_reason(

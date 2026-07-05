@@ -178,6 +178,21 @@ std::string make_subscriber_downlink_bandwidth_labels(const lifecycle_debug_subs
     return labels;
 }
 
+std::string make_subscriber_recovery_runtime_labels(const lifecycle_debug_subscriber_recovery_runtime_entry& entry)
+{
+    std::string labels;
+
+    append_prometheus_label(labels, "stream_id", entry.stream_id);
+    append_prometheus_label(labels, "subscriber_session_id", entry.subscriber_session_id);
+
+    if (!entry.publisher_session_id.empty())
+    {
+        append_prometheus_label(labels, "publisher_session_id", entry.publisher_session_id);
+    }
+
+    return labels;
+}
+
 void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lifecycle_debug_snapshot& snapshot)
 {
     if (!output.empty() && output.back() != '\n')
@@ -297,6 +312,11 @@ void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lif
                                           static_cast<uint64_t>(snapshot.subscriber_downlink_pacing_queue_byte_count));
 
     append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_recovery_runtimes_current", "current subscriber recovery runtime entries", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_subscriber_recovery_runtimes_current", static_cast<uint64_t>(snapshot.subscriber_recovery_runtime_count));
+
+    append_router_prometheus_metric_header(
         output, "simplewebrtc_subscriber_downlink_target_bitrate_bps", "observe-only subscriber downlink target bitrate in bps", "gauge");
     append_router_prometheus_metric_header(output,
                                            "simplewebrtc_subscriber_downlink_lookup_hit_rate_ppm",
@@ -378,6 +398,53 @@ void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lif
             output, "simplewebrtc_subscriber_downlink_pacing_sent_bytes", labels, downlink_state.pacing_sent_byte_count);
         append_router_prometheus_labeled_metric_value(
             output, "simplewebrtc_subscriber_downlink_pacing_dropped_bytes", labels, downlink_state.pacing_dropped_byte_count);
+    }
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_recovery_forward_bindings", "subscriber recovery forward binding count", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_recovery_rtx_forward_bindings", "subscriber recovery rtx forward binding count", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_recovery_transport_cc_windows", "subscriber recovery transport cc feedback window count", "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_subscriber_recovery_transport_cc_lookup_hit_rate_ppm",
+                                           "subscriber recovery transport cc lookup hit rate in parts per million",
+                                           "gauge");
+    append_router_prometheus_metric_header(output,
+                                           "simplewebrtc_subscriber_recovery_transport_cc_loss_rate_ppm",
+                                           "subscriber recovery transport cc loss rate in parts per million",
+                                           "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_recovery_downlink_target_bitrate_bps", "subscriber recovery downlink target bitrate bps", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_recovery_pacing_queue_packets", "subscriber recovery pacing queued packet count", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_recovery_pacing_sent_packets", "subscriber recovery pacing sent packet count", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_recovery_bitrate_gate_dropped_packets", "subscriber recovery bitrate gate dropped packet count", "gauge");
+
+    for (const auto& recovery_runtime : snapshot.subscriber_recovery_runtimes)
+    {
+        const std::string labels = make_subscriber_recovery_runtime_labels(recovery_runtime);
+
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_recovery_forward_bindings", labels, recovery_runtime.forward_binding_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_recovery_rtx_forward_bindings", labels, recovery_runtime.rtx_forward_binding_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_recovery_transport_cc_windows", labels, recovery_runtime.transport_cc_feedback_window_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_recovery_transport_cc_lookup_hit_rate_ppm", labels, recovery_runtime.transport_cc_lookup_hit_rate_ppm);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_recovery_transport_cc_loss_rate_ppm", labels, recovery_runtime.transport_cc_loss_rate_ppm);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_recovery_downlink_target_bitrate_bps", labels, recovery_runtime.downlink_target_bitrate_bps);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_recovery_pacing_queue_packets", labels, recovery_runtime.pacing_queue_packet_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_recovery_pacing_sent_packets", labels, recovery_runtime.pacing_sent_packet_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_recovery_bitrate_gate_dropped_packets", labels, recovery_runtime.bitrate_gate_dropped_packet_count);
     }
 
     append_router_prometheus_metric_header(output,
