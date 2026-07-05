@@ -1,6 +1,7 @@
 #ifndef SIMPLE_WEBRTC_ICE_ICE_UDP_SERVER_H
 #define SIMPLE_WEBRTC_ICE_ICE_UDP_SERVER_H
 
+#include <deque>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -401,6 +402,33 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
         uint64_t packet_count = 0;
     };
+
+    struct outbound_transport_cc_packet_identity
+    {
+        std::string stream_id;
+
+        std::string publisher_session_id;
+        std::string subscriber_session_id;
+
+        std::string publisher_mid;
+        std::string subscriber_mid;
+
+        std::string kind;
+
+        uint32_t publisher_ssrc = 0;
+        uint32_t subscriber_ssrc = 0;
+
+        uint8_t publisher_payload_type = 0;
+        uint8_t subscriber_payload_type = 0;
+
+        uint16_t publisher_rtp_sequence_number = 0;
+        uint16_t subscriber_rtp_sequence_number = 0;
+
+        uint16_t publisher_transport_cc_sequence_number = 0;
+        uint16_t subscriber_transport_cc_sequence_number = 0;
+
+        uint64_t sent_at_milliseconds = 0;
+    };
     struct pending_subscriber_runtime_residual_check
     {
         std::string stream_id;
@@ -470,6 +498,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     std::size_t erase_outbound_transport_cc_sequences_for_stream_locked(std::string_view stream_id);
+
+    void remember_outbound_transport_cc_packet(const outbound_transport_cc_packet_identity& identity);
+
+    void forget_outbound_transport_cc_packets_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_outbound_transport_cc_packets_for_stream_locked(std::string_view stream_id);
 
     [[nodiscard]]
     std::optional<media_ssrc_mapping> find_identity_ssrc_mapping_by_subscriber_ssrc(std::string_view subscriber_session_id,
@@ -982,6 +1017,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, selected_rid_keyframe_request_pending_state> pending_selected_rid_keyframe_request_state_by_key_;
     std::unordered_map<std::string, extmap_rewrite_runtime_state> extmap_rewrite_state_by_key_;
     std::unordered_map<std::string, uint16_t> outbound_transport_cc_sequence_by_key_;
+    std::unordered_map<std::string, outbound_transport_cc_packet_identity> outbound_transport_cc_packets_by_key_;
+    std::deque<std::string> outbound_transport_cc_packet_insertion_order_;
 
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
