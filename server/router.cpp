@@ -280,6 +280,23 @@ void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lif
                                           static_cast<uint64_t>(snapshot.subscriber_downlink_bandwidth_state_count));
 
     append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_states_current", "current subscriber downlink pacing states", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_subscriber_downlink_pacing_states_current", static_cast<uint64_t>(snapshot.subscriber_downlink_pacing_state_count));
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_queue_packets_current", "current subscriber downlink pacing queued packets", "gauge");
+    append_router_prometheus_metric_value(output,
+                                          "simplewebrtc_subscriber_downlink_pacing_queue_packets_current",
+                                          static_cast<uint64_t>(snapshot.subscriber_downlink_pacing_queue_packet_count));
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_queue_bytes_current", "current subscriber downlink pacing queued bytes", "gauge");
+    append_router_prometheus_metric_value(output,
+                                          "simplewebrtc_subscriber_downlink_pacing_queue_bytes_current",
+                                          static_cast<uint64_t>(snapshot.subscriber_downlink_pacing_queue_byte_count));
+
+    append_router_prometheus_metric_header(
         output, "simplewebrtc_subscriber_downlink_target_bitrate_bps", "observe-only subscriber downlink target bitrate in bps", "gauge");
     append_router_prometheus_metric_header(output,
                                            "simplewebrtc_subscriber_downlink_lookup_hit_rate_ppm",
@@ -301,6 +318,24 @@ void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lif
         output, "simplewebrtc_subscriber_downlink_bitrate_gate_allowed_bytes", "subscriber downlink bitrate gate allowed bytes", "gauge");
     append_router_prometheus_metric_header(
         output, "simplewebrtc_subscriber_downlink_bitrate_gate_dropped_bytes", "subscriber downlink bitrate gate dropped bytes", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_queue_packets", "subscriber downlink pacing queued packets", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_queue_bytes", "subscriber downlink pacing queued bytes", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_budget_bytes", "subscriber downlink pacing current budget bytes", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_enqueued_packets", "subscriber downlink pacing enqueued packets", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_sent_packets", "subscriber downlink pacing sent packets", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_dropped_packets", "subscriber downlink pacing dropped packets", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_enqueued_bytes", "subscriber downlink pacing enqueued bytes", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_sent_bytes", "subscriber downlink pacing sent bytes", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_dropped_bytes", "subscriber downlink pacing dropped bytes", "gauge");
 
     for (const auto& downlink_state : snapshot.subscriber_downlink_bandwidth_states)
     {
@@ -325,6 +360,24 @@ void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lif
             output, "simplewebrtc_subscriber_downlink_bitrate_gate_allowed_bytes", labels, downlink_state.bitrate_gate_allowed_byte_count);
         append_router_prometheus_labeled_metric_value(
             output, "simplewebrtc_subscriber_downlink_bitrate_gate_dropped_bytes", labels, downlink_state.bitrate_gate_dropped_byte_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_pacing_queue_packets", labels, downlink_state.pacing_queue_packet_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_pacing_queue_bytes", labels, downlink_state.pacing_queue_byte_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_pacing_budget_bytes", labels, downlink_state.pacing_budget_bytes);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_pacing_enqueued_packets", labels, downlink_state.pacing_enqueued_packet_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_pacing_sent_packets", labels, downlink_state.pacing_sent_packet_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_pacing_dropped_packets", labels, downlink_state.pacing_dropped_packet_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_pacing_enqueued_bytes", labels, downlink_state.pacing_enqueued_byte_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_pacing_sent_bytes", labels, downlink_state.pacing_sent_byte_count);
+        append_router_prometheus_labeled_metric_value(
+            output, "simplewebrtc_subscriber_downlink_pacing_dropped_bytes", labels, downlink_state.pacing_dropped_byte_count);
     }
 
     append_router_prometheus_metric_header(output,

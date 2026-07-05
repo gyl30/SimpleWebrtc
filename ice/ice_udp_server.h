@@ -531,6 +531,42 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t bitrate_gate_allowed_byte_count = 0;
         uint64_t bitrate_gate_dropped_byte_count = 0;
     };
+
+    struct subscriber_downlink_pacing_packet
+    {
+        std::string stream_id;
+        std::string subscriber_session_id;
+        std::string remote_address;
+
+        boost::asio::ip::udp::endpoint remote_endpoint;
+
+        std::vector<uint8_t> protected_packet;
+
+        uint64_t enqueued_at_milliseconds = 0;
+        uint64_t protected_size = 0;
+    };
+
+    struct subscriber_downlink_pacing_state
+    {
+        std::string stream_id;
+        std::string subscriber_session_id;
+
+        std::deque<subscriber_downlink_pacing_packet> queue;
+
+        uint64_t queue_byte_count = 0;
+        uint64_t pacing_budget_bytes = 0;
+        uint64_t pacing_last_update_milliseconds = 0;
+
+        uint64_t enqueued_packet_count = 0;
+        uint64_t enqueued_byte_count = 0;
+
+        uint64_t sent_packet_count = 0;
+        uint64_t sent_byte_count = 0;
+
+        uint64_t dropped_packet_count = 0;
+        uint64_t dropped_byte_count = 0;
+    };
+
     struct pending_subscriber_runtime_residual_check
     {
         std::string stream_id;
@@ -635,7 +671,37 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                         std::span<const uint8_t> outbound_plain_packet,
                                                         const std::optional<media_ssrc_mapping>& outbound_mapping);
 
+    [[nodiscard]]
+    bool subscriber_downlink_pacing_should_enqueue_packet(const media_route_result& route,
+                                                          const media_peer_info& target_peer,
+                                                          const srtp_packet_process_result& packet,
+                                                          const std::optional<media_ssrc_mapping>& outbound_mapping) const;
+
+    void enqueue_subscriber_downlink_paced_packet(const media_route_result& route,
+                                                  const media_peer_info& target_peer,
+                                                  std::string_view remote_address,
+                                                  const boost::asio::ip::udp::endpoint& remote_endpoint,
+                                                  std::vector<uint8_t> protected_packet);
+
+    void schedule_subscriber_downlink_pacing_timer();
+
+    void handle_subscriber_downlink_pacing_timer();
+
+    [[nodiscard]]
+    std::vector<subscriber_downlink_pacing_packet> pop_subscriber_downlink_pacing_packets();
+
     void forget_subscriber_downlink_bandwidth_states_for_session(std::string_view session_id);
+
+    void forget_subscriber_downlink_pacing_states_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_subscriber_downlink_pacing_states_for_stream_locked(std::string_view stream_id);
+
+    [[nodiscard]]
+    std::size_t subscriber_downlink_pacing_queue_packet_count_locked() const;
+
+    [[nodiscard]]
+    std::size_t subscriber_downlink_pacing_queue_byte_count_locked() const;
 
     [[nodiscard]]
     std::size_t erase_subscriber_downlink_bandwidth_states_for_stream_locked(std::string_view stream_id);
@@ -1097,10 +1163,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     boost::asio::steady_timer rtcp_report_timer_;
 
     boost::asio::steady_timer rtcp_transport_cc_feedback_timer_;
-
     boost::asio::steady_timer endpoint_idle_cleanup_timer_;
-
     boost::asio::steady_timer pending_session_cleanup_timer_;
+    boost::asio::steady_timer subscriber_downlink_pacing_timer_;
 
     std::string bind_host_;
 
@@ -1157,6 +1222,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::deque<std::string> outbound_transport_cc_packet_insertion_order_;
     std::unordered_map<std::string, outbound_transport_cc_feedback_window_state> outbound_transport_cc_feedback_windows_by_key_;
     std::unordered_map<std::string, subscriber_downlink_bandwidth_state> subscriber_downlink_bandwidth_by_key_;
+    std::unordered_map<std::string, subscriber_downlink_pacing_state> subscriber_downlink_pacing_by_key_;
+
+    bool subscriber_downlink_pacing_timer_scheduled_ = false;
 
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
@@ -1198,6 +1266,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_rewrite_empty_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_runtime_gate_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_bitrate_gate_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_pacing_queue_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_protect_failed_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_protect_ignored_total_{0};
 
