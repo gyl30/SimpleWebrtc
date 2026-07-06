@@ -877,11 +877,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                    const std::optional<media_track_resolution>& track_resolution,
                                                                    const media_peer_info& target_peer);
 
+    void complete_republish_keyframe_request_pending_for_publisher_keyframe(const srtp_packet_process_result& packet,
+                                                                            const media_route_result& route,
+                                                                            const std::optional<media_track_resolution>& track_resolution);
+
     void remember_selected_rid_layer_quality_packet_locked(selected_rid_layer_runtime_state& state,
                                                            const media_track_resolution& track_resolution,
                                                            std::size_t packet_size,
                                                            uint64_t current_time_milliseconds);
-
     [[nodiscard]]
     std::optional<std::string> runtime_selected_rid_target_for_subscriber(const media_route_result& route,
                                                                           const media_peer_info& target_peer,

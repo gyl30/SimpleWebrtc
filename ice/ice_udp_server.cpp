@@ -4207,6 +4207,290 @@ std::string lower_ascii_copy(std::string_view value)
 
     return result;
 }
+enum class publisher_video_keyframe_codec
+{
+    unknown,
+    vp8,
+    h264,
+};
+
+publisher_video_keyframe_codec publisher_video_keyframe_codec_from_name(std::string_view codec_name)
+{
+    const std::string normalized = lower_ascii_copy(codec_name);
+
+    if (normalized == "vp8")
+    {
+        return publisher_video_keyframe_codec::vp8;
+    }
+
+    if (normalized == "h264")
+    {
+        return publisher_video_keyframe_codec::h264;
+    }
+
+    return publisher_video_keyframe_codec::unknown;
+}
+
+std::string_view publisher_video_keyframe_codec_to_string(publisher_video_keyframe_codec codec)
+{
+    switch (codec)
+    {
+        case publisher_video_keyframe_codec::vp8:
+            return "vp8";
+
+        case publisher_video_keyframe_codec::h264:
+            return "h264";
+
+        case publisher_video_keyframe_codec::unknown:
+            return "unknown";
+    }
+
+    return "unknown";
+}
+
+std::optional<std::string> find_offer_codec_name_by_payload_type(const sdp::webrtc_offer_summary& offer, std::string_view mid, uint16_t payload_type)
+{
+    if (!mid.empty())
+    {
+        const sdp::media_summary* media = find_media_summary_by_mid(offer, mid);
+
+        if (media != nullptr)
+        {
+            for (const auto& codec : media->codecs)
+            {
+                if (codec.payload_type == payload_type)
+                {
+                    return codec.name;
+                }
+            }
+        }
+    }
+
+    std::optional<std::string> matched_codec_name;
+
+    for (const auto& media : offer.media)
+    {
+        for (const auto& codec : media.codecs)
+        {
+            if (codec.payload_type != payload_type)
+            {
+                continue;
+            }
+
+            if (matched_codec_name.has_value())
+            {
+                return std::nullopt;
+            }
+
+            matched_codec_name = codec.name;
+        }
+    }
+
+    return matched_codec_name;
+}
+
+std::optional<std::span<const uint8_t>> rtp_payload_span(std::span<const uint8_t> packet, const rtp_packet_header& header)
+{
+    if (header.payload_size == 0)
+    {
+        return std::nullopt;
+    }
+
+    if (header.payload_offset > packet.size())
+    {
+        return std::nullopt;
+    }
+
+    if (header.payload_offset + header.payload_size > packet.size())
+    {
+        return std::nullopt;
+    }
+
+    return packet.subspan(header.payload_offset, header.payload_size);
+}
+
+bool is_vp8_keyframe_payload(std::span<const uint8_t> payload)
+{
+    if (payload.empty())
+    {
+        return false;
+    }
+
+    const uint8_t descriptor = payload[0];
+
+    const bool extension_present = (descriptor & 0x80U) != 0;
+    const bool start_of_partition = (descriptor & 0x10U) != 0;
+    const uint8_t partition_id = static_cast<uint8_t>(descriptor & 0x0FU);
+
+    if (!start_of_partition || partition_id != 0)
+    {
+        return false;
+    }
+
+    std::size_t offset = 1;
+
+    if (extension_present)
+    {
+        if (offset >= payload.size())
+        {
+            return false;
+        }
+
+        const uint8_t extension = payload[offset];
+
+        offset += 1;
+
+        const bool picture_id_present = (extension & 0x80U) != 0;
+        const bool tl0picidx_present = (extension & 0x40U) != 0;
+        const bool tid_present = (extension & 0x20U) != 0;
+        const bool keyidx_present = (extension & 0x10U) != 0;
+
+        if (picture_id_present)
+        {
+            if (offset >= payload.size())
+            {
+                return false;
+            }
+
+            const bool long_picture_id = (payload[offset] & 0x80U) != 0;
+
+            offset += long_picture_id ? 2 : 1;
+        }
+
+        if (tl0picidx_present)
+        {
+            offset += 1;
+        }
+
+        if (tid_present || keyidx_present)
+        {
+            offset += 1;
+        }
+    }
+
+    if (offset >= payload.size())
+    {
+        return false;
+    }
+
+    /*
+     * RFC 7741 VP8 payload:
+     * the first byte of the VP8 uncompressed data has bit 0 == 0 for key frames.
+     */
+    return (payload[offset] & 0x01U) == 0;
+}
+
+bool h264_nal_unit_type_is_idr(uint8_t nal_unit_type) { return nal_unit_type == 5; }
+
+bool is_h264_single_nal_keyframe(std::span<const uint8_t> payload)
+{
+    if (payload.empty())
+    {
+        return false;
+    }
+
+    const uint8_t nal_unit_type = static_cast<uint8_t>(payload[0] & 0x1FU);
+
+    return h264_nal_unit_type_is_idr(nal_unit_type);
+}
+
+bool is_h264_stap_a_keyframe(std::span<const uint8_t> payload)
+{
+    if (payload.size() < 3)
+    {
+        return false;
+    }
+
+    std::size_t offset = 1;
+
+    while (offset + 2 <= payload.size())
+    {
+        const uint16_t nal_unit_size =
+            static_cast<uint16_t>((static_cast<uint16_t>(payload[offset]) << 8U) | static_cast<uint16_t>(payload[offset + 1]));
+
+        offset += 2;
+
+        if (nal_unit_size == 0)
+        {
+            return false;
+        }
+
+        if (offset + static_cast<std::size_t>(nal_unit_size) > payload.size())
+        {
+            return false;
+        }
+
+        const uint8_t nal_unit_type = static_cast<uint8_t>(payload[offset] & 0x1FU);
+
+        if (h264_nal_unit_type_is_idr(nal_unit_type))
+        {
+            return true;
+        }
+
+        offset += static_cast<std::size_t>(nal_unit_size);
+    }
+
+    return false;
+}
+
+bool is_h264_fu_a_keyframe(std::span<const uint8_t> payload)
+{
+    if (payload.size() < 2)
+    {
+        return false;
+    }
+
+    const uint8_t fu_header = payload[1];
+
+    const bool start = (fu_header & 0x80U) != 0;
+    const uint8_t reconstructed_nal_unit_type = static_cast<uint8_t>(fu_header & 0x1FU);
+
+    return start && h264_nal_unit_type_is_idr(reconstructed_nal_unit_type);
+}
+
+bool is_h264_keyframe_payload(std::span<const uint8_t> payload)
+{
+    if (payload.empty())
+    {
+        return false;
+    }
+
+    const uint8_t nal_unit_type = static_cast<uint8_t>(payload[0] & 0x1FU);
+
+    if (nal_unit_type >= 1 && nal_unit_type <= 23)
+    {
+        return is_h264_single_nal_keyframe(payload);
+    }
+
+    if (nal_unit_type == 24)
+    {
+        return is_h264_stap_a_keyframe(payload);
+    }
+
+    if (nal_unit_type == 28)
+    {
+        return is_h264_fu_a_keyframe(payload);
+    }
+
+    return false;
+}
+
+bool is_publisher_video_keyframe_payload(publisher_video_keyframe_codec codec, std::span<const uint8_t> payload)
+{
+    switch (codec)
+    {
+        case publisher_video_keyframe_codec::vp8:
+            return is_vp8_keyframe_payload(payload);
+
+        case publisher_video_keyframe_codec::h264:
+            return is_h264_keyframe_payload(payload);
+
+        case publisher_video_keyframe_codec::unknown:
+            return false;
+    }
+
+    return false;
+}
 simulcast_rid_preference_policy parse_simulcast_rid_preference_policy(std::string_view value)
 {
     const std::string normalized = lower_ascii_copy(value);
@@ -11078,6 +11362,9 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
         rtp_rtcp_drop_inbound_identity_gate_total_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+
+    complete_republish_keyframe_request_pending_for_publisher_keyframe(*result, route, track_resolution);
+
     cache_inbound_rtp_packet(*result, route, track_resolution);
 
     if (result->kind == srtp_packet_kind::rtcp && result->rtcp_has_bye)
@@ -19554,6 +19841,166 @@ bool ice_udp_server::consume_republish_keyframe_request_pending_for_subscriber(c
         packet.ssrc);
 
     return true;
+}
+
+void ice_udp_server::complete_republish_keyframe_request_pending_for_publisher_keyframe(const srtp_packet_process_result& packet,
+                                                                                        const media_route_result& route,
+                                                                                        const std::optional<media_track_resolution>& track_resolution)
+{
+    if (packet.kind != srtp_packet_kind::rtp)
+    {
+        return;
+    }
+
+    if (packet.plain_packet.empty())
+    {
+        return;
+    }
+
+    if (route.action != media_route_action::fanout_to_subscribers)
+    {
+        return;
+    }
+
+    if (route.source.role != media_peer_role::publisher)
+    {
+        return;
+    }
+
+    if (route.source.stream_id.empty() || route.source.session_id.empty())
+    {
+        return;
+    }
+
+    if (route.target_endpoints.empty())
+    {
+        return;
+    }
+
+    if (!track_resolution.has_value() || !track_resolution->resolved || !is_video_media_kind(track_resolution->kind))
+    {
+        return;
+    }
+
+    if (track_resolution->rtx)
+    {
+        return;
+    }
+
+    if (registry_ == nullptr)
+    {
+        return;
+    }
+
+    auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
+
+    if (publisher == nullptr)
+    {
+        return;
+    }
+
+    const uint16_t payload_type = static_cast<uint16_t>(track_resolution->payload_type);
+
+    const std::optional<std::string> codec_name =
+        find_offer_codec_name_by_payload_type(publisher->remote_offer_summary(), track_resolution->mid, payload_type);
+
+    if (!codec_name.has_value())
+    {
+        return;
+    }
+
+    const publisher_video_keyframe_codec keyframe_codec = publisher_video_keyframe_codec_from_name(*codec_name);
+
+    if (keyframe_codec == publisher_video_keyframe_codec::unknown)
+    {
+        return;
+    }
+
+    std::span<const uint8_t> plain_packet(packet.plain_packet.data(), packet.plain_packet.size());
+
+    auto header = parse_rtp_packet_header(plain_packet);
+
+    if (!header)
+    {
+        WEBRTC_LOG_DEBUG("publisher republish keyframe detect skipped parse failed stream={} publisher_session={} ssrc={} error={}",
+                         route.source.stream_id,
+                         route.source.session_id,
+                         packet.ssrc,
+                         header.error());
+
+        return;
+    }
+
+    auto payload = rtp_payload_span(plain_packet, *header);
+
+    if (!payload.has_value())
+    {
+        return;
+    }
+
+    if (!is_publisher_video_keyframe_payload(keyframe_codec, *payload))
+    {
+        return;
+    }
+
+    std::size_t eligible_subscriber_count = 0;
+    std::size_t first_request_subscriber_count = 0;
+    std::size_t target_endpoint_count = route.target_endpoints.size();
+    uint64_t pending_age_milliseconds = 0;
+    bool pending_erased = false;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        auto iterator = pending_republish_keyframe_state_by_stream_.find(route.source.stream_id);
+
+        if (iterator == pending_republish_keyframe_state_by_stream_.end())
+        {
+            return;
+        }
+
+        republish_keyframe_request_state& state = iterator->second;
+
+        if (state.publisher_session_id != route.source.session_id)
+        {
+            return;
+        }
+
+        eligible_subscriber_count = state.eligible_subscriber_session_ids.size();
+        first_request_subscriber_count = state.consumed_subscriber_session_ids.size();
+
+        const uint64_t current_time_milliseconds = now_milliseconds();
+
+        if (state.pending_since_milliseconds != 0 && current_time_milliseconds >= state.pending_since_milliseconds)
+        {
+            pending_age_milliseconds = current_time_milliseconds - state.pending_since_milliseconds;
+        }
+
+        pending_republish_keyframe_state_by_stream_.erase(iterator);
+
+        pending_erased = true;
+    }
+
+    if (!pending_erased)
+    {
+        return;
+    }
+
+    WEBRTC_LOG_INFO(
+        "publisher republish keyframe observed pending cleared stream={} publisher_session={} mid={} kind={} codec={} ssrc={} sequence={} "
+        "payload_type={} eligible_subscribers={} first_request_subscribers={} target_endpoints={} pending_age_ms={}",
+        route.source.stream_id,
+        route.source.session_id,
+        track_resolution->mid,
+        track_resolution->kind,
+        publisher_video_keyframe_codec_to_string(keyframe_codec),
+        header->ssrc,
+        header->sequence_number,
+        static_cast<unsigned int>(header->payload_type),
+        eligible_subscriber_count,
+        first_request_subscriber_count,
+        target_endpoint_count,
+        pending_age_milliseconds);
 }
 
 void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet,
