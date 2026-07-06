@@ -136,12 +136,20 @@ publisher_session_result stream_registry::replace_publisher_session(std::string 
 
     previous_session->set_state(session_state::closed);
 
+    stream_removed_session removed_publisher;
+    removed_publisher.kind = stream_session_kind::publisher;
+    removed_publisher.stream_id = previous_session->stream_id();
+    removed_publisher.session_id = previous_session->session_id();
+    removed_publisher.local_ice_ufrag = previous_session->local_ice().ufrag;
+    removed_publisher.remote_ice_ufrag = previous_session->remote_offer_summary().ice_ufrag;
+
+    remember_removed_session_locked(removed_publisher);
+
     publishers_by_session_id_.erase(previous_iterator);
 
     publishers_by_stream_id_.erase(stream_iterator);
 
     const std::string session_id = make_unique_session_id_locked();
-
     const uint64_t created_at = now_milliseconds();
 
     auto session =
@@ -210,10 +218,18 @@ subscriber_session_result stream_registry::replace_subscriber_session(std::strin
 
     previous_session->set_state(session_state::closed);
 
+    stream_removed_session removed_subscriber;
+    removed_subscriber.kind = stream_session_kind::subscriber;
+    removed_subscriber.stream_id = previous_session->stream_id();
+    removed_subscriber.session_id = previous_session->session_id();
+    removed_subscriber.local_ice_ufrag = previous_session->local_ice().ufrag;
+    removed_subscriber.remote_ice_ufrag = previous_session->remote_offer_summary().ice_ufrag;
+
+    remember_removed_session_locked(removed_subscriber);
+
     subscribers_by_session_id_.erase(previous_iterator);
 
     const auto stream_iterator = subscriber_session_ids_by_stream_id_.find(stream_id);
-
     if (stream_iterator != subscriber_session_ids_by_stream_id_.end())
     {
         stream_iterator->second.erase(previous_session_id);
