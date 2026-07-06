@@ -499,10 +499,14 @@ std::string_view subscriber_downlink_control_state_to_string(ice_udp_server::sub
 
         case ice_udp_server::subscriber_downlink_control_state::constrained:
             return "constrained";
+
+        case ice_udp_server::subscriber_downlink_control_state::hold_down:
+            return "hold_down";
     }
 
     return "probing";
 }
+
 std::string_view subscriber_downlink_control_mode_to_string(ice_udp_server::subscriber_downlink_control_mode mode)
 {
     switch (mode)
@@ -544,75 +548,202 @@ uint64_t clamp_bitrate(uint64_t bitrate_bps, uint64_t min_bitrate_bps, uint64_t 
 
     return bitrate_bps;
 }
-
-ice_udp_server::subscriber_downlink_control_state select_subscriber_downlink_control_state(uint64_t observation_count,
-                                                                                           uint64_t lookup_hit_rate_ppm,
-                                                                                           uint64_t loss_rate_ppm)
+uint64_t increase_bitrate_by_ppm(uint64_t bitrate_bps, uint64_t increase_ppm, uint64_t min_step_bps)
 {
-    constexpr uint64_t k_probe_observation_count = 128;
-    constexpr uint64_t k_min_reliable_lookup_hit_rate_ppm = 950000;
-    constexpr uint64_t k_recovering_loss_rate_ppm = 30000;
-    constexpr uint64_t k_constrained_loss_rate_ppm = 100000;
+    if (bitrate_bps == 0)
+    {
+        return min_step_bps;
+    }
 
-    if (observation_count < k_probe_observation_count)
+    uint64_t step_bps = scale_bitrate(bitrate_bps, increase_ppm, 1000000U);
+
+    if (step_bps < min_step_bps)
+    {
+        step_bps = min_step_bps;
+    }
+
+    if (std::numeric_limits<uint64_t>::max() - bitrate_bps < step_bps)
+    {
+        return std::numeric_limits<uint64_t>::max();
+    }
+
+    return bitrate_bps + step_bps;
+}
+
+bool subscriber_downlink_state_duration_elapsed(const ice_udp_server::subscriber_downlink_bandwidth_state& state,
+                                                uint64_t current_time_milliseconds,
+                                                uint64_t duration_milliseconds)
+{
+    if (duration_milliseconds == 0)
+    {
+        return true;
+    }
+
+    if (state.state_entered_at_milliseconds == 0)
+    {
+        return true;
+    }
+
+    return current_time_milliseconds >= state.state_entered_at_milliseconds + duration_milliseconds;
+}
+
+ice_udp_server::subscriber_downlink_control_state select_subscriber_downlink_control_state(
+    const ice_udp_server::subscriber_downlink_bandwidth_state& state,
+    const ice_udp_server::subscriber_downlink_control_config& config,
+    uint64_t current_time_milliseconds,
+    uint64_t observation_count,
+    uint64_t lookup_hit_rate_ppm,
+    uint64_t loss_rate_ppm,
+    uint64_t next_healthy_window_count,
+    uint64_t next_bad_window_count)
+{
+    const bool has_enough_samples = observation_count >= config.probe_observation_count;
+    const bool has_reliable_lookup = lookup_hit_rate_ppm >= config.min_reliable_lookup_hit_rate_ppm;
+
+    if (!has_enough_samples || !has_reliable_lookup)
     {
         return ice_udp_server::subscriber_downlink_control_state::probing;
     }
 
-    if (lookup_hit_rate_ppm < k_min_reliable_lookup_hit_rate_ppm)
-    {
-        return ice_udp_server::subscriber_downlink_control_state::probing;
-    }
+    const bool bad_enough = next_bad_window_count >= config.constrained_required_bad_windows;
 
-    if (loss_rate_ppm >= k_constrained_loss_rate_ppm)
+    if (loss_rate_ppm >= config.severe_loss_rate_ppm)
     {
         return ice_udp_server::subscriber_downlink_control_state::constrained;
     }
 
-    if (loss_rate_ppm >= k_recovering_loss_rate_ppm)
+    switch (state.control_state)
     {
-        return ice_udp_server::subscriber_downlink_control_state::recovering;
+        case ice_udp_server::subscriber_downlink_control_state::probing:
+            if (loss_rate_ppm >= config.constrained_loss_rate_ppm)
+            {
+                return ice_udp_server::subscriber_downlink_control_state::constrained;
+            }
+
+            if (loss_rate_ppm >= config.recovering_loss_rate_ppm)
+            {
+                return ice_udp_server::subscriber_downlink_control_state::recovering;
+            }
+
+            return ice_udp_server::subscriber_downlink_control_state::steady;
+
+        case ice_udp_server::subscriber_downlink_control_state::steady:
+            if (loss_rate_ppm >= config.constrained_loss_rate_ppm && bad_enough)
+            {
+                return ice_udp_server::subscriber_downlink_control_state::constrained;
+            }
+
+            if (loss_rate_ppm >= config.recovering_loss_rate_ppm)
+            {
+                return ice_udp_server::subscriber_downlink_control_state::recovering;
+            }
+
+            return ice_udp_server::subscriber_downlink_control_state::steady;
+
+        case ice_udp_server::subscriber_downlink_control_state::recovering:
+            if (loss_rate_ppm >= config.constrained_loss_rate_ppm)
+            {
+                return ice_udp_server::subscriber_downlink_control_state::constrained;
+            }
+
+            if (!subscriber_downlink_state_duration_elapsed(state, current_time_milliseconds, config.recovering_min_duration_milliseconds))
+            {
+                return ice_udp_server::subscriber_downlink_control_state::recovering;
+            }
+
+            if (next_healthy_window_count >= config.hold_down_required_healthy_windows)
+            {
+                return ice_udp_server::subscriber_downlink_control_state::hold_down;
+            }
+
+            return ice_udp_server::subscriber_downlink_control_state::recovering;
+
+        case ice_udp_server::subscriber_downlink_control_state::constrained:
+            if (loss_rate_ppm >= config.recovering_loss_rate_ppm)
+            {
+                return ice_udp_server::subscriber_downlink_control_state::constrained;
+            }
+
+            if (!subscriber_downlink_state_duration_elapsed(state, current_time_milliseconds, config.min_state_duration_milliseconds))
+            {
+                return ice_udp_server::subscriber_downlink_control_state::constrained;
+            }
+
+            if (next_healthy_window_count >= config.recovering_required_healthy_windows)
+            {
+                return ice_udp_server::subscriber_downlink_control_state::recovering;
+            }
+
+            return ice_udp_server::subscriber_downlink_control_state::constrained;
+
+        case ice_udp_server::subscriber_downlink_control_state::hold_down:
+            if (loss_rate_ppm >= config.constrained_loss_rate_ppm)
+            {
+                return ice_udp_server::subscriber_downlink_control_state::constrained;
+            }
+
+            if (state.hold_down_until_milliseconds != 0 && current_time_milliseconds < state.hold_down_until_milliseconds)
+            {
+                return ice_udp_server::subscriber_downlink_control_state::hold_down;
+            }
+
+            if (loss_rate_ppm >= config.recovering_loss_rate_ppm)
+            {
+                return ice_udp_server::subscriber_downlink_control_state::recovering;
+            }
+
+            return ice_udp_server::subscriber_downlink_control_state::steady;
     }
 
-    return ice_udp_server::subscriber_downlink_control_state::steady;
+    return ice_udp_server::subscriber_downlink_control_state::probing;
 }
 
 std::string make_subscriber_downlink_transition_reason(ice_udp_server::subscriber_downlink_control_state state,
                                                        uint64_t observation_count,
                                                        uint64_t lookup_hit_rate_ppm,
-                                                       uint64_t loss_rate_ppm)
+                                                       uint64_t loss_rate_ppm,
+                                                       uint64_t healthy_window_count,
+                                                       uint64_t bad_window_count,
+                                                       uint64_t unreliable_window_count)
 {
     std::string reason;
 
-    reason.reserve(128);
+    reason.reserve(192);
 
     reason.append("state=");
-
     reason.append(subscriber_downlink_control_state_to_string(state));
 
     reason.append(" observations=");
-
     reason.append(std::to_string(observation_count));
 
     reason.append(" lookup_hit_rate_ppm=");
-
     reason.append(std::to_string(lookup_hit_rate_ppm));
 
     reason.append(" loss_rate_ppm=");
-
     reason.append(std::to_string(loss_rate_ppm));
+
+    reason.append(" healthy_windows=");
+    reason.append(std::to_string(healthy_window_count));
+
+    reason.append(" bad_windows=");
+    reason.append(std::to_string(bad_window_count));
+
+    reason.append(" unreliable_windows=");
+    reason.append(std::to_string(unreliable_window_count));
 
     return reason;
 }
 
 uint64_t estimate_subscriber_downlink_target_bitrate_bps(const ice_udp_server::subscriber_downlink_bandwidth_state& state,
-                                                         ice_udp_server::subscriber_downlink_control_state next_state)
+                                                         const ice_udp_server::subscriber_downlink_control_config& config,
+                                                         ice_udp_server::subscriber_downlink_control_state next_state,
+                                                         uint64_t loss_rate_ppm)
 {
     uint64_t target_bitrate_bps = state.target_bitrate_bps;
 
     if (target_bitrate_bps == 0)
     {
-        target_bitrate_bps = 2000000;
+        target_bitrate_bps = config.initial_target_bitrate_bps;
     }
 
     switch (next_state)
@@ -621,19 +752,32 @@ uint64_t estimate_subscriber_downlink_target_bitrate_bps(const ice_udp_server::s
             break;
 
         case ice_udp_server::subscriber_downlink_control_state::steady:
-            target_bitrate_bps += std::max<uint64_t>(target_bitrate_bps / 20U, 50000U);
+            target_bitrate_bps = increase_bitrate_by_ppm(target_bitrate_bps, config.steady_increase_ppm, 50000U);
             break;
 
         case ice_udp_server::subscriber_downlink_control_state::recovering:
+            target_bitrate_bps = increase_bitrate_by_ppm(target_bitrate_bps, config.recovering_increase_ppm, 25000U);
+            break;
+
+        case ice_udp_server::subscriber_downlink_control_state::hold_down:
+            target_bitrate_bps = increase_bitrate_by_ppm(target_bitrate_bps, config.hold_down_increase_ppm, 10000U);
             break;
 
         case ice_udp_server::subscriber_downlink_control_state::constrained:
-            target_bitrate_bps = scale_bitrate(target_bitrate_bps, 85U, 100U);
+            if (loss_rate_ppm >= config.severe_loss_rate_ppm)
+            {
+                target_bitrate_bps = scale_bitrate(target_bitrate_bps, config.severe_constrained_decrease_ppm, 1000000U);
+            }
+            else
+            {
+                target_bitrate_bps = scale_bitrate(target_bitrate_bps, config.constrained_decrease_ppm, 1000000U);
+            }
             break;
     }
 
     return clamp_bitrate(target_bitrate_bps, state.min_bitrate_bps, state.max_bitrate_bps);
 }
+
 bool subscriber_downlink_state_enables_bitrate_gate(ice_udp_server::subscriber_downlink_control_state state)
 {
     switch (state)
@@ -644,6 +788,7 @@ bool subscriber_downlink_state_enables_bitrate_gate(ice_udp_server::subscriber_d
         case ice_udp_server::subscriber_downlink_control_state::steady:
         case ice_udp_server::subscriber_downlink_control_state::recovering:
         case ice_udp_server::subscriber_downlink_control_state::constrained:
+        case ice_udp_server::subscriber_downlink_control_state::hold_down:
             return true;
     }
 
@@ -898,10 +1043,14 @@ lifecycle_debug_subscriber_downlink_bandwidth_entry make_subscriber_downlink_ban
     entry.updated_at_milliseconds = state.updated_at_milliseconds;
     entry.last_feedback_at_milliseconds = state.last_feedback_at_milliseconds;
     entry.last_transition_at_milliseconds = state.last_transition_at_milliseconds;
+    entry.state_entered_at_milliseconds = state.state_entered_at_milliseconds;
+    entry.hold_down_until_milliseconds = state.hold_down_until_milliseconds;
 
     entry.transition_count = state.transition_count;
+    entry.healthy_window_count = state.healthy_window_count;
+    entry.bad_window_count = state.bad_window_count;
+    entry.unreliable_window_count = state.unreliable_window_count;
     entry.last_transition_reason = state.last_transition_reason;
-
     entry.target_bitrate_bps = state.target_bitrate_bps;
     entry.min_bitrate_bps = state.min_bitrate_bps;
     entry.max_bitrate_bps = state.max_bitrate_bps;
@@ -1945,6 +2094,81 @@ ice_udp_server::subscriber_downlink_control_config make_subscriber_downlink_cont
     config.initial_target_bitrate_bps =
         get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_INITIAL_TARGET_BITRATE_BPS", config.initial_target_bitrate_bps);
 
+    config.probe_observation_count = get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_PROBE_OBSERVATION_COUNT", config.probe_observation_count);
+    config.probe_observation_count = std::max<uint64_t>(config.probe_observation_count, 16);
+    config.probe_observation_count = std::min<uint64_t>(config.probe_observation_count, 4096);
+
+    config.min_reliable_lookup_hit_rate_ppm =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_MIN_LOOKUP_HIT_RATE_PPM", config.min_reliable_lookup_hit_rate_ppm);
+    config.min_reliable_lookup_hit_rate_ppm = std::min<uint64_t>(config.min_reliable_lookup_hit_rate_ppm, 1000000);
+
+    config.healthy_loss_rate_ppm = get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_HEALTHY_LOSS_RATE_PPM", config.healthy_loss_rate_ppm);
+    config.recovering_loss_rate_ppm =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_RECOVERING_LOSS_RATE_PPM", config.recovering_loss_rate_ppm);
+    config.constrained_loss_rate_ppm =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_CONSTRAINED_LOSS_RATE_PPM", config.constrained_loss_rate_ppm);
+    config.severe_loss_rate_ppm = get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_SEVERE_LOSS_RATE_PPM", config.severe_loss_rate_ppm);
+
+    config.healthy_loss_rate_ppm = std::min<uint64_t>(config.healthy_loss_rate_ppm, 1000000);
+    config.recovering_loss_rate_ppm = std::min<uint64_t>(config.recovering_loss_rate_ppm, 1000000);
+    config.constrained_loss_rate_ppm = std::min<uint64_t>(config.constrained_loss_rate_ppm, 1000000);
+    config.severe_loss_rate_ppm = std::min<uint64_t>(config.severe_loss_rate_ppm, 1000000);
+
+    if (config.recovering_loss_rate_ppm < config.healthy_loss_rate_ppm)
+    {
+        config.recovering_loss_rate_ppm = config.healthy_loss_rate_ppm;
+    }
+
+    if (config.constrained_loss_rate_ppm < config.recovering_loss_rate_ppm)
+    {
+        config.constrained_loss_rate_ppm = config.recovering_loss_rate_ppm;
+    }
+
+    if (config.severe_loss_rate_ppm < config.constrained_loss_rate_ppm)
+    {
+        config.severe_loss_rate_ppm = config.constrained_loss_rate_ppm;
+    }
+
+    config.min_state_duration_milliseconds =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_MIN_STATE_DURATION_MS", config.min_state_duration_milliseconds);
+    config.recovering_min_duration_milliseconds =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_RECOVERING_MIN_DURATION_MS", config.recovering_min_duration_milliseconds);
+    config.hold_down_duration_milliseconds =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_HOLD_DOWN_DURATION_MS", config.hold_down_duration_milliseconds);
+
+    config.min_state_duration_milliseconds = std::min<uint64_t>(config.min_state_duration_milliseconds, 60000);
+    config.recovering_min_duration_milliseconds = std::min<uint64_t>(config.recovering_min_duration_milliseconds, 60000);
+    config.hold_down_duration_milliseconds = std::min<uint64_t>(config.hold_down_duration_milliseconds, 60000);
+
+    config.recovering_required_healthy_windows =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_RECOVERING_REQUIRED_HEALTHY_WINDOWS", config.recovering_required_healthy_windows);
+    config.hold_down_required_healthy_windows =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_HOLD_DOWN_REQUIRED_HEALTHY_WINDOWS", config.hold_down_required_healthy_windows);
+    config.constrained_required_bad_windows =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_CONSTRAINED_REQUIRED_BAD_WINDOWS", config.constrained_required_bad_windows);
+
+    config.recovering_required_healthy_windows = std::max<uint64_t>(config.recovering_required_healthy_windows, 1);
+    config.hold_down_required_healthy_windows = std::max<uint64_t>(config.hold_down_required_healthy_windows, 1);
+    config.constrained_required_bad_windows = std::max<uint64_t>(config.constrained_required_bad_windows, 1);
+
+    config.steady_increase_ppm = get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_STEADY_INCREASE_PPM", config.steady_increase_ppm);
+    config.recovering_increase_ppm = get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_RECOVERING_INCREASE_PPM", config.recovering_increase_ppm);
+    config.hold_down_increase_ppm = get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_HOLD_DOWN_INCREASE_PPM", config.hold_down_increase_ppm);
+    config.constrained_decrease_ppm =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_CONSTRAINED_DECREASE_PPM", config.constrained_decrease_ppm);
+    config.severe_constrained_decrease_ppm =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_SEVERE_CONSTRAINED_DECREASE_PPM", config.severe_constrained_decrease_ppm);
+
+    config.steady_increase_ppm = std::min<uint64_t>(config.steady_increase_ppm, 200000);
+    config.recovering_increase_ppm = std::min<uint64_t>(config.recovering_increase_ppm, 100000);
+    config.hold_down_increase_ppm = std::min<uint64_t>(config.hold_down_increase_ppm, 50000);
+
+    config.constrained_decrease_ppm = std::max<uint64_t>(config.constrained_decrease_ppm, 100000);
+    config.constrained_decrease_ppm = std::min<uint64_t>(config.constrained_decrease_ppm, 1000000);
+
+    config.severe_constrained_decrease_ppm = std::max<uint64_t>(config.severe_constrained_decrease_ppm, 100000);
+    config.severe_constrained_decrease_ppm = std::min<uint64_t>(config.severe_constrained_decrease_ppm, config.constrained_decrease_ppm);
+
     config.min_bitrate_bps = get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_MIN_BITRATE_BPS", config.min_bitrate_bps);
 
     config.max_bitrate_bps = get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_MAX_BITRATE_BPS", config.max_bitrate_bps);
@@ -2010,18 +2234,38 @@ ice_udp_server::subscriber_downlink_control_config make_subscriber_downlink_cont
 
     WEBRTC_LOG_INFO(
         "subscriber downlink control config mode={} initial_target_bitrate_bps={} min_bitrate_bps={} max_bitrate_bps={} "
-        "pacing_max_queue_packets={} pacing_max_queue_bytes={} pacing_max_packet_age_ms={} pacing_max_packets_per_tick={} "
-        "pacing_timer_interval_ms={}",
+        "probe_observation_count={} min_lookup_hit_rate_ppm={} healthy_loss_rate_ppm={} recovering_loss_rate_ppm={} "
+        "constrained_loss_rate_ppm={} severe_loss_rate_ppm={} min_state_duration_ms={} recovering_min_duration_ms={} "
+        "hold_down_duration_ms={} recovering_required_healthy_windows={} hold_down_required_healthy_windows={} "
+        "constrained_required_bad_windows={} steady_increase_ppm={} recovering_increase_ppm={} hold_down_increase_ppm={} "
+        "constrained_decrease_ppm={} severe_constrained_decrease_ppm={} pacing_max_queue_packets={} pacing_max_queue_bytes={} "
+        "pacing_max_packet_age_ms={} pacing_max_packets_per_tick={} pacing_timer_interval_ms={}",
         subscriber_downlink_control_mode_to_string(config.mode),
         config.initial_target_bitrate_bps,
         config.min_bitrate_bps,
         config.max_bitrate_bps,
+        config.probe_observation_count,
+        config.min_reliable_lookup_hit_rate_ppm,
+        config.healthy_loss_rate_ppm,
+        config.recovering_loss_rate_ppm,
+        config.constrained_loss_rate_ppm,
+        config.severe_loss_rate_ppm,
+        config.min_state_duration_milliseconds,
+        config.recovering_min_duration_milliseconds,
+        config.hold_down_duration_milliseconds,
+        config.recovering_required_healthy_windows,
+        config.hold_down_required_healthy_windows,
+        config.constrained_required_bad_windows,
+        config.steady_increase_ppm,
+        config.recovering_increase_ppm,
+        config.hold_down_increase_ppm,
+        config.constrained_decrease_ppm,
+        config.severe_constrained_decrease_ppm,
         config.max_pacing_queue_packets_per_subscriber,
         config.max_pacing_queue_bytes_per_subscriber,
         config.max_pacing_packet_age_milliseconds,
         config.max_pacing_packets_per_tick,
         config.pacing_timer_interval_milliseconds);
-
     return config;
 }
 
@@ -5675,6 +5919,11 @@ void ice_udp_server::mark_subscriber_downlink_republish_grace_for_stream(std::st
         state.last_transition_reason = "publisher republish grace";
 
         state.control_state = subscriber_downlink_control_state::probing;
+        state.state_entered_at_milliseconds = now_milliseconds();
+        state.hold_down_until_milliseconds = 0;
+        state.healthy_window_count = 0;
+        state.bad_window_count = 0;
+        state.unreliable_window_count = 0;
         state.target_bitrate_bps = clamp_subscriber_downlink_republish_grace_bitrate(
             k_subscriber_downlink_republish_grace_target_bitrate_bps, state.min_bitrate_bps, state.max_bitrate_bps);
 
@@ -19039,6 +19288,11 @@ void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_lock
         state.updated_at_milliseconds = current_time_milliseconds;
         state.last_feedback_at_milliseconds = current_time_milliseconds;
         state.last_transition_at_milliseconds = current_time_milliseconds;
+        state.state_entered_at_milliseconds = current_time_milliseconds;
+        state.hold_down_until_milliseconds = 0;
+        state.healthy_window_count = 0;
+        state.bad_window_count = 0;
+        state.unreliable_window_count = 0;
         state.last_transition_reason = "created";
 
         state.target_bitrate_bps = downlink_config.initial_target_bitrate_bps;
@@ -19051,9 +19305,6 @@ void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_lock
 
     const uint64_t lookup_hit_rate_ppm = make_rate_ppm(window.lookup_hit_count, lookup_feedback_count);
     const uint64_t loss_rate_ppm = make_rate_ppm(window.lost_count, packet_status_count);
-
-    const subscriber_downlink_control_state next_state =
-        select_subscriber_downlink_control_state(observation_count, lookup_hit_rate_ppm, loss_rate_ppm);
 
     bool republish_grace_active = false;
 
@@ -19082,6 +19333,11 @@ void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_lock
         state.feedback_count = 0;
 
         state.control_state = subscriber_downlink_control_state::probing;
+        state.state_entered_at_milliseconds = current_time_milliseconds;
+        state.hold_down_until_milliseconds = 0;
+        state.healthy_window_count = 0;
+        state.bad_window_count = 0;
+        state.unreliable_window_count = 0;
         state.target_bitrate_bps = clamp_subscriber_downlink_republish_grace_bitrate(
             k_subscriber_downlink_republish_grace_target_bitrate_bps, state.min_bitrate_bps, state.max_bitrate_bps);
 
@@ -19098,19 +19354,68 @@ void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_lock
 
         return;
     }
+
+    const auto& downlink_config = ice_udp_server_runtime_config_instance().subscriber_downlink_control;
+
+    const bool has_enough_samples = observation_count >= downlink_config.probe_observation_count;
+    const bool has_reliable_lookup = lookup_hit_rate_ppm >= downlink_config.min_reliable_lookup_hit_rate_ppm;
+
+    const bool healthy_window = has_enough_samples && has_reliable_lookup && loss_rate_ppm <= downlink_config.healthy_loss_rate_ppm;
+
+    const bool bad_window = has_enough_samples && has_reliable_lookup && loss_rate_ppm >= downlink_config.constrained_loss_rate_ppm;
+
+    const bool unreliable_window = !has_enough_samples || !has_reliable_lookup;
+
+    const uint64_t next_healthy_window_count = healthy_window ? state.healthy_window_count + 1 : 0;
+    const uint64_t next_bad_window_count = bad_window ? state.bad_window_count + 1 : 0;
+    const uint64_t next_unreliable_window_count = unreliable_window ? state.unreliable_window_count + 1 : 0;
+
+    const subscriber_downlink_control_state next_state = select_subscriber_downlink_control_state(state,
+                                                                                                  downlink_config,
+                                                                                                  current_time_milliseconds,
+                                                                                                  observation_count,
+                                                                                                  lookup_hit_rate_ppm,
+                                                                                                  loss_rate_ppm,
+                                                                                                  next_healthy_window_count,
+                                                                                                  next_bad_window_count);
+
     if (state.control_state != next_state)
     {
         state.control_state = next_state;
         state.transition_count += 1;
         state.last_transition_at_milliseconds = current_time_milliseconds;
-        state.last_transition_reason = make_subscriber_downlink_transition_reason(next_state, observation_count, lookup_hit_rate_ppm, loss_rate_ppm);
+        state.state_entered_at_milliseconds = current_time_milliseconds;
+
+        if (next_state == subscriber_downlink_control_state::hold_down)
+        {
+            state.hold_down_until_milliseconds = current_time_milliseconds + downlink_config.hold_down_duration_milliseconds;
+        }
+        else
+        {
+            state.hold_down_until_milliseconds = 0;
+        }
+
+        state.last_transition_reason = make_subscriber_downlink_transition_reason(next_state,
+                                                                                  observation_count,
+                                                                                  lookup_hit_rate_ppm,
+                                                                                  loss_rate_ppm,
+                                                                                  next_healthy_window_count,
+                                                                                  next_bad_window_count,
+                                                                                  next_unreliable_window_count);
     }
+
+    state.healthy_window_count = next_healthy_window_count;
+    state.bad_window_count = next_bad_window_count;
+    state.unreliable_window_count = next_unreliable_window_count;
 
     state.updated_at_milliseconds = current_time_milliseconds;
     state.last_feedback_at_milliseconds =
         window.last_feedback_at_milliseconds != 0 ? window.last_feedback_at_milliseconds : current_time_milliseconds;
 
-    state.target_bitrate_bps = estimate_subscriber_downlink_target_bitrate_bps(state, next_state);
+    if (!unreliable_window)
+    {
+        state.target_bitrate_bps = estimate_subscriber_downlink_target_bitrate_bps(state, downlink_config, next_state, loss_rate_ppm);
+    }
 
     state.feedback_count = window.feedback_count;
     state.window_observation_count = observation_count;

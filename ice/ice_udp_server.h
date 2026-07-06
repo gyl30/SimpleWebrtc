@@ -535,19 +535,41 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t min_bitrate_bps = 150000;
         uint64_t max_bitrate_bps = 5000000;
 
+        uint64_t probe_observation_count = 128;
+        uint64_t min_reliable_lookup_hit_rate_ppm = 950000;
+
+        uint64_t healthy_loss_rate_ppm = 10000;
+        uint64_t recovering_loss_rate_ppm = 30000;
+        uint64_t constrained_loss_rate_ppm = 100000;
+        uint64_t severe_loss_rate_ppm = 200000;
+
+        uint64_t min_state_duration_milliseconds = 1500;
+        uint64_t recovering_min_duration_milliseconds = 3000;
+        uint64_t hold_down_duration_milliseconds = 3000;
+
+        uint64_t recovering_required_healthy_windows = 2;
+        uint64_t hold_down_required_healthy_windows = 3;
+        uint64_t constrained_required_bad_windows = 2;
+
+        uint64_t steady_increase_ppm = 50000;
+        uint64_t recovering_increase_ppm = 20000;
+        uint64_t hold_down_increase_ppm = 10000;
+        uint64_t constrained_decrease_ppm = 850000;
+        uint64_t severe_constrained_decrease_ppm = 700000;
+
         std::size_t max_pacing_queue_packets_per_subscriber = 256;
         uint64_t max_pacing_queue_bytes_per_subscriber = 512000;
         uint64_t max_pacing_packet_age_milliseconds = 1000;
         std::size_t max_pacing_packets_per_tick = 32;
         uint64_t pacing_timer_interval_milliseconds = 5;
     };
-
     enum class subscriber_downlink_control_state
     {
         probing,
         steady,
         recovering,
         constrained,
+        hold_down,
     };
     struct subscriber_downlink_bandwidth_state
     {
@@ -560,8 +582,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t updated_at_milliseconds = 0;
         uint64_t last_feedback_at_milliseconds = 0;
         uint64_t last_transition_at_milliseconds = 0;
+        uint64_t state_entered_at_milliseconds = 0;
+        uint64_t hold_down_until_milliseconds = 0;
 
         uint64_t transition_count = 0;
+        uint64_t healthy_window_count = 0;
+        uint64_t bad_window_count = 0;
+        uint64_t unreliable_window_count = 0;
 
         std::string last_transition_reason;
 
