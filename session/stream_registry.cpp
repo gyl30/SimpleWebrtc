@@ -481,6 +481,11 @@ remove_session_result stream_registry::remove_publisher_session(std::string_view
 
         const auto publisher = publisher_iterator->second;
 
+        if (publisher == nullptr)
+        {
+            return std::unexpected(stream_registry_error::publisher_session_not_found);
+        }
+
         const std::string stream_id = publisher->stream_id();
 
         publisher->set_state(session_state::closed);
@@ -495,38 +500,14 @@ remove_session_result stream_registry::remove_publisher_session(std::string_view
         remember_removed_session_locked(removed_publisher);
         removed_sessions.push_back(std::move(removed_publisher));
 
-        const auto subscribers_iterator = subscriber_session_ids_by_stream_id_.find(stream_id);
-
-        if (subscribers_iterator != subscriber_session_ids_by_stream_id_.end())
-        {
-            for (const auto& subscriber_session_id : subscribers_iterator->second)
-            {
-                const auto subscriber_iterator = subscribers_by_session_id_.find(subscriber_session_id);
-
-                if (subscriber_iterator == subscribers_by_session_id_.end())
-                {
-                    continue;
-                }
-
-                const auto subscriber = subscriber_iterator->second;
-
-                subscriber->set_state(session_state::closed);
-
-                stream_removed_session removed_subscriber;
-                removed_subscriber.kind = stream_session_kind::subscriber;
-                removed_subscriber.stream_id = subscriber->stream_id();
-                removed_subscriber.session_id = subscriber->session_id();
-                removed_subscriber.local_ice_ufrag = subscriber->local_ice().ufrag;
-                removed_subscriber.remote_ice_ufrag = subscriber->remote_offer_summary().ice_ufrag;
-
-                remember_removed_session_locked(removed_subscriber);
-                removed_sessions.push_back(std::move(removed_subscriber));
-                subscribers_by_session_id_.erase(subscriber_iterator);
-            }
-
-            subscriber_session_ids_by_stream_id_.erase(subscribers_iterator);
-        }
-
+        /*
+         * Do not remove subscribers when the publisher is deleted.
+         *
+         * A WHEP subscriber belongs to the stream, not to a single publisher
+         * session lifetime. Keeping subscribers registered lets a later WHIP
+         * publisher for the same stream restore forwarding without forcing the
+         * browser to create a new WHEP session.
+         */
         publishers_by_stream_id_.erase(stream_id);
         publishers_by_session_id_.erase(publisher_iterator);
 
