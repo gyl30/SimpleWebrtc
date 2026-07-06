@@ -5203,6 +5203,86 @@ void ice_udp_server::mark_subscriber_downlink_republish_grace_for_stream(std::st
                     k_subscriber_downlink_republish_grace_milliseconds,
                     grace_until_milliseconds);
 }
+void ice_udp_server::mark_subscriber_downlink_ice_restart_grace_for_session(std::string_view stream_id, std::string_view subscriber_session_id)
+{
+    if (stream_id.empty() || subscriber_session_id.empty())
+    {
+        return;
+    }
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+    const uint64_t grace_until_milliseconds = current_time_milliseconds + k_subscriber_downlink_republish_grace_milliseconds;
+
+    std::size_t state_count = 0;
+    std::size_t erased_feedback_windows = 0;
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const std::string state_key = make_subscriber_downlink_bandwidth_state_key(stream_id, subscriber_session_id);
+
+    auto state_iterator = subscriber_downlink_bandwidth_by_key_.find(state_key);
+
+    if (state_iterator != subscriber_downlink_bandwidth_by_key_.end())
+    {
+        auto& state = state_iterator->second;
+
+        const std::string grace_key = make_subscriber_downlink_republish_grace_key(state.stream_id, state.subscriber_session_id);
+
+        subscriber_downlink_republish_grace_until_by_key_[grace_key] = grace_until_milliseconds;
+
+        state.updated_at_milliseconds = current_time_milliseconds;
+        state.last_feedback_at_milliseconds = current_time_milliseconds;
+        state.last_transition_at_milliseconds = current_time_milliseconds;
+        state.transition_count += 1;
+        state.last_transition_reason = "subscriber ice restart grace";
+
+        state.control_state = subscriber_downlink_control_state::probing;
+        state.target_bitrate_bps = clamp_subscriber_downlink_republish_grace_bitrate(
+            k_subscriber_downlink_republish_grace_target_bitrate_bps, state.min_bitrate_bps, state.max_bitrate_bps);
+
+        state.feedback_count = 0;
+        state.window_observation_count = 0;
+        state.window_packet_status_count = 0;
+        state.lookup_hit_rate_ppm = 1000000;
+        state.loss_rate_ppm = 0;
+        state.received_count = 0;
+        state.lost_count = 0;
+        state.avg_delta_microseconds = 0;
+        state.min_delta_microseconds = 0;
+        state.max_delta_microseconds = 0;
+
+        state_count = 1;
+    }
+    else
+    {
+        subscriber_downlink_republish_grace_until_by_key_[make_subscriber_downlink_republish_grace_key(stream_id, subscriber_session_id)] =
+            grace_until_milliseconds;
+    }
+
+    for (auto iterator = outbound_transport_cc_feedback_windows_by_key_.begin(); iterator != outbound_transport_cc_feedback_windows_by_key_.end();)
+    {
+        if (outbound_transport_cc_feedback_window_key_matches_session(iterator->first, subscriber_session_id))
+        {
+            iterator = outbound_transport_cc_feedback_windows_by_key_.erase(iterator);
+
+            erased_feedback_windows += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    WEBRTC_LOG_INFO(
+        "subscriber downlink ice restart grace marked stream={} subscriber_session={} states={} feedback_windows_erased={} grace_ms={} "
+        "grace_until_ms={}",
+        stream_id,
+        subscriber_session_id,
+        state_count,
+        erased_feedback_windows,
+        k_subscriber_downlink_republish_grace_milliseconds,
+        grace_until_milliseconds);
+}
 
 void ice_udp_server::forget_subscriber_downlink_republish_grace_for_session(std::string_view session_id)
 {
@@ -8671,6 +8751,13 @@ void ice_udp_server::register_session_removed_callback()
             self->retire_restarted_session_ice_credentials(restarted_session, "ice restart callback");
 
             self->retire_session_endpoint_for_ice_restart(restarted_session, "ice restart callback");
+
+            if (restarted_session.kind == stream_session_kind::subscriber)
+            {
+                self->mark_subscriber_downlink_ice_restart_grace_for_session(restarted_session.stream_id, restarted_session.session_id);
+
+                self->forget_keyframe_request_states_for_session(restarted_session.session_id);
+            }
 
             self->schedule_lifecycle_snapshot_log("ice restart callback", restarted_session.stream_id, restarted_session.session_id);
         });
@@ -21055,6 +21142,19 @@ std::size_t ice_udp_server::erase_keyframe_request_states_for_session_locked(std
     }
 
     return erased_count;
+}
+void ice_udp_server::forget_keyframe_request_states_for_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const std::size_t erased_count = erase_keyframe_request_states_for_session_locked(session_id);
+
+    WEBRTC_LOG_DEBUG("ice udp keyframe request states forgotten session={} count={}", session_id, erased_count);
 }
 
 std::size_t ice_udp_server::erase_keyframe_request_states_for_stream_locked(std::string_view stream_id)

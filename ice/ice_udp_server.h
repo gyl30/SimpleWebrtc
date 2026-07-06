@@ -1181,6 +1181,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void mark_subscriber_downlink_republish_grace_for_stream(std::string_view stream_id, std::string_view publisher_session_id);
 
+    void mark_subscriber_downlink_ice_restart_grace_for_session(std::string_view stream_id, std::string_view subscriber_session_id);
+
+    void forget_keyframe_request_states_for_session(std::string_view session_id);
     void forget_subscriber_downlink_republish_grace_for_session(std::string_view session_id);
 
     [[nodiscard]]
