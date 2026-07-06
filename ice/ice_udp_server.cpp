@@ -8714,6 +8714,11 @@ void ice_udp_server::register_session_removed_callback()
                 self->send_rtcp_bye_for_removed_session(removed_session);
             }
 
+            if (removed_session.kind == stream_session_kind::subscriber)
+            {
+                self->forget_republish_keyframe_request_pending_for_subscriber(removed_session.stream_id, removed_session.session_id);
+            }
+
             self->forget_session(removed_session.session_id);
 
             if (removed_session.kind == stream_session_kind::publisher)
@@ -8825,8 +8830,13 @@ void ice_udp_server::register_session_removed_callback()
 
             self->retire_removed_session_ice_credentials(removed_subscriber, "subscriber reconnect callback");
             self->send_rtcp_bye_for_removed_session(removed_subscriber);
+
+            self->forget_republish_keyframe_request_pending_for_subscriber(reconnected_session.stream_id, reconnected_session.old_session_id);
+
             self->forget_session(reconnected_session.old_session_id);
+
             self->schedule_subscriber_runtime_residual_check(reconnected_session.stream_id, reconnected_session.old_session_id);
+
             self->schedule_lifecycle_snapshot_log("subscriber reconnect callback", reconnected_session.stream_id, reconnected_session.old_session_id);
         });
     registry_callback_registered_ = true;
@@ -17007,6 +17017,39 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         erased_payload_type_mappings,
         erased_keyframe_request_states);
 }
+std::unordered_set<std::string> ice_udp_server::collect_republish_keyframe_eligible_subscribers(std::string_view stream_id) const
+{
+    std::unordered_set<std::string> subscriber_session_ids;
+
+    if (stream_id.empty() || registry_ == nullptr)
+    {
+        return subscriber_session_ids;
+    }
+
+    const std::vector<stream_session_lifecycle_snapshot> snapshots = registry_->session_lifecycle_snapshots();
+
+    for (const auto& snapshot : snapshots)
+    {
+        if (snapshot.kind != stream_session_kind::subscriber)
+        {
+            continue;
+        }
+
+        if (snapshot.stream_id != stream_id)
+        {
+            continue;
+        }
+
+        if (snapshot.session_id.empty())
+        {
+            continue;
+        }
+
+        subscriber_session_ids.insert(snapshot.session_id);
+    }
+
+    return subscriber_session_ids;
+}
 void ice_udp_server::mark_republish_keyframe_request_pending(std::string_view stream_id, std::string_view new_publisher_session_id)
 {
     if (stream_id.empty() || new_publisher_session_id.empty())
@@ -17014,15 +17057,106 @@ void ice_udp_server::mark_republish_keyframe_request_pending(std::string_view st
         return;
     }
 
+    std::unordered_set<std::string> eligible_subscriber_session_ids = collect_republish_keyframe_eligible_subscribers(stream_id);
+
+    std::size_t eligible_subscriber_count = 0;
+    std::size_t erased_stale_count = 0;
+
     {
         std::lock_guard lock(endpoint_mutex_);
-        republish_keyframe_request_state state;
-        state.publisher_session_id = std::string(new_publisher_session_id);
-        pending_republish_keyframe_state_by_stream_[std::string(stream_id)] = std::move(state);
+
+        if (eligible_subscriber_session_ids.empty())
+        {
+            erased_stale_count = pending_republish_keyframe_state_by_stream_.erase(std::string(stream_id));
+        }
+        else
+        {
+            republish_keyframe_request_state state;
+            state.publisher_session_id = std::string(new_publisher_session_id);
+            state.eligible_subscriber_session_ids = std::move(eligible_subscriber_session_ids);
+
+            eligible_subscriber_count = state.eligible_subscriber_session_ids.size();
+
+            pending_republish_keyframe_state_by_stream_[std::string(stream_id)] = std::move(state);
+        }
+    }
+
+    if (eligible_subscriber_count == 0)
+    {
+        WEBRTC_LOG_INFO("publisher republish keyframe request skipped stream={} publisher_session={} eligible_subscribers=0 erased_stale={}",
+                        stream_id,
+                        new_publisher_session_id,
+                        erased_stale_count);
+
+        return;
+    }
+
+    WEBRTC_LOG_INFO("publisher republish keyframe request pending stream={} publisher_session={} eligible_subscribers={}",
+                    stream_id,
+                    new_publisher_session_id,
+                    eligible_subscriber_count);
+}
+void ice_udp_server::forget_republish_keyframe_request_pending_for_subscriber(std::string_view stream_id, std::string_view subscriber_session_id)
+{
+    if (stream_id.empty() || subscriber_session_id.empty())
+    {
+        return;
+    }
+
+    std::string publisher_session_id;
+    std::size_t removed_eligible_count = 0;
+    std::size_t removed_consumed_count = 0;
+    std::size_t remaining_eligible_count = 0;
+    std::size_t consumed_subscriber_count = 0;
+    bool pending_erased = false;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        auto iterator = pending_republish_keyframe_state_by_stream_.find(std::string(stream_id));
+
+        if (iterator == pending_republish_keyframe_state_by_stream_.end())
+        {
+            return;
+        }
+
+        republish_keyframe_request_state& state = iterator->second;
+
+        publisher_session_id = state.publisher_session_id;
+
+        removed_eligible_count = state.eligible_subscriber_session_ids.erase(std::string(subscriber_session_id));
+
+        removed_consumed_count = state.consumed_subscriber_session_ids.erase(std::string(subscriber_session_id));
+
+        remaining_eligible_count = state.eligible_subscriber_session_ids.size();
+
+        consumed_subscriber_count = state.consumed_subscriber_session_ids.size();
+
+        if (state.eligible_subscriber_session_ids.empty() ||
+            state.consumed_subscriber_session_ids.size() >= state.eligible_subscriber_session_ids.size())
+        {
+            pending_republish_keyframe_state_by_stream_.erase(iterator);
+
+            pending_erased = true;
+        }
+    }
+
+    if (removed_eligible_count == 0 && removed_consumed_count == 0 && !pending_erased)
+    {
+        return;
     }
 
     WEBRTC_LOG_INFO(
-        "publisher republish keyframe request pending stream={} publisher_session={} scope=subscribers", stream_id, new_publisher_session_id);
+        "publisher republish keyframe request subscriber forgotten stream={} publisher_session={} subscriber_session={} removed_eligible={} "
+        "removed_consumed={} remaining_eligible={} consumed_subscribers={} pending_erased={}",
+        stream_id,
+        publisher_session_id,
+        subscriber_session_id,
+        removed_eligible_count,
+        removed_consumed_count,
+        remaining_eligible_count,
+        consumed_subscriber_count,
+        pending_erased ? 1 : 0);
 }
 void ice_udp_server::remember_selected_rid_keyframe_request_pending_locked(std::string_view key,
                                                                            selected_rid_layer_runtime_state& state,
@@ -19175,6 +19309,7 @@ std::size_t ice_udp_server::erase_selected_rid_layer_states_for_stream_locked(st
 
     return erased_count;
 }
+
 bool ice_udp_server::consume_republish_keyframe_request_pending_for_subscriber(const srtp_packet_process_result& packet,
                                                                                const media_route_result& route,
                                                                                const std::optional<media_track_resolution>& track_resolution,
@@ -19210,40 +19345,90 @@ bool ice_udp_server::consume_republish_keyframe_request_pending_for_subscriber(c
         return false;
     }
 
-    std::lock_guard lock(endpoint_mutex_);
+    std::string stale_publisher_session_id;
+    std::size_t consumed_subscriber_count = 0;
+    std::size_t eligible_subscriber_count = 0;
+    bool pending_completed = false;
+    bool stale_pending_erased = false;
 
-    const auto iterator = pending_republish_keyframe_state_by_stream_.find(route.source.stream_id);
-
-    if (iterator == pending_republish_keyframe_state_by_stream_.end())
     {
+        std::lock_guard lock(endpoint_mutex_);
+
+        auto iterator = pending_republish_keyframe_state_by_stream_.find(route.source.stream_id);
+
+        if (iterator == pending_republish_keyframe_state_by_stream_.end())
+        {
+            return false;
+        }
+
+        republish_keyframe_request_state& state = iterator->second;
+
+        if (state.publisher_session_id != route.source.session_id)
+        {
+            stale_publisher_session_id = state.publisher_session_id;
+
+            pending_republish_keyframe_state_by_stream_.erase(iterator);
+
+            stale_pending_erased = true;
+        }
+        else if (state.eligible_subscriber_session_ids.empty())
+        {
+            pending_republish_keyframe_state_by_stream_.erase(iterator);
+
+            pending_completed = true;
+        }
+        else if (!state.eligible_subscriber_session_ids.contains(target_peer.session_id))
+        {
+            return false;
+        }
+        else if (state.consumed_subscriber_session_ids.contains(target_peer.session_id))
+        {
+            return false;
+        }
+        else
+        {
+            state.consumed_subscriber_session_ids.insert(target_peer.session_id);
+
+            consumed_subscriber_count = state.consumed_subscriber_session_ids.size();
+            eligible_subscriber_count = state.eligible_subscriber_session_ids.size();
+
+            if (consumed_subscriber_count >= eligible_subscriber_count)
+            {
+                pending_republish_keyframe_state_by_stream_.erase(iterator);
+
+                pending_completed = true;
+            }
+        }
+    }
+
+    if (stale_pending_erased)
+    {
+        WEBRTC_LOG_DEBUG("publisher republish keyframe stale request erased stream={} stale_publisher_session={} current_publisher_session={}",
+                         route.source.stream_id,
+                         stale_publisher_session_id,
+                         route.source.session_id);
+
         return false;
     }
 
-    republish_keyframe_request_state& state = iterator->second;
-
-    if (state.publisher_session_id != route.source.session_id)
+    if (eligible_subscriber_count == 0)
     {
         return false;
     }
-
-    if (state.consumed_subscriber_session_ids.contains(target_peer.session_id))
-    {
-        return false;
-    }
-
-    state.consumed_subscriber_session_ids.insert(target_peer.session_id);
 
     WEBRTC_LOG_INFO(
-        "publisher republish keyframe request consumed stream={} publisher_session={} subscriber_session={} consumed_subscribers={} media_ssrc={}",
+        "publisher republish keyframe request consumed stream={} publisher_session={} subscriber_session={} consumed_subscribers={} "
+        "eligible_subscribers={} completed={} media_ssrc={}",
         route.source.stream_id,
         route.source.session_id,
         target_peer.session_id,
-        state.consumed_subscriber_session_ids.size(),
+        consumed_subscriber_count,
+        eligible_subscriber_count,
+        pending_completed ? 1 : 0,
         packet.ssrc);
 
     return true;
 }
-
 void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet,
                                           const media_route_result& route,
                                           const std::optional<media_track_resolution>& track_resolution,

@@ -302,9 +302,20 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     struct republish_keyframe_request_state
     {
         std::string publisher_session_id;
+
+        /*
+         * A republish-triggered keyframe request is scoped to the subscribers
+         * that were active when the new publisher session replaced the old one.
+         *
+         * Do not let a later WHEP reconnect/new subscriber consume an old
+         * republish pending request. That would make the old publisher switch
+         * state leak into a new subscriber generation and can produce one extra
+         * misleading proactive PLI.
+         */
+        std::unordered_set<std::string> eligible_subscriber_session_ids;
+
         std::unordered_set<std::string> consumed_subscriber_session_ids;
     };
-
     struct outbound_rtp_sequence_rewrite_state
     {
         std::string stream_id;
@@ -842,7 +853,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                               const std::optional<media_track_resolution>& track_resolution,
                               const std::vector<rtcp_feedback_route_event>& feedback_events);
 
+    [[nodiscard]]
+    std::unordered_set<std::string> collect_republish_keyframe_eligible_subscribers(std::string_view stream_id) const;
+
     void mark_republish_keyframe_request_pending(std::string_view stream_id, std::string_view new_publisher_session_id);
+
+    void forget_republish_keyframe_request_pending_for_subscriber(std::string_view stream_id, std::string_view subscriber_session_id);
 
     [[nodiscard]]
     bool consume_republish_keyframe_request_pending_for_subscriber(const srtp_packet_process_result& packet,
