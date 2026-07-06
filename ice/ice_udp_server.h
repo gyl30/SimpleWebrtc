@@ -536,6 +536,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t max_bitrate_bps = 5000000;
 
         uint64_t probe_observation_count = 128;
+        uint64_t keyframe_recovery_bypass_duration_milliseconds = 1200;
+        uint64_t keyframe_recovery_bypass_packet_count = 96;
         uint64_t min_reliable_lookup_hit_rate_ppm = 950000;
 
         uint64_t healthy_loss_rate_ppm = 10000;
@@ -622,6 +624,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t bitrate_gate_dropped_packet_count = 0;
         uint64_t bitrate_gate_allowed_byte_count = 0;
         uint64_t bitrate_gate_dropped_byte_count = 0;
+
+        uint64_t bitrate_gate_keyframe_bypass_packet_count = 0;
+        uint64_t bitrate_gate_keyframe_bypass_byte_count = 0;
+        uint64_t bitrate_gate_recovery_bypass_packet_count = 0;
+        uint64_t bitrate_gate_recovery_bypass_byte_count = 0;
+
+        uint64_t keyframe_recovery_until_milliseconds = 0;
+        uint64_t keyframe_recovery_remaining_packet_count = 0;
     };
 
     struct subscriber_downlink_pacing_packet
@@ -775,6 +785,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                         const srtp_packet_process_result& packet,
                                                         std::span<const uint8_t> outbound_plain_packet,
                                                         const std::optional<media_ssrc_mapping>& outbound_mapping);
+
+    [[nodiscard]]
+    bool subscriber_downlink_packet_is_keyframe(const media_route_result& route,
+                                                const std::optional<media_track_resolution>& track_resolution,
+                                                const srtp_packet_process_result& packet,
+                                                std::span<const uint8_t> outbound_plain_packet) const;
 
     [[nodiscard]]
     bool subscriber_downlink_pacing_should_enqueue_packet(const media_route_result& route,

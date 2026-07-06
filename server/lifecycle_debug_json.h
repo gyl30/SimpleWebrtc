@@ -183,6 +183,14 @@ struct lifecycle_debug_subscriber_downlink_bandwidth_entry
     uint64_t bitrate_gate_allowed_byte_count = 0;
     uint64_t bitrate_gate_dropped_byte_count = 0;
 
+    uint64_t bitrate_gate_keyframe_bypass_packet_count = 0;
+    uint64_t bitrate_gate_keyframe_bypass_byte_count = 0;
+    uint64_t bitrate_gate_recovery_bypass_packet_count = 0;
+    uint64_t bitrate_gate_recovery_bypass_byte_count = 0;
+
+    uint64_t keyframe_recovery_until_milliseconds = 0;
+    uint64_t keyframe_recovery_remaining_packet_count = 0;
+
     uint64_t pacing_queue_packet_count = 0;
     uint64_t pacing_queue_byte_count = 0;
     uint64_t pacing_budget_bytes = 0;
@@ -734,7 +742,7 @@ REFLECT_STRUCT(webrtc::lifecycle_debug_transport_cc_feedback_window_entry,
                (stream_id)(subscriber_session_id)(first_feedback_at_milliseconds)(last_feedback_at_milliseconds)(feedback_count)(feedback_packet_status_count)(lookup_hit_count)(lookup_miss_count)(lookup_hit_rate_ppm)(received_count)(lost_count)(loss_rate_ppm)(small_delta_count)(large_delta_count)(avg_delta_microseconds)(min_delta_microseconds)(max_delta_microseconds)(observation_count));
 
 REFLECT_STRUCT(
-    webrtc::lifecycle_debug_subscriber_downlink_bandwidth_entry, (stream_id)(subscriber_session_id)(control_state)(control_mode)(created_at_milliseconds)(updated_at_milliseconds)(last_feedback_at_milliseconds)(last_transition_at_milliseconds)(state_entered_at_milliseconds)(hold_down_until_milliseconds)(transition_count)(healthy_window_count)(bad_window_count)(unreliable_window_count)(last_transition_reason)(target_bitrate_bps)(min_bitrate_bps)(max_bitrate_bps)(feedback_count)(window_observation_count)(window_packet_status_count)(lookup_hit_rate_ppm)(loss_rate_ppm)(received_count)(lost_count)(avg_delta_microseconds)(min_delta_microseconds)(max_delta_microseconds)(bitrate_gate_last_update_milliseconds)(bitrate_gate_budget_bytes)(bitrate_gate_observed_allowed_packet_count)(bitrate_gate_observed_dropped_packet_count)(bitrate_gate_observed_allowed_byte_count)(bitrate_gate_observed_dropped_byte_count)(bitrate_gate_allowed_packet_count)(bitrate_gate_dropped_packet_count)(bitrate_gate_allowed_byte_count)(bitrate_gate_dropped_byte_count)(pacing_queue_packet_count)(pacing_queue_byte_count)(pacing_budget_bytes)(pacing_last_update_milliseconds)(pacing_observed_enqueued_packet_count)(pacing_observed_enqueued_byte_count)(pacing_enqueued_packet_count)(pacing_enqueued_byte_count)(pacing_sent_packet_count)(pacing_sent_byte_count)(pacing_dropped_packet_count)(pacing_dropped_byte_count));
+    webrtc::lifecycle_debug_subscriber_downlink_bandwidth_entry, (stream_id)(subscriber_session_id)(control_state)(control_mode)(created_at_milliseconds)(updated_at_milliseconds)(last_feedback_at_milliseconds)(last_transition_at_milliseconds)(state_entered_at_milliseconds)(hold_down_until_milliseconds)(transition_count)(healthy_window_count)(bad_window_count)(unreliable_window_count)(last_transition_reason)(target_bitrate_bps)(min_bitrate_bps)(max_bitrate_bps)(feedback_count)(window_observation_count)(window_packet_status_count)(lookup_hit_rate_ppm)(loss_rate_ppm)(received_count)(lost_count)(avg_delta_microseconds)(min_delta_microseconds)(max_delta_microseconds)(bitrate_gate_last_update_milliseconds)(bitrate_gate_budget_bytes)(bitrate_gate_observed_allowed_packet_count)(bitrate_gate_observed_dropped_packet_count)(bitrate_gate_observed_allowed_byte_count)(bitrate_gate_observed_dropped_byte_count)(bitrate_gate_allowed_packet_count)(bitrate_gate_dropped_packet_count)(bitrate_gate_allowed_byte_count)(bitrate_gate_dropped_byte_count)(bitrate_gate_keyframe_bypass_packet_count)(bitrate_gate_keyframe_bypass_byte_count)(bitrate_gate_recovery_bypass_packet_count)(bitrate_gate_recovery_bypass_byte_count)(keyframe_recovery_until_milliseconds)(keyframe_recovery_remaining_packet_count)(pacing_queue_packet_count)(pacing_queue_byte_count)(pacing_budget_bytes)(pacing_last_update_milliseconds)(pacing_observed_enqueued_packet_count)(pacing_observed_enqueued_byte_count)(pacing_enqueued_packet_count)(pacing_enqueued_byte_count)(pacing_sent_packet_count)(pacing_sent_byte_count)(pacing_dropped_packet_count)(pacing_dropped_byte_count));
 
 REFLECT_STRUCT(webrtc::lifecycle_debug_retired_endpoint_entry,
                (remote_address)(session_id)(reason)(expires_at_milliseconds)(remaining_ttl_milliseconds)(suppressed_packets));
