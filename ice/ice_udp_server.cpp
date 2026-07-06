@@ -503,6 +503,22 @@ std::string_view subscriber_downlink_control_state_to_string(ice_udp_server::sub
 
     return "probing";
 }
+std::string_view subscriber_downlink_control_mode_to_string(ice_udp_server::subscriber_downlink_control_mode mode)
+{
+    switch (mode)
+    {
+        case ice_udp_server::subscriber_downlink_control_mode::disabled:
+            return "disabled";
+
+        case ice_udp_server::subscriber_downlink_control_mode::observe_only:
+            return "observe_only";
+
+        case ice_udp_server::subscriber_downlink_control_mode::enabled:
+            return "enabled";
+    }
+
+    return "observe_only";
+}
 
 uint64_t scale_bitrate(uint64_t bitrate_bps, uint64_t numerator, uint64_t denominator)
 {
@@ -868,13 +884,16 @@ lifecycle_debug_transport_cc_feedback_window_entry make_transport_cc_feedback_wi
 }
 
 lifecycle_debug_subscriber_downlink_bandwidth_entry make_subscriber_downlink_bandwidth_debug_entry(
-    const ice_udp_server::subscriber_downlink_bandwidth_state& state, const ice_udp_server::subscriber_downlink_pacing_state* pacing_state)
+    const ice_udp_server::subscriber_downlink_bandwidth_state& state,
+    const ice_udp_server::subscriber_downlink_pacing_state* pacing_state,
+    ice_udp_server::subscriber_downlink_control_mode control_mode)
 {
     lifecycle_debug_subscriber_downlink_bandwidth_entry entry;
 
     entry.stream_id = state.stream_id;
     entry.subscriber_session_id = state.subscriber_session_id;
     entry.control_state = subscriber_downlink_control_state_to_string(state.control_state);
+    entry.control_mode = subscriber_downlink_control_mode_to_string(control_mode);
     entry.created_at_milliseconds = state.created_at_milliseconds;
     entry.updated_at_milliseconds = state.updated_at_milliseconds;
     entry.last_feedback_at_milliseconds = state.last_feedback_at_milliseconds;
@@ -903,17 +922,25 @@ lifecycle_debug_subscriber_downlink_bandwidth_entry make_subscriber_downlink_ban
 
     entry.bitrate_gate_last_update_milliseconds = state.bitrate_gate_last_update_milliseconds;
     entry.bitrate_gate_budget_bytes = state.bitrate_gate_budget_bytes;
+
+    entry.bitrate_gate_observed_allowed_packet_count = state.bitrate_gate_observed_allowed_packet_count;
+    entry.bitrate_gate_observed_dropped_packet_count = state.bitrate_gate_observed_dropped_packet_count;
+    entry.bitrate_gate_observed_allowed_byte_count = state.bitrate_gate_observed_allowed_byte_count;
+    entry.bitrate_gate_observed_dropped_byte_count = state.bitrate_gate_observed_dropped_byte_count;
+
     entry.bitrate_gate_allowed_packet_count = state.bitrate_gate_allowed_packet_count;
     entry.bitrate_gate_dropped_packet_count = state.bitrate_gate_dropped_packet_count;
     entry.bitrate_gate_allowed_byte_count = state.bitrate_gate_allowed_byte_count;
     entry.bitrate_gate_dropped_byte_count = state.bitrate_gate_dropped_byte_count;
-
     if (pacing_state != nullptr)
     {
         entry.pacing_queue_packet_count = static_cast<uint64_t>(pacing_state->queue.size());
         entry.pacing_queue_byte_count = pacing_state->queue_byte_count;
         entry.pacing_budget_bytes = pacing_state->pacing_budget_bytes;
         entry.pacing_last_update_milliseconds = pacing_state->pacing_last_update_milliseconds;
+
+        entry.pacing_observed_enqueued_packet_count = pacing_state->observed_enqueued_packet_count;
+        entry.pacing_observed_enqueued_byte_count = pacing_state->observed_enqueued_byte_count;
 
         entry.pacing_enqueued_packet_count = pacing_state->enqueued_packet_count;
         entry.pacing_enqueued_byte_count = pacing_state->enqueued_byte_count;
@@ -1851,6 +1878,152 @@ std::size_t get_env_size_or_default(const char* name, std::size_t default_value)
 
     return static_cast<std::size_t>(parsed);
 }
+std::string normalize_env_token(const char* value)
+{
+    std::string token;
+
+    if (value == nullptr)
+    {
+        return token;
+    }
+
+    token.reserve(std::char_traits<char>::length(value));
+
+    for (const char* iterator = value; *iterator != '\0'; ++iterator)
+    {
+        const auto ch = static_cast<unsigned char>(*iterator);
+
+        if (ch == '-' || ch == ' ')
+        {
+            token.push_back('_');
+            continue;
+        }
+
+        token.push_back(static_cast<char>(std::tolower(ch)));
+    }
+
+    return token;
+}
+
+ice_udp_server::subscriber_downlink_control_mode make_subscriber_downlink_control_mode_from_env()
+{
+    const char* value = std::getenv("WEBRTC_SUBSCRIBER_DOWNLINK_CONTROL_MODE");
+
+    if (value == nullptr || value[0] == '\0')
+    {
+        return ice_udp_server::subscriber_downlink_control_mode::observe_only;
+    }
+
+    const std::string token = normalize_env_token(value);
+
+    if (token == "disabled" || token == "disable" || token == "off" || token == "0")
+    {
+        return ice_udp_server::subscriber_downlink_control_mode::disabled;
+    }
+
+    if (token == "observe_only" || token == "observe" || token == "dry_run" || token == "dryrun")
+    {
+        return ice_udp_server::subscriber_downlink_control_mode::observe_only;
+    }
+
+    if (token == "enabled" || token == "enable" || token == "on" || token == "1")
+    {
+        return ice_udp_server::subscriber_downlink_control_mode::enabled;
+    }
+
+    WEBRTC_LOG_WARN("subscriber downlink control mode invalid value={} default=observe_only", value);
+
+    return ice_udp_server::subscriber_downlink_control_mode::observe_only;
+}
+
+ice_udp_server::subscriber_downlink_control_config make_subscriber_downlink_control_config_from_env()
+{
+    ice_udp_server::subscriber_downlink_control_config config;
+
+    config.mode = make_subscriber_downlink_control_mode_from_env();
+
+    config.initial_target_bitrate_bps =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_INITIAL_TARGET_BITRATE_BPS", config.initial_target_bitrate_bps);
+
+    config.min_bitrate_bps = get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_MIN_BITRATE_BPS", config.min_bitrate_bps);
+
+    config.max_bitrate_bps = get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_MAX_BITRATE_BPS", config.max_bitrate_bps);
+
+    if (config.min_bitrate_bps < 64000)
+    {
+        WEBRTC_LOG_WARN("subscriber downlink min bitrate too small value={} clamped=64000", config.min_bitrate_bps);
+
+        config.min_bitrate_bps = 64000;
+    }
+
+    if (config.max_bitrate_bps < config.min_bitrate_bps)
+    {
+        WEBRTC_LOG_WARN(
+            "subscriber downlink max bitrate lower than min max={} min={} clamped_to_min", config.max_bitrate_bps, config.min_bitrate_bps);
+
+        config.max_bitrate_bps = config.min_bitrate_bps;
+    }
+
+    if (config.max_bitrate_bps > 50000000)
+    {
+        WEBRTC_LOG_WARN("subscriber downlink max bitrate too large value={} clamped=50000000", config.max_bitrate_bps);
+
+        config.max_bitrate_bps = 50000000;
+    }
+
+    config.initial_target_bitrate_bps = clamp_bitrate(config.initial_target_bitrate_bps, config.min_bitrate_bps, config.max_bitrate_bps);
+
+    config.max_pacing_queue_packets_per_subscriber =
+        get_env_size_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_PACING_MAX_QUEUE_PACKETS", config.max_pacing_queue_packets_per_subscriber);
+
+    config.max_pacing_queue_packets_per_subscriber = std::max<std::size_t>(config.max_pacing_queue_packets_per_subscriber, 1);
+
+    config.max_pacing_queue_packets_per_subscriber = std::min<std::size_t>(config.max_pacing_queue_packets_per_subscriber, 8192);
+
+    config.max_pacing_queue_bytes_per_subscriber =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_PACING_MAX_QUEUE_BYTES", config.max_pacing_queue_bytes_per_subscriber);
+
+    config.max_pacing_queue_bytes_per_subscriber = std::max<uint64_t>(config.max_pacing_queue_bytes_per_subscriber, 64000);
+
+    config.max_pacing_queue_bytes_per_subscriber = std::min<uint64_t>(config.max_pacing_queue_bytes_per_subscriber, 16777216);
+
+    config.max_pacing_packet_age_milliseconds =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_PACING_MAX_PACKET_AGE_MS", config.max_pacing_packet_age_milliseconds);
+
+    config.max_pacing_packet_age_milliseconds = std::max<uint64_t>(config.max_pacing_packet_age_milliseconds, 100);
+
+    config.max_pacing_packet_age_milliseconds = std::min<uint64_t>(config.max_pacing_packet_age_milliseconds, 10000);
+
+    config.max_pacing_packets_per_tick =
+        get_env_size_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_PACING_MAX_PACKETS_PER_TICK", config.max_pacing_packets_per_tick);
+
+    config.max_pacing_packets_per_tick = std::max<std::size_t>(config.max_pacing_packets_per_tick, 1);
+
+    config.max_pacing_packets_per_tick = std::min<std::size_t>(config.max_pacing_packets_per_tick, 256);
+
+    config.pacing_timer_interval_milliseconds =
+        get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_PACING_TIMER_INTERVAL_MS", config.pacing_timer_interval_milliseconds);
+
+    config.pacing_timer_interval_milliseconds = std::max<uint64_t>(config.pacing_timer_interval_milliseconds, 1);
+
+    config.pacing_timer_interval_milliseconds = std::min<uint64_t>(config.pacing_timer_interval_milliseconds, 100);
+
+    WEBRTC_LOG_INFO(
+        "subscriber downlink control config mode={} initial_target_bitrate_bps={} min_bitrate_bps={} max_bitrate_bps={} "
+        "pacing_max_queue_packets={} pacing_max_queue_bytes={} pacing_max_packet_age_ms={} pacing_max_packets_per_tick={} "
+        "pacing_timer_interval_ms={}",
+        subscriber_downlink_control_mode_to_string(config.mode),
+        config.initial_target_bitrate_bps,
+        config.min_bitrate_bps,
+        config.max_bitrate_bps,
+        config.max_pacing_queue_packets_per_subscriber,
+        config.max_pacing_queue_bytes_per_subscriber,
+        config.max_pacing_packet_age_milliseconds,
+        config.max_pacing_packets_per_tick,
+        config.pacing_timer_interval_milliseconds);
+
+    return config;
+}
 
 rtcp_report_service_config make_rtcp_report_service_config_from_env()
 {
@@ -2257,6 +2430,8 @@ struct ice_udp_server_runtime_config
 
     nack_retransmit_throttle_config nack_retransmit_throttle;
 
+    ice_udp_server::subscriber_downlink_control_config subscriber_downlink_control;
+
     std::chrono::milliseconds ice_consent_check_interval{std::chrono::seconds(5)};
 
     uint64_t ice_consent_timeout_milliseconds = k_ice_consent_timeout_milliseconds;
@@ -2287,6 +2462,8 @@ ice_udp_server_runtime_config make_ice_udp_server_runtime_config_from_env()
     config.rtx_retransmission_index = make_rtx_retransmission_index_config_from_env();
 
     config.nack_retransmit_throttle = make_nack_retransmit_throttle_config_from_env();
+
+    config.subscriber_downlink_control = make_subscriber_downlink_control_config_from_env();
 
     config.ice_consent_check_interval = make_ice_consent_check_interval_from_env();
 
@@ -6803,6 +6980,8 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
         snapshot.subscriber_downlink_bandwidth_states.reserve(subscriber_downlink_bandwidth_by_key_.size());
 
+        const subscriber_downlink_control_mode downlink_control_mode = ice_udp_server_runtime_config_instance().subscriber_downlink_control.mode;
+
         for (const auto& [key, state] : subscriber_downlink_bandwidth_by_key_)
         {
             const auto pacing_iterator = subscriber_downlink_pacing_by_key_.find(key);
@@ -6810,9 +6989,9 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             const subscriber_downlink_pacing_state* pacing_state =
                 pacing_iterator == subscriber_downlink_pacing_by_key_.end() ? nullptr : &pacing_iterator->second;
 
-            snapshot.subscriber_downlink_bandwidth_states.push_back(make_subscriber_downlink_bandwidth_debug_entry(state, pacing_state));
+            snapshot.subscriber_downlink_bandwidth_states.push_back(
+                make_subscriber_downlink_bandwidth_debug_entry(state, pacing_state, downlink_control_mode));
         }
-
         for (const auto& [key, state] : selected_rid_layer_state_by_key_)
         {
             lifecycle_debug_selected_rid_layer_entry entry;
@@ -18852,6 +19031,8 @@ void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_lock
 
     if (state.stream_id.empty())
     {
+        const auto& downlink_config = ice_udp_server_runtime_config_instance().subscriber_downlink_control;
+
         state.stream_id = stream_id;
         state.subscriber_session_id = subscriber_session_id;
         state.created_at_milliseconds = current_time_milliseconds;
@@ -18859,8 +19040,11 @@ void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_lock
         state.last_feedback_at_milliseconds = current_time_milliseconds;
         state.last_transition_at_milliseconds = current_time_milliseconds;
         state.last_transition_reason = "created";
-    }
 
+        state.target_bitrate_bps = downlink_config.initial_target_bitrate_bps;
+        state.min_bitrate_bps = downlink_config.min_bitrate_bps;
+        state.max_bitrate_bps = downlink_config.max_bitrate_bps;
+    }
     const uint64_t observation_count = static_cast<uint64_t>(window.observations.size());
     const uint64_t lookup_feedback_count = window.lookup_hit_count + window.lookup_miss_count;
     const uint64_t packet_status_count = window.received_count + window.lost_count;
@@ -18942,6 +19126,7 @@ void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_lock
     state.min_delta_microseconds = window.min_delta_microseconds;
     state.max_delta_microseconds = window.max_delta_microseconds;
 }
+
 bool ice_udp_server::subscriber_downlink_bitrate_gate_allows_packet(const media_route_result& route,
                                                                     const media_peer_info& target_peer,
                                                                     const std::optional<media_track_resolution>& track_resolution,
@@ -18949,6 +19134,13 @@ bool ice_udp_server::subscriber_downlink_bitrate_gate_allows_packet(const media_
                                                                     std::span<const uint8_t> outbound_plain_packet,
                                                                     const std::optional<media_ssrc_mapping>& outbound_mapping)
 {
+    const auto& downlink_config = ice_udp_server_runtime_config_instance().subscriber_downlink_control;
+
+    if (downlink_config.mode == subscriber_downlink_control_mode::disabled)
+    {
+        return true;
+    }
+
     if (packet.kind != srtp_packet_kind::rtp)
     {
         return true;
@@ -19021,8 +19213,38 @@ bool ice_udp_server::subscriber_downlink_bitrate_gate_allows_packet(const media_
     if (state.bitrate_gate_budget_bytes >= packet_size)
     {
         state.bitrate_gate_budget_bytes -= packet_size;
-        state.bitrate_gate_allowed_packet_count += 1;
-        state.bitrate_gate_allowed_byte_count += packet_size;
+
+        state.bitrate_gate_observed_allowed_packet_count += 1;
+        state.bitrate_gate_observed_allowed_byte_count += packet_size;
+
+        if (downlink_config.mode == subscriber_downlink_control_mode::enabled)
+        {
+            state.bitrate_gate_allowed_packet_count += 1;
+            state.bitrate_gate_allowed_byte_count += packet_size;
+        }
+
+        return true;
+    }
+
+    state.bitrate_gate_observed_dropped_packet_count += 1;
+    state.bitrate_gate_observed_dropped_byte_count += packet_size;
+
+    if (downlink_config.mode == subscriber_downlink_control_mode::observe_only)
+    {
+        WEBRTC_LOG_DEBUG(
+            "subscriber downlink bitrate gate observe only would drop stream={} subscriber_session={} target_bitrate_bps={} "
+            "control_state={} budget_bytes={} packet_size={} observed_dropped_packets={} observed_dropped_bytes={} loss_rate_ppm={} "
+            "lookup_hit_rate_ppm={}",
+            target_peer.stream_id,
+            target_peer.session_id,
+            state.target_bitrate_bps,
+            subscriber_downlink_control_state_to_string(state.control_state),
+            state.bitrate_gate_budget_bytes,
+            packet_size,
+            state.bitrate_gate_observed_dropped_packet_count,
+            state.bitrate_gate_observed_dropped_byte_count,
+            state.loss_rate_ppm,
+            state.lookup_hit_rate_ppm);
 
         return true;
     }
@@ -19050,8 +19272,16 @@ bool ice_udp_server::subscriber_downlink_bitrate_gate_allows_packet(const media_
 bool ice_udp_server::subscriber_downlink_pacing_should_enqueue_packet(const media_route_result& route,
                                                                       const media_peer_info& target_peer,
                                                                       const srtp_packet_process_result& packet,
-                                                                      const std::optional<media_ssrc_mapping>& outbound_mapping) const
+                                                                      const std::optional<media_ssrc_mapping>& outbound_mapping,
+                                                                      uint64_t protected_packet_size)
 {
+    const auto& downlink_config = ice_udp_server_runtime_config_instance().subscriber_downlink_control;
+
+    if (downlink_config.mode == subscriber_downlink_control_mode::disabled)
+    {
+        return false;
+    }
+
     if (packet.kind != srtp_packet_kind::rtp)
     {
         return false;
@@ -19098,7 +19328,29 @@ bool ice_udp_server::subscriber_downlink_pacing_should_enqueue_packet(const medi
         return false;
     }
 
-    return subscriber_downlink_state_enables_bitrate_gate(iterator->second.control_state);
+    if (!subscriber_downlink_state_enables_bitrate_gate(iterator->second.control_state))
+    {
+        return false;
+    }
+
+    if (downlink_config.mode == subscriber_downlink_control_mode::observe_only)
+    {
+        auto& pacing_state = subscriber_downlink_pacing_by_key_[key];
+
+        if (pacing_state.stream_id.empty())
+        {
+            pacing_state.stream_id = target_peer.stream_id;
+            pacing_state.subscriber_session_id = target_peer.session_id;
+            pacing_state.pacing_last_update_milliseconds = now_milliseconds();
+        }
+
+        pacing_state.observed_enqueued_packet_count += 1;
+        pacing_state.observed_enqueued_byte_count += protected_packet_size;
+
+        return false;
+    }
+
+    return downlink_config.mode == subscriber_downlink_control_mode::enabled;
 }
 
 void ice_udp_server::enqueue_subscriber_downlink_paced_packet(const media_route_result& route,
@@ -19107,8 +19359,10 @@ void ice_udp_server::enqueue_subscriber_downlink_paced_packet(const media_route_
                                                               const boost::asio::ip::udp::endpoint& remote_endpoint,
                                                               std::vector<uint8_t> protected_packet)
 {
-    constexpr std::size_t k_max_pacing_queue_packets_per_subscriber = 256;
-    constexpr uint64_t k_max_pacing_queue_bytes_per_subscriber = 512000;
+    const auto& downlink_config = ice_udp_server_runtime_config_instance().subscriber_downlink_control;
+
+    const std::size_t max_pacing_queue_packets_per_subscriber = downlink_config.max_pacing_queue_packets_per_subscriber;
+    const uint64_t max_pacing_queue_bytes_per_subscriber = downlink_config.max_pacing_queue_bytes_per_subscriber;
 
     if (protected_packet.empty())
     {
@@ -19134,7 +19388,7 @@ void ice_udp_server::enqueue_subscriber_downlink_paced_packet(const media_route_
             pacing_state.pacing_last_update_milliseconds = now;
         }
 
-        if (packet_size > k_max_pacing_queue_bytes_per_subscriber)
+        if (packet_size > max_pacing_queue_bytes_per_subscriber)
         {
             pacing_state.dropped_packet_count += 1;
             pacing_state.dropped_byte_count += packet_size;
@@ -19146,13 +19400,13 @@ void ice_udp_server::enqueue_subscriber_downlink_paced_packet(const media_route_
                             target_peer.session_id,
                             remote_address,
                             packet_size,
-                            k_max_pacing_queue_bytes_per_subscriber);
+                            max_pacing_queue_bytes_per_subscriber);
 
             return;
         }
 
-        while (!pacing_state.queue.empty() && (pacing_state.queue.size() >= k_max_pacing_queue_packets_per_subscriber ||
-                                               pacing_state.queue_byte_count + packet_size > k_max_pacing_queue_bytes_per_subscriber))
+        while (!pacing_state.queue.empty() && (pacing_state.queue.size() >= max_pacing_queue_packets_per_subscriber ||
+                                               pacing_state.queue_byte_count + packet_size > max_pacing_queue_bytes_per_subscriber))
         {
             const subscriber_downlink_pacing_packet dropped_packet = std::move(pacing_state.queue.front());
 
@@ -19178,6 +19432,10 @@ void ice_udp_server::enqueue_subscriber_downlink_paced_packet(const media_route_
         packet_to_queue.protected_packet = std::move(protected_packet);
 
         pacing_state.queue_byte_count += packet_size;
+
+        pacing_state.observed_enqueued_packet_count += 1;
+        pacing_state.observed_enqueued_byte_count += packet_size;
+
         pacing_state.enqueued_packet_count += 1;
         pacing_state.enqueued_byte_count += packet_size;
 
@@ -19194,13 +19452,14 @@ void ice_udp_server::enqueue_subscriber_downlink_paced_packet(const media_route_
 
 std::vector<ice_udp_server::subscriber_downlink_pacing_packet> ice_udp_server::pop_subscriber_downlink_pacing_packets()
 {
-    constexpr uint64_t k_max_pacing_packet_age_milliseconds = 1000;
-    constexpr std::size_t k_max_pacing_packets_per_tick = 32;
+    const auto& downlink_config = ice_udp_server_runtime_config_instance().subscriber_downlink_control;
+
+    const uint64_t max_pacing_packet_age_milliseconds = downlink_config.max_pacing_packet_age_milliseconds;
+    const std::size_t max_pacing_packets_per_tick = downlink_config.max_pacing_packets_per_tick;
 
     std::vector<subscriber_downlink_pacing_packet> packets;
 
-    packets.reserve(k_max_pacing_packets_per_tick);
-
+    packets.reserve(max_pacing_packets_per_tick);
     const uint64_t now = now_milliseconds();
 
     std::lock_guard lock(endpoint_mutex_);
@@ -19218,7 +19477,7 @@ std::vector<ice_udp_server::subscriber_downlink_pacing_packet> ice_udp_server::p
         {
             subscriber_downlink_pacing_packet& front_packet = pacing_state.queue.front();
 
-            if (front_packet.enqueued_at_milliseconds != 0 && now > front_packet.enqueued_at_milliseconds + k_max_pacing_packet_age_milliseconds)
+            if (front_packet.enqueued_at_milliseconds != 0 && now > front_packet.enqueued_at_milliseconds + max_pacing_packet_age_milliseconds)
             {
                 const uint64_t dropped_size = front_packet.protected_size;
 
@@ -19252,7 +19511,7 @@ std::vector<ice_udp_server::subscriber_downlink_pacing_packet> ice_udp_server::p
 
             pacing_state.queue_byte_count = pacing_state.queue_byte_count >= sent_size ? pacing_state.queue_byte_count - sent_size : 0;
 
-            if (packets.size() >= k_max_pacing_packets_per_tick)
+            if (packets.size() >= max_pacing_packets_per_tick)
             {
                 return packets;
             }
@@ -19277,7 +19536,8 @@ void ice_udp_server::schedule_subscriber_downlink_pacing_timer()
 
     auto self = shared_from_this();
 
-    subscriber_downlink_pacing_timer_.expires_after(std::chrono::milliseconds(5));
+    subscriber_downlink_pacing_timer_.expires_after(std::chrono::milliseconds(
+        static_cast<int64_t>(ice_udp_server_runtime_config_instance().subscriber_downlink_control.pacing_timer_interval_milliseconds)));
 
     subscriber_downlink_pacing_timer_.async_wait(
         [self](const boost::system::error_code& error)
@@ -20334,7 +20594,8 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
             maybe_request_keyframe_from_publisher(packet, route, track_resolution, *target_peer);
         }
 
-        if (subscriber_downlink_pacing_should_enqueue_packet(route, *target_peer, packet, outbound_mapping))
+        if (subscriber_downlink_pacing_should_enqueue_packet(
+                route, *target_peer, packet, outbound_mapping, static_cast<uint64_t>(protected_packet->protected_packet.size())))
         {
             WEBRTC_LOG_DEBUG("media forward pacing enqueue stream={} source={} target={} kind={} plain_size={} protected_size={}",
                              route.source.stream_id,

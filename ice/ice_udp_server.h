@@ -520,6 +520,28 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::deque<outbound_transport_cc_feedback_observation> observations;
     };
 
+    enum class subscriber_downlink_control_mode
+    {
+        disabled,
+        observe_only,
+        enabled,
+    };
+
+    struct subscriber_downlink_control_config
+    {
+        subscriber_downlink_control_mode mode = subscriber_downlink_control_mode::observe_only;
+
+        uint64_t initial_target_bitrate_bps = 2000000;
+        uint64_t min_bitrate_bps = 150000;
+        uint64_t max_bitrate_bps = 5000000;
+
+        std::size_t max_pacing_queue_packets_per_subscriber = 256;
+        uint64_t max_pacing_queue_bytes_per_subscriber = 512000;
+        uint64_t max_pacing_packet_age_milliseconds = 1000;
+        std::size_t max_pacing_packets_per_tick = 32;
+        uint64_t pacing_timer_interval_milliseconds = 5;
+    };
+
     enum class subscriber_downlink_control_state
     {
         probing,
@@ -527,7 +549,6 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         recovering,
         constrained,
     };
-
     struct subscriber_downlink_bandwidth_state
     {
         std::string stream_id;
@@ -564,6 +585,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
         uint64_t bitrate_gate_last_update_milliseconds = 0;
         uint64_t bitrate_gate_budget_bytes = 0;
+
+        uint64_t bitrate_gate_observed_allowed_packet_count = 0;
+        uint64_t bitrate_gate_observed_dropped_packet_count = 0;
+        uint64_t bitrate_gate_observed_allowed_byte_count = 0;
+        uint64_t bitrate_gate_observed_dropped_byte_count = 0;
+
         uint64_t bitrate_gate_allowed_packet_count = 0;
         uint64_t bitrate_gate_dropped_packet_count = 0;
         uint64_t bitrate_gate_allowed_byte_count = 0;
@@ -595,6 +622,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t pacing_budget_bytes = 0;
         uint64_t pacing_last_update_milliseconds = 0;
 
+        uint64_t observed_enqueued_packet_count = 0;
+        uint64_t observed_enqueued_byte_count = 0;
+
         uint64_t enqueued_packet_count = 0;
         uint64_t enqueued_byte_count = 0;
 
@@ -604,7 +634,6 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t dropped_packet_count = 0;
         uint64_t dropped_byte_count = 0;
     };
-
     struct pending_subscriber_runtime_residual_check
     {
         std::string stream_id;
@@ -724,7 +753,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     bool subscriber_downlink_pacing_should_enqueue_packet(const media_route_result& route,
                                                           const media_peer_info& target_peer,
                                                           const srtp_packet_process_result& packet,
-                                                          const std::optional<media_ssrc_mapping>& outbound_mapping) const;
+                                                          const std::optional<media_ssrc_mapping>& outbound_mapping,
+                                                          uint64_t protected_packet_size);
 
     void enqueue_subscriber_downlink_paced_packet(const media_route_result& route,
                                                   const media_peer_info& target_peer,
