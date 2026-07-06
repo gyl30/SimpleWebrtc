@@ -776,9 +776,23 @@ void media_router::update_stream_member_counts_locked(std::string_view stream_id
         stats.active_subscribers = subscriber_iterator->second.size();
     }
 
-    if (stats.active_publishers == 0 && stats.active_subscribers == 0 && stats.inbound_rtp_packets == 0 && stats.inbound_rtcp_packets == 0)
+    if (stats.active_publishers == 0 && stats.active_subscribers == 0)
     {
+        const std::size_t track_count = stats.tracks.size();
+
+        const uint64_t inbound_rtp_packets = stats.inbound_rtp_packets;
+        const uint64_t inbound_rtcp_packets = stats.inbound_rtcp_packets;
+        const uint64_t routed_target_packets = stats.fanout_target_packets;
+
         stream_stats_by_stream_.erase(std::string(stream_id));
+
+        WEBRTC_LOG_INFO(
+            "media router empty stream stats erased stream={} tracks={} inbound_rtp_packets={} inbound_rtcp_packets={} routed_target_packets={}",
+            stream_id,
+            track_count,
+            inbound_rtp_packets,
+            inbound_rtcp_packets,
+            routed_target_packets);
     }
 }
 media_track_stats& media_router::get_or_create_track_stats_locked(media_stream_stats& stream_stats,

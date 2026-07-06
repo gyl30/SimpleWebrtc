@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <map>
 #include <vector>
@@ -90,6 +91,8 @@ constexpr std::size_t k_nack_sequences_per_item = 17;
 constexpr auto k_pending_session_cleanup_interval = std::chrono::seconds(5);
 
 constexpr uint64_t k_default_pending_session_timeout_milliseconds = 60000;
+
+constexpr uint64_t k_default_orphan_subscriber_timeout_milliseconds = 60000;
 
 constexpr uint64_t k_keyframe_request_interval_milliseconds = 1000;
 
@@ -2222,6 +2225,23 @@ uint64_t make_pending_session_timeout_milliseconds_from_env()
 
     return timeout_milliseconds;
 }
+uint64_t make_orphan_subscriber_timeout_milliseconds_from_env()
+{
+    uint64_t timeout_milliseconds =
+        get_env_uint64_or_default("WEBRTC_ORPHAN_SUBSCRIBER_TIMEOUT_MS", k_default_orphan_subscriber_timeout_milliseconds);
+
+    if (timeout_milliseconds != 0 && timeout_milliseconds < 10000)
+    {
+        WEBRTC_LOG_WARN("orphan subscriber timeout too small timeout_ms={} min_ms=10000 clamped=10000", timeout_milliseconds);
+
+        timeout_milliseconds = 10000;
+    }
+
+    WEBRTC_LOG_INFO(
+        "orphan subscriber cleanup config timeout_ms={} interval_ms={}", timeout_milliseconds, k_pending_session_cleanup_interval.count() * 1000);
+
+    return timeout_milliseconds;
+}
 
 struct ice_udp_server_runtime_config
 {
@@ -2248,6 +2268,8 @@ struct ice_udp_server_runtime_config
     uint64_t endpoint_idle_timeout_milliseconds = k_default_endpoint_idle_timeout_milliseconds;
 
     uint64_t pending_session_timeout_milliseconds = k_default_pending_session_timeout_milliseconds;
+
+    uint64_t orphan_subscriber_timeout_milliseconds = k_default_orphan_subscriber_timeout_milliseconds;
 };
 
 ice_udp_server_runtime_config make_ice_udp_server_runtime_config_from_env()
@@ -2278,10 +2300,12 @@ ice_udp_server_runtime_config make_ice_udp_server_runtime_config_from_env()
 
     config.pending_session_timeout_milliseconds = make_pending_session_timeout_milliseconds_from_env();
 
+    config.orphan_subscriber_timeout_milliseconds = make_orphan_subscriber_timeout_milliseconds_from_env();
+
     WEBRTC_LOG_INFO(
         "ice udp runtime config loaded dtls_handshake_timeout_ms={} rtp_cache_max_packets={} ice_consent_interval_ms={} "
         "ice_consent_timeout_ms={} unselected_pair_retention_ms={} rtcp_timer_interval_ms={} endpoint_idle_timeout_ms={} "
-        "pending_session_timeout_ms={}",
+        "pending_session_timeout_ms={} orphan_subscriber_timeout_ms={}",
         config.dtls_transport.handshake_timeout.count(),
         config.rtp_packet_cache.max_packets,
         config.ice_consent_check_interval.count(),
@@ -2289,8 +2313,8 @@ ice_udp_server_runtime_config make_ice_udp_server_runtime_config_from_env()
         config.unselected_candidate_pair_retention_milliseconds,
         config.rtcp_report_timer_interval.count(),
         config.endpoint_idle_timeout_milliseconds,
-        config.pending_session_timeout_milliseconds);
-
+        config.pending_session_timeout_milliseconds,
+        config.orphan_subscriber_timeout_milliseconds);
     return config;
 }
 
@@ -4980,8 +5004,8 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       rtcp_report_timer_(io_context),
       rtcp_transport_cc_feedback_timer_(io_context),
       endpoint_idle_cleanup_timer_(io_context),
-      subscriber_downlink_pacing_timer_(io_context),
       pending_session_cleanup_timer_(io_context),
+      subscriber_downlink_pacing_timer_(io_context),
       bind_host_(std::move(bind_host)),
       bind_port_(bind_port),
       registry_(std::move(registry)),
@@ -4993,7 +5017,8 @@ ice_udp_server::ice_udp_server(boost::asio::io_context& io_context,
       rtcp_transport_cc_feedback_service_(
           std::make_shared<rtcp_transport_cc_feedback_service>(ice_udp_server_runtime_config_instance().rtcp_transport_cc_feedback)),
       endpoint_idle_timeout_milliseconds_(ice_udp_server_runtime_config_instance().endpoint_idle_timeout_milliseconds),
-      pending_session_timeout_milliseconds_(ice_udp_server_runtime_config_instance().pending_session_timeout_milliseconds)
+      pending_session_timeout_milliseconds_(ice_udp_server_runtime_config_instance().pending_session_timeout_milliseconds),
+      orphan_subscriber_timeout_milliseconds_(ice_udp_server_runtime_config_instance().orphan_subscriber_timeout_milliseconds)
 {
 }
 
@@ -5153,6 +5178,12 @@ void ice_udp_server::stop()
     pending_session_cleanup_timer_.cancel();
 
     subscriber_downlink_pacing_timer_.cancel();
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        publisher_absent_since_milliseconds_by_stream_id_.clear();
+    }
 
     boost::system::error_code socket_ec;
 
@@ -6021,8 +6052,18 @@ void ice_udp_server::on_pending_session_cleanup(boost::system::error_code ec)
         remove_expired_session(session_id, "pending session");
     }
 
+    std::vector<std::string> orphan_subscriber_session_ids = collect_orphan_subscriber_session_ids(current_time_milliseconds);
+
+    for (const auto& session_id : orphan_subscriber_session_ids)
+    {
+        WEBRTC_LOG_WARN("orphan subscriber expired session={} timeout_ms={}", session_id, orphan_subscriber_timeout_milliseconds_);
+
+        remove_expired_session(session_id, "orphan subscriber");
+    }
+
     schedule_pending_session_cleanup();
 }
+
 std::expected<void, std::string> validate_simulcast_rid_target_request(const simulcast_rid_target_request& request)
 {
     if (request.stream_id.empty())
@@ -6141,6 +6182,145 @@ std::vector<std::string> ice_udp_server::collect_pending_session_ids(uint64_t cu
         {
             expired_session_ids.push_back(snapshot.session_id);
         }
+    }
+
+    return expired_session_ids;
+}
+void ice_udp_server::mark_publisher_absent_for_stream(std::string_view stream_id, std::string_view reason)
+{
+    if (stream_id.empty() || orphan_subscriber_timeout_milliseconds_ == 0)
+    {
+        return;
+    }
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    auto [iterator, inserted] = publisher_absent_since_milliseconds_by_stream_id_.try_emplace(std::string(stream_id), current_time_milliseconds);
+
+    WEBRTC_LOG_INFO("publisher absent stream marked stream={} reason={} inserted={} absent_since_ms={} timeout_ms={}",
+                    stream_id,
+                    reason,
+                    inserted ? 1 : 0,
+                    iterator->second,
+                    orphan_subscriber_timeout_milliseconds_);
+}
+
+void ice_udp_server::forget_publisher_absent_for_stream(std::string_view stream_id, std::string_view reason)
+{
+    if (stream_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const std::size_t erased = publisher_absent_since_milliseconds_by_stream_id_.erase(std::string(stream_id));
+
+    if (erased != 0)
+    {
+        WEBRTC_LOG_INFO("publisher absent stream cleared stream={} reason={}", stream_id, reason);
+    }
+}
+
+std::vector<std::string> ice_udp_server::collect_orphan_subscriber_session_ids(uint64_t current_time_milliseconds)
+{
+    std::vector<std::string> expired_session_ids;
+
+    if (orphan_subscriber_timeout_milliseconds_ == 0 || registry_ == nullptr)
+    {
+        return expired_session_ids;
+    }
+
+    const std::vector<stream_session_lifecycle_snapshot> snapshots = registry_->session_lifecycle_snapshots();
+
+    std::unordered_map<std::string, std::vector<std::string>> subscriber_session_ids_by_stream;
+    std::unordered_set<std::string> streams_with_publisher;
+
+    for (const auto& snapshot : snapshots)
+    {
+        if (snapshot.stream_id.empty())
+        {
+            continue;
+        }
+
+        if (snapshot.kind == stream_session_kind::publisher)
+        {
+            streams_with_publisher.insert(snapshot.stream_id);
+
+            continue;
+        }
+
+        if (snapshot.kind == stream_session_kind::subscriber)
+        {
+            subscriber_session_ids_by_stream[snapshot.stream_id].push_back(snapshot.session_id);
+        }
+    }
+
+    for (const auto& [stream_id, subscriber_session_ids] : subscriber_session_ids_by_stream)
+    {
+        if (subscriber_session_ids.empty())
+        {
+            continue;
+        }
+
+        if (streams_with_publisher.contains(stream_id) || registry_->find_publisher_by_stream_id(stream_id) != nullptr)
+        {
+            forget_publisher_absent_for_stream(stream_id, "publisher present during orphan cleanup");
+
+            continue;
+        }
+
+        uint64_t absent_since_milliseconds = current_time_milliseconds;
+        bool inserted = false;
+
+        {
+            std::lock_guard lock(endpoint_mutex_);
+
+            auto [iterator, emplaced] = publisher_absent_since_milliseconds_by_stream_id_.try_emplace(stream_id, current_time_milliseconds);
+
+            absent_since_milliseconds = iterator->second;
+            inserted = emplaced;
+        }
+
+        if (inserted)
+        {
+            WEBRTC_LOG_INFO("publisher absent stream observed by orphan cleanup stream={} subscriber_count={} timeout_ms={}",
+                            stream_id,
+                            subscriber_session_ids.size(),
+                            orphan_subscriber_timeout_milliseconds_);
+        }
+
+        const uint64_t absent_age_milliseconds =
+            current_time_milliseconds >= absent_since_milliseconds ? current_time_milliseconds - absent_since_milliseconds : 0;
+
+        if (absent_age_milliseconds < orphan_subscriber_timeout_milliseconds_)
+        {
+            WEBRTC_LOG_DEBUG("orphan subscriber grace active stream={} subscriber_count={} absent_age_ms={} timeout_ms={}",
+                             stream_id,
+                             subscriber_session_ids.size(),
+                             absent_age_milliseconds,
+                             orphan_subscriber_timeout_milliseconds_);
+
+            continue;
+        }
+
+        WEBRTC_LOG_WARN("orphan subscriber grace expired stream={} subscriber_count={} absent_age_ms={} timeout_ms={}",
+                        stream_id,
+                        subscriber_session_ids.size(),
+                        absent_age_milliseconds,
+                        orphan_subscriber_timeout_milliseconds_);
+
+        for (const auto& subscriber_session_id : subscriber_session_ids)
+        {
+            if (!contains_string(expired_session_ids, subscriber_session_id))
+            {
+                expired_session_ids.push_back(subscriber_session_id);
+            }
+        }
+
+        forget_publisher_absent_for_stream(stream_id, "orphan subscriber expired");
     }
 
     return expired_session_ids;
@@ -8998,6 +9178,7 @@ void ice_udp_server::register_session_removed_callback()
             {
                 self->forget_publisher_runtime_state_preserving_subscribers(
                     removed_session.stream_id, removed_session.session_id, "publisher removal callback");
+                self->mark_publisher_absent_for_stream(removed_session.stream_id, "publisher removal callback");
             }
             else if (removed_session.kind == stream_session_kind::subscriber)
             {
@@ -9071,6 +9252,8 @@ void ice_udp_server::register_session_removed_callback()
             self->retire_republished_publisher_ice_credentials(republished_session, "publisher republish callback");
 
             self->retire_old_publisher_endpoint_for_republish(republished_session, "publisher republish callback");
+
+            self->forget_publisher_absent_for_stream(republished_session.stream_id, "publisher republish callback");
 
             self->forget_publisher_runtime_state_preserving_subscribers(
                 republished_session.stream_id, republished_session.old_session_id, "publisher republish callback");

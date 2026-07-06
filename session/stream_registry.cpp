@@ -501,12 +501,12 @@ remove_session_result stream_registry::remove_publisher_session(std::string_view
         removed_sessions.push_back(std::move(removed_publisher));
 
         /*
-         * Do not remove subscribers when the publisher is deleted.
+         * Keep existing WHEP subscribers during the publisher absence grace window.
          *
-         * A WHEP subscriber belongs to the stream, not to a single publisher
-         * session lifetime. Keeping subscribers registered lets a later WHIP
-         * publisher for the same stream restore forwarding without forcing the
-         * browser to create a new WHEP session.
+         * Subscribers are attached to the stream, not to one concrete publisher
+         * session lifetime. The ICE layer will remove orphan subscribers later
+         * if no publisher returns for this stream before
+         * WEBRTC_ORPHAN_SUBSCRIBER_TIMEOUT_MS.
          */
         publishers_by_stream_id_.erase(stream_id);
         publishers_by_session_id_.erase(publisher_iterator);

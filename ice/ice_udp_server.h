@@ -1011,6 +1011,17 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void expire_ice_consent_session(const ice_consent_timeout_event& event);
 
     void cleanup_unselected_candidate_pairs(uint64_t current_time_milliseconds);
+
+    [[nodiscard]]
+    std::vector<std::string> collect_pending_session_ids(uint64_t current_time_milliseconds) const;
+
+    [[nodiscard]]
+    std::vector<std::string> collect_orphan_subscriber_session_ids(uint64_t current_time_milliseconds);
+
+    void mark_publisher_absent_for_stream(std::string_view stream_id, std::string_view reason);
+
+    void forget_publisher_absent_for_stream(std::string_view stream_id, std::string_view reason);
+
     void remove_expired_session(std::string_view session_id, std::string_view reason);
 
     [[nodiscard]]
@@ -1034,9 +1045,6 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void schedule_pending_session_cleanup();
 
     void on_pending_session_cleanup(boost::system::error_code ec);
-
-    [[nodiscard]]
-    std::vector<std::string> collect_pending_session_ids(uint64_t current_time_milliseconds) const;
 
     void on_endpoint_idle_cleanup(boost::system::error_code ec);
 
@@ -1305,9 +1313,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     bool registry_callback_registered_ = false;
 
     uint64_t last_empty_rtcp_report_log_milliseconds_ = 0;
+
     uint64_t endpoint_idle_timeout_milliseconds_ = 120000;
+
     uint64_t pending_session_timeout_milliseconds_ = 60000;
 
+    uint64_t orphan_subscriber_timeout_milliseconds_ = 60000;
+
+    std::unordered_map<std::string, uint64_t> publisher_absent_since_milliseconds_by_stream_id_;
     std::atomic<uint64_t> rtcp_report_inbound_rtcp_observe_attempts_total_{0};
     std::atomic<uint64_t> rtcp_report_inbound_rtcp_observe_failed_total_{0};
     std::atomic<uint64_t> rtcp_report_inbound_sender_report_sources_total_{0};
