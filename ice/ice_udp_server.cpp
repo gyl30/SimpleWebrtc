@@ -5013,9 +5013,12 @@ void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
         nack_retransmit_throttle_->forget_session(session_id);
     }
 }
-void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view stream_id, std::string_view old_publisher_session_id)
+
+void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view stream_id,
+                                                                std::string_view old_publisher_session_id,
+                                                                std::string_view new_publisher_session_id)
 {
-    if (stream_id.empty() || old_publisher_session_id.empty())
+    if (stream_id.empty() || old_publisher_session_id.empty() || new_publisher_session_id.empty())
     {
         return;
     }
@@ -5028,6 +5031,10 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
      *
      * Do not call cleanup_stream_runtime_state(stream_id) here because it
      * would remove the stream's subscribers from media_router.
+     *
+     * Do not erase outbound transport-cc sequence state for this stream.
+     * WHEP subscriber transports stay alive across publisher republish, so
+     * subscriber transport-wide sequence numbers must remain monotonic.
      */
     forget_session(old_publisher_session_id);
 
@@ -5049,6 +5056,7 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
 
         cache_erased = true;
     }
+
     if (rtx_sequence_allocator_ != nullptr)
     {
         rtx_sequence_allocator_->forget_stream(stream_id);
@@ -5066,56 +5074,90 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
 
     std::size_t erased_payload_type_mappings = 0;
     std::size_t erased_keyframe_request_states = 0;
+    std::size_t erased_extmap_rewrite_states = 0;
+    std::size_t erased_selected_rid_states = 0;
+    std::size_t erased_outbound_transport_cc_packets = 0;
+    std::size_t erased_outbound_transport_cc_feedback_windows = 0;
+    std::size_t erased_fir_sequence_states = 0;
+    std::size_t erased_publisher_video_ssrc_states = 0;
 
     {
         std::lock_guard lock(endpoint_mutex_);
+
         erased_payload_type_mappings = erase_payload_type_mappings_for_stream_locked(stream_id);
+
         erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
-        const std::size_t erased_extmap_rewrite_states = erase_extmap_rewrite_states_for_stream_locked(stream_id);
-        (void)erased_extmap_rewrite_states;
-        const std::size_t erased_selected_rid_states = erase_selected_rid_layer_states_for_stream_locked(stream_id);
-        (void)erased_selected_rid_states;
-        const std::size_t erased_outbound_transport_cc_sequences = erase_outbound_transport_cc_sequences_for_stream_locked(stream_id);
-        (void)erased_outbound_transport_cc_sequences;
-        const std::size_t erased_outbound_transport_cc_packets = erase_outbound_transport_cc_packets_for_stream_locked(stream_id);
-        (void)erased_outbound_transport_cc_packets;
-        const std::size_t erased_outbound_transport_cc_feedback_windows = erase_outbound_transport_cc_feedback_windows_for_stream_locked(stream_id);
-        (void)erased_outbound_transport_cc_feedback_windows;
+
+        erased_extmap_rewrite_states = erase_extmap_rewrite_states_for_stream_locked(stream_id);
+
+        erased_selected_rid_states = erase_selected_rid_layer_states_for_stream_locked(stream_id);
+
+        /*
+         * Clear old publisher-derived packet identity/window data, but keep
+         * outbound_transport_cc_sequence_by_key_ untouched. Existing WHEP
+         * subscribers continue on the same transport and must not see TWCC
+         * sequence rollback after publisher republish.
+         */
+        erased_outbound_transport_cc_packets = erase_outbound_transport_cc_packets_for_stream_locked(stream_id);
+
+        erased_outbound_transport_cc_feedback_windows = erase_outbound_transport_cc_feedback_windows_for_stream_locked(stream_id);
+
+        const std::string stream_prefix = std::string(stream_id) + "|";
+
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
-            if (iterator->first.starts_with(std::string(stream_id) + "|"))
+            if (iterator->first.starts_with(stream_prefix))
             {
                 iterator = fir_sequence_number_by_key_.erase(iterator);
+
+                erased_fir_sequence_states += 1;
+
                 continue;
             }
+
             ++iterator;
         }
+
         const std::string publisher_video_ssrc_exact_key = std::string(stream_id);
         const std::string publisher_video_ssrc_prefix = publisher_video_ssrc_exact_key + "|";
+
         for (auto iterator = publisher_video_ssrc_by_stream_.begin(); iterator != publisher_video_ssrc_by_stream_.end();)
         {
             if (iterator->first == publisher_video_ssrc_exact_key || iterator->first.starts_with(publisher_video_ssrc_prefix))
             {
                 iterator = publisher_video_ssrc_by_stream_.erase(iterator);
+
+                erased_publisher_video_ssrc_states += 1;
+
                 continue;
             }
+
             ++iterator;
         }
 
         pending_republish_keyframe_state_by_stream_.erase(std::string(stream_id));
     }
+
     WEBRTC_LOG_INFO(
-        "publisher republish runtime state forgotten stream={} old_session={} cache_erased={} cache_packets_before={} cache_packets_erased={} "
-        "remaining_cache_packets={} "
-        "payload_type_mappings_erased={} keyframe_states_erased={}",
+        "publisher republish runtime state forgotten stream={} old_session={} new_session={} cache_erased={} cache_packets_before={} "
+        "cache_packets_erased={} remaining_cache_packets={} payload_type_mappings_erased={} keyframe_states_erased={} "
+        "extmap_rewrite_states_erased={} selected_rid_states_erased={} outbound_twcc_packets_erased={} outbound_twcc_windows_erased={} "
+        "fir_sequence_states_erased={} publisher_video_ssrc_states_erased={}",
         stream_id,
         old_publisher_session_id,
+        new_publisher_session_id,
         cache_erased ? 1 : 0,
         cache_packets_before,
         cache_packets_erased,
         remaining_packets,
         erased_payload_type_mappings,
-        erased_keyframe_request_states);
+        erased_keyframe_request_states,
+        erased_extmap_rewrite_states,
+        erased_selected_rid_states,
+        erased_outbound_transport_cc_packets,
+        erased_outbound_transport_cc_feedback_windows,
+        erased_fir_sequence_states,
+        erased_publisher_video_ssrc_states);
 }
 void ice_udp_server::forget_session(std::string_view session_id)
 {
@@ -8418,7 +8460,8 @@ void ice_udp_server::register_session_removed_callback()
 
             self->retire_old_publisher_endpoint_for_republish(republished_session, "publisher republish callback");
 
-            self->forget_republished_publisher_runtime_state(republished_session.stream_id, republished_session.old_session_id);
+            self->forget_republished_publisher_runtime_state(
+                republished_session.stream_id, republished_session.old_session_id, republished_session.new_session_id);
 
             self->mark_republish_keyframe_request_pending(republished_session.stream_id, republished_session.new_session_id);
 
