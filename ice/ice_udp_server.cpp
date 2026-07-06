@@ -8737,11 +8737,9 @@ void ice_udp_server::register_session_removed_callback()
             removed_subscriber.remote_ice_ufrag = reconnected_session.old_remote_ice_ufrag;
 
             self->retire_removed_session_ice_credentials(removed_subscriber, "subscriber reconnect callback");
-
             self->send_rtcp_bye_for_removed_session(removed_subscriber);
-
             self->forget_session(reconnected_session.old_session_id);
-
+            self->schedule_subscriber_runtime_residual_check(reconnected_session.stream_id, reconnected_session.old_session_id);
             self->schedule_lifecycle_snapshot_log("subscriber reconnect callback", reconnected_session.stream_id, reconnected_session.old_session_id);
         });
     registry_callback_registered_ = true;
