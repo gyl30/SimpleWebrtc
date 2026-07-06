@@ -1102,9 +1102,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void retire_old_publisher_endpoint_for_republish(const stream_republished_session& republished_session, std::string_view reason);
 
-    void forget_republished_publisher_runtime_state(std::string_view stream_id,
-                                                    std::string_view old_publisher_session_id,
-                                                    std::string_view new_publisher_session_id);
+    void forget_publisher_runtime_state_preserving_subscribers(std::string_view stream_id,
+                                                               std::string_view publisher_session_id,
+                                                               std::string_view reason);
     void retire_ice_credentials_locked(std::string_view local_ice_ufrag,
                                        std::string_view remote_ice_ufrag,
                                        std::string_view stream_id,

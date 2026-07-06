@@ -5621,30 +5621,30 @@ std::size_t ice_udp_server::erase_subscriber_downlink_republish_grace_for_stream
 
     return erased_count;
 }
-void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view stream_id,
-                                                                std::string_view old_publisher_session_id,
-                                                                std::string_view new_publisher_session_id)
+void ice_udp_server::forget_publisher_runtime_state_preserving_subscribers(std::string_view stream_id,
+                                                                           std::string_view publisher_session_id,
+                                                                           std::string_view reason)
 {
-    if (stream_id.empty() || old_publisher_session_id.empty() || new_publisher_session_id.empty())
+    if (stream_id.empty() || publisher_session_id.empty())
     {
         return;
     }
 
     /*
-     * Clear old publisher transport/runtime by session id first.
-     * This removes old endpoint, DTLS, SRTP, publisher media_router peer,
-     * track binding, SSRC mapping, identity authority, RTCP/TWCC and
+     * Clear publisher transport/runtime by session id first.
+     * This removes the publisher endpoint, DTLS, SRTP, publisher media_router peer,
+     * track binding, publisher-side SSRC mapping, identity authority, RTCP/TWCC and
      * session-scoped RTX/NACK state.
      *
-     * Do not call cleanup_stream_runtime_state(stream_id) here because it
-     * would remove the stream's subscribers from media_router.
+     * Do not call cleanup_stream_runtime_state(stream_id) here because it would
+     * remove existing WHEP subscribers from media_router.
      *
      * Do not erase outbound transport-cc sequence state for this stream.
-     * WHEP subscriber transports stay alive across publisher republish, so
-     * subscriber transport-wide sequence numbers must remain monotonic.
+     * WHEP subscriber transports may stay alive across publisher republish or
+     * publisher delete/recreate, so subscriber transport-wide sequence numbers
+     * must remain monotonic.
      */
-    forget_session(old_publisher_session_id);
-
+    forget_session(publisher_session_id);
     bool cache_erased = false;
     std::size_t cache_packets_before = 0;
     std::size_t cache_packets_after = 0;
@@ -5746,13 +5746,13 @@ void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view
     }
 
     WEBRTC_LOG_INFO(
-        "publisher republish runtime state forgotten stream={} old_session={} new_session={} cache_erased={} cache_packets_before={} "
+        "publisher runtime state forgotten preserving subscribers stream={} publisher_session={} reason={} cache_erased={} cache_packets_before={} "
         "cache_packets_erased={} remaining_cache_packets={} payload_type_mappings_erased={} keyframe_states_erased={} "
         "extmap_rewrite_states_erased={} selected_rid_states_erased={} outbound_twcc_packets_erased={} outbound_twcc_windows_erased={} "
         "fir_sequence_states_erased={} publisher_video_ssrc_states_erased={}",
         stream_id,
-        old_publisher_session_id,
-        new_publisher_session_id,
+        publisher_session_id,
+        reason,
         cache_erased ? 1 : 0,
         cache_packets_before,
         cache_packets_erased,
@@ -8993,30 +8993,23 @@ void ice_udp_server::register_session_removed_callback()
                             removed_session.remote_ice_ufrag);
 
             self->retire_removed_session_ice_credentials(removed_session, "registry removal callback");
+
             if (removed_session.kind == stream_session_kind::publisher)
             {
-                self->send_rtcp_bye_for_removed_stream(removed_session.stream_id);
+                self->forget_publisher_runtime_state_preserving_subscribers(
+                    removed_session.stream_id, removed_session.session_id, "publisher removal callback");
             }
             else if (removed_session.kind == stream_session_kind::subscriber)
             {
                 self->send_rtcp_bye_for_removed_session(removed_session);
-            }
 
-            if (removed_session.kind == stream_session_kind::subscriber)
-            {
                 self->forget_republish_keyframe_request_pending_for_subscriber(removed_session.stream_id, removed_session.session_id);
-            }
 
-            self->forget_session(removed_session.session_id);
+                self->forget_session(removed_session.session_id);
 
-            if (removed_session.kind == stream_session_kind::publisher)
-            {
-                self->cleanup_stream_runtime_state(removed_session.stream_id);
-            }
-            if (removed_session.kind == stream_session_kind::subscriber)
-            {
                 self->schedule_subscriber_runtime_residual_check(removed_session.stream_id, removed_session.session_id);
             }
+
             self->schedule_lifecycle_snapshot_log("registry removal callback", removed_session.stream_id, removed_session.session_id);
         });
 
@@ -9079,8 +9072,8 @@ void ice_udp_server::register_session_removed_callback()
 
             self->retire_old_publisher_endpoint_for_republish(republished_session, "publisher republish callback");
 
-            self->forget_republished_publisher_runtime_state(
-                republished_session.stream_id, republished_session.old_session_id, republished_session.new_session_id);
+            self->forget_publisher_runtime_state_preserving_subscribers(
+                republished_session.stream_id, republished_session.old_session_id, "publisher republish callback");
 
             self->mark_subscriber_downlink_republish_grace_for_stream(republished_session.stream_id, republished_session.new_session_id);
 
