@@ -317,6 +317,19 @@ std::string make_session_resource_etag(const session_type& session)
 
     uint64_t hash = k_fnv_offset_basis;
 
+    /*
+     * ETag represents the HTTP session resource version, not transient transport
+     * runtime state.
+     *
+     * Do not include:
+     *   - session.state_string()
+     *   - session.updated_at_milliseconds()
+     *   - ICE selected pair / DTLS / SRTP / media runtime state
+     *
+     * Otherwise a client can receive an ETag from POST /whip or POST /whep and
+     * immediately fail a valid If-Match request because the session moved from
+     * sdp_answered to ice_connected.
+     */
     hash = trickle_ice_http_detail::fnv1a_append_string(hash, trickle_ice_http_detail::string_like_view(session.session_id()));
 
     hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
@@ -325,15 +338,7 @@ std::string make_session_resource_etag(const session_type& session)
 
     hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
 
-    hash = trickle_ice_http_detail::fnv1a_append_string(hash, trickle_ice_http_detail::string_like_view(session.state_string()));
-
-    hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
-
     hash = trickle_ice_http_detail::fnv1a_append_uint64(hash, session.created_at_milliseconds());
-
-    hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
-
-    hash = trickle_ice_http_detail::fnv1a_append_uint64(hash, session.updated_at_milliseconds());
 
     hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
 
@@ -361,12 +366,11 @@ std::string make_session_resource_etag(const session_type& session)
 
     std::ostringstream output;
 
-    output << "\"swrtc-" << std::hex << hash << "-" << std::dec << session.updated_at_milliseconds() << "-" << session.remote_ice_candidates().size()
+    output << "\"swrtc-" << std::hex << hash << "-" << std::dec << session.created_at_milliseconds() << "-" << session.remote_ice_candidates().size()
            << "-" << (session.remote_ice_completed() ? 1 : 0) << "\"";
 
     return output.str();
 }
-
 template <typename session_type>
 void set_session_resource_headers(const http_response_ptr& response, const session_type& session)
 {
