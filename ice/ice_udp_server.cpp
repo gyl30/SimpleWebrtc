@@ -1061,6 +1061,48 @@ bool outbound_transport_cc_sequence_key_matches_stream(std::string_view key, std
 
     return key.starts_with(prefix);
 }
+std::string make_outbound_rtp_sequence_key(std::string_view stream_id, std::string_view subscriber_session_id, uint32_t subscriber_ssrc)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + subscriber_session_id.size() + 24);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(subscriber_session_id);
+
+    key.push_back('|');
+
+    key.append(std::to_string(subscriber_ssrc));
+
+    return key;
+}
+
+bool outbound_rtp_sequence_key_matches_stream(std::string_view key, std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return false;
+    }
+
+    const std::string prefix = std::string(stream_id) + "|";
+
+    return key.starts_with(prefix);
+}
+
+bool outbound_rtp_sequence_key_matches_session(std::string_view key, std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return false;
+    }
+
+    const std::string needle = "|" + std::string(session_id) + "|";
+
+    return key.find(needle) != std::string_view::npos;
+}
 
 bool keyframe_request_key_matches_session(std::string_view key, std::string_view session_id)
 {
@@ -4778,6 +4820,11 @@ void ice_udp_server::stop()
         pending_selected_rid_keyframe_request_state_by_key_.clear();
 
         extmap_rewrite_state_by_key_.clear();
+        outbound_rtp_sequence_by_key_.clear();
+        outbound_transport_cc_sequence_by_key_.clear();
+        outbound_transport_cc_packets_by_key_.clear();
+        outbound_transport_cc_packet_insertion_order_.clear();
+        outbound_transport_cc_feedback_windows_by_key_.clear();
 
         subscriber_downlink_pacing_by_key_.clear();
 
@@ -4963,6 +5010,7 @@ void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
 
     forget_extmap_rewrite_states_for_session(session_id);
     forget_selected_rid_layer_states_for_session(session_id);
+    forget_outbound_rtp_sequences_for_session(session_id);
     forget_outbound_transport_cc_sequences_for_session(session_id);
     forget_outbound_transport_cc_packets_for_session(session_id);
     forget_outbound_transport_cc_feedback_windows_for_session(session_id);
@@ -14575,6 +14623,44 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
     const std::span<const uint8_t> plain_packet_span(packet.plain_packet.data(), packet.plain_packet.size());
 
+    /*
+     * Keep RTP sequence numbers monotonic for each subscriber SSRC.
+     *
+     * This must run outside the video-only RTP header extension rewrite block.
+     * Republish keeps the WHEP subscriber SRTP outbound context alive, so both
+     * audio and video packets sent to the same subscriber SSRC must continue
+     * with subscriber-side RTP sequence numbers. If audio keeps the new
+     * publisher's random sequence number, libsrtp rejects packets as replay_old.
+     */
+    if (ssrc_mapping.has_value() && payload_type_mapping.has_value())
+    {
+        auto publisher_header = parse_rtp_packet_header(plain_packet_span);
+
+        if (!publisher_header)
+        {
+            WEBRTC_LOG_WARN("rtp outbound sequence rewrite parse failed stream={} publisher_session={} subscriber_session={} error={}",
+                            payload_type_mapping->stream_id,
+                            route.source.session_id,
+                            target_peer.session_id,
+                            publisher_header.error());
+
+            return std::nullopt;
+        }
+
+        const uint16_t outbound_rtp_sequence = next_outbound_rtp_sequence(payload_type_mapping->stream_id,
+                                                                          route.source.session_id,
+                                                                          target_peer.session_id,
+                                                                          ssrc_mapping->subscriber_ssrc,
+                                                                          publisher_header->sequence_number);
+
+        if (outbound_rtp_sequence != publisher_header->sequence_number)
+        {
+            options.sequence_number = outbound_rtp_sequence;
+
+            rewrite_required = true;
+        }
+    }
+
     if (payload_type_mapping.has_value() && media_payload_type_mapping_allows_rid_header_extension_rewrite(*payload_type_mapping) &&
         registry_ != nullptr)
     {
@@ -14741,7 +14827,8 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
                     identity.subscriber_payload_type = payload_type_mapping->subscriber_payload_type;
 
                     identity.publisher_rtp_sequence_number = publisher_header->sequence_number;
-                    identity.subscriber_rtp_sequence_number = publisher_header->sequence_number;
+                    identity.subscriber_rtp_sequence_number =
+                        options.sequence_number.has_value() ? *options.sequence_number : publisher_header->sequence_number;
 
                     identity.publisher_transport_cc_sequence_number =
                         read_publisher_transport_cc_sequence_number(*payload_type_mapping, publisher_offer, plain_packet_span).value_or(0);
@@ -16581,6 +16668,8 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         (void)erased_extmap_rewrite_states;
         const std::size_t erased_selected_rid_states = erase_selected_rid_layer_states_for_stream_locked(stream_id);
         (void)erased_selected_rid_states;
+        const std::size_t erased_outbound_rtp_sequences = erase_outbound_rtp_sequences_for_stream_locked(stream_id);
+        (void)erased_outbound_rtp_sequences;
         const std::size_t erased_outbound_transport_cc_sequences = erase_outbound_transport_cc_sequences_for_stream_locked(stream_id);
         (void)erased_outbound_transport_cc_sequences;
         const std::size_t erased_outbound_transport_cc_packets = erase_outbound_transport_cc_packets_for_stream_locked(stream_id);
@@ -17504,6 +17593,115 @@ uint16_t ice_udp_server::next_outbound_transport_cc_sequence(std::string_view st
     next_sequence_number = static_cast<uint16_t>(next_sequence_number + 1U);
 
     return sequence_number;
+}
+uint16_t ice_udp_server::next_outbound_rtp_sequence(std::string_view stream_id,
+                                                    std::string_view publisher_session_id,
+                                                    std::string_view subscriber_session_id,
+                                                    uint32_t subscriber_ssrc,
+                                                    uint16_t publisher_sequence_number)
+{
+    if (stream_id.empty() || publisher_session_id.empty() || subscriber_session_id.empty() || subscriber_ssrc == 0)
+    {
+        return publisher_sequence_number;
+    }
+
+    const std::string key = make_outbound_rtp_sequence_key(stream_id, subscriber_session_id, subscriber_ssrc);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    outbound_rtp_sequence_rewrite_state& state = outbound_rtp_sequence_by_key_[key];
+
+    if (state.stream_id.empty())
+    {
+        state.stream_id = stream_id;
+        state.publisher_session_id = publisher_session_id;
+        state.subscriber_session_id = subscriber_session_id;
+        state.subscriber_ssrc = subscriber_ssrc;
+
+        state.last_publisher_sequence_number = publisher_sequence_number;
+        state.last_subscriber_sequence_number = publisher_sequence_number;
+        state.next_subscriber_sequence_number = static_cast<uint16_t>(publisher_sequence_number + 1U);
+        state.packet_count = 1;
+
+        return publisher_sequence_number;
+    }
+
+    if (state.publisher_session_id != publisher_session_id)
+    {
+        state.publisher_session_id = publisher_session_id;
+        state.publisher_switch_count += 1;
+    }
+
+    const uint16_t subscriber_sequence_number = state.next_subscriber_sequence_number;
+
+    state.last_publisher_sequence_number = publisher_sequence_number;
+    state.last_subscriber_sequence_number = subscriber_sequence_number;
+    state.next_subscriber_sequence_number = static_cast<uint16_t>(subscriber_sequence_number + 1U);
+    state.packet_count += 1;
+
+    return subscriber_sequence_number;
+}
+
+void ice_udp_server::forget_outbound_rtp_sequences_for_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    for (auto iterator = outbound_rtp_sequence_by_key_.begin(); iterator != outbound_rtp_sequence_by_key_.end();)
+    {
+        /*
+         * The key layout is:
+         *
+         *   stream_id|subscriber_session_id|subscriber_ssrc
+         *
+         * Republish removes the old publisher session, but the subscriber SRTP
+         * outbound context remains alive. Therefore publisher-session cleanup
+         * must not erase this state. Otherwise the next publisher packet would
+         * restart from the new publisher's random RTP sequence number and libsrtp
+         * would reject it as replay_old.
+         *
+         * Only erase this state when the subscriber session itself is removed.
+         * Stream cleanup still erases all remaining stream-level states.
+         */
+        if (outbound_rtp_sequence_key_matches_session(iterator->first, session_id) || iterator->second.subscriber_session_id == session_id)
+        {
+            iterator = outbound_rtp_sequence_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
+std::size_t ice_udp_server::erase_outbound_rtp_sequences_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = outbound_rtp_sequence_by_key_.begin(); iterator != outbound_rtp_sequence_by_key_.end();)
+    {
+        if (outbound_rtp_sequence_key_matches_stream(iterator->first, stream_id))
+        {
+            iterator = outbound_rtp_sequence_by_key_.erase(iterator);
+
+            erased_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
 }
 
 void ice_udp_server::remember_outbound_transport_cc_packet(const outbound_transport_cc_packet_identity& identity)

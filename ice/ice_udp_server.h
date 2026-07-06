@@ -304,6 +304,22 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string publisher_session_id;
         std::unordered_set<std::string> consumed_subscriber_session_ids;
     };
+
+    struct outbound_rtp_sequence_rewrite_state
+    {
+        std::string stream_id;
+        std::string publisher_session_id;
+        std::string subscriber_session_id;
+
+        uint32_t subscriber_ssrc = 0;
+
+        uint16_t last_publisher_sequence_number = 0;
+        uint16_t last_subscriber_sequence_number = 0;
+        uint16_t next_subscriber_sequence_number = 0;
+
+        uint64_t packet_count = 0;
+        uint64_t publisher_switch_count = 0;
+    };
     struct selected_rid_layer_runtime_state
     {
         std::string stream_id;
@@ -629,13 +645,25 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     [[nodiscard]]
     uint16_t next_outbound_transport_cc_sequence(std::string_view stream_id, std::string_view subscriber_session_id);
+
+    [[nodiscard]]
+    uint16_t next_outbound_rtp_sequence(std::string_view stream_id,
+                                        std::string_view publisher_session_id,
+                                        std::string_view subscriber_session_id,
+                                        uint32_t subscriber_ssrc,
+                                        uint16_t publisher_sequence_number);
+
+    void forget_outbound_rtp_sequences_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_outbound_rtp_sequences_for_stream_locked(std::string_view stream_id);
+
     void forget_outbound_transport_cc_sequences_for_session(std::string_view session_id);
 
     [[nodiscard]]
     std::size_t erase_outbound_transport_cc_sequences_for_stream_locked(std::string_view stream_id);
 
     void remember_outbound_transport_cc_packet(const outbound_transport_cc_packet_identity& identity);
-
     void forget_outbound_transport_cc_packets_for_session(std::string_view session_id);
 
     [[nodiscard]]
@@ -1217,11 +1245,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, runtime_selected_rid_target_state> runtime_selected_rid_targets_by_key_;
     std::unordered_set<std::string> pending_selected_rid_keyframe_request_keys_;
     std::unordered_map<std::string, selected_rid_keyframe_request_pending_state> pending_selected_rid_keyframe_request_state_by_key_;
+
     std::unordered_map<std::string, extmap_rewrite_runtime_state> extmap_rewrite_state_by_key_;
+    std::unordered_map<std::string, outbound_rtp_sequence_rewrite_state> outbound_rtp_sequence_by_key_;
     std::unordered_map<std::string, uint16_t> outbound_transport_cc_sequence_by_key_;
     std::unordered_map<std::string, outbound_transport_cc_packet_identity> outbound_transport_cc_packets_by_key_;
     std::deque<std::string> outbound_transport_cc_packet_insertion_order_;
     std::unordered_map<std::string, outbound_transport_cc_feedback_window_state> outbound_transport_cc_feedback_windows_by_key_;
+
     std::unordered_map<std::string, subscriber_downlink_bandwidth_state> subscriber_downlink_bandwidth_by_key_;
     std::unordered_map<std::string, subscriber_downlink_pacing_state> subscriber_downlink_pacing_by_key_;
 
