@@ -191,9 +191,12 @@ class stream_registry
     [[nodiscard]] std::size_t subscriber_count() const;
 
    private:
-   private:
+    [[nodiscard]]
+    bool is_removed_session_tombstone_expired_locked(const stream_removed_session_tombstone& tombstone, uint64_t current_time_milliseconds) const;
+
     void remember_removed_session_locked(const stream_removed_session& removed_session);
-    void prune_removed_session_tombstones_locked();
+
+    void prune_removed_session_tombstones_locked(uint64_t current_time_milliseconds);
 
     [[nodiscard]] std::string make_unique_session_id_locked() const;
     [[nodiscard]] static uint64_t now_milliseconds();

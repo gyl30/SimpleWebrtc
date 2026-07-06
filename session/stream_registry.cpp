@@ -21,6 +21,8 @@ namespace webrtc
 namespace
 {
 constexpr std::size_t k_max_removed_session_tombstones = 4096;
+constexpr uint64_t k_removed_session_tombstone_ttl_milliseconds = 120000;
+
 void notify_removed_sessions(const stream_session_removed_callback& callback, const std::vector<stream_removed_session>& removed_sessions)
 {
     if (!callback)
@@ -346,6 +348,8 @@ std::optional<stream_removed_session_tombstone> stream_registry::find_removed_se
         return std::nullopt;
     }
 
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
     std::lock_guard lock(mutex_);
 
     const auto iterator = removed_session_tombstones_by_session_id_.find(std::string(session_id));
@@ -355,11 +359,19 @@ std::optional<stream_removed_session_tombstone> stream_registry::find_removed_se
         return std::nullopt;
     }
 
+    if (is_removed_session_tombstone_expired_locked(iterator->second, current_time_milliseconds))
+    {
+        return std::nullopt;
+    }
+
     return iterator->second;
 }
+
 std::vector<stream_removed_session_tombstone> stream_registry::removed_session_tombstone_snapshot() const
 {
     std::vector<stream_removed_session_tombstone> snapshot;
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
 
     std::lock_guard lock(mutex_);
 
@@ -369,12 +381,31 @@ std::vector<stream_removed_session_tombstone> stream_registry::removed_session_t
     {
         (void)session_id;
 
+        if (is_removed_session_tombstone_expired_locked(tombstone, current_time_milliseconds))
+        {
+            continue;
+        }
+
         snapshot.push_back(tombstone);
     }
 
     return snapshot;
 }
+bool stream_registry::is_removed_session_tombstone_expired_locked(const stream_removed_session_tombstone& tombstone,
+                                                                  uint64_t current_time_milliseconds) const
+{
+    if (tombstone.removed_at_milliseconds == 0)
+    {
+        return false;
+    }
 
+    if (current_time_milliseconds <= tombstone.removed_at_milliseconds)
+    {
+        return false;
+    }
+
+    return current_time_milliseconds - tombstone.removed_at_milliseconds >= k_removed_session_tombstone_ttl_milliseconds;
+}
 void stream_registry::remember_removed_session_locked(const stream_removed_session& removed_session)
 {
     if (removed_session.session_id.empty())
@@ -382,20 +413,34 @@ void stream_registry::remember_removed_session_locked(const stream_removed_sessi
         return;
     }
 
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
     stream_removed_session_tombstone tombstone;
 
     tombstone.kind = removed_session.kind;
     tombstone.stream_id = removed_session.stream_id;
     tombstone.session_id = removed_session.session_id;
-    tombstone.removed_at_milliseconds = now_milliseconds();
+    tombstone.removed_at_milliseconds = current_time_milliseconds;
 
     removed_session_tombstones_by_session_id_[tombstone.session_id] = std::move(tombstone);
 
-    prune_removed_session_tombstones_locked();
+    prune_removed_session_tombstones_locked(current_time_milliseconds);
 }
 
-void stream_registry::prune_removed_session_tombstones_locked()
+void stream_registry::prune_removed_session_tombstones_locked(uint64_t current_time_milliseconds)
 {
+    for (auto iterator = removed_session_tombstones_by_session_id_.begin(); iterator != removed_session_tombstones_by_session_id_.end();)
+    {
+        if (is_removed_session_tombstone_expired_locked(iterator->second, current_time_milliseconds))
+        {
+            iterator = removed_session_tombstones_by_session_id_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
     while (removed_session_tombstones_by_session_id_.size() > k_max_removed_session_tombstones)
     {
         auto oldest_iterator = removed_session_tombstones_by_session_id_.end();

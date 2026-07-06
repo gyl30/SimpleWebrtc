@@ -303,18 +303,29 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     {
         std::string publisher_session_id;
 
+        uint64_t pending_since_milliseconds = 0;
+        uint64_t expires_at_milliseconds = 0;
+
         /*
          * A republish-triggered keyframe request is scoped to the subscribers
          * that were active when the new publisher session replaced the old one.
          *
          * Do not let a later WHEP reconnect/new subscriber consume an old
          * republish pending request. That would make the old publisher switch
-         * state leak into a new subscriber generation and can produce one extra
-         * misleading proactive PLI.
+         * state leak into a new subscriber generation.
          */
         std::unordered_set<std::string> eligible_subscriber_session_ids;
 
+        /*
+         * This set means "this subscriber has received at least one republish
+         * recovery PLI". It no longer means the request is fully completed.
+         * Republish recovery may send a few bounded retries until the short
+         * pending window expires or the per-subscriber attempt limit is reached.
+         */
         std::unordered_set<std::string> consumed_subscriber_session_ids;
+
+        std::unordered_map<std::string, uint64_t> last_request_milliseconds_by_subscriber_session_id;
+        std::unordered_map<std::string, std::size_t> request_count_by_subscriber_session_id;
     };
     struct outbound_rtp_sequence_rewrite_state
     {

@@ -93,6 +93,10 @@ constexpr uint64_t k_default_pending_session_timeout_milliseconds = 60000;
 
 constexpr uint64_t k_keyframe_request_interval_milliseconds = 1000;
 
+constexpr uint64_t k_republish_keyframe_request_pending_timeout_milliseconds = 8000;
+
+constexpr std::size_t k_republish_keyframe_request_max_attempts_per_subscriber = 5;
+
 constexpr std::size_t k_default_rtp_packet_cache_max_packets = 4096;
 
 constexpr std::size_t k_min_rtp_packet_cache_max_packets = 128;
@@ -17050,6 +17054,7 @@ std::unordered_set<std::string> ice_udp_server::collect_republish_keyframe_eligi
 
     return subscriber_session_ids;
 }
+
 void ice_udp_server::mark_republish_keyframe_request_pending(std::string_view stream_id, std::string_view new_publisher_session_id)
 {
     if (stream_id.empty() || new_publisher_session_id.empty())
@@ -17058,6 +17063,9 @@ void ice_udp_server::mark_republish_keyframe_request_pending(std::string_view st
     }
 
     std::unordered_set<std::string> eligible_subscriber_session_ids = collect_republish_keyframe_eligible_subscribers(stream_id);
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+    const uint64_t expires_at_milliseconds = current_time_milliseconds + k_republish_keyframe_request_pending_timeout_milliseconds;
 
     std::size_t eligible_subscriber_count = 0;
     std::size_t erased_stale_count = 0;
@@ -17073,6 +17081,8 @@ void ice_udp_server::mark_republish_keyframe_request_pending(std::string_view st
         {
             republish_keyframe_request_state state;
             state.publisher_session_id = std::string(new_publisher_session_id);
+            state.pending_since_milliseconds = current_time_milliseconds;
+            state.expires_at_milliseconds = expires_at_milliseconds;
             state.eligible_subscriber_session_ids = std::move(eligible_subscriber_session_ids);
 
             eligible_subscriber_count = state.eligible_subscriber_session_ids.size();
@@ -17091,10 +17101,14 @@ void ice_udp_server::mark_republish_keyframe_request_pending(std::string_view st
         return;
     }
 
-    WEBRTC_LOG_INFO("publisher republish keyframe request pending stream={} publisher_session={} eligible_subscribers={}",
-                    stream_id,
-                    new_publisher_session_id,
-                    eligible_subscriber_count);
+    WEBRTC_LOG_INFO(
+        "publisher republish keyframe request pending stream={} publisher_session={} eligible_subscribers={} timeout_ms={} "
+        "expires_at_ms={}",
+        stream_id,
+        new_publisher_session_id,
+        eligible_subscriber_count,
+        k_republish_keyframe_request_pending_timeout_milliseconds,
+        expires_at_milliseconds);
 }
 void ice_udp_server::forget_republish_keyframe_request_pending_for_subscriber(std::string_view stream_id, std::string_view subscriber_session_id)
 {
@@ -17124,14 +17138,18 @@ void ice_udp_server::forget_republish_keyframe_request_pending_for_subscriber(st
 
         publisher_session_id = state.publisher_session_id;
 
-        removed_eligible_count = state.eligible_subscriber_session_ids.erase(std::string(subscriber_session_id));
+        const std::string subscriber_session_id_string(subscriber_session_id);
 
-        removed_consumed_count = state.consumed_subscriber_session_ids.erase(std::string(subscriber_session_id));
+        removed_eligible_count = state.eligible_subscriber_session_ids.erase(subscriber_session_id_string);
+
+        removed_consumed_count = state.consumed_subscriber_session_ids.erase(subscriber_session_id_string);
+
+        state.last_request_milliseconds_by_subscriber_session_id.erase(subscriber_session_id_string);
+        state.request_count_by_subscriber_session_id.erase(subscriber_session_id_string);
 
         remaining_eligible_count = state.eligible_subscriber_session_ids.size();
 
         consumed_subscriber_count = state.consumed_subscriber_session_ids.size();
-
         if (state.eligible_subscriber_session_ids.empty() ||
             state.consumed_subscriber_session_ids.size() >= state.eligible_subscriber_session_ids.size())
         {
@@ -19345,11 +19363,16 @@ bool ice_udp_server::consume_republish_keyframe_request_pending_for_subscriber(c
         return false;
     }
 
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
     std::string stale_publisher_session_id;
-    std::size_t consumed_subscriber_count = 0;
+    std::size_t request_count = 0;
     std::size_t eligible_subscriber_count = 0;
-    bool pending_completed = false;
+    std::size_t first_request_subscriber_count = 0;
+    bool pending_erased = false;
     bool stale_pending_erased = false;
+    bool pending_expired = false;
+    bool request_limit_reached = false;
 
     {
         std::lock_guard lock(endpoint_mutex_);
@@ -19371,32 +19394,108 @@ bool ice_udp_server::consume_republish_keyframe_request_pending_for_subscriber(c
 
             stale_pending_erased = true;
         }
+        else if (state.expires_at_milliseconds != 0 && current_time_milliseconds >= state.expires_at_milliseconds)
+        {
+            pending_republish_keyframe_state_by_stream_.erase(iterator);
+
+            pending_expired = true;
+        }
         else if (state.eligible_subscriber_session_ids.empty())
         {
             pending_republish_keyframe_state_by_stream_.erase(iterator);
 
-            pending_completed = true;
+            pending_erased = true;
         }
         else if (!state.eligible_subscriber_session_ids.contains(target_peer.session_id))
         {
             return false;
         }
-        else if (state.consumed_subscriber_session_ids.contains(target_peer.session_id))
-        {
-            return false;
-        }
         else
         {
-            state.consumed_subscriber_session_ids.insert(target_peer.session_id);
-
-            consumed_subscriber_count = state.consumed_subscriber_session_ids.size();
             eligible_subscriber_count = state.eligible_subscriber_session_ids.size();
 
-            if (consumed_subscriber_count >= eligible_subscriber_count)
-            {
-                pending_republish_keyframe_state_by_stream_.erase(iterator);
+            const std::string subscriber_session_id = target_peer.session_id;
 
-                pending_completed = true;
+            const auto last_request_iterator = state.last_request_milliseconds_by_subscriber_session_id.find(subscriber_session_id);
+
+            if (last_request_iterator != state.last_request_milliseconds_by_subscriber_session_id.end())
+            {
+                const uint64_t elapsed_milliseconds =
+                    current_time_milliseconds > last_request_iterator->second ? current_time_milliseconds - last_request_iterator->second : 0;
+
+                if (elapsed_milliseconds < k_keyframe_request_interval_milliseconds)
+                {
+                    return false;
+                }
+            }
+
+            request_count = state.request_count_by_subscriber_session_id[subscriber_session_id];
+
+            if (request_count >= k_republish_keyframe_request_max_attempts_per_subscriber)
+            {
+                request_limit_reached = true;
+
+                bool all_subscribers_reached_limit = true;
+
+                for (const std::string& eligible_subscriber_session_id : state.eligible_subscriber_session_ids)
+                {
+                    const auto count_iterator = state.request_count_by_subscriber_session_id.find(eligible_subscriber_session_id);
+
+                    const std::size_t subscriber_request_count =
+                        count_iterator == state.request_count_by_subscriber_session_id.end() ? 0 : count_iterator->second;
+
+                    if (subscriber_request_count < k_republish_keyframe_request_max_attempts_per_subscriber)
+                    {
+                        all_subscribers_reached_limit = false;
+
+                        break;
+                    }
+                }
+
+                if (all_subscribers_reached_limit)
+                {
+                    pending_republish_keyframe_state_by_stream_.erase(iterator);
+
+                    pending_erased = true;
+                }
+            }
+            else
+            {
+                request_count += 1;
+
+                state.request_count_by_subscriber_session_id[subscriber_session_id] = request_count;
+                state.last_request_milliseconds_by_subscriber_session_id[subscriber_session_id] = current_time_milliseconds;
+
+                state.consumed_subscriber_session_ids.insert(subscriber_session_id);
+
+                first_request_subscriber_count = state.consumed_subscriber_session_ids.size();
+
+                if (request_count >= k_republish_keyframe_request_max_attempts_per_subscriber)
+                {
+                    bool all_subscribers_reached_limit = true;
+
+                    for (const std::string& eligible_subscriber_session_id : state.eligible_subscriber_session_ids)
+                    {
+                        const auto count_iterator = state.request_count_by_subscriber_session_id.find(eligible_subscriber_session_id);
+
+                        const std::size_t subscriber_request_count =
+                            count_iterator == state.request_count_by_subscriber_session_id.end() ? 0 : count_iterator->second;
+
+                        if (subscriber_request_count < k_republish_keyframe_request_max_attempts_per_subscriber)
+                        {
+                            all_subscribers_reached_limit = false;
+
+                            break;
+                        }
+                    }
+
+                    if (all_subscribers_reached_limit)
+                    {
+                        pending_republish_keyframe_state_by_stream_.erase(iterator);
+
+                        pending_erased = true;
+                    }
+                }
             }
         }
     }
@@ -19411,24 +19510,52 @@ bool ice_udp_server::consume_republish_keyframe_request_pending_for_subscriber(c
         return false;
     }
 
-    if (eligible_subscriber_count == 0)
+    if (pending_expired)
+    {
+        WEBRTC_LOG_WARN("publisher republish keyframe request expired stream={} publisher_session={} subscriber_session={} timeout_ms={}",
+                        route.source.stream_id,
+                        route.source.session_id,
+                        target_peer.session_id,
+                        k_republish_keyframe_request_pending_timeout_milliseconds);
+
+        return false;
+    }
+
+    if (request_limit_reached)
+    {
+        WEBRTC_LOG_WARN(
+            "publisher republish keyframe request limit reached stream={} publisher_session={} subscriber_session={} max_attempts={} "
+            "pending_erased={}",
+            route.source.stream_id,
+            route.source.session_id,
+            target_peer.session_id,
+            k_republish_keyframe_request_max_attempts_per_subscriber,
+            pending_erased ? 1 : 0);
+
+        return false;
+    }
+
+    if (eligible_subscriber_count == 0 || request_count == 0)
     {
         return false;
     }
 
     WEBRTC_LOG_INFO(
-        "publisher republish keyframe request consumed stream={} publisher_session={} subscriber_session={} consumed_subscribers={} "
-        "eligible_subscribers={} completed={} media_ssrc={}",
+        "publisher republish keyframe request retry stream={} publisher_session={} subscriber_session={} request_count={} max_attempts={} "
+        "first_request_subscribers={} eligible_subscribers={} pending_erased={} media_ssrc={}",
         route.source.stream_id,
         route.source.session_id,
         target_peer.session_id,
-        consumed_subscriber_count,
+        request_count,
+        k_republish_keyframe_request_max_attempts_per_subscriber,
+        first_request_subscriber_count,
         eligible_subscriber_count,
-        pending_completed ? 1 : 0,
+        pending_erased ? 1 : 0,
         packet.ssrc);
 
     return true;
 }
+
 void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet,
                                           const media_route_result& route,
                                           const std::optional<media_track_resolution>& track_resolution,
