@@ -688,9 +688,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void remember_subscriber_downlink_bandwidth_feedback_window_locked(std::string_view stream_id,
                                                                        std::string_view subscriber_session_id,
-                                                                       const outbound_transport_cc_feedback_window_state& window,
+                                                                       outbound_transport_cc_feedback_window_state& window,
                                                                        uint64_t current_time_milliseconds);
-
     [[nodiscard]]
     bool subscriber_downlink_bitrate_gate_allows_packet(const media_route_result& route,
                                                         const media_peer_info& target_peer,
@@ -1180,6 +1179,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                           const std::vector<rtcp_feedback_route_event>& feedback_events,
                                                                           const media_peer_info& target_peer);
 
+    void mark_subscriber_downlink_republish_grace_for_stream(std::string_view stream_id, std::string_view publisher_session_id);
+
+    void forget_subscriber_downlink_republish_grace_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_subscriber_downlink_republish_grace_for_stream_locked(std::string_view stream_id);
+
    private:
     boost::asio::io_context& io_context_;
 
@@ -1255,6 +1261,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     std::unordered_map<std::string, subscriber_downlink_bandwidth_state> subscriber_downlink_bandwidth_by_key_;
     std::unordered_map<std::string, subscriber_downlink_pacing_state> subscriber_downlink_pacing_by_key_;
+    std::unordered_map<std::string, uint64_t> subscriber_downlink_republish_grace_until_by_key_;
 
     bool subscriber_downlink_pacing_timer_scheduled_ = false;
 

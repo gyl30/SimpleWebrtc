@@ -101,6 +101,68 @@ constexpr std::size_t k_max_rtp_packet_cache_max_packets = 262144;
 
 inline constexpr std::size_t k_max_outbound_transport_cc_packet_identities = 65536;
 
+constexpr uint64_t k_subscriber_downlink_republish_grace_milliseconds = 8000;
+constexpr uint64_t k_subscriber_downlink_republish_grace_target_bitrate_bps = 2000000;
+
+std::string make_subscriber_downlink_republish_grace_key(std::string_view stream_id, std::string_view subscriber_session_id)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + subscriber_session_id.size() + 1);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(subscriber_session_id);
+
+    return key;
+}
+
+bool subscriber_downlink_republish_grace_key_matches_stream(std::string_view key, std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return false;
+    }
+
+    const std::string prefix = std::string(stream_id) + "|";
+
+    return key.starts_with(prefix);
+}
+
+bool subscriber_downlink_republish_grace_key_matches_session(std::string_view key, std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return false;
+    }
+
+    const std::string suffix = "|" + std::string(session_id);
+
+    if (key.size() < suffix.size())
+    {
+        return false;
+    }
+
+    return key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+uint64_t clamp_subscriber_downlink_republish_grace_bitrate(uint64_t bitrate_bps, uint64_t min_bitrate_bps, uint64_t max_bitrate_bps)
+{
+    if (max_bitrate_bps > 0)
+    {
+        bitrate_bps = std::min(bitrate_bps, max_bitrate_bps);
+    }
+
+    if (min_bitrate_bps > 0)
+    {
+        bitrate_bps = std::max(bitrate_bps, min_bitrate_bps);
+    }
+
+    return bitrate_bps;
+}
+
 struct ice_username_parts
 {
     std::string_view recipient_ufrag;
@@ -689,7 +751,30 @@ bool subscriber_downlink_pacing_state_key_matches_stream(std::string_view key, s
 {
     return subscriber_downlink_bandwidth_state_key_matches_stream(key, stream_id);
 }
+void reset_outbound_transport_cc_feedback_window_runtime(ice_udp_server::outbound_transport_cc_feedback_window_state& window,
+                                                         uint64_t current_time_milliseconds)
+{
+    window.first_feedback_at_milliseconds = current_time_milliseconds;
+    window.last_feedback_at_milliseconds = current_time_milliseconds;
 
+    window.feedback_count = 0;
+    window.feedback_packet_status_count = 0;
+
+    window.lookup_hit_count = 0;
+    window.lookup_miss_count = 0;
+
+    window.received_count = 0;
+    window.lost_count = 0;
+
+    window.small_delta_count = 0;
+    window.large_delta_count = 0;
+
+    window.delta_microseconds_sum = 0;
+    window.max_delta_microseconds = 0;
+    window.min_delta_microseconds = 0;
+
+    window.observations.clear();
+}
 void add_outbound_transport_cc_feedback_delta(ice_udp_server::outbound_transport_cc_feedback_window_state& window, int64_t delta_microseconds)
 {
     if (window.small_delta_count + window.large_delta_count == 0)
@@ -4812,6 +4897,7 @@ void ice_udp_server::stop()
         pending_republish_keyframe_state_by_stream_.clear();
 
         selected_rid_layer_state_by_key_.clear();
+        subscriber_downlink_republish_grace_until_by_key_.clear();
 
         runtime_selected_rid_targets_by_key_.clear();
 
@@ -4827,7 +4913,7 @@ void ice_udp_server::stop()
         outbound_transport_cc_feedback_windows_by_key_.clear();
 
         subscriber_downlink_pacing_by_key_.clear();
-
+        subscriber_downlink_bandwidth_by_key_.clear();
         subscriber_downlink_pacing_timer_scheduled_ = false;
 
         endpoint_last_seen_milliseconds_by_address_.clear();
@@ -5012,6 +5098,7 @@ void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
     forget_selected_rid_layer_states_for_session(session_id);
     forget_outbound_rtp_sequences_for_session(session_id);
     forget_outbound_transport_cc_sequences_for_session(session_id);
+    forget_subscriber_downlink_republish_grace_for_session(session_id);
     forget_outbound_transport_cc_packets_for_session(session_id);
     forget_outbound_transport_cc_feedback_windows_for_session(session_id);
     forget_subscriber_downlink_bandwidth_states_for_session(session_id);
@@ -5061,7 +5148,111 @@ void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
         nack_retransmit_throttle_->forget_session(session_id);
     }
 }
+void ice_udp_server::mark_subscriber_downlink_republish_grace_for_stream(std::string_view stream_id, std::string_view publisher_session_id)
+{
+    if (stream_id.empty())
+    {
+        return;
+    }
 
+    const uint64_t grace_until_milliseconds = now_milliseconds() + k_subscriber_downlink_republish_grace_milliseconds;
+
+    std::size_t state_count = 0;
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    for (auto& [key, state] : subscriber_downlink_bandwidth_by_key_)
+    {
+        if (state.stream_id != stream_id)
+        {
+            continue;
+        }
+
+        const std::string grace_key = make_subscriber_downlink_republish_grace_key(state.stream_id, state.subscriber_session_id);
+
+        subscriber_downlink_republish_grace_until_by_key_[grace_key] = grace_until_milliseconds;
+
+        state.updated_at_milliseconds = now_milliseconds();
+        state.last_feedback_at_milliseconds = now_milliseconds();
+        state.last_transition_at_milliseconds = now_milliseconds();
+        state.transition_count += 1;
+        state.last_transition_reason = "publisher republish grace";
+
+        state.control_state = subscriber_downlink_control_state::probing;
+        state.target_bitrate_bps = clamp_subscriber_downlink_republish_grace_bitrate(
+            k_subscriber_downlink_republish_grace_target_bitrate_bps, state.min_bitrate_bps, state.max_bitrate_bps);
+
+        state.feedback_count = 0;
+        state.window_observation_count = 0;
+        state.window_packet_status_count = 0;
+        state.lookup_hit_rate_ppm = 1000000;
+        state.loss_rate_ppm = 0;
+        state.received_count = 0;
+        state.lost_count = 0;
+        state.avg_delta_microseconds = 0;
+        state.min_delta_microseconds = 0;
+        state.max_delta_microseconds = 0;
+
+        state_count += 1;
+    }
+
+    WEBRTC_LOG_INFO("subscriber downlink republish grace marked stream={} publisher_session={} subscribers={} grace_ms={} grace_until_ms={}",
+                    stream_id,
+                    publisher_session_id,
+                    state_count,
+                    k_subscriber_downlink_republish_grace_milliseconds,
+                    grace_until_milliseconds);
+}
+
+void ice_udp_server::forget_subscriber_downlink_republish_grace_for_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    for (auto iterator = subscriber_downlink_republish_grace_until_by_key_.begin();
+         iterator != subscriber_downlink_republish_grace_until_by_key_.end();)
+    {
+        if (subscriber_downlink_republish_grace_key_matches_session(iterator->first, session_id))
+        {
+            iterator = subscriber_downlink_republish_grace_until_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+}
+
+std::size_t ice_udp_server::erase_subscriber_downlink_republish_grace_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = subscriber_downlink_republish_grace_until_by_key_.begin();
+         iterator != subscriber_downlink_republish_grace_until_by_key_.end();)
+    {
+        if (subscriber_downlink_republish_grace_key_matches_stream(iterator->first, stream_id))
+        {
+            iterator = subscriber_downlink_republish_grace_until_by_key_.erase(iterator);
+
+            erased_count += 1;
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
+}
 void ice_udp_server::forget_republished_publisher_runtime_state(std::string_view stream_id,
                                                                 std::string_view old_publisher_session_id,
                                                                 std::string_view new_publisher_session_id)
@@ -8511,6 +8702,8 @@ void ice_udp_server::register_session_removed_callback()
             self->forget_republished_publisher_runtime_state(
                 republished_session.stream_id, republished_session.old_session_id, republished_session.new_session_id);
 
+            self->mark_subscriber_downlink_republish_grace_for_stream(republished_session.stream_id, republished_session.new_session_id);
+
             self->mark_republish_keyframe_request_pending(republished_session.stream_id, republished_session.new_session_id);
 
             self->schedule_lifecycle_snapshot_log("publisher republish callback", republished_session.stream_id, republished_session.old_session_id);
@@ -10380,7 +10573,7 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
     {
         std::lock_guard lock(endpoint_mutex_);
 
-        const auto iterator = keyframe_request_last_time_milliseconds_by_key_.find(key);
+        auto iterator = keyframe_request_last_time_milliseconds_by_key_.find(key);
 
         if (republish_keyframe_request || selected_rid_keyframe_request)
         {
@@ -10393,23 +10586,24 @@ void ice_udp_server::maybe_request_keyframe_from_publisher(const srtp_packet_pro
                 keyframe_request_last_time_milliseconds_by_key_.emplace(key, current_time_milliseconds);
             }
         }
-        else if (iterator != keyframe_request_last_time_milliseconds_by_key_.end())
+        else if (iterator == keyframe_request_last_time_milliseconds_by_key_.end())
         {
-            const uint64_t elapsed_milliseconds = current_time_milliseconds > iterator->second ? current_time_milliseconds - iterator->second : 0;
-
-            if (elapsed_milliseconds < k_keyframe_request_interval_milliseconds)
-            {
-                return;
-            }
-
-            iterator->second = current_time_milliseconds;
+            /*
+             * Send one proactive PLI for a newly observed publisher->subscriber
+             * video forwarding binding. After that, normal browser RTCP feedback
+             * is responsible for additional keyframe requests.
+             *
+             * Do not keep sending proactive PLI every interval for healthy video:
+             * that creates a permanent keyframe request loop even when WHEP is
+             * already decoding frames.
+             */
+            keyframe_request_last_time_milliseconds_by_key_.emplace(key, current_time_milliseconds);
         }
         else
         {
-            keyframe_request_last_time_milliseconds_by_key_.emplace(key, current_time_milliseconds);
+            return;
         }
     }
-
     const keyframe_request_feedback_type feedback_type =
         select_keyframe_request_feedback_type(route.source.stream_id, route.source.session_id, track_resolution->mid, track_resolution->kind);
 
@@ -16678,6 +16872,9 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         const std::size_t erased_outbound_transport_cc_feedback_windows = erase_outbound_transport_cc_feedback_windows_for_stream_locked(stream_id);
         (void)erased_outbound_transport_cc_feedback_windows;
 
+        const std::size_t erased_republish_grace = erase_subscriber_downlink_republish_grace_for_stream_locked(stream_id);
+        (void)erased_republish_grace;
+
         const std::size_t erased_subscriber_downlink_bandwidth_states = erase_subscriber_downlink_bandwidth_states_for_stream_locked(stream_id);
         (void)erased_subscriber_downlink_bandwidth_states;
 
@@ -17941,7 +18138,7 @@ std::size_t ice_udp_server::outbound_transport_cc_feedback_window_observation_co
 }
 void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_locked(std::string_view stream_id,
                                                                                    std::string_view subscriber_session_id,
-                                                                                   const outbound_transport_cc_feedback_window_state& window,
+                                                                                   outbound_transport_cc_feedback_window_state& window,
                                                                                    uint64_t current_time_milliseconds)
 {
     if (stream_id.empty() || subscriber_session_id.empty())
@@ -17974,6 +18171,49 @@ void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_lock
     const subscriber_downlink_control_state next_state =
         select_subscriber_downlink_control_state(observation_count, lookup_hit_rate_ppm, loss_rate_ppm);
 
+    bool republish_grace_active = false;
+
+    const std::string republish_grace_key = make_subscriber_downlink_republish_grace_key(state.stream_id, state.subscriber_session_id);
+
+    auto republish_grace_iterator = subscriber_downlink_republish_grace_until_by_key_.find(republish_grace_key);
+
+    if (republish_grace_iterator != subscriber_downlink_republish_grace_until_by_key_.end())
+    {
+        if (now_milliseconds() <= republish_grace_iterator->second)
+        {
+            republish_grace_active = true;
+        }
+        else
+        {
+            subscriber_downlink_republish_grace_until_by_key_.erase(republish_grace_iterator);
+        }
+    }
+
+    if (republish_grace_active)
+    {
+        reset_outbound_transport_cc_feedback_window_runtime(window, current_time_milliseconds);
+
+        state.updated_at_milliseconds = current_time_milliseconds;
+        state.last_feedback_at_milliseconds = current_time_milliseconds;
+        state.feedback_count = 0;
+
+        state.control_state = subscriber_downlink_control_state::probing;
+        state.target_bitrate_bps = clamp_subscriber_downlink_republish_grace_bitrate(
+            k_subscriber_downlink_republish_grace_target_bitrate_bps, state.min_bitrate_bps, state.max_bitrate_bps);
+
+        state.window_observation_count = 0;
+        state.window_packet_status_count = 0;
+        state.lookup_hit_rate_ppm = 1000000;
+        state.loss_rate_ppm = 0;
+        state.received_count = 0;
+        state.lost_count = 0;
+        state.avg_delta_microseconds = 0;
+        state.min_delta_microseconds = 0;
+        state.max_delta_microseconds = 0;
+        state.last_transition_reason = "publisher republish grace";
+
+        return;
+    }
     if (state.control_state != next_state)
     {
         state.control_state = next_state;
