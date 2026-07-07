@@ -1268,6 +1268,54 @@ std::string make_outbound_transport_cc_packet_key(std::string_view stream_id,
 
     return key;
 }
+std::string make_outbound_transport_cc_rtp_packet_key(std::string_view stream_id,
+                                                      std::string_view subscriber_session_id,
+                                                      uint32_t subscriber_ssrc,
+                                                      uint16_t subscriber_rtp_sequence_number)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + subscriber_session_id.size() + 32);
+
+    key.append(stream_id);
+    key.push_back('|');
+    key.append(subscriber_session_id);
+    key.push_back('|');
+    key.append(std::to_string(subscriber_ssrc));
+    key.push_back('|');
+    key.append(std::to_string(subscriber_rtp_sequence_number));
+
+    return key;
+}
+
+bool outbound_transport_cc_rtp_packet_key_matches_stream(std::string_view key, std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return false;
+    }
+
+    std::string prefix(stream_id);
+    prefix.push_back('|');
+
+    return key.starts_with(prefix);
+}
+
+bool outbound_transport_cc_rtp_packet_key_matches_session(std::string_view key, std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return false;
+    }
+
+    std::string marker;
+    marker.reserve(session_id.size() + 2);
+    marker.push_back('|');
+    marker.append(session_id);
+    marker.push_back('|');
+
+    return key.find(marker) != std::string_view::npos;
+}
 
 bool outbound_transport_cc_packet_key_matches_session(std::string_view key, std::string_view session_id)
 {
@@ -17024,6 +17072,7 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
     std::size_t miss_count = 0;
     std::size_t received_hit_count = 0;
     std::size_t lost_hit_count = 0;
+    std::size_t local_drop_ignored_count = 0;
 
     bool feedback_packet_begin = true;
 
@@ -17052,6 +17101,21 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
         {
             hit_count += 1;
 
+            if (identity->locally_dropped)
+            {
+                local_drop_ignored_count += 1;
+
+                WEBRTC_LOG_DEBUG(
+                    "transport cc feedback ignored local drop stream={} subscriber_session={} transport_cc_sequence={} reason={} received={}",
+                    event.source.stream_id,
+                    event.source.session_id,
+                    status.sequence_number,
+                    identity->local_drop_reason,
+                    status.received);
+
+                continue;
+            }
+
             observation.sent_at_milliseconds = identity->sent_at_milliseconds;
             observation.publisher_ssrc = identity->publisher_ssrc;
             observation.subscriber_ssrc = identity->subscriber_ssrc;
@@ -17070,6 +17134,7 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
         else
         {
             miss_count += 1;
+            observation.counts_for_downlink_control = false;
         }
 
         remember_outbound_transport_cc_feedback_observation(event.source.stream_id, event.source.session_id, observation);
@@ -17099,15 +17164,32 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
             {
                 hit_count += 1;
 
+                if (identity->locally_dropped)
+                {
+                    local_drop_ignored_count += 1;
+
+                    WEBRTC_LOG_DEBUG(
+                        "transport cc fallback feedback ignored local drop stream={} subscriber_session={} transport_cc_sequence={} reason={}",
+                        event.source.stream_id,
+                        event.source.session_id,
+                        sequence_number,
+                        identity->local_drop_reason);
+
+                    continue;
+                }
+
                 observation.sent_at_milliseconds = identity->sent_at_milliseconds;
                 observation.publisher_ssrc = identity->publisher_ssrc;
                 observation.subscriber_ssrc = identity->subscriber_ssrc;
                 observation.publisher_rtp_sequence_number = identity->publisher_rtp_sequence_number;
                 observation.subscriber_rtp_sequence_number = identity->subscriber_rtp_sequence_number;
+
+                lost_hit_count += 1;
             }
             else
             {
                 miss_count += 1;
+                observation.counts_for_downlink_control = false;
             }
 
             remember_outbound_transport_cc_feedback_observation(event.source.stream_id, event.source.session_id, observation);
@@ -17127,7 +17209,7 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
     WEBRTC_LOG_DEBUG(
         "transport cc feedback resolved stream={} subscriber_session={} sender_ssrc={} media_ssrc={} base_sequence={} "
         "packet_status_count={} feedback_packet_count={} received={} not_received={} small_delta={} large_delta={} hit={} miss={} "
-        "received_hit={} lost_hit={}",
+        "received_hit={} lost_hit={} local_drop_ignored={}",
         event.source.stream_id,
         event.source.session_id,
         event.sender_ssrc,
@@ -17142,7 +17224,8 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
         hit_count,
         miss_count,
         received_hit_count,
-        lost_hit_count);
+        lost_hit_count,
+        local_drop_ignored_count);
 }
 void ice_udp_server::remember_orphan_subscriber_keyframe_request(const rtcp_feedback_route_event& event)
 {
@@ -19631,11 +19714,28 @@ void ice_udp_server::remember_outbound_transport_cc_packet(const outbound_transp
 
     const std::string key =
         make_outbound_transport_cc_packet_key(identity.stream_id, identity.subscriber_session_id, identity.subscriber_transport_cc_sequence_number);
+
+    const std::string rtp_key = make_outbound_transport_cc_rtp_packet_key(
+        identity.stream_id, identity.subscriber_session_id, identity.subscriber_ssrc, identity.subscriber_rtp_sequence_number);
+
     std::lock_guard lock(endpoint_mutex_);
 
-    const bool inserted = !outbound_transport_cc_packets_by_key_.contains(key);
+    const auto old_iterator = outbound_transport_cc_packets_by_key_.find(key);
+
+    if (old_iterator != outbound_transport_cc_packets_by_key_.end())
+    {
+        const outbound_transport_cc_packet_identity& old_identity = old_iterator->second;
+
+        const std::string old_rtp_key = make_outbound_transport_cc_rtp_packet_key(
+            old_identity.stream_id, old_identity.subscriber_session_id, old_identity.subscriber_ssrc, old_identity.subscriber_rtp_sequence_number);
+
+        outbound_transport_cc_packet_key_by_rtp_key_.erase(old_rtp_key);
+    }
+
+    const bool inserted = old_iterator == outbound_transport_cc_packets_by_key_.end();
 
     outbound_transport_cc_packets_by_key_[key] = identity;
+    outbound_transport_cc_packet_key_by_rtp_key_[rtp_key] = key;
 
     if (inserted)
     {
@@ -19649,8 +19749,130 @@ void ice_udp_server::remember_outbound_transport_cc_packet(const outbound_transp
 
         outbound_transport_cc_packet_insertion_order_.pop_front();
 
+        const auto oldest_iterator = outbound_transport_cc_packets_by_key_.find(oldest_key);
+
+        if (oldest_iterator != outbound_transport_cc_packets_by_key_.end())
+        {
+            const outbound_transport_cc_packet_identity& oldest_identity = oldest_iterator->second;
+
+            const std::string oldest_rtp_key = make_outbound_transport_cc_rtp_packet_key(oldest_identity.stream_id,
+                                                                                         oldest_identity.subscriber_session_id,
+                                                                                         oldest_identity.subscriber_ssrc,
+                                                                                         oldest_identity.subscriber_rtp_sequence_number);
+
+            outbound_transport_cc_packet_key_by_rtp_key_.erase(oldest_rtp_key);
+        }
+
         outbound_transport_cc_packets_by_key_.erase(oldest_key);
     }
+}
+std::optional<ice_udp_server::outbound_transport_cc_packet_identity> ice_udp_server::find_outbound_transport_cc_packet_by_rtp(
+    std::string_view stream_id, std::string_view subscriber_session_id, uint32_t subscriber_ssrc, uint16_t subscriber_rtp_sequence_number) const
+{
+    if (stream_id.empty() || subscriber_session_id.empty() || subscriber_ssrc == 0)
+    {
+        return std::nullopt;
+    }
+
+    const std::string rtp_key =
+        make_outbound_transport_cc_rtp_packet_key(stream_id, subscriber_session_id, subscriber_ssrc, subscriber_rtp_sequence_number);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto index_iterator = outbound_transport_cc_packet_key_by_rtp_key_.find(rtp_key);
+
+    if (index_iterator == outbound_transport_cc_packet_key_by_rtp_key_.end())
+    {
+        return std::nullopt;
+    }
+
+    const auto packet_iterator = outbound_transport_cc_packets_by_key_.find(index_iterator->second);
+
+    if (packet_iterator == outbound_transport_cc_packets_by_key_.end())
+    {
+        return std::nullopt;
+    }
+
+    return packet_iterator->second;
+}
+
+void ice_udp_server::mark_outbound_transport_cc_packet_locally_dropped_by_rtp(std::string_view stream_id,
+                                                                              std::string_view subscriber_session_id,
+                                                                              uint32_t subscriber_ssrc,
+                                                                              uint16_t subscriber_rtp_sequence_number,
+                                                                              std::string_view reason)
+{
+    std::lock_guard lock(endpoint_mutex_);
+
+    mark_outbound_transport_cc_packet_locally_dropped_by_rtp_locked(
+        stream_id, subscriber_session_id, subscriber_ssrc, subscriber_rtp_sequence_number, reason);
+}
+
+void ice_udp_server::mark_outbound_transport_cc_packet_locally_dropped_by_rtp_locked(std::string_view stream_id,
+                                                                                     std::string_view subscriber_session_id,
+                                                                                     uint32_t subscriber_ssrc,
+                                                                                     uint16_t subscriber_rtp_sequence_number,
+                                                                                     std::string_view reason)
+{
+    if (stream_id.empty() || subscriber_session_id.empty() || subscriber_ssrc == 0)
+    {
+        return;
+    }
+
+    const std::string rtp_key =
+        make_outbound_transport_cc_rtp_packet_key(stream_id, subscriber_session_id, subscriber_ssrc, subscriber_rtp_sequence_number);
+
+    const auto index_iterator = outbound_transport_cc_packet_key_by_rtp_key_.find(rtp_key);
+
+    if (index_iterator == outbound_transport_cc_packet_key_by_rtp_key_.end())
+    {
+        return;
+    }
+
+    const auto packet_iterator = outbound_transport_cc_packets_by_key_.find(index_iterator->second);
+
+    if (packet_iterator == outbound_transport_cc_packets_by_key_.end())
+    {
+        return;
+    }
+
+    outbound_transport_cc_packet_identity& identity = packet_iterator->second;
+
+    identity.locally_dropped = true;
+    identity.local_drop_reason = std::string(reason);
+    identity.locally_dropped_at_milliseconds = now_milliseconds();
+}
+
+void ice_udp_server::mark_outbound_transport_cc_packet_locally_dropped_from_rtp_packet(const media_route_result& route,
+                                                                                       const media_peer_info& target_peer,
+                                                                                       std::span<const uint8_t> outbound_plain_packet,
+                                                                                       const std::optional<media_ssrc_mapping>& outbound_mapping,
+                                                                                       std::string_view reason)
+{
+    if (route.source.role != media_peer_role::publisher)
+    {
+        return;
+    }
+
+    if (target_peer.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (!outbound_mapping.has_value())
+    {
+        return;
+    }
+
+    auto header = parse_rtp_packet_header(outbound_plain_packet);
+
+    if (!header)
+    {
+        return;
+    }
+
+    mark_outbound_transport_cc_packet_locally_dropped_by_rtp(
+        target_peer.stream_id, target_peer.session_id, header->ssrc, header->sequence_number, reason);
 }
 std::optional<ice_udp_server::outbound_transport_cc_packet_identity> ice_udp_server::find_outbound_transport_cc_packet(
     std::string_view stream_id, std::string_view subscriber_session_id, uint16_t subscriber_transport_cc_sequence_number) const
@@ -19719,15 +19941,17 @@ void ice_udp_server::remember_outbound_transport_cc_feedback_observation(std::st
         window.lookup_miss_count += 1;
     }
 
-    if (observation.received)
+    if (observation.lookup_hit && observation.counts_for_downlink_control)
     {
-        window.received_count += 1;
+        if (observation.received)
+        {
+            window.received_count += 1;
+        }
+        else
+        {
+            window.lost_count += 1;
+        }
     }
-    else
-    {
-        window.lost_count += 1;
-    }
-
     if (observation.has_delta)
     {
         if (observation.delta_microseconds >= -8192000 && observation.delta_microseconds <= 8192000)
@@ -19761,15 +19985,17 @@ void ice_udp_server::remember_outbound_transport_cc_feedback_observation(std::st
             window.lookup_miss_count -= 1;
         }
 
-        if (oldest.received && window.received_count != 0)
+        if (oldest.lookup_hit && oldest.counts_for_downlink_control)
         {
-            window.received_count -= 1;
+            if (oldest.received && window.received_count != 0)
+            {
+                window.received_count -= 1;
+            }
+            else if (!oldest.received && window.lost_count != 0)
+            {
+                window.lost_count -= 1;
+            }
         }
-        else if (!oldest.received && window.lost_count != 0)
-        {
-            window.lost_count -= 1;
-        }
-
         if (oldest.has_delta)
         {
             if (oldest.delta_microseconds >= -8192000 && oldest.delta_microseconds <= 8192000)
@@ -20311,7 +20537,8 @@ void ice_udp_server::enqueue_subscriber_downlink_paced_packet(const media_route_
                                                               const media_peer_info& target_peer,
                                                               std::string_view remote_address,
                                                               const boost::asio::ip::udp::endpoint& remote_endpoint,
-                                                              std::vector<uint8_t> protected_packet)
+                                                              std::vector<uint8_t> protected_packet,
+                                                              std::optional<outbound_transport_cc_packet_identity> transport_cc_identity)
 {
     const auto& downlink_config = ice_udp_server_runtime_config_instance().subscriber_downlink_control;
 
@@ -20362,7 +20589,7 @@ void ice_udp_server::enqueue_subscriber_downlink_paced_packet(const media_route_
         while (!pacing_state.queue.empty() && (pacing_state.queue.size() >= max_pacing_queue_packets_per_subscriber ||
                                                pacing_state.queue_byte_count + packet_size > max_pacing_queue_bytes_per_subscriber))
         {
-            const subscriber_downlink_pacing_packet dropped_packet = std::move(pacing_state.queue.front());
+            subscriber_downlink_pacing_packet dropped_packet = std::move(pacing_state.queue.front());
 
             pacing_state.queue.pop_front();
 
@@ -20372,6 +20599,16 @@ void ice_udp_server::enqueue_subscriber_downlink_paced_packet(const media_route_
             pacing_state.dropped_packet_count += 1;
             pacing_state.dropped_byte_count += dropped_packet.protected_size;
 
+            if (dropped_packet.transport_cc_identity.has_value())
+            {
+                const outbound_transport_cc_packet_identity& identity = *dropped_packet.transport_cc_identity;
+
+                mark_outbound_transport_cc_packet_locally_dropped_by_rtp_locked(identity.stream_id,
+                                                                                identity.subscriber_session_id,
+                                                                                identity.subscriber_ssrc,
+                                                                                identity.subscriber_rtp_sequence_number,
+                                                                                "pacing_queue");
+            }
             rtp_rtcp_drop_media_forward_pacing_queue_total_.fetch_add(1, std::memory_order_relaxed);
         }
 
@@ -20383,6 +20620,7 @@ void ice_udp_server::enqueue_subscriber_downlink_paced_packet(const media_route_
         packet_to_queue.remote_endpoint = remote_endpoint;
         packet_to_queue.protected_size = packet_size;
         packet_to_queue.enqueued_at_milliseconds = now;
+        packet_to_queue.transport_cc_identity = std::move(transport_cc_identity);
         packet_to_queue.protected_packet = std::move(protected_packet);
 
         pacing_state.queue_byte_count += packet_size;
@@ -20483,7 +20721,9 @@ std::vector<ice_udp_server::subscriber_downlink_pacing_packet> ice_udp_server::p
 
             if (front_packet.enqueued_at_milliseconds != 0 && now > front_packet.enqueued_at_milliseconds + max_pacing_packet_age_milliseconds)
             {
-                const uint64_t dropped_size = front_packet.protected_size;
+                subscriber_downlink_pacing_packet dropped_packet = std::move(front_packet);
+
+                const uint64_t dropped_size = dropped_packet.protected_size;
 
                 pacing_state.queue.pop_front();
 
@@ -20492,11 +20732,20 @@ std::vector<ice_udp_server::subscriber_downlink_pacing_packet> ice_udp_server::p
                 pacing_state.dropped_packet_count += 1;
                 pacing_state.dropped_byte_count += dropped_size;
 
+                if (dropped_packet.transport_cc_identity.has_value())
+                {
+                    const outbound_transport_cc_packet_identity& identity = *dropped_packet.transport_cc_identity;
+
+                    mark_outbound_transport_cc_packet_locally_dropped_by_rtp_locked(identity.stream_id,
+                                                                                    identity.subscriber_session_id,
+                                                                                    identity.subscriber_ssrc,
+                                                                                    identity.subscriber_rtp_sequence_number,
+                                                                                    "pacing_expired");
+                }
                 rtp_rtcp_drop_media_forward_pacing_queue_total_.fetch_add(1, std::memory_order_relaxed);
 
                 continue;
             }
-
             if (sent_for_subscriber >= max_pacing_packets_per_subscriber_per_tick)
             {
                 break;
@@ -20766,6 +21015,7 @@ std::size_t ice_udp_server::subscriber_downlink_pacing_queue_byte_count_locked()
 
     return count;
 }
+
 void ice_udp_server::forget_outbound_transport_cc_packets_for_session(std::string_view session_id)
 {
     if (session_id.empty())
@@ -20786,6 +21036,9 @@ void ice_udp_server::forget_outbound_transport_cc_packets_for_session(std::strin
 
         ++iterator;
     }
+
+    std::erase_if(outbound_transport_cc_packet_key_by_rtp_key_,
+                  [session_id](const auto& item) { return outbound_transport_cc_rtp_packet_key_matches_session(item.first, session_id); });
 
     std::erase_if(outbound_transport_cc_packet_insertion_order_,
                   [session_id](const std::string& key) { return outbound_transport_cc_packet_key_matches_session(key, session_id); });
@@ -20813,6 +21066,9 @@ std::size_t ice_udp_server::erase_outbound_transport_cc_packets_for_stream_locke
 
         ++iterator;
     }
+
+    std::erase_if(outbound_transport_cc_packet_key_by_rtp_key_,
+                  [stream_id](const auto& item) { return outbound_transport_cc_rtp_packet_key_matches_stream(item.first, stream_id); });
 
     std::erase_if(outbound_transport_cc_packet_insertion_order_,
                   [stream_id](const std::string& key) { return outbound_transport_cc_packet_key_matches_stream(key, stream_id); });
@@ -21787,6 +22043,9 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
 
             if (!subscriber_downlink_bitrate_gate_allows_packet(route, *target_peer, track_resolution, packet, outbound_span, outbound_mapping))
             {
+                mark_outbound_transport_cc_packet_locally_dropped_from_rtp_packet(
+                    route, *target_peer, outbound_span, outbound_mapping, "bitrate_gate");
+
                 rtp_rtcp_drop_media_forward_bitrate_gate_total_.fetch_add(1, std::memory_order_relaxed);
 
                 continue;
@@ -21831,10 +22090,24 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
 
             maybe_request_keyframe_from_publisher(packet, route, track_resolution, *target_peer);
         }
-
-        if (subscriber_downlink_pacing_should_enqueue_packet(
-                route, *target_peer, packet, outbound_mapping, static_cast<uint64_t>(protected_packet->protected_packet.size())))
+        const uint64_t pacing_now = now_milliseconds();
+        if (subscriber_downlink_pacing_should_enqueue_packet(route, *target_peer, packet, outbound_mapping, pacing_now))
         {
+            std::optional<outbound_transport_cc_packet_identity> pacing_transport_cc_identity;
+
+            if (packet.kind == srtp_packet_kind::rtp && outbound_mapping.has_value())
+            {
+                const std::span<const uint8_t> outbound_span(outbound_plain_packet->data(), outbound_plain_packet->size());
+
+                auto outbound_header = parse_rtp_packet_header(outbound_span);
+
+                if (outbound_header)
+                {
+                    pacing_transport_cc_identity = find_outbound_transport_cc_packet_by_rtp(
+                        target_peer->stream_id, target_peer->session_id, outbound_header->ssrc, outbound_header->sequence_number);
+                }
+            }
+
             WEBRTC_LOG_DEBUG("media forward pacing enqueue stream={} source={} target={} kind={} plain_size={} protected_size={}",
                              route.source.stream_id,
                              route.source.remote_endpoint,
@@ -21843,12 +22116,15 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
                              outbound_plain_packet->size(),
                              protected_packet->protected_packet.size());
 
-            enqueue_subscriber_downlink_paced_packet(
-                route, *target_peer, target_address, *target_endpoint, std::move(protected_packet->protected_packet));
+            enqueue_subscriber_downlink_paced_packet(route,
+                                                     *target_peer,
+                                                     target_address,
+                                                     *target_endpoint,
+                                                     std::move(protected_packet->protected_packet),
+                                                     std::move(pacing_transport_cc_identity));
 
             continue;
         }
-
         WEBRTC_LOG_DEBUG("media forward send stream={} source={} target={} kind={} plain_size={} protected_size={}",
                          route.source.stream_id,
                          route.source.remote_endpoint,

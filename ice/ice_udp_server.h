@@ -502,13 +502,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     struct outbound_transport_cc_packet_identity
     {
         std::string stream_id;
-
         std::string publisher_session_id;
         std::string subscriber_session_id;
 
         std::string publisher_mid;
         std::string subscriber_mid;
-
         std::string kind;
 
         uint32_t publisher_ssrc = 0;
@@ -524,12 +522,17 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint16_t subscriber_transport_cc_sequence_number = 0;
 
         uint64_t sent_at_milliseconds = 0;
+
+        bool locally_dropped = false;
+        std::string local_drop_reason;
+        uint64_t locally_dropped_at_milliseconds = 0;
     };
     struct outbound_transport_cc_feedback_observation
     {
         uint16_t subscriber_transport_cc_sequence_number = 0;
 
         bool lookup_hit = false;
+        bool counts_for_downlink_control = true;
         bool received = false;
         bool has_delta = false;
 
@@ -719,10 +722,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
         std::vector<uint8_t> protected_packet;
 
+        std::optional<outbound_transport_cc_packet_identity> transport_cc_identity;
+
         uint64_t enqueued_at_milliseconds = 0;
         uint64_t protected_size = 0;
     };
-
     struct subscriber_downlink_pacing_state
     {
         std::string stream_id;
@@ -845,6 +849,29 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::optional<outbound_transport_cc_packet_identity> find_outbound_transport_cc_packet(std::string_view stream_id,
                                                                                            std::string_view subscriber_session_id,
                                                                                            uint16_t subscriber_transport_cc_sequence_number) const;
+    [[nodiscard]]
+    std::optional<outbound_transport_cc_packet_identity> find_outbound_transport_cc_packet_by_rtp(std::string_view stream_id,
+                                                                                                  std::string_view subscriber_session_id,
+                                                                                                  uint32_t subscriber_ssrc,
+                                                                                                  uint16_t subscriber_rtp_sequence_number) const;
+
+    void mark_outbound_transport_cc_packet_locally_dropped_by_rtp(std::string_view stream_id,
+                                                                  std::string_view subscriber_session_id,
+                                                                  uint32_t subscriber_ssrc,
+                                                                  uint16_t subscriber_rtp_sequence_number,
+                                                                  std::string_view reason);
+
+    void mark_outbound_transport_cc_packet_locally_dropped_by_rtp_locked(std::string_view stream_id,
+                                                                         std::string_view subscriber_session_id,
+                                                                         uint32_t subscriber_ssrc,
+                                                                         uint16_t subscriber_rtp_sequence_number,
+                                                                         std::string_view reason);
+
+    void mark_outbound_transport_cc_packet_locally_dropped_from_rtp_packet(const media_route_result& route,
+                                                                           const media_peer_info& target_peer,
+                                                                           std::span<const uint8_t> outbound_plain_packet,
+                                                                           const std::optional<media_ssrc_mapping>& outbound_mapping,
+                                                                           std::string_view reason);
 
     void remember_outbound_transport_cc_feedback_observation(std::string_view stream_id,
                                                              std::string_view subscriber_session_id,
@@ -889,8 +916,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                   const media_peer_info& target_peer,
                                                   std::string_view remote_address,
                                                   const boost::asio::ip::udp::endpoint& remote_endpoint,
-                                                  std::vector<uint8_t> protected_packet);
-
+                                                  std::vector<uint8_t> protected_packet,
+                                                  std::optional<outbound_transport_cc_packet_identity> transport_cc_identity);
     void schedule_subscriber_downlink_pacing_timer();
 
     void handle_subscriber_downlink_pacing_timer();
@@ -1475,6 +1502,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     std::unordered_map<std::string, uint16_t> outbound_transport_cc_sequence_by_key_;
     std::unordered_map<std::string, outbound_transport_cc_packet_identity> outbound_transport_cc_packets_by_key_;
+    std::unordered_map<std::string, std::string> outbound_transport_cc_packet_key_by_rtp_key_;
     std::deque<std::string> outbound_transport_cc_packet_insertion_order_;
     std::unordered_map<std::string, outbound_transport_cc_feedback_window_state> outbound_transport_cc_feedback_windows_by_key_;
 
