@@ -15256,14 +15256,45 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
             if (ensured_header_extension_id_exists(rewrite_options.ensured_header_extensions, rewrite.source_id) ||
                 ensured_header_extension_id_exists(rewrite_options.ensured_header_extensions, rewrite.target_id))
             {
+                WEBRTC_LOG_WARN(
+                    "rtx retransmit header extension id rewrite skipped ensured extension collision name={} stream={} subscriber={} "
+                    "publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} kind={} primary_sequence={} "
+                    "source_id={} target_id={}",
+                    rewrite_name,
+                    event.source.stream_id,
+                    event.source.remote_endpoint,
+                    primary_ssrc_mapping.publisher_session_id,
+                    primary_ssrc_mapping.subscriber_session_id,
+                    rtx_payload_type_mapping->publisher_mid,
+                    rtx_payload_type_mapping->subscriber_mid,
+                    rtx_payload_type_mapping->kind,
+                    cached_packet.sequence_number,
+                    rewrite.source_id,
+                    rewrite.target_id);
+
                 return true;
             }
 
             if (rtp_packet_header_extension_id_exists(make_rtx_packet_span(), rewrite.target_id))
             {
+                WEBRTC_LOG_WARN(
+                    "rtx retransmit header extension id rewrite skipped target id collision name={} stream={} subscriber={} "
+                    "publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} kind={} primary_sequence={} "
+                    "source_id={} target_id={}",
+                    rewrite_name,
+                    event.source.stream_id,
+                    event.source.remote_endpoint,
+                    primary_ssrc_mapping.publisher_session_id,
+                    primary_ssrc_mapping.subscriber_session_id,
+                    rtx_payload_type_mapping->publisher_mid,
+                    rtx_payload_type_mapping->subscriber_mid,
+                    rtx_payload_type_mapping->kind,
+                    cached_packet.sequence_number,
+                    rewrite.source_id,
+                    rewrite.target_id);
+
                 return true;
             }
-
             if (remember_runtime_mapping && !remember_extmap_header_extension_id_rewrite(event.source.stream_id,
                                                                                          primary_ssrc_mapping.publisher_session_id,
                                                                                          primary_ssrc_mapping.subscriber_session_id,
@@ -15319,11 +15350,43 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
             if (ensured_header_extension_id_exists(rewrite_options.ensured_header_extensions, tracked_rewrite.source_id) ||
                 ensured_header_extension_id_exists(rewrite_options.ensured_header_extensions, tracked_rewrite.target_id))
             {
+                WEBRTC_LOG_WARN(
+                    "rtx retransmit rtx header extension id rewrite skipped ensured extension collision name={} stream={} subscriber={} "
+                    "publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} kind={} primary_sequence={} "
+                    "source_id={} target_id={}",
+                    rewrite_name,
+                    event.source.stream_id,
+                    event.source.remote_endpoint,
+                    primary_ssrc_mapping.publisher_session_id,
+                    primary_ssrc_mapping.subscriber_session_id,
+                    rtx_payload_type_mapping->publisher_mid,
+                    rtx_payload_type_mapping->subscriber_mid,
+                    rtx_payload_type_mapping->kind,
+                    cached_packet.sequence_number,
+                    tracked_rewrite.source_id,
+                    tracked_rewrite.target_id);
+
                 return true;
             }
 
             if (rtp_packet_header_extension_id_exists(make_rtx_packet_span(), tracked_rewrite.target_id))
             {
+                WEBRTC_LOG_WARN(
+                    "rtx retransmit rtx header extension id rewrite skipped target id collision name={} stream={} subscriber={} "
+                    "publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} kind={} primary_sequence={} "
+                    "source_id={} target_id={}",
+                    rewrite_name,
+                    event.source.stream_id,
+                    event.source.remote_endpoint,
+                    primary_ssrc_mapping.publisher_session_id,
+                    primary_ssrc_mapping.subscriber_session_id,
+                    rtx_payload_type_mapping->publisher_mid,
+                    rtx_payload_type_mapping->subscriber_mid,
+                    rtx_payload_type_mapping->kind,
+                    cached_packet.sequence_number,
+                    tracked_rewrite.source_id,
+                    tracked_rewrite.target_id);
+
                 return true;
             }
             if (!remember_extmap_header_extension_id_rewrite(event.source.stream_id,
@@ -16010,14 +16073,39 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
             if (ensured_header_extension_id_exists(options.ensured_header_extensions, rewrite.source_id) ||
                 ensured_header_extension_id_exists(options.ensured_header_extensions, rewrite.target_id))
             {
+                WEBRTC_LOG_WARN(
+                    "rtp header extension id rewrite skipped ensured extension collision name={} stream={} publisher_session={} "
+                    "subscriber_session={} publisher_mid={} subscriber_mid={} kind={} source_id={} target_id={}",
+                    rewrite_name,
+                    payload_type_mapping->stream_id,
+                    route.source.session_id,
+                    target_peer.session_id,
+                    payload_type_mapping->publisher_mid,
+                    payload_type_mapping->subscriber_mid,
+                    payload_type_mapping->kind,
+                    rewrite.source_id,
+                    rewrite.target_id);
+
                 return true;
             }
 
             if (rtp_packet_header_extension_id_exists(plain_packet_span, rewrite.target_id))
             {
+                WEBRTC_LOG_WARN(
+                    "rtp header extension id rewrite skipped target id collision name={} stream={} publisher_session={} subscriber_session={} "
+                    "publisher_mid={} subscriber_mid={} kind={} source_id={} target_id={}",
+                    rewrite_name,
+                    payload_type_mapping->stream_id,
+                    route.source.session_id,
+                    target_peer.session_id,
+                    payload_type_mapping->publisher_mid,
+                    payload_type_mapping->subscriber_mid,
+                    payload_type_mapping->kind,
+                    rewrite.source_id,
+                    rewrite.target_id);
+
                 return true;
             }
-
             if (remember_runtime_mapping && !remember_extmap_header_extension_id_rewrite(route.source.stream_id,
                                                                                          route.source.session_id,
                                                                                          target_peer.session_id,
@@ -16579,14 +16667,43 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
             if (ensured_header_extension_id_exists(options.ensured_header_extensions, rewrite.source_id) ||
                 ensured_header_extension_id_exists(options.ensured_header_extensions, rewrite.target_id))
             {
+                WEBRTC_LOG_WARN(
+                    "rtp nack retransmit header extension id rewrite skipped ensured extension collision name={} stream={} subscriber={} "
+                    "publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} kind={} sequence={} source_id={} target_id={}",
+                    rewrite_name,
+                    event.source.stream_id,
+                    event.source.remote_endpoint,
+                    ssrc_mapping->publisher_session_id,
+                    ssrc_mapping->subscriber_session_id,
+                    payload_type_mapping->publisher_mid,
+                    payload_type_mapping->subscriber_mid,
+                    payload_type_mapping->kind,
+                    cached_packet.sequence_number,
+                    rewrite.source_id,
+                    rewrite.target_id);
+
                 return true;
             }
 
             if (rtp_packet_header_extension_id_exists(cached_plain_packet_span, rewrite.target_id))
             {
+                WEBRTC_LOG_WARN(
+                    "rtp nack retransmit header extension id rewrite skipped target id collision name={} stream={} subscriber={} "
+                    "publisher_session={} subscriber_session={} publisher_mid={} subscriber_mid={} kind={} sequence={} source_id={} target_id={}",
+                    rewrite_name,
+                    event.source.stream_id,
+                    event.source.remote_endpoint,
+                    ssrc_mapping->publisher_session_id,
+                    ssrc_mapping->subscriber_session_id,
+                    payload_type_mapping->publisher_mid,
+                    payload_type_mapping->subscriber_mid,
+                    payload_type_mapping->kind,
+                    cached_packet.sequence_number,
+                    rewrite.source_id,
+                    rewrite.target_id);
+
                 return true;
             }
-
             if (remember_runtime_mapping && !remember_extmap_header_extension_id_rewrite(event.source.stream_id,
                                                                                          ssrc_mapping->publisher_session_id,
                                                                                          ssrc_mapping->subscriber_session_id,
