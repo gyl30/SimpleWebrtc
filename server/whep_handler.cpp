@@ -279,6 +279,61 @@ std::vector<sdp::sdp_answer_media_source> filter_whep_outbound_media_sources(con
 
     return filtered_sources;
 }
+
+std::size_t count_whep_outbound_media_sources_by_kind(const std::vector<sdp::sdp_answer_media_source>& sources, std::string_view kind)
+{
+    std::size_t count = 0;
+
+    for (const auto& source : sources)
+    {
+        if (source.ssrc == 0)
+        {
+            continue;
+        }
+
+        if (source.kind != kind)
+        {
+            continue;
+        }
+
+        count += 1;
+    }
+
+    return count;
+}
+
+const sdp::sdp_answer_media_source* find_previous_whep_outbound_media_source_by_mid(const std::vector<sdp::sdp_answer_media_source>& previous_sources,
+                                                                                    std::string_view mid,
+                                                                                    std::string_view kind)
+{
+    if (mid.empty())
+    {
+        return nullptr;
+    }
+
+    for (const auto& source : previous_sources)
+    {
+        if (source.ssrc == 0)
+        {
+            continue;
+        }
+
+        if (source.mid != mid)
+        {
+            continue;
+        }
+
+        if (source.kind != kind)
+        {
+            continue;
+        }
+
+        return &source;
+    }
+
+    return nullptr;
+}
+
 const sdp::sdp_answer_media_source* find_previous_whep_outbound_media_source_by_kind(
     const std::vector<sdp::sdp_answer_media_source>& previous_sources, std::string_view kind)
 {
@@ -300,6 +355,30 @@ const sdp::sdp_answer_media_source* find_previous_whep_outbound_media_source_by_
     return nullptr;
 }
 
+const sdp::sdp_answer_media_source* find_previous_whep_outbound_media_source(const std::vector<sdp::sdp_answer_media_source>& previous_sources,
+                                                                             const std::vector<sdp::sdp_answer_media_source>& fresh_sources,
+                                                                             const sdp::sdp_answer_media_source& fresh_source)
+{
+    const auto* matched_by_mid = find_previous_whep_outbound_media_source_by_mid(previous_sources, fresh_source.mid, fresh_source.kind);
+
+    if (matched_by_mid != nullptr)
+    {
+        return matched_by_mid;
+    }
+
+    if (count_whep_outbound_media_sources_by_kind(previous_sources, fresh_source.kind) != 1)
+    {
+        return nullptr;
+    }
+
+    if (count_whep_outbound_media_sources_by_kind(fresh_sources, fresh_source.kind) != 1)
+    {
+        return nullptr;
+    }
+
+    return find_previous_whep_outbound_media_source_by_kind(previous_sources, fresh_source.kind);
+}
+
 std::vector<sdp::sdp_answer_media_source> make_reconnected_whep_outbound_media_sources(
     const std::vector<sdp::sdp_answer_media_source>& previous_sources, const sdp::webrtc_offer_summary& offer)
 {
@@ -316,7 +395,7 @@ std::vector<sdp::sdp_answer_media_source> make_reconnected_whep_outbound_media_s
 
     for (const auto& fresh_source : fresh_sources)
     {
-        const auto* previous_source = find_previous_whep_outbound_media_source_by_kind(previous_sources, fresh_source.kind);
+        const auto* previous_source = find_previous_whep_outbound_media_source(previous_sources, fresh_sources, fresh_source);
 
         if (previous_source == nullptr)
         {
@@ -335,11 +414,14 @@ std::vector<sdp::sdp_answer_media_source> make_reconnected_whep_outbound_media_s
 
         reconnected_source.track_id = fresh_source.track_id;
 
-        if (reconnected_source.rtx_repair_ssrc == 0)
+        if (fresh_source.rtx_repair_ssrc == 0)
+        {
+            reconnected_source.rtx_repair_ssrc = 0;
+        }
+        else if (reconnected_source.rtx_repair_ssrc == 0)
         {
             reconnected_source.rtx_repair_ssrc = fresh_source.rtx_repair_ssrc;
         }
-
         if (reconnected_source.cname.empty())
         {
             reconnected_source.cname = fresh_source.cname;
