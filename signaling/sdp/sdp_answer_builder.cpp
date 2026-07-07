@@ -2569,14 +2569,154 @@ void append_media_source_attributes(media_description& answer_media,
     push_attribute(answer_media.attributes, "ssrc", std::move(repair_msid_value));
 }
 
-bool answer_codecs_include_rtx(const std::vector<codec_info>& codecs)
+bool codec_name_equals_ignore_case(std::string_view value, std::string_view expected)
+{
+    if (value.size() != expected.size())
+    {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < value.size(); ++i)
+    {
+        const auto left = static_cast<unsigned char>(value[i]);
+        const auto right = static_cast<unsigned char>(expected[i]);
+
+        if (std::tolower(left) != std::tolower(right))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::string_view trim_fmtp_token(std::string_view value)
+{
+    const auto begin = value.find_first_not_of(" \t");
+
+    if (begin == std::string_view::npos)
+    {
+        return {};
+    }
+
+    const auto end = value.find_last_not_of(" \t");
+
+    return value.substr(begin, end - begin + 1);
+}
+
+bool parse_fmtp_payload_type(std::string_view value, uint16_t& payload_type)
+{
+    value = trim_fmtp_token(value);
+
+    if (value.empty())
+    {
+        return false;
+    }
+
+    uint32_t parsed = 0;
+
+    for (const char ch : value)
+    {
+        if (ch < '0' || ch > '9')
+        {
+            return false;
+        }
+
+        parsed = (parsed * 10U) + static_cast<uint32_t>(ch - '0');
+
+        if (parsed > 127U)
+        {
+            return false;
+        }
+    }
+
+    payload_type = static_cast<uint16_t>(parsed);
+
+    return true;
+}
+
+bool find_rtx_apt_payload_type(const codec_info& codec, uint16_t& apt_payload_type)
+{
+    std::size_t start = 0;
+
+    while (start <= codec.fmtp.size())
+    {
+        const std::size_t separator = codec.fmtp.find(';', start);
+        const std::string_view part = separator == std::string_view::npos ? std::string_view(codec.fmtp).substr(start)
+                                                                          : std::string_view(codec.fmtp).substr(start, separator - start);
+
+        const std::string_view item = trim_fmtp_token(part);
+        const std::size_t equal_position = item.find('=');
+
+        if (equal_position != std::string_view::npos)
+        {
+            const std::string_view key = trim_fmtp_token(item.substr(0, equal_position));
+            const std::string_view value = trim_fmtp_token(item.substr(equal_position + 1));
+
+            if (codec_name_equals_ignore_case(key, "apt"))
+            {
+                return parse_fmtp_payload_type(value, apt_payload_type);
+            }
+        }
+
+        if (separator == std::string_view::npos)
+        {
+            break;
+        }
+
+        start = separator + 1;
+    }
+
+    return false;
+}
+
+bool answer_primary_payload_type_exists(const std::vector<codec_info>& codecs, uint16_t payload_type)
 {
     for (const auto& codec : codecs)
     {
-        if (codec.name == "rtx" || codec.name == "RTX")
+        if (codec.payload_type != payload_type)
         {
-            return true;
+            continue;
         }
+
+        if (codec_name_equals_ignore_case(codec.name, "rtx"))
+        {
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+bool answer_codecs_include_usable_rtx(const std::vector<codec_info>& codecs)
+{
+    for (const auto& codec : codecs)
+    {
+        if (!codec_name_equals_ignore_case(codec.name, "rtx"))
+        {
+            continue;
+        }
+
+        if (codec.clock_rate != 90000)
+        {
+            continue;
+        }
+
+        uint16_t apt_payload_type = 0;
+
+        if (!find_rtx_apt_payload_type(codec, apt_payload_type))
+        {
+            continue;
+        }
+
+        if (!answer_primary_payload_type_exists(codecs, apt_payload_type))
+        {
+            continue;
+        }
+
+        return true;
     }
 
     return false;
@@ -2854,7 +2994,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 
             if (media_source != nullptr)
             {
-                append_media_source_attributes(answer_media, *media_source, answer_msid_value, answer_codecs_include_rtx(codecs));
+                append_media_source_attributes(answer_media, *media_source, answer_msid_value, answer_codecs_include_usable_rtx(codecs));
             }
         }
     }
