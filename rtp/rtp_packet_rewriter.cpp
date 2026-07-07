@@ -184,20 +184,42 @@ struct one_byte_header_extension_item
 
 std::size_t make_rtp_extension_insert_offset(const rtp_packet_header& header) { return 12 + static_cast<std::size_t>(header.csrc_count) * 4; }
 
-std::vector<uint8_t> build_one_byte_header_extension_payload(const std::vector<one_byte_header_extension_item>& items)
+std::expected<void, std::string> validate_one_byte_header_extension_item(const one_byte_header_extension_item& item)
+{
+    if (item.id == 0)
+    {
+        return make_error("rtp one-byte header extension item id is zero");
+    }
+
+    if (item.id >= 15)
+    {
+        return make_error("rtp one-byte header extension item id is out of range");
+    }
+
+    if (item.payload.empty())
+    {
+        return make_error("rtp one-byte header extension item payload is empty");
+    }
+
+    if (item.payload.size() > 16)
+    {
+        return make_error("rtp one-byte header extension item payload is too large");
+    }
+
+    return {};
+}
+
+std::expected<std::vector<uint8_t>, std::string> build_one_byte_header_extension_payload(const std::vector<one_byte_header_extension_item>& items)
 {
     std::vector<uint8_t> payload;
 
     for (const auto& item : items)
     {
-        if (item.id == 0 || item.id >= 15)
-        {
-            continue;
-        }
+        auto validation_result = validate_one_byte_header_extension_item(item);
 
-        if (item.payload.empty() || item.payload.size() > 16)
+        if (!validation_result)
         {
-            continue;
+            return std::unexpected(validation_result.error());
         }
 
         payload.push_back(static_cast<uint8_t>((item.id << 4U) | static_cast<uint8_t>(item.payload.size() - 1)));
@@ -273,14 +295,19 @@ std::expected<void, std::string> insert_new_one_byte_header_extension_block(std:
 
     items.push_back(std::move(item));
 
-    std::vector<uint8_t> extension_payload = build_one_byte_header_extension_payload(items);
+    auto extension_payload = build_one_byte_header_extension_payload(items);
 
-    if (extension_payload.empty() || (extension_payload.size() % 4) != 0)
+    if (!extension_payload)
+    {
+        return std::unexpected(extension_payload.error());
+    }
+
+    if (extension_payload->empty() || (extension_payload->size() % 4) != 0)
     {
         return make_error("rtp ensure new extension payload alignment is invalid");
     }
 
-    const std::size_t extension_words = extension_payload.size() / 4;
+    const std::size_t extension_words = extension_payload->size() / 4;
 
     if (extension_words > 0xffff)
     {
@@ -289,14 +316,13 @@ std::expected<void, std::string> insert_new_one_byte_header_extension_block(std:
 
     std::vector<uint8_t> extension_block;
 
-    extension_block.reserve(4 + extension_payload.size());
+    extension_block.reserve(4 + extension_payload->size());
 
     extension_block.push_back(0xbe);
     extension_block.push_back(0xde);
     extension_block.push_back(static_cast<uint8_t>((extension_words >> 8U) & 0xffU));
     extension_block.push_back(static_cast<uint8_t>(extension_words & 0xffU));
-    extension_block.insert(extension_block.end(), extension_payload.begin(), extension_payload.end());
-
+    extension_block.insert(extension_block.end(), extension_payload->begin(), extension_payload->end());
     packet[0] = static_cast<uint8_t>(packet[0] | 0x10U);
 
     packet.insert(packet.begin() + static_cast<std::ptrdiff_t>(insert_offset), extension_block.begin(), extension_block.end());
@@ -324,14 +350,19 @@ std::expected<void, std::string> replace_one_byte_header_extension_block(std::ve
         return make_error("rtp ensure replace extension offsets are invalid");
     }
 
-    std::vector<uint8_t> extension_payload = build_one_byte_header_extension_payload(items);
+    auto extension_payload = build_one_byte_header_extension_payload(items);
 
-    if (extension_payload.empty() || (extension_payload.size() % 4) != 0)
+    if (!extension_payload)
+    {
+        return std::unexpected(extension_payload.error());
+    }
+
+    if (extension_payload->empty() || (extension_payload->size() % 4) != 0)
     {
         return make_error("rtp ensure replace extension payload alignment is invalid");
     }
 
-    const std::size_t extension_words = extension_payload.size() / 4;
+    const std::size_t extension_words = extension_payload->size() / 4;
 
     if (extension_words > 0xffff)
     {
@@ -341,10 +372,10 @@ std::expected<void, std::string> replace_one_byte_header_extension_block(std::ve
     packet.erase(packet.begin() + static_cast<std::ptrdiff_t>(header.extension_payload_offset),
                  packet.begin() + static_cast<std::ptrdiff_t>(header.payload_offset));
 
-    packet.insert(packet.begin() + static_cast<std::ptrdiff_t>(header.extension_payload_offset), extension_payload.begin(), extension_payload.end());
+    packet.insert(
+        packet.begin() + static_cast<std::ptrdiff_t>(header.extension_payload_offset), extension_payload->begin(), extension_payload->end());
 
     write_u16(packet, header.extension_header_offset + 2, static_cast<uint16_t>(extension_words));
-
     return {};
 }
 
