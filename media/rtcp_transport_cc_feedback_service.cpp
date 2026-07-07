@@ -441,13 +441,6 @@ std::expected<std::vector<uint8_t>, std::string> write_transport_cc_feedback_pac
 
     return packet;
 }
-bool source_identity_matches_observed_packet(const rtcp_transport_cc_feedback_service::source_state& source,
-                                             const rtcp_transport_cc_observed_packet& packet)
-{
-    return source.stream_id == packet.stream_id && source.session_id == packet.session_id && source.remote_endpoint == packet.remote_endpoint &&
-           source.mid == packet.mid && source.kind == packet.kind && source.sender_ssrc == packet.sender_ssrc &&
-           source.media_ssrc == packet.media_ssrc;
-}
 }    // namespace
 
 rtcp_transport_cc_feedback_service::rtcp_transport_cc_feedback_service() : config_() {}

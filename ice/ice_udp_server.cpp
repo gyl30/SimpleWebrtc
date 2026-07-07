@@ -50,7 +50,7 @@ constexpr std::size_t k_rtcp_bye_max_ssrcs_per_packet = 31;
 
 constexpr std::size_t k_max_ice_username_fragment_size = 256;
 
-constexpr std::size_t k_max_ice_username_size = k_max_ice_username_fragment_size * 2 + 1;
+constexpr std::size_t k_max_ice_username_size = (k_max_ice_username_fragment_size * 2) + 1;
 
 constexpr auto k_minimum_dtls_timer_delay = std::chrono::milliseconds(1);
 
@@ -153,7 +153,7 @@ bool subscriber_downlink_republish_grace_key_matches_session(std::string_view ke
         return false;
     }
 
-    return key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0;
+    return key.ends_with(suffix);
 }
 
 uint64_t clamp_subscriber_downlink_republish_grace_bitrate(uint64_t bitrate_bps, uint64_t min_bitrate_bps, uint64_t max_bitrate_bps)
@@ -179,43 +179,6 @@ struct ice_username_parts
 
 using optional_mid_rewrite_result = std::expected<std::optional<rtp_header_extension_rewrite>, std::string>;
 using optional_rtx_header_extension_id_rewrite_result = std::expected<std::optional<rtp_rtx_header_extension_id_rewrite>, std::string>;
-
-void append_pli_u16(std::vector<uint8_t>& packet, uint16_t value)
-{
-    packet.push_back(static_cast<uint8_t>(value >> 8U));
-
-    packet.push_back(static_cast<uint8_t>(value & 0xffU));
-}
-
-void append_pli_u32(std::vector<uint8_t>& packet, uint32_t value)
-{
-    packet.push_back(static_cast<uint8_t>(value >> 24U));
-
-    packet.push_back(static_cast<uint8_t>((value >> 16U) & 0xffU));
-
-    packet.push_back(static_cast<uint8_t>((value >> 8U) & 0xffU));
-
-    packet.push_back(static_cast<uint8_t>(value & 0xffU));
-}
-
-std::vector<uint8_t> make_rtcp_picture_loss_indication_packet(uint32_t sender_ssrc, uint32_t media_ssrc)
-{
-    std::vector<uint8_t> packet;
-
-    packet.reserve(12);
-
-    packet.push_back(0x81U);
-
-    packet.push_back(206U);
-
-    append_pli_u16(packet, 2);
-
-    append_pli_u32(packet, sender_ssrc);
-
-    append_pli_u32(packet, media_ssrc);
-
-    return packet;
-}
 
 std::string make_keyframe_request_track_leaf(const media_track_resolution& track_resolution, uint32_t media_ssrc)
 {
@@ -558,10 +521,7 @@ uint64_t increase_bitrate_by_ppm(uint64_t bitrate_bps, uint64_t increase_ppm, ui
 
     uint64_t step_bps = scale_bitrate(bitrate_bps, increase_ppm, 1000000U);
 
-    if (step_bps < min_step_bps)
-    {
-        step_bps = min_step_bps;
-    }
+    step_bps = std::max(step_bps, min_step_bps);
 
     if (std::numeric_limits<uint64_t>::max() - bitrate_bps < step_bps)
     {
@@ -965,16 +925,8 @@ void add_outbound_transport_cc_feedback_delta(ice_udp_server::outbound_transport
     }
 
     window.delta_microseconds_sum += delta_microseconds;
-
-    if (delta_microseconds < window.min_delta_microseconds)
-    {
-        window.min_delta_microseconds = delta_microseconds;
-    }
-
-    if (delta_microseconds > window.max_delta_microseconds)
-    {
-        window.max_delta_microseconds = delta_microseconds;
-    }
+    window.min_delta_microseconds = std::min(delta_microseconds, window.min_delta_microseconds);
+    window.max_delta_microseconds = std::max(delta_microseconds, window.max_delta_microseconds);
 }
 
 void subtract_outbound_transport_cc_feedback_delta(ice_udp_server::outbound_transport_cc_feedback_window_state& window, int64_t delta_microseconds)
@@ -1627,7 +1579,7 @@ std::vector<lifecycle_debug_subscriber_forward_group_entry> make_subscriber_forw
             continue;
         }
 
-        const std::size_t index = static_cast<std::size_t>(std::distance(keys.begin(), iterator));
+        const auto index = static_cast<std::size_t>(std::distance(keys.begin(), iterator));
 
         update_subscriber_forward_group(groups[index], binding);
     }
@@ -1658,7 +1610,7 @@ lifecycle_debug_subscriber_rtcp_group_entry& get_or_create_subscriber_rtcp_group
 
     if (iterator != keys.end())
     {
-        const std::size_t index = static_cast<std::size_t>(std::distance(keys.begin(), iterator));
+        const auto index = static_cast<std::size_t>(std::distance(keys.begin(), iterator));
 
         return groups[index];
     }
@@ -1829,11 +1781,6 @@ bool lifecycle_debug_session_exists(const std::vector<lifecycle_debug_session_en
     return false;
 }
 
-bool lifecycle_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
-{
-    return lifecycle_active_runtime_state_is_empty(snapshot) && lifecycle_delayed_runtime_state_is_empty(snapshot);
-}
-
 uint16_t read_network_u16(std::span<const uint8_t> data, std::size_t offset)
 {
     return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
@@ -1967,7 +1914,7 @@ std::expected<std::size_t, std::string> compute_rtp_payload_size(std::span<const
         return make_error("rtp payload size packet is too small");
     }
 
-    const uint8_t version = static_cast<uint8_t>(packet[0] >> 6U);
+    const auto version = static_cast<uint8_t>(packet[0] >> 6U);
 
     if (version != 2)
     {
@@ -1978,9 +1925,9 @@ std::expected<std::size_t, std::string> compute_rtp_payload_size(std::span<const
 
     const bool has_extension = (packet[0] & 0x10U) != 0;
 
-    const uint8_t csrc_count = static_cast<uint8_t>(packet[0] & 0x0fU);
+    const auto csrc_count = static_cast<uint8_t>(packet[0] & 0x0fU);
 
-    std::size_t offset = 12 + static_cast<std::size_t>(csrc_count) * 4;
+    std::size_t offset = 12 + (static_cast<std::size_t>(csrc_count) * 4);
 
     if (offset > packet.size())
     {
@@ -1996,7 +1943,7 @@ std::expected<std::size_t, std::string> compute_rtp_payload_size(std::span<const
 
         const uint16_t extension_length_words = read_network_u16(packet, offset + 2);
 
-        offset += 4 + static_cast<std::size_t>(extension_length_words) * 4;
+        offset += 4 + (static_cast<std::size_t>(extension_length_words) * 4);
 
         if (offset > packet.size())
         {
@@ -2098,7 +2045,7 @@ uint64_t get_env_uint64_or_default(const char* name, uint64_t default_value)
 
     char* end = nullptr;
 
-    const unsigned long long parsed = std::strtoull(value, &end, 10);
+    const auto parsed = std::strtoull(value, &end, 10);
 
     if (errno != 0 || end == value || *end != '\0')
     {
@@ -3168,75 +3115,6 @@ std::vector<uint8_t> string_to_bytes(std::string_view value)
     return result;
 }
 
-optional_mid_rewrite_result make_mid_header_extension_rewrite(const media_payload_type_mapping& mapping,
-                                                              const sdp::webrtc_offer_summary& publisher_offer,
-                                                              const sdp::webrtc_offer_summary& subscriber_offer,
-                                                              std::span<const uint8_t> plain_packet)
-{
-    if (!mapping.mid_rewrite_required)
-    {
-        return std::optional<rtp_header_extension_rewrite>{};
-    }
-
-    const sdp::media_summary* publisher_media = find_media_summary_by_mid(publisher_offer, mapping.publisher_mid);
-
-    if (publisher_media == nullptr)
-    {
-        return make_error("rtp mid rewrite publisher media not found");
-    }
-
-    const sdp::media_summary* subscriber_media = find_media_summary_by_mid(subscriber_offer, mapping.subscriber_mid);
-
-    if (subscriber_media == nullptr)
-    {
-        return make_error("rtp mid rewrite subscriber media not found");
-    }
-
-    auto publisher_mid_extension_id = find_rtp_header_extension_id(*publisher_media, k_mid_extension_uri);
-
-    if (!publisher_mid_extension_id.has_value())
-    {
-        return std::optional<rtp_header_extension_rewrite>{};
-    }
-
-    auto subscriber_mid_extension_id = find_rtp_header_extension_id(*subscriber_media, k_mid_extension_uri);
-
-    if (!subscriber_mid_extension_id.has_value())
-    {
-        return make_error("rtp mid rewrite subscriber mid extension is missing");
-    }
-
-    auto header = parse_rtp_packet_header(plain_packet);
-
-    if (!header)
-    {
-        std::string message = "rtp mid rewrite parse failed: ";
-
-        message.append(header.error());
-
-        return std::unexpected(std::move(message));
-    }
-
-    auto existing_payload = find_rtp_header_extension(plain_packet, *header, *publisher_mid_extension_id);
-
-    if (!existing_payload.has_value())
-    {
-        return std::optional<rtp_header_extension_rewrite>{};
-    }
-
-    if (existing_payload->size() != mapping.subscriber_mid.size())
-    {
-        return make_error("rtp mid extension payload size rewrite is unsupported");
-    }
-
-    rtp_header_extension_rewrite rewrite;
-
-    rewrite.id = *publisher_mid_extension_id;
-
-    rewrite.payload = string_to_bytes(mapping.subscriber_mid);
-
-    return std::optional<rtp_header_extension_rewrite>(std::move(rewrite));
-}
 using optional_mid_ensure_result = std::expected<std::optional<rtp_header_extension_ensure>, std::string>;
 
 optional_mid_ensure_result make_outbound_mid_header_extension_ensure(const media_payload_type_mapping& mapping,
@@ -3313,71 +3191,6 @@ bool rtp_packet_header_extension_id_exists(std::span<const uint8_t> plain_packet
 
 using optional_header_extension_id_rewrite_result = std::expected<std::optional<rtp_header_extension_id_rewrite>, std::string>;
 using optional_header_extension_rewrite_result = std::expected<std::optional<rtp_header_extension_rewrite>, std::string>;
-
-optional_header_extension_id_rewrite_result make_mid_header_extension_id_rewrite(const media_payload_type_mapping& mapping,
-                                                                                 const sdp::webrtc_offer_summary& publisher_offer,
-                                                                                 const sdp::webrtc_offer_summary& subscriber_offer,
-                                                                                 std::span<const uint8_t> plain_packet)
-{
-    const sdp::media_summary* publisher_media = find_media_summary_by_mid(publisher_offer, mapping.publisher_mid);
-
-    if (publisher_media == nullptr)
-    {
-        return make_error("rtp mid id rewrite publisher media not found");
-    }
-
-    const sdp::media_summary* subscriber_media = find_media_summary_by_mid(subscriber_offer, mapping.subscriber_mid);
-
-    if (subscriber_media == nullptr)
-    {
-        return make_error("rtp mid id rewrite subscriber media not found");
-    }
-
-    const std::optional<uint8_t> publisher_mid_extension_id = find_rtp_header_extension_id(*publisher_media, k_mid_extension_uri);
-
-    if (!publisher_mid_extension_id.has_value())
-    {
-        return std::optional<rtp_header_extension_id_rewrite>{};
-    }
-
-    auto header = parse_rtp_packet_header(plain_packet);
-
-    if (!header)
-    {
-        std::string message = "rtp mid id rewrite parse failed: ";
-
-        message.append(header.error());
-
-        return std::unexpected(std::move(message));
-    }
-
-    auto publisher_payload = find_rtp_header_extension(plain_packet, *header, *publisher_mid_extension_id);
-
-    if (!publisher_payload.has_value())
-    {
-        return std::optional<rtp_header_extension_id_rewrite>{};
-    }
-
-    const std::optional<uint8_t> subscriber_mid_extension_id = find_rtp_header_extension_id(*subscriber_media, k_mid_extension_uri);
-
-    if (!subscriber_mid_extension_id.has_value())
-    {
-        return make_error("rtp mid id rewrite subscriber mid extension is missing");
-    }
-
-    if (*publisher_mid_extension_id == *subscriber_mid_extension_id)
-    {
-        return std::optional<rtp_header_extension_id_rewrite>{};
-    }
-
-    rtp_header_extension_id_rewrite rewrite;
-
-    rewrite.source_id = *publisher_mid_extension_id;
-
-    rewrite.target_id = *subscriber_mid_extension_id;
-
-    return std::optional<rtp_header_extension_id_rewrite>(rewrite);
-}
 
 std::optional<uint8_t> find_transport_wide_cc_header_extension_id(const sdp::media_summary& media)
 {
@@ -4665,20 +4478,7 @@ void append_unique_rtcp_bye_ssrc(std::vector<uint32_t>& ssrcs, uint32_t ssrc)
 
     ssrcs.push_back(ssrc);
 }
-void append_unique_keyframe_media_ssrc(std::vector<uint32_t>& ssrcs, uint32_t ssrc)
-{
-    if (ssrc == 0)
-    {
-        return;
-    }
 
-    if (std::find(ssrcs.begin(), ssrcs.end(), ssrc) != ssrcs.end())
-    {
-        return;
-    }
-
-    ssrcs.push_back(ssrc);
-}
 void append_unique_keyframe_media_target(std::vector<ice_udp_server::keyframe_request_media_target>& targets,
                                          ice_udp_server::keyframe_request_media_target target)
 {
@@ -4715,7 +4515,7 @@ const sdp::media_summary* find_offer_media_by_mid(const sdp::webrtc_offer_summar
 
     return nullptr;
 }
-enum class simulcast_rid_preference_policy
+enum class simulcast_rid_preference_policy : uint8_t
 {
     offer_order,
     reverse_order,
@@ -4763,14 +4563,14 @@ std::string lower_ascii_copy(std::string_view value)
 
     result.reserve(value.size());
 
-    for (unsigned char ch : value)
+    for (auto ch : value)
     {
         result.push_back(static_cast<char>(std::tolower(ch)));
     }
 
     return result;
 }
-enum class publisher_video_keyframe_codec
+enum class publisher_video_keyframe_codec : uint8_t
 {
     unknown,
     vp8,
@@ -4883,7 +4683,7 @@ bool is_vp8_keyframe_payload(std::span<const uint8_t> payload)
 
     const bool extension_present = (descriptor & 0x80U) != 0;
     const bool start_of_partition = (descriptor & 0x10U) != 0;
-    const uint8_t partition_id = static_cast<uint8_t>(descriptor & 0x0FU);
+    const auto partition_id = static_cast<uint8_t>(descriptor & 0x0FU);
 
     if (!start_of_partition || partition_id != 0)
     {
@@ -4952,7 +4752,7 @@ bool is_h264_single_nal_keyframe(std::span<const uint8_t> payload)
         return false;
     }
 
-    const uint8_t nal_unit_type = static_cast<uint8_t>(payload[0] & 0x1FU);
+    const auto nal_unit_type = static_cast<uint8_t>(payload[0] & 0x1FU);
 
     return h264_nal_unit_type_is_idr(nal_unit_type);
 }
@@ -4968,8 +4768,7 @@ bool is_h264_stap_a_keyframe(std::span<const uint8_t> payload)
 
     while (offset + 2 <= payload.size())
     {
-        const uint16_t nal_unit_size =
-            static_cast<uint16_t>((static_cast<uint16_t>(payload[offset]) << 8U) | static_cast<uint16_t>(payload[offset + 1]));
+        const auto nal_unit_size = static_cast<uint16_t>((static_cast<uint16_t>(payload[offset]) << 8U) | static_cast<uint16_t>(payload[offset + 1]));
 
         offset += 2;
 
@@ -4983,7 +4782,7 @@ bool is_h264_stap_a_keyframe(std::span<const uint8_t> payload)
             return false;
         }
 
-        const uint8_t nal_unit_type = static_cast<uint8_t>(payload[offset] & 0x1FU);
+        const auto nal_unit_type = static_cast<uint8_t>(payload[offset] & 0x1FU);
 
         if (h264_nal_unit_type_is_idr(nal_unit_type))
         {
@@ -5006,7 +4805,7 @@ bool is_h264_fu_a_keyframe(std::span<const uint8_t> payload)
     const uint8_t fu_header = payload[1];
 
     const bool start = (fu_header & 0x80U) != 0;
-    const uint8_t reconstructed_nal_unit_type = static_cast<uint8_t>(fu_header & 0x1FU);
+    const auto reconstructed_nal_unit_type = static_cast<uint8_t>(fu_header & 0x1FU);
 
     return start && h264_nal_unit_type_is_idr(reconstructed_nal_unit_type);
 }
@@ -5018,7 +4817,7 @@ bool is_h264_keyframe_payload(std::span<const uint8_t> payload)
         return false;
     }
 
-    const uint8_t nal_unit_type = static_cast<uint8_t>(payload[0] & 0x1FU);
+    const auto nal_unit_type = static_cast<uint8_t>(payload[0] & 0x1FU);
 
     if (nal_unit_type >= 1 && nal_unit_type <= 23)
     {
@@ -5627,7 +5426,7 @@ ice_udp_server_result ice_udp_server::start()
 
     boost::asio::ip::udp::endpoint endpoint(address, bind_port_);
 
-    socket_.open(endpoint.protocol(), ec);
+    ec = socket_.open(endpoint.protocol(), ec);
 
     if (ec)
     {
@@ -5640,14 +5439,14 @@ ice_udp_server_result ice_udp_server::start()
 
     boost::asio::socket_base::reuse_address reuse_address(true);
 
-    socket_.set_option(reuse_address, ec);
+    ec = socket_.set_option(reuse_address, ec);
 
     if (ec)
     {
         WEBRTC_LOG_WARN("ice udp socket set reuse_address failed: {}", ec.message());
     }
 
-    socket_.bind(endpoint, ec);
+    ec = socket_.bind(endpoint, ec);
 
     if (ec)
     {
@@ -6076,53 +5875,44 @@ void ice_udp_server::mark_subscriber_downlink_republish_grace_for_stream(std::st
         k_subscriber_downlink_republish_grace_milliseconds,
         grace_until_milliseconds);
 }
-std::size_t ice_udp_server::erase_orphan_subscriber_keyframe_requests_for_session_locked(std::string_view session_id)
+void ice_udp_server::erase_orphan_subscriber_keyframe_requests_for_session_locked(std::string_view session_id)
 {
     if (session_id.empty())
     {
-        return 0;
+        return;
     }
-
-    std::size_t erased_count = 0;
 
     for (auto iterator = orphan_subscriber_keyframe_requests_by_key_.begin(); iterator != orphan_subscriber_keyframe_requests_by_key_.end();)
     {
         if (iterator->second.subscriber_session_id == session_id)
         {
             iterator = orphan_subscriber_keyframe_requests_by_key_.erase(iterator);
-            erased_count += 1;
             continue;
         }
 
         ++iterator;
     }
-
-    return erased_count;
 }
 
-std::size_t ice_udp_server::erase_orphan_subscriber_keyframe_requests_for_stream_locked(std::string_view stream_id)
+void ice_udp_server::erase_orphan_subscriber_keyframe_requests_for_stream_locked(std::string_view stream_id)
 {
     if (stream_id.empty())
     {
-        return 0;
+        return;
     }
-
-    std::size_t erased_count = 0;
 
     for (auto iterator = orphan_subscriber_keyframe_requests_by_key_.begin(); iterator != orphan_subscriber_keyframe_requests_by_key_.end();)
     {
         if (iterator->second.stream_id == stream_id)
         {
             iterator = orphan_subscriber_keyframe_requests_by_key_.erase(iterator);
-            erased_count += 1;
             continue;
         }
 
         ++iterator;
     }
-
-    return erased_count;
 }
+
 void ice_udp_server::mark_subscriber_downlink_ice_restart_grace_for_session(std::string_view stream_id, std::string_view subscriber_session_id)
 {
     if (stream_id.empty() || subscriber_session_id.empty())
@@ -7623,22 +7413,22 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
             if (!session_entry.has_endpoint)
             {
-                session_entry.transport_blockers.push_back("endpoint missing");
+                session_entry.transport_blockers.emplace_back("endpoint missing");
             }
 
             if (!session_entry.has_selected_candidate_pair)
             {
-                session_entry.transport_blockers.push_back("selected candidate pair missing");
+                session_entry.transport_blockers.emplace_back("selected candidate pair missing");
             }
 
             if (session_entry.has_selected_candidate_pair && !session_entry.selected_candidate_pair_nominated)
             {
-                session_entry.transport_blockers.push_back("selected candidate pair not nominated");
+                session_entry.transport_blockers.emplace_back("selected candidate pair not nominated");
             }
 
             if (session_entry.selected_candidate_pair_consent_stale)
             {
-                session_entry.transport_blockers.push_back("selected candidate pair consent stale");
+                session_entry.transport_blockers.emplace_back("selected candidate pair consent stale");
             }
 
             session_entry.transport_blocker_count = to_debug_count(session_entry.transport_blockers.size());
@@ -11276,7 +11066,8 @@ void ice_udp_server::handle_stun_packet(std::span<const uint8_t> data, const boo
     }
     if (retired_endpoint_matches_session(remote_address, session_id))
     {
-        suppress_retired_endpoint_packet(remote_address, "stun");
+        const bool suppressed = suppress_retired_endpoint_packet(remote_address, "stun");
+        (void)suppressed;
 
         return;
     }
@@ -15046,7 +14837,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
 
             rtcp_feedback_block_ssrc_rewrite fci_rewrite;
 
-            fci_rewrite.offset = 12 + i * 8;
+            fci_rewrite.offset = 12 + (i * 8);
             fci_rewrite.source_ssrc = item.ssrc;
             fci_rewrite.target_ssrc = item_resolution->forward_mapping.publisher_ssrc;
 
@@ -15071,7 +14862,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_rtcp_feedback_p
 
             rtcp_feedback_block_ssrc_rewrite fci_rewrite;
 
-            fci_rewrite.offset = 20 + i * 4;
+            fci_rewrite.offset = 20 + (i * 4);
             fci_rewrite.source_ssrc = subscriber_ssrc;
             fci_rewrite.target_ssrc = remb_resolution->forward_mapping.publisher_ssrc;
 
@@ -15637,7 +15428,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
                     identity.subscriber_ssrc = rtx_ssrc_mapping->subscriber_ssrc;
 
                     identity.publisher_payload_type = cached_packet.payload_type;
-                    identity.subscriber_payload_type = rtx_payload_type_mapping->subscriber_payload_type;
+                    identity.subscriber_payload_type = static_cast<uint8_t>(rtx_payload_type_mapping->subscriber_payload_type);
 
                     identity.publisher_rtp_sequence_number = cached_packet.sequence_number;
                     identity.subscriber_rtp_sequence_number = rtx_sequence_number;
@@ -16264,7 +16055,9 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
                     identity.subscriber_ssrc = ssrc_mapping->subscriber_ssrc;
 
                     identity.publisher_payload_type = publisher_header->payload_type;
-                    identity.subscriber_payload_type = payload_type_mapping->subscriber_payload_type;
+                    identity.subscriber_payload_type = payload_type_mapping->subscriber_payload_type <= 127U
+                                                           ? static_cast<uint8_t>(payload_type_mapping->subscriber_payload_type)
+                                                           : publisher_header->payload_type;
 
                     identity.publisher_rtp_sequence_number = publisher_header->sequence_number;
                     identity.subscriber_rtp_sequence_number =
@@ -16278,7 +16071,6 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
                     remember_outbound_transport_cc_packet(identity);
                 }
-
                 options.header_extensions.push_back(std::move(**transport_cc_sequence_rewrite));
 
                 rewrite_required = true;
@@ -16796,7 +16588,9 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
                     identity.subscriber_ssrc = ssrc_mapping->subscriber_ssrc;
 
                     identity.publisher_payload_type = cached_packet.payload_type;
-                    identity.subscriber_payload_type = payload_type_mapping->subscriber_payload_type;
+                    identity.subscriber_payload_type = payload_type_mapping->subscriber_payload_type <= 127U
+                                                           ? static_cast<uint8_t>(payload_type_mapping->subscriber_payload_type)
+                                                           : cached_packet.payload_type;
 
                     identity.publisher_rtp_sequence_number = cached_packet.sequence_number;
                     identity.subscriber_rtp_sequence_number =
@@ -22158,7 +21952,7 @@ void ice_udp_server::send_response(std::vector<uint8_t> response, const boost::a
 
     socket_.async_send_to(boost::asio::buffer(*response_buffer),
                           remote_endpoint,
-                          [this, self, response_buffer, remote_address](boost::system::error_code ec, std::size_t bytes_transferred)
+                          [self, response_buffer, remote_address](boost::system::error_code ec, std::size_t bytes_transferred)
                           {
                               (void)response_buffer;
 
@@ -23423,10 +23217,15 @@ bool ice_udp_server::suppress_retired_ice_credential_stun(std::string_view local
 
     std::lock_guard lock(endpoint_mutex_);
 
-    expire_retired_ice_credentials_locked(now_milliseconds());
+    const uint64_t current_time_milliseconds = now_milliseconds();
+    const std::size_t expired_count = expire_retired_ice_credentials_locked(current_time_milliseconds);
+
+    if (expired_count != 0)
+    {
+        WEBRTC_LOG_DEBUG("ice retired credentials expired during retired credential stun suppression count={}", expired_count);
+    }
 
     const auto iterator = retired_ice_credentials_by_local_ufrag_.find(std::string(local_ice_ufrag));
-
     if (iterator == retired_ice_credentials_by_local_ufrag_.end())
     {
         return false;

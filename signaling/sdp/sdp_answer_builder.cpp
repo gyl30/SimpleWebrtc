@@ -441,43 +441,6 @@ bool string_vector_contains(const std::vector<std::string>& values, std::string_
 }
 
 bool is_answer_media_rejected(const media_description& media) { return media.media_name.port.value == 0; }
-std::expected<std::vector<std::string>, std::string> collect_accepted_answer_media_mids(const session_description& answer)
-{
-    std::vector<std::string> accepted_mids;
-
-    for (const auto& media : answer.media_descriptions)
-    {
-        if (is_answer_media_rejected(media))
-        {
-            continue;
-        }
-
-        const std::optional<std::string> mid = find_answer_media_mid(media);
-
-        if (!mid.has_value())
-        {
-            return make_error("accepted answer media is missing mid");
-        }
-
-        if (string_vector_contains(accepted_mids, *mid))
-        {
-            std::string message = "accepted answer media mid duplicated mid=";
-
-            message.append(*mid);
-
-            return std::unexpected(std::move(message));
-        }
-
-        accepted_mids.push_back(*mid);
-    }
-
-    if (accepted_mids.empty())
-    {
-        return make_error("answer has no accepted media mids");
-    }
-
-    return accepted_mids;
-}
 
 std::expected<std::vector<std::string>, std::string> collect_answer_bundle_mids(const session_description& answer)
 {
@@ -933,19 +896,6 @@ bool answer_media_has_send_direction(const media_description& media)
     return false;
 }
 
-bool answer_media_has_receive_only_direction(const media_description& media)
-{
-    for (const auto& attribute : media.attributes)
-    {
-        if (attribute.key == k_attribute_recv_only)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 bool rejected_answer_media_attribute_is_allowed(std::string_view key)
 {
     if (key == k_attribute_mid)
@@ -1241,21 +1191,6 @@ std::expected<parsed_rid_attribute, std::string> parse_rid_attribute_value(std::
     return result;
 }
 
-std::vector<std::string> collect_attribute_values(const media_description& media, std::string_view key)
-{
-    std::vector<std::string> values;
-
-    for (const auto& attribute : media.attributes)
-    {
-        if (attribute.key == key)
-        {
-            values.push_back(attribute.value);
-        }
-    }
-
-    return values;
-}
-
 std::unordered_map<std::string, parsed_extmap_attribute> collect_extmaps_by_uri(const media_summary& media)
 {
     std::unordered_map<std::string, parsed_extmap_attribute> extmaps;
@@ -1322,13 +1257,6 @@ std::expected<std::vector<parsed_rid_attribute>, std::string> parse_answer_rids(
     }
 
     return rids;
-}
-
-bool extmap_uri_is_rid_related(std::string_view uri) { return uri == k_rtp_stream_id_extension_uri || uri == k_repaired_rtp_stream_id_extension_uri; }
-
-bool extmap_uri_is_media_identity(std::string_view uri)
-{
-    return uri == k_rtp_mid_extension_uri || uri == k_rtp_stream_id_extension_uri || uri == k_repaired_rtp_stream_id_extension_uri;
 }
 
 bool answer_media_has_rtx_codec(const media_description& media)

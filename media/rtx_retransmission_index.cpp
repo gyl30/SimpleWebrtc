@@ -41,7 +41,7 @@ void rtx_retransmission_index::remember(std::string_view stream_id,
 
     std::lock_guard lock(mutex_);
 
-    expire_old_locked(now_milliseconds);
+    const std::size_t expired_count = expire_old_locked(now_milliseconds);
 
     const bool exists = mappings_by_key_.contains(key);
 
@@ -91,6 +91,11 @@ void rtx_retransmission_index::remember(std::string_view stream_id,
     if (!exists)
     {
         insertion_order_.push_back(key);
+    }
+
+    if (expired_count != 0 && mappings_by_key_.empty())
+    {
+        insertion_order_.clear();
     }
 
     enforce_capacity_locked();

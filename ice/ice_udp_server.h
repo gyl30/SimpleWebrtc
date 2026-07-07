@@ -1423,11 +1423,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void consume_orphan_subscriber_keyframe_request_after_mapping_created(const media_ssrc_mapping& mapping,
                                                                           const media_route_result& route,
                                                                           const media_peer_info& target_peer);
-    [[nodiscard]]
-    std::size_t erase_orphan_subscriber_keyframe_requests_for_session_locked(std::string_view session_id);
+    void erase_orphan_subscriber_keyframe_requests_for_session_locked(std::string_view session_id);
 
-    [[nodiscard]]
-    std::size_t erase_orphan_subscriber_keyframe_requests_for_stream_locked(std::string_view stream_id);
+    void erase_orphan_subscriber_keyframe_requests_for_stream_locked(std::string_view stream_id);
 
    private:
     boost::asio::io_context& io_context_;
