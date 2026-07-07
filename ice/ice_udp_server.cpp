@@ -19651,17 +19651,8 @@ void ice_udp_server::forget_outbound_rtp_sequences_for_session(std::string_view 
         ++iterator;
     }
 
-    for (auto iterator = outbound_rtp_packet_insertion_order_.begin(); iterator != outbound_rtp_packet_insertion_order_.end();)
-    {
-        if (outbound_rtp_sequence_key_matches_session(*iterator, session_id))
-        {
-            iterator = outbound_rtp_packet_insertion_order_.erase(iterator);
-
-            continue;
-        }
-
-        ++iterator;
-    }
+    std::erase_if(outbound_rtp_packet_insertion_order_,
+                  [session_id](const std::string& key) { return outbound_rtp_sequence_key_matches_session(key, session_id); });
 }
 
 std::size_t ice_udp_server::erase_outbound_rtp_sequences_for_stream_locked(std::string_view stream_id)
@@ -19699,17 +19690,9 @@ std::size_t ice_udp_server::erase_outbound_rtp_sequences_for_stream_locked(std::
         ++iterator;
     }
 
-    for (auto iterator = outbound_rtp_packet_insertion_order_.begin(); iterator != outbound_rtp_packet_insertion_order_.end();)
-    {
-        if (outbound_rtp_sequence_key_matches_stream(*iterator, stream_id))
-        {
-            iterator = outbound_rtp_packet_insertion_order_.erase(iterator);
+    std::erase_if(outbound_rtp_packet_insertion_order_,
+                  [stream_id](const std::string& key) { return outbound_rtp_sequence_key_matches_stream(key, stream_id); });
 
-            continue;
-        }
-
-        ++iterator;
-    }
     return erased_count;
 }
 
