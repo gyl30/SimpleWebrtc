@@ -791,6 +791,57 @@ void append_answerable_rtx_codecs(const media_summary& subscriber_media,
         selected_codecs.push_back(subscriber_codec);
     }
 }
+bool rtx_codec_is_answerable_for_offer(const media_summary& offer_media, const codec_info& rtx_codec, const std::vector<codec_info>& selected_codecs)
+{
+    if (offer_media.kind != "video")
+    {
+        return false;
+    }
+
+    if (!is_rtx_codec(rtx_codec))
+    {
+        return false;
+    }
+
+    if (!payload_type_exists(offer_media.payload_types, rtx_codec.payload_type))
+    {
+        return false;
+    }
+
+    const auto apt_payload_type = find_codec_apt_payload_type(rtx_codec);
+
+    if (!apt_payload_type.has_value())
+    {
+        return false;
+    }
+
+    const codec_info* selected_primary_codec = find_selected_codec_by_payload_type(selected_codecs, *apt_payload_type);
+
+    if (selected_primary_codec == nullptr)
+    {
+        return false;
+    }
+
+    if (is_rtx_codec(*selected_primary_codec))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+void append_answerable_offer_rtx_codecs(const media_summary& offer_media, std::vector<codec_info>& selected_codecs)
+{
+    for (const auto& codec : offer_media.codecs)
+    {
+        if (!rtx_codec_is_answerable_for_offer(offer_media, codec, selected_codecs))
+        {
+            continue;
+        }
+
+        selected_codecs.push_back(codec);
+    }
+}
 
 std::expected<void, std::string> validate_offer_media(const media_summary& media)
 {
@@ -850,6 +901,8 @@ codec_negotiation_result negotiate_codecs(const media_summary& offer_media)
     {
         return make_media_error(offer_media, "has no supported codecs");
     }
+
+    append_answerable_offer_rtx_codecs(offer_media, selected_codecs);
 
     return selected_codecs;
 }
