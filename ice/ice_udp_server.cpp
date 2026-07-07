@@ -3189,6 +3189,47 @@ bool rtp_packet_header_extension_id_exists(std::span<const uint8_t> plain_packet
     return false;
 }
 
+bool media_header_extension_id_has_uri(const sdp::media_summary& media, uint8_t extension_id, std::string_view uri)
+{
+    if (extension_id == 0 || uri.empty())
+    {
+        return false;
+    }
+
+    for (const auto& extension : media.header_extensions)
+    {
+        if (extension.id != extension_id)
+        {
+            continue;
+        }
+
+        return extension.uri == uri;
+    }
+
+    return false;
+}
+
+bool outbound_header_extension_ensure_would_overwrite_different_uri(const media_payload_type_mapping& mapping,
+                                                                    const sdp::webrtc_offer_summary& publisher_offer,
+                                                                    std::span<const uint8_t> plain_packet,
+                                                                    const rtp_header_extension_ensure& ensure,
+                                                                    std::string_view expected_uri)
+{
+    if (!rtp_packet_header_extension_id_exists(plain_packet, ensure.id))
+    {
+        return false;
+    }
+
+    const sdp::media_summary* publisher_media = find_media_summary_by_mid(publisher_offer, mapping.publisher_mid);
+
+    if (publisher_media == nullptr)
+    {
+        return true;
+    }
+
+    return !media_header_extension_id_has_uri(*publisher_media, ensure.id, expected_uri);
+}
+
 using optional_header_extension_id_rewrite_result = std::expected<std::optional<rtp_header_extension_id_rewrite>, std::string>;
 using optional_header_extension_rewrite_result = std::expected<std::optional<rtp_header_extension_rewrite>, std::string>;
 
@@ -15993,9 +16034,27 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
             if (outbound_mid_ensure->has_value())
             {
-                options.ensured_header_extensions.push_back(std::move(**outbound_mid_ensure));
+                const auto& mid_ensure = **outbound_mid_ensure;
 
-                rewrite_required = true;
+                if (outbound_header_extension_ensure_would_overwrite_different_uri(
+                        *payload_type_mapping, publisher_offer, plain_packet_span, mid_ensure, sdp::k_rtp_header_extension_sdes_mid_uri))
+                {
+                    WEBRTC_LOG_WARN(
+                        "rtp outbound mid ensure skipped target id collision stream={} publisher_session={} subscriber_session={} "
+                        "publisher_mid={} subscriber_mid={} extension_id={}",
+                        payload_type_mapping->stream_id,
+                        route.source.session_id,
+                        target_peer.session_id,
+                        payload_type_mapping->publisher_mid,
+                        payload_type_mapping->subscriber_mid,
+                        mid_ensure.id);
+                }
+                else
+                {
+                    options.ensured_header_extensions.push_back(std::move(**outbound_mid_ensure));
+
+                    rewrite_required = true;
+                }
             }
         }
         else

@@ -386,9 +386,11 @@ std::expected<void, std::string> ensure_header_extensions(std::vector<uint8_t>& 
                                                           const rtp_packet_header& header,
                                                           const rtp_packet_rewrite_options& options)
 {
+    rtp_packet_header current_header = header;
+
     for (const auto& extension : options.ensured_header_extensions)
     {
-        auto ensure_result = ensure_header_extension(packet, header, extension);
+        auto ensure_result = ensure_header_extension(packet, current_header, extension);
 
         if (!ensure_result)
         {
@@ -401,6 +403,8 @@ std::expected<void, std::string> ensure_header_extensions(std::vector<uint8_t>& 
         {
             return std::unexpected(reparsed_header.error());
         }
+
+        current_header = *reparsed_header;
     }
 
     return {};
