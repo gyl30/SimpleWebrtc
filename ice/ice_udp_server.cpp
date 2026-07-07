@@ -910,7 +910,16 @@ void refill_subscriber_downlink_pacing_budget(ice_udp_server::subscriber_downlin
 
     pacing_state.pacing_budget_bytes = std::min<uint64_t>(pacing_state.pacing_budget_bytes + refill_bytes, max_budget_bytes);
 }
+bool subscriber_downlink_keyframe_recovery_window_active(const ice_udp_server::subscriber_downlink_bandwidth_state& state,
+                                                         uint64_t current_time_milliseconds)
+{
+    if (state.keyframe_recovery_until_milliseconds == 0)
+    {
+        return false;
+    }
 
+    return current_time_milliseconds <= state.keyframe_recovery_until_milliseconds;
+}
 bool subscriber_downlink_pacing_state_key_matches_session(std::string_view key, std::string_view session_id)
 {
     return subscriber_downlink_bandwidth_state_key_matches_session(key, session_id);
@@ -20498,6 +20507,7 @@ bool ice_udp_server::subscriber_downlink_pacing_should_enqueue_packet(const medi
     }
 
     const std::string key = make_subscriber_downlink_bandwidth_state_key(target_peer.stream_id, target_peer.session_id);
+    const uint64_t current_time_milliseconds = now_milliseconds();
 
     std::lock_guard lock(endpoint_mutex_);
 
@@ -20508,7 +20518,9 @@ bool ice_udp_server::subscriber_downlink_pacing_should_enqueue_packet(const medi
         return false;
     }
 
-    if (!subscriber_downlink_state_enables_bitrate_gate(iterator->second.control_state))
+    const subscriber_downlink_bandwidth_state& bandwidth_state = iterator->second;
+
+    if (!subscriber_downlink_state_enables_bitrate_gate(bandwidth_state.control_state))
     {
         return false;
     }
@@ -20521,11 +20533,27 @@ bool ice_udp_server::subscriber_downlink_pacing_should_enqueue_packet(const medi
         {
             pacing_state.stream_id = target_peer.stream_id;
             pacing_state.subscriber_session_id = target_peer.session_id;
-            pacing_state.pacing_last_update_milliseconds = now_milliseconds();
+            pacing_state.pacing_last_update_milliseconds = current_time_milliseconds;
         }
 
         pacing_state.observed_enqueued_packet_count += 1;
         pacing_state.observed_enqueued_byte_count += protected_packet_size;
+
+        return false;
+    }
+
+    if (subscriber_downlink_keyframe_recovery_window_active(bandwidth_state, current_time_milliseconds))
+    {
+        WEBRTC_LOG_DEBUG(
+            "subscriber downlink pacing recovery bypass stream={} subscriber_session={} control_state={} target_bitrate_bps={} "
+            "protected_packet_size={} recovery_until={} recovery_remaining_packets={}",
+            target_peer.stream_id,
+            target_peer.session_id,
+            subscriber_downlink_control_state_to_string(bandwidth_state.control_state),
+            bandwidth_state.target_bitrate_bps,
+            protected_packet_size,
+            bandwidth_state.keyframe_recovery_until_milliseconds,
+            bandwidth_state.keyframe_recovery_remaining_packet_count);
 
         return false;
     }
@@ -22090,8 +22118,8 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
 
             maybe_request_keyframe_from_publisher(packet, route, track_resolution, *target_peer);
         }
-        const uint64_t pacing_now = now_milliseconds();
-        if (subscriber_downlink_pacing_should_enqueue_packet(route, *target_peer, packet, outbound_mapping, pacing_now))
+        const uint64_t protected_packet_size = static_cast<uint64_t>(protected_packet->protected_packet.size());
+        if (subscriber_downlink_pacing_should_enqueue_packet(route, *target_peer, packet, outbound_mapping, protected_packet_size))
         {
             std::optional<outbound_transport_cc_packet_identity> pacing_transport_cc_identity;
 
