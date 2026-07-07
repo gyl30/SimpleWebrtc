@@ -16,7 +16,69 @@ namespace webrtc
 {
 namespace
 {
+inline constexpr std::size_t k_rtcp_common_header_size = 4;
+inline constexpr std::size_t k_rtcp_feedback_header_size = 12;
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
+
+std::expected<std::size_t, std::string> rtcp_feedback_payload_end(const rtcp_packet_header& header, std::span<const uint8_t> data)
+{
+    if (header.packet_size > data.size())
+    {
+        return make_error("rtcp feedback packet exceeds buffer size");
+    }
+
+    std::size_t payload_end = header.packet_size;
+
+    if (!header.padding)
+    {
+        return payload_end;
+    }
+
+    if (payload_end <= k_rtcp_common_header_size)
+    {
+        return make_error("rtcp feedback padding packet is too short");
+    }
+
+    const std::size_t padding_size = data[payload_end - 1];
+
+    if (padding_size == 0)
+    {
+        return make_error("rtcp feedback padding size is zero");
+    }
+
+    if (padding_size > payload_end - k_rtcp_common_header_size)
+    {
+        return make_error("rtcp feedback padding exceeds packet size");
+    }
+
+    payload_end -= padding_size;
+
+    if (payload_end < k_rtcp_feedback_header_size)
+    {
+        return make_error("rtcp feedback payload is shorter than feedback header");
+    }
+
+    return payload_end;
+}
+
+bool rtcp_feedback_trailing_bytes_are_zero(std::span<const uint8_t> data, std::size_t offset, std::size_t end)
+{
+    if (offset > end || end > data.size())
+    {
+        return false;
+    }
+
+    for (std::size_t current = offset; current < end; ++current)
+    {
+        if (data[current] != 0)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 uint16_t read_u16(std::span<const uint8_t> data, std::size_t offset)
 {
@@ -399,6 +461,11 @@ std::expected<void, std::string> parse_transport_feedback(std::span<const uint8_
                 return std::unexpected(delta_offset.error());
             }
 
+            if (!rtcp_feedback_trailing_bytes_are_zero(data, *delta_offset, end))
+            {
+                return make_error("rtcp transport cc trailing padding is not zero");
+            }
+
             return {};
         }
 
@@ -580,9 +647,16 @@ rtcp_feedback_packet_result parse_rtcp_feedback_packet(std::span<const uint8_t> 
         return make_error("rtcp packet is not feedback");
     }
 
-    if (header->packet_size < 12)
+    if (header->packet_size < k_rtcp_feedback_header_size)
     {
         return make_error("rtcp feedback packet is shorter than feedback header");
+    }
+
+    auto payload_end = rtcp_feedback_payload_end(*header, data);
+
+    if (!payload_end)
+    {
+        return std::unexpected(payload_end.error());
     }
 
     rtcp_feedback_packet packet;
@@ -595,9 +669,8 @@ rtcp_feedback_packet_result parse_rtcp_feedback_packet(std::span<const uint8_t> 
     packet.sender_ssrc = read_u32(data, 4);
     packet.media_ssrc = read_u32(data, 8);
 
-    const std::size_t fci_offset = 12;
-    const std::size_t packet_end = header->packet_size;
-
+    const std::size_t fci_offset = k_rtcp_feedback_header_size;
+    const std::size_t packet_end = *payload_end;
     std::expected<void, std::string> parse_result;
 
     if (packet.packet_type == k_rtcp_packet_type_transport_feedback)

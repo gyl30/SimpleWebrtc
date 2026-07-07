@@ -69,6 +69,42 @@ rtcp_report_block parse_report_block(std::span<const uint8_t> data, std::size_t 
     block.delay_since_last_sender_report = read_u32(data, offset + 20);
     return block;
 }
+
+std::expected<std::size_t, std::string> rtcp_report_payload_end(const rtcp_packet_header& header, std::span<const uint8_t> data)
+{
+    if (header.packet_size > data.size())
+    {
+        return make_error("rtcp report packet exceeds buffer size");
+    }
+
+    std::size_t payload_end = header.packet_size;
+
+    if (!header.padding)
+    {
+        return payload_end;
+    }
+
+    if (payload_end <= k_rtcp_common_header_size)
+    {
+        return make_error("rtcp report padding packet is too short");
+    }
+
+    const std::size_t padding_size = data[payload_end - 1];
+
+    if (padding_size == 0)
+    {
+        return make_error("rtcp report padding size is zero");
+    }
+
+    if (padding_size > payload_end - k_rtcp_common_header_size)
+    {
+        return make_error("rtcp report padding exceeds packet size");
+    }
+
+    payload_end -= padding_size;
+
+    return payload_end;
+}
 }    // namespace
 
 bool is_rtcp_report_packet(std::span<const uint8_t> data)
@@ -97,12 +133,14 @@ rtcp_report_packet_result parse_rtcp_report_packet(std::span<const uint8_t> data
         return make_error("rtcp packet is not report");
     }
 
-    if (header->packet_size > data.size())
+    auto payload_end = rtcp_report_payload_end(*header, data);
+
+    if (!payload_end)
     {
-        return make_error("rtcp report packet exceeds buffer size");
+        return std::unexpected(payload_end.error());
     }
 
-    if (header->packet_size < k_rtcp_common_header_size + k_rtcp_sender_ssrc_size)
+    if (*payload_end < k_rtcp_common_header_size + k_rtcp_sender_ssrc_size)
     {
         return make_error("rtcp report packet is too short");
     }
@@ -122,7 +160,7 @@ rtcp_report_packet_result parse_rtcp_report_packet(std::span<const uint8_t> data
 
     if (packet.is_sender_report)
     {
-        if (header->packet_size < report_block_offset + k_rtcp_sender_info_size)
+        if (*payload_end < report_block_offset + k_rtcp_sender_info_size)
         {
             return make_error("rtcp sender report sender info is truncated");
         }
@@ -132,16 +170,15 @@ rtcp_report_packet_result parse_rtcp_report_packet(std::span<const uint8_t> data
 
         report_block_offset += k_rtcp_sender_info_size;
     }
-
     const std::size_t report_block_bytes = static_cast<std::size_t>(packet.report_count) * k_rtcp_report_block_size;
+    const std::size_t report_block_end = report_block_offset + report_block_bytes;
 
-    if (report_block_offset + report_block_bytes > header->packet_size)
+    if (report_block_end > *payload_end)
     {
         return make_error("rtcp report block list is truncated");
     }
 
     packet.report_blocks.reserve(packet.report_count);
-
     for (std::size_t i = 0; i < packet.report_count; ++i)
     {
         const std::size_t offset = report_block_offset + i * k_rtcp_report_block_size;

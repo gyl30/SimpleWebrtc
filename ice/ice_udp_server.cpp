@@ -16750,9 +16750,30 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
 
             if (outbound_mid_ensure->has_value())
             {
-                options.ensured_header_extensions.push_back(std::move(**outbound_mid_ensure));
+                const auto& mid_ensure = **outbound_mid_ensure;
 
-                rewrite_required = true;
+                if (outbound_header_extension_ensure_would_overwrite_different_uri(
+                        *payload_type_mapping, publisher_offer, cached_plain_packet_span, mid_ensure, sdp::k_rtp_header_extension_sdes_mid_uri))
+                {
+                    WEBRTC_LOG_WARN(
+                        "rtp nack retransmit outbound mid ensure skipped target id collision stream={} subscriber={} publisher_session={} "
+                        "subscriber_session={} publisher_mid={} subscriber_mid={} kind={} sequence={} extension_id={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        ssrc_mapping->publisher_session_id,
+                        ssrc_mapping->subscriber_session_id,
+                        payload_type_mapping->publisher_mid,
+                        payload_type_mapping->subscriber_mid,
+                        payload_type_mapping->kind,
+                        cached_packet.sequence_number,
+                        mid_ensure.id);
+                }
+                else
+                {
+                    options.ensured_header_extensions.push_back(std::move(**outbound_mid_ensure));
+
+                    rewrite_required = true;
+                }
             }
         }
         else
@@ -16771,7 +16792,6 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
                 publisher->accepted_remote_media_mline_indexes().size(),
                 subscriber->accepted_remote_media_mline_indexes().size());
         }
-
         if (publisher_subscriber_media_has_negotiated_transport_cc(*publisher, *subscriber, *payload_type_mapping))
         {
             const std::optional<uint16_t> publisher_transport_cc_sequence =

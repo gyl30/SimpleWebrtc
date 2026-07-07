@@ -17,11 +17,11 @@ namespace
 constexpr std::size_t k_rtp_fixed_header_size = 12;
 constexpr std::size_t k_rtp_csrc_size = 4;
 constexpr std::size_t k_rtp_extension_header_size = 4;
+constexpr std::size_t k_rtcp_common_header_size = 4;
 
 constexpr uint16_t k_one_byte_extension_profile = 0xBEDE;
 constexpr uint16_t k_two_byte_extension_profile_mask = 0xFFF0;
 constexpr uint16_t k_two_byte_extension_profile_value = 0x1000;
-
 constexpr uint8_t k_one_byte_extension_reserved_id = 15;
 
 constexpr std::string_view k_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
@@ -486,7 +486,7 @@ rtp_packet_header_result parse_rtp_packet_header(std::span<const uint8_t> data)
 
 rtcp_packet_header_result parse_rtcp_packet_header(std::span<const uint8_t> data)
 {
-    if (data.size() < 4)
+    if (data.size() < k_rtcp_common_header_size)
     {
         return make_error("rtcp packet is shorter than fixed header");
     }
@@ -504,15 +504,10 @@ rtcp_packet_header_result parse_rtcp_packet_header(std::span<const uint8_t> data
     rtcp_packet_header header;
 
     header.version = static_cast<uint8_t>(data[0] >> 6U);
-
     header.padding = (data[0] & 0x20U) != 0;
-
     header.count = static_cast<uint8_t>(data[0] & 0x1FU);
-
     header.packet_type = data[1];
-
     header.length = read_u16(data, 2);
-
     header.packet_size = (static_cast<std::size_t>(header.length) + 1) * 4;
 
     if (header.packet_size > data.size())
@@ -520,10 +515,29 @@ rtcp_packet_header_result parse_rtcp_packet_header(std::span<const uint8_t> data
         return make_error("rtcp packet is truncated");
     }
 
+    if (header.padding)
+    {
+        if (header.packet_size <= k_rtcp_common_header_size)
+        {
+            return make_error("rtcp padding packet is too short");
+        }
+
+        const std::size_t padding_size = data[header.packet_size - 1];
+
+        if (padding_size == 0)
+        {
+            return make_error("rtcp padding size is zero");
+        }
+
+        if (padding_size > header.packet_size - k_rtcp_common_header_size)
+        {
+            return make_error("rtcp padding exceeds packet size");
+        }
+    }
+
     if (header.packet_size >= 8)
     {
         header.has_ssrc = true;
-
         header.ssrc = read_u32(data, 4);
     }
 
