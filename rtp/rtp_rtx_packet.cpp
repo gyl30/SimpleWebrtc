@@ -456,10 +456,12 @@ rtp_rtx_packet_result make_rtp_rtx_packet(std::span<const uint8_t> primary_packe
 
     rtx_packet[1] = static_cast<uint8_t>((rtx_packet[1] & 0x80U) | options.payload_type);
 
+    const uint16_t original_sequence_number = options.original_sequence_number.value_or(primary_header->sequence_number);
+
     write_u16(rtx_packet, 2, options.sequence_number);
     write_u32(rtx_packet, 4, options.timestamp);
     write_u32(rtx_packet, 8, options.ssrc);
-    append_u16(rtx_packet, primary_header->sequence_number);
+    append_u16(rtx_packet, original_sequence_number);
 
     const auto payload_begin = primary_packet.begin() + static_cast<std::ptrdiff_t>(primary_header->payload_offset);
     const auto payload_end = payload_begin + static_cast<std::ptrdiff_t>(primary_header->payload_size);
@@ -477,8 +479,7 @@ rtp_rtx_packet_result make_rtp_rtx_packet(std::span<const uint8_t> primary_packe
     }
 
     auto validation_result =
-        validate_rtp_rtx_packet(std::span<const uint8_t>(rtx_packet.data(), rtx_packet.size()), options, primary_header->sequence_number);
-
+        validate_rtp_rtx_packet(std::span<const uint8_t>(rtx_packet.data(), rtx_packet.size()), options, original_sequence_number);
     if (!validation_result)
     {
         return std::unexpected(validation_result.error());

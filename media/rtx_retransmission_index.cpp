@@ -22,6 +22,8 @@ void rtx_retransmission_index::remember(std::string_view stream_id,
                                         uint32_t publisher_primary_ssrc,
                                         uint32_t subscriber_primary_ssrc,
                                         uint16_t primary_sequence_number,
+                                        uint16_t subscriber_primary_sequence_number,
+                                        bool has_subscriber_primary_sequence_number,
                                         std::string_view publisher_mid,
                                         std::string_view subscriber_mid,
                                         std::string_view kind,
@@ -81,6 +83,8 @@ void rtx_retransmission_index::remember(std::string_view stream_id,
     mapping.subscriber_primary_ssrc = subscriber_primary_ssrc;
 
     mapping.primary_sequence_number = primary_sequence_number;
+    mapping.subscriber_primary_sequence_number = subscriber_primary_sequence_number;
+    mapping.has_subscriber_primary_sequence_number = has_subscriber_primary_sequence_number;
 
     mappings_by_key_[key] = std::move(mapping);
 

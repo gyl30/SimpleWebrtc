@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -22,9 +23,10 @@ struct rtp_rtx_packet_options
     uint16_t sequence_number = 0;
     uint32_t timestamp = 0;
 
+    std::optional<uint16_t> original_sequence_number;
+
     std::vector<rtp_rtx_header_extension_id_rewrite> header_extension_id_rewrites;
 };
-
 struct rtp_rtx_packet_info
 {
     rtp_packet_header header;

@@ -252,11 +252,28 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     };
     struct nack_retransmit_sequence
     {
+        /*
+         * Sequence number carried by RTCP NACK.
+         * For primary feedback this is subscriber primary RTP sequence.
+         * For RTX feedback this is subscriber RTX RTP sequence.
+         */
         uint16_t feedback_sequence_number = 0;
+
+        /*
+         * Publisher/cache sequence used to lookup rtp_packet_cache_.
+         */
         uint16_t cache_sequence_number = 0;
+
+        /*
+         * Subscriber primary RTP identity used when retransmitting either
+         * primary fallback RTP or RTX OSN.
+         */
+        uint16_t subscriber_sequence_number = 0;
+        uint32_t subscriber_timestamp = 0;
+        bool has_subscriber_rtp_identity = false;
+
         bool rtx_feedback = false;
     };
-
     struct nack_retransmit_resolution
     {
         std::optional<media_ssrc_mapping> ssrc_mapping;
@@ -327,6 +344,16 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::unordered_map<std::string, uint64_t> last_request_milliseconds_by_subscriber_session_id;
         std::unordered_map<std::string, std::size_t> request_count_by_subscriber_session_id;
     };
+    struct outbound_rtp_rewrite_result
+    {
+        uint16_t sequence_number = 0;
+        uint32_t timestamp = 0;
+
+        bool sequence_number_rewrite_required = false;
+        bool timestamp_rewrite_required = false;
+        bool publisher_switch = false;
+    };
+
     struct outbound_rtp_sequence_rewrite_state
     {
         std::string stream_id;
@@ -339,9 +366,40 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint16_t last_subscriber_sequence_number = 0;
         uint16_t next_subscriber_sequence_number = 0;
 
+        uint32_t last_publisher_timestamp = 0;
+        uint32_t last_subscriber_timestamp = 0;
+
         uint64_t packet_count = 0;
         uint64_t publisher_switch_count = 0;
     };
+
+    struct outbound_rtp_packet_identity
+    {
+        std::string stream_id;
+        std::string publisher_session_id;
+        std::string subscriber_session_id;
+
+        std::string publisher_mid;
+        std::string subscriber_mid;
+        std::string kind;
+
+        bool rtx = false;
+
+        uint32_t publisher_ssrc = 0;
+        uint32_t subscriber_ssrc = 0;
+
+        uint8_t publisher_payload_type = 0;
+        uint8_t subscriber_payload_type = 0;
+
+        uint16_t publisher_rtp_sequence_number = 0;
+        uint16_t subscriber_rtp_sequence_number = 0;
+
+        uint32_t publisher_rtp_timestamp = 0;
+        uint32_t subscriber_rtp_timestamp = 0;
+
+        uint64_t sent_at_milliseconds = 0;
+    };
+
     struct selected_rid_layer_runtime_state
     {
         std::string stream_id;
@@ -638,6 +696,18 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t keyframe_recovery_remaining_packet_count = 0;
         uint64_t last_keyframe_request_at_milliseconds = 0;
     };
+    struct orphan_subscriber_keyframe_request_state
+    {
+        std::string stream_id;
+        std::string subscriber_session_id;
+
+        uint64_t first_requested_at_milliseconds = 0;
+        uint64_t last_requested_at_milliseconds = 0;
+        uint64_t request_count = 0;
+
+        std::string feedback_name;
+        uint32_t last_media_ssrc = 0;
+    };
 
     struct subscriber_downlink_pacing_packet
     {
@@ -740,11 +810,20 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     uint16_t next_outbound_transport_cc_sequence(std::string_view stream_id, std::string_view subscriber_session_id);
 
     [[nodiscard]]
-    uint16_t next_outbound_rtp_sequence(std::string_view stream_id,
-                                        std::string_view publisher_session_id,
-                                        std::string_view subscriber_session_id,
-                                        uint32_t subscriber_ssrc,
-                                        uint16_t publisher_sequence_number);
+    outbound_rtp_rewrite_result next_outbound_rtp_rewrite(std::string_view stream_id,
+                                                          std::string_view publisher_session_id,
+                                                          std::string_view subscriber_session_id,
+                                                          uint32_t subscriber_ssrc,
+                                                          uint16_t publisher_sequence_number,
+                                                          uint32_t publisher_timestamp);
+
+    void remember_outbound_rtp_packet(const outbound_rtp_packet_identity& identity);
+
+    [[nodiscard]]
+    std::optional<outbound_rtp_packet_identity> find_outbound_rtp_packet(std::string_view stream_id,
+                                                                         std::string_view subscriber_session_id,
+                                                                         uint32_t subscriber_ssrc,
+                                                                         uint16_t subscriber_sequence_number) const;
 
     void forget_outbound_rtp_sequences_for_session(std::string_view session_id);
 
@@ -912,12 +991,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::optional<std::vector<uint8_t>> make_rtx_retransmit_plain_packet(const rtcp_feedback_route_event& event,
                                                                          const rtp_packet_cache_entry& cached_packet,
                                                                          const media_ssrc_mapping& primary_ssrc_mapping,
-                                                                         const media_payload_type_mapping& primary_payload_type_mapping);
+                                                                         const media_payload_type_mapping& primary_payload_type_mapping,
+                                                                         const nack_retransmit_sequence& requested_sequence);
 
     [[nodiscard]]
     std::optional<retransmit_plain_packet_result> make_retransmit_plain_packet(const rtcp_feedback_route_event& event,
                                                                                const rtp_packet_cache_entry& cached_packet,
-                                                                               const std::optional<media_ssrc_mapping>& ssrc_mapping);
+                                                                               const std::optional<media_ssrc_mapping>& ssrc_mapping,
+                                                                               const nack_retransmit_sequence& requested_sequence);
 
     [[nodiscard]]
     bool subscriber_feedback_targets_selected_rid_layer(const rtcp_feedback_route_event& event,
@@ -1310,6 +1391,17 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     std::size_t erase_subscriber_downlink_republish_grace_for_stream_locked(std::string_view stream_id);
 
+    void remember_orphan_subscriber_keyframe_request(const rtcp_feedback_route_event& event);
+
+    void consume_orphan_subscriber_keyframe_request_after_mapping_created(const media_ssrc_mapping& mapping,
+                                                                          const media_route_result& route,
+                                                                          const media_peer_info& target_peer);
+    [[nodiscard]]
+    std::size_t erase_orphan_subscriber_keyframe_requests_for_session_locked(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_orphan_subscriber_keyframe_requests_for_stream_locked(std::string_view stream_id);
+
    private:
     boost::asio::io_context& io_context_;
 
@@ -1378,6 +1470,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     std::unordered_map<std::string, extmap_rewrite_runtime_state> extmap_rewrite_state_by_key_;
     std::unordered_map<std::string, outbound_rtp_sequence_rewrite_state> outbound_rtp_sequence_by_key_;
+    std::unordered_map<std::string, outbound_rtp_packet_identity> outbound_rtp_packets_by_key_;
+    std::deque<std::string> outbound_rtp_packet_insertion_order_;
+
     std::unordered_map<std::string, uint16_t> outbound_transport_cc_sequence_by_key_;
     std::unordered_map<std::string, outbound_transport_cc_packet_identity> outbound_transport_cc_packets_by_key_;
     std::deque<std::string> outbound_transport_cc_packet_insertion_order_;
@@ -1386,6 +1481,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, subscriber_downlink_bandwidth_state> subscriber_downlink_bandwidth_by_key_;
     std::unordered_map<std::string, subscriber_downlink_pacing_state> subscriber_downlink_pacing_by_key_;
     std::unordered_map<std::string, uint64_t> subscriber_downlink_republish_grace_until_by_key_;
+    std::unordered_map<std::string, orphan_subscriber_keyframe_request_state> orphan_subscriber_keyframe_requests_by_key_;
 
     std::string subscriber_downlink_pacing_round_robin_after_key;
 

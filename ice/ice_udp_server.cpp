@@ -107,6 +107,7 @@ constexpr std::size_t k_min_rtp_packet_cache_max_packets = 128;
 constexpr std::size_t k_max_rtp_packet_cache_max_packets = 262144;
 
 inline constexpr std::size_t k_max_outbound_transport_cc_packet_identities = 65536;
+inline constexpr std::size_t k_max_outbound_rtp_packet_identities = 65536;
 
 constexpr uint64_t k_subscriber_downlink_republish_grace_milliseconds = 8000;
 constexpr uint64_t k_subscriber_downlink_republish_grace_target_bitrate_bps = 2000000;
@@ -1357,6 +1358,31 @@ std::string make_outbound_rtp_sequence_key(std::string_view stream_id, std::stri
     key.push_back('|');
 
     key.append(std::to_string(subscriber_ssrc));
+
+    return key;
+}
+std::string make_outbound_rtp_packet_key(std::string_view stream_id,
+                                         std::string_view subscriber_session_id,
+                                         uint32_t subscriber_ssrc,
+                                         uint16_t subscriber_sequence_number)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + subscriber_session_id.size() + 48);
+
+    key.append(stream_id);
+
+    key.push_back('|');
+
+    key.append(subscriber_session_id);
+
+    key.push_back('|');
+
+    key.append(std::to_string(subscriber_ssrc));
+
+    key.push_back('|');
+
+    key.append(std::to_string(subscriber_sequence_number));
 
     return key;
 }
@@ -5682,6 +5708,8 @@ void ice_udp_server::stop()
 
         extmap_rewrite_state_by_key_.clear();
         outbound_rtp_sequence_by_key_.clear();
+        outbound_rtp_packets_by_key_.clear();
+        outbound_rtp_packet_insertion_order_.clear();
         outbound_transport_cc_sequence_by_key_.clear();
         outbound_transport_cc_packets_by_key_.clear();
         outbound_transport_cc_packet_insertion_order_.clear();
@@ -5978,6 +6006,7 @@ void ice_udp_server::mark_subscriber_downlink_republish_grace_for_stream(std::st
         state_count += 1;
     }
 
+    erase_orphan_subscriber_keyframe_requests_for_stream_locked(stream_id);
     pacing_state_count = erase_subscriber_downlink_pacing_states_for_stream_locked(stream_id);
 
     WEBRTC_LOG_INFO(
@@ -5989,6 +6018,53 @@ void ice_udp_server::mark_subscriber_downlink_republish_grace_for_stream(std::st
         pacing_state_count,
         k_subscriber_downlink_republish_grace_milliseconds,
         grace_until_milliseconds);
+}
+std::size_t ice_udp_server::erase_orphan_subscriber_keyframe_requests_for_session_locked(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = orphan_subscriber_keyframe_requests_by_key_.begin(); iterator != orphan_subscriber_keyframe_requests_by_key_.end();)
+    {
+        if (iterator->second.subscriber_session_id == session_id)
+        {
+            iterator = orphan_subscriber_keyframe_requests_by_key_.erase(iterator);
+            erased_count += 1;
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
+}
+
+std::size_t ice_udp_server::erase_orphan_subscriber_keyframe_requests_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
+    for (auto iterator = orphan_subscriber_keyframe_requests_by_key_.begin(); iterator != orphan_subscriber_keyframe_requests_by_key_.end();)
+    {
+        if (iterator->second.stream_id == stream_id)
+        {
+            iterator = orphan_subscriber_keyframe_requests_by_key_.erase(iterator);
+            erased_count += 1;
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    return erased_count;
 }
 void ice_udp_server::mark_subscriber_downlink_ice_restart_grace_for_session(std::string_view stream_id, std::string_view subscriber_session_id)
 {
@@ -6062,6 +6138,7 @@ void ice_udp_server::mark_subscriber_downlink_ice_restart_grace_for_session(std:
     }
 
     erased_pacing_states = erase_subscriber_downlink_pacing_states_for_session_locked(subscriber_session_id);
+    erase_orphan_subscriber_keyframe_requests_for_session_locked(subscriber_session_id);
 
     WEBRTC_LOG_INFO(
         "subscriber downlink ice restart grace marked stream={} subscriber_session={} states={} feedback_windows_erased={} "
@@ -14283,6 +14360,11 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_ssrc_mapping(con
     if (mapping_result->packet_count == 1)
     {
         WEBRTC_LOG_INFO("media ssrc mapping created {}", media_ssrc_mapping_to_string(*mapping_result));
+
+        if (!mapping_result->rtx && is_video_media_kind(mapping_result->kind))
+        {
+            consume_orphan_subscriber_keyframe_request_after_mapping_created(*mapping_result, route, target_peer);
+        }
     }
     return *mapping_result;
 }
@@ -15088,7 +15170,8 @@ std::optional<media_ssrc_mapping> ice_udp_server::get_or_create_rtx_ssrc_mapping
 std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_packet(const rtcp_feedback_route_event& event,
                                                                                      const rtp_packet_cache_entry& cached_packet,
                                                                                      const media_ssrc_mapping& primary_ssrc_mapping,
-                                                                                     const media_payload_type_mapping& primary_payload_type_mapping)
+                                                                                     const media_payload_type_mapping& primary_payload_type_mapping,
+                                                                                     const nack_retransmit_sequence& requested_sequence)
 {
     if (rtx_sequence_allocator_ == nullptr)
     {
@@ -15128,10 +15211,17 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
         return std::nullopt;
     }
 
-    const uint16_t seed_sequence_number = static_cast<uint16_t>(static_cast<uint32_t>(cached_packet.sequence_number) + 1U);
+    const outbound_rtp_rewrite_result outbound_rtx = next_outbound_rtp_rewrite(primary_ssrc_mapping.stream_id,
+                                                                               primary_ssrc_mapping.publisher_session_id,
+                                                                               primary_ssrc_mapping.subscriber_session_id,
+                                                                               rtx_ssrc_mapping->subscriber_ssrc,
+                                                                               cached_packet.sequence_number,
+                                                                               cached_packet.timestamp);
 
-    const uint16_t rtx_sequence_number = rtx_sequence_allocator_->allocate(
-        primary_ssrc_mapping.stream_id, primary_ssrc_mapping.subscriber_session_id, rtx_ssrc_mapping->subscriber_ssrc, seed_sequence_number);
+    const uint16_t rtx_sequence_number = outbound_rtx.sequence_number;
+
+    const uint16_t rtx_original_sequence_number =
+        requested_sequence.has_subscriber_rtp_identity ? requested_sequence.subscriber_sequence_number : requested_sequence.cache_sequence_number;
 
     rtp_rtx_packet_options options;
 
@@ -15141,8 +15231,9 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
 
     options.sequence_number = rtx_sequence_number;
 
-    options.timestamp = cached_packet.timestamp;
+    options.timestamp = outbound_rtx.timestamp;
 
+    options.original_sequence_number = rtx_original_sequence_number;
     if (registry_ != nullptr && identity_authority_ != nullptr)
     {
         auto publisher = registry_->find_publisher_by_session_id(primary_ssrc_mapping.publisher_session_id);
@@ -15585,18 +15676,17 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
     }
 
     auto final_rtx_validation =
-        validate_rtp_rtx_packet(std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()), options, cached_packet.sequence_number);
-
+        validate_rtp_rtx_packet(std::span<const uint8_t>(rtx_packet->data(), rtx_packet->size()), options, rtx_original_sequence_number);
     if (!final_rtx_validation)
     {
         WEBRTC_LOG_WARN(
-            "rtx retransmit packet validation failed stream={} subscriber={} primary_ssrc={} rtx_ssrc={} primary_sequence={} rtx_sequence={} "
+            "rtx retransmit packet validation failed stream={} subscriber={} primary_ssrc={} rtx_ssrc={} subscriber_osn={} rtx_sequence={} "
             "error={}",
             event.source.stream_id,
             event.source.remote_endpoint,
             primary_ssrc_mapping.publisher_ssrc,
             rtx_ssrc_mapping->subscriber_ssrc,
-            cached_packet.sequence_number,
+            rtx_original_sequence_number,
             rtx_sequence_number,
             final_rtx_validation.error());
 
@@ -15630,6 +15720,8 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
                                             primary_ssrc_mapping.publisher_ssrc,
                                             primary_ssrc_mapping.subscriber_ssrc,
                                             cached_packet.sequence_number,
+                                            rtx_original_sequence_number,
+                                            true,
                                             primary_ssrc_mapping.publisher_mid,
                                             primary_ssrc_mapping.subscriber_mid,
                                             primary_ssrc_mapping.kind,
@@ -15639,22 +15731,24 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
     }
 
     WEBRTC_LOG_DEBUG(
-        "rtx retransmit packet built stream={} subscriber={} primary_ssrc={} subscriber_primary_ssrc={} rtx_ssrc={} primary_sequence={} "
-        "rtx_sequence={} osn={} primary_pt={} rtx_pt={} repaired_rid_rewrite={} rtx_payload_size={} size={}",
+        "rtx retransmit packet built stream={} subscriber={} primary_ssrc={} subscriber_primary_ssrc={} rtx_ssrc={} cache_sequence={} "
+        "subscriber_osn={} rtx_sequence={} rtx_timestamp={} osn={} primary_pt={} rtx_pt={} repaired_rid_rewrite={} rtx_payload_size={} "
+        "size={}",
         event.source.stream_id,
         event.source.remote_endpoint,
         primary_ssrc_mapping.publisher_ssrc,
         primary_ssrc_mapping.subscriber_ssrc,
         rtx_ssrc_mapping->subscriber_ssrc,
         cached_packet.sequence_number,
+        rtx_original_sequence_number,
         rtx_sequence_number,
+        outbound_rtx.timestamp,
         final_rtx_info->original_sequence_number,
         static_cast<unsigned int>(cached_packet.payload_type),
         rtx_payload_type_mapping->subscriber_payload_type,
         repaired_rid_rewrite_applied ? 1 : 0,
         final_rtx_info->original_payload_size,
         rtx_packet->size());
-
     return rtx_packet.value();
 }
 
@@ -15854,13 +15948,19 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
     const std::span<const uint8_t> plain_packet_span(packet.plain_packet.data(), packet.plain_packet.size());
 
     /*
-     * Keep RTP sequence numbers monotonic for each subscriber SSRC.
+     * Keep RTP sequence numbers and timestamps continuous for each outbound
+     * subscriber SSRC.
      *
-     * This must run outside the video-only RTP header extension rewrite block.
-     * Republish keeps the WHEP subscriber SRTP outbound context alive, so both
-     * audio and video packets sent to the same subscriber SSRC must continue
-     * with subscriber-side RTP sequence numbers. If audio keeps the new
-     * publisher's random sequence number, libsrtp rejects packets as replay_old.
+     * This runs outside the video-only RTP header extension block on purpose.
+     * It covers every publisher RTP packet that is fanned out to a subscriber:
+     *
+     *   - audio primary RTP
+     *   - video primary RTP
+     *   - publisher RTX / repaired RTP if it is forwarded as RTP
+     *
+     * Republish keeps the WHEP subscriber PeerConnection and SRTP outbound
+     * context alive. Therefore the same subscriber SSRC must not suddenly jump
+     * to the new publisher's random sequence number or timestamp base.
      */
     if (ssrc_mapping.has_value() && payload_type_mapping.has_value())
     {
@@ -15868,7 +15968,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
         if (!publisher_header)
         {
-            WEBRTC_LOG_WARN("rtp outbound sequence rewrite parse failed stream={} publisher_session={} subscriber_session={} error={}",
+            WEBRTC_LOG_WARN("rtp outbound continuity rewrite parse failed stream={} publisher_session={} subscriber_session={} error={}",
                             payload_type_mapping->stream_id,
                             route.source.session_id,
                             target_peer.session_id,
@@ -15877,17 +15977,70 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
             return std::nullopt;
         }
 
-        const uint16_t outbound_rtp_sequence = next_outbound_rtp_sequence(payload_type_mapping->stream_id,
-                                                                          route.source.session_id,
-                                                                          target_peer.session_id,
-                                                                          ssrc_mapping->subscriber_ssrc,
-                                                                          publisher_header->sequence_number);
+        const outbound_rtp_rewrite_result outbound_rtp = next_outbound_rtp_rewrite(payload_type_mapping->stream_id,
+                                                                                   route.source.session_id,
+                                                                                   target_peer.session_id,
+                                                                                   ssrc_mapping->subscriber_ssrc,
+                                                                                   publisher_header->sequence_number,
+                                                                                   publisher_header->timestamp);
 
-        if (outbound_rtp_sequence != publisher_header->sequence_number)
+        if (outbound_rtp.sequence_number_rewrite_required)
         {
-            options.sequence_number = outbound_rtp_sequence;
+            options.sequence_number = outbound_rtp.sequence_number;
 
             rewrite_required = true;
+        }
+
+        if (outbound_rtp.timestamp_rewrite_required)
+        {
+            options.timestamp = outbound_rtp.timestamp;
+
+            rewrite_required = true;
+        }
+
+        outbound_rtp_packet_identity identity;
+
+        identity.stream_id = payload_type_mapping->stream_id;
+        identity.publisher_session_id = route.source.session_id;
+        identity.subscriber_session_id = target_peer.session_id;
+        identity.publisher_mid = payload_type_mapping->publisher_mid;
+        identity.subscriber_mid = payload_type_mapping->subscriber_mid;
+        identity.kind = payload_type_mapping->kind;
+        identity.rtx = payload_type_mapping->rtx;
+
+        identity.publisher_ssrc = publisher_header->ssrc;
+        identity.subscriber_ssrc = ssrc_mapping->subscriber_ssrc;
+
+        identity.publisher_payload_type = publisher_header->payload_type;
+        identity.subscriber_payload_type = payload_type_mapping->subscriber_payload_type <= 127
+                                               ? static_cast<uint8_t>(payload_type_mapping->subscriber_payload_type)
+                                               : publisher_header->payload_type;
+
+        identity.publisher_rtp_sequence_number = publisher_header->sequence_number;
+        identity.subscriber_rtp_sequence_number = outbound_rtp.sequence_number;
+
+        identity.publisher_rtp_timestamp = publisher_header->timestamp;
+        identity.subscriber_rtp_timestamp = outbound_rtp.timestamp;
+
+        identity.sent_at_milliseconds = now_milliseconds();
+
+        remember_outbound_rtp_packet(identity);
+
+        if (outbound_rtp.publisher_switch)
+        {
+            WEBRTC_LOG_INFO(
+                "rtp outbound continuity publisher switched stream={} old_or_new_publisher_session={} subscriber_session={} subscriber_ssrc={} "
+                "publisher_sequence={} subscriber_sequence={} publisher_timestamp={} subscriber_timestamp={} kind={} rtx={}",
+                payload_type_mapping->stream_id,
+                route.source.session_id,
+                target_peer.session_id,
+                ssrc_mapping->subscriber_ssrc,
+                publisher_header->sequence_number,
+                outbound_rtp.sequence_number,
+                publisher_header->timestamp,
+                outbound_rtp.timestamp,
+                payload_type_mapping->kind,
+                payload_type_mapping->rtx ? 1 : 0);
         }
     }
 
@@ -16223,7 +16376,10 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 }
 
 std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::make_retransmit_plain_packet(
-    const rtcp_feedback_route_event& event, const rtp_packet_cache_entry& cached_packet, const std::optional<media_ssrc_mapping>& ssrc_mapping)
+    const rtcp_feedback_route_event& event,
+    const rtp_packet_cache_entry& cached_packet,
+    const std::optional<media_ssrc_mapping>& ssrc_mapping,
+    const nack_retransmit_sequence& requested_sequence)
 {
     std::vector<uint8_t> original_packet;
 
@@ -16307,12 +16463,42 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
 
     if (media_ssrc_mapping_is_primary_video(*ssrc_mapping))
     {
-        std::optional<std::vector<uint8_t>> rtx_packet = make_rtx_retransmit_plain_packet(event, cached_packet, *ssrc_mapping, *payload_type_mapping);
+        std::optional<std::vector<uint8_t>> rtx_packet =
+            make_rtx_retransmit_plain_packet(event, cached_packet, *ssrc_mapping, *payload_type_mapping, requested_sequence);
 
         if (rtx_packet.has_value())
         {
             return make_rtx_result(std::move(*rtx_packet));
         }
+
+        if (requested_sequence.rtx_feedback && !requested_sequence.has_subscriber_rtp_identity)
+        {
+            WEBRTC_LOG_WARN(
+                "rtp nack retransmit skipped rtx feedback primary fallback without subscriber identity stream={} subscriber={} feedback_sequence={} "
+                "cache_sequence={} publisher_ssrc={} subscriber_ssrc={}",
+                event.source.stream_id,
+                event.source.remote_endpoint,
+                requested_sequence.feedback_sequence_number,
+                requested_sequence.cache_sequence_number,
+                ssrc_mapping->publisher_ssrc,
+                ssrc_mapping->subscriber_ssrc);
+
+            return std::nullopt;
+        }
+    }
+
+    if (requested_sequence.has_subscriber_rtp_identity)
+    {
+        options.sequence_number = requested_sequence.subscriber_sequence_number;
+        options.timestamp = requested_sequence.subscriber_timestamp;
+
+        rewrite_required = true;
+    }
+    else if (!requested_sequence.rtx_feedback && requested_sequence.feedback_sequence_number != cached_packet.sequence_number)
+    {
+        options.sequence_number = requested_sequence.feedback_sequence_number;
+
+        rewrite_required = true;
     }
 
     if (payload_type_mapping->payload_type_rewrite_required)
@@ -16556,7 +16742,8 @@ std::optional<ice_udp_server::retransmit_plain_packet_result> ice_udp_server::ma
                     identity.subscriber_payload_type = payload_type_mapping->subscriber_payload_type;
 
                     identity.publisher_rtp_sequence_number = cached_packet.sequence_number;
-                    identity.subscriber_rtp_sequence_number = cached_packet.sequence_number;
+                    identity.subscriber_rtp_sequence_number =
+                        options.sequence_number.has_value() ? *options.sequence_number : cached_packet.sequence_number;
 
                     identity.publisher_transport_cc_sequence_number = *publisher_transport_cc_sequence;
                     identity.subscriber_transport_cc_sequence_number = outbound_transport_cc_sequence;
@@ -16957,6 +17144,141 @@ void ice_udp_server::handle_transport_cc_feedback_event(const rtcp_feedback_rout
         received_hit_count,
         lost_hit_count);
 }
+void ice_udp_server::remember_orphan_subscriber_keyframe_request(const rtcp_feedback_route_event& event)
+{
+    if (!event.valid)
+    {
+        return;
+    }
+
+    if (!event.has_keyframe_request && event.fir_count == 0)
+    {
+        return;
+    }
+
+    if (event.source.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (event.source.stream_id.empty() || event.source.session_id.empty())
+    {
+        return;
+    }
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+    const std::string key = make_subscriber_downlink_bandwidth_state_key(event.source.stream_id, event.source.session_id);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    auto& state = orphan_subscriber_keyframe_requests_by_key_[key];
+
+    if (state.stream_id.empty())
+    {
+        state.stream_id = event.source.stream_id;
+        state.subscriber_session_id = event.source.session_id;
+        state.first_requested_at_milliseconds = current_time_milliseconds;
+    }
+
+    state.last_requested_at_milliseconds = current_time_milliseconds;
+    state.request_count += 1;
+    state.feedback_name = event.feedback_name;
+    state.last_media_ssrc = event.media_ssrc;
+
+    WEBRTC_LOG_DEBUG("orphan subscriber keyframe request remembered stream={} subscriber_session={} feedback={} media_ssrc={} count={}",
+                     state.stream_id,
+                     state.subscriber_session_id,
+                     state.feedback_name,
+                     state.last_media_ssrc,
+                     state.request_count);
+}
+
+void ice_udp_server::consume_orphan_subscriber_keyframe_request_after_mapping_created(const media_ssrc_mapping& mapping,
+                                                                                      const media_route_result& route,
+                                                                                      const media_peer_info& target_peer)
+{
+    if (!media_ssrc_mapping_is_primary_video(mapping))
+    {
+        return;
+    }
+
+    if (route.source.role != media_peer_role::publisher)
+    {
+        return;
+    }
+
+    if (target_peer.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (mapping.stream_id.empty() || mapping.subscriber_session_id.empty())
+    {
+        return;
+    }
+
+    if (mapping.stream_id != route.source.stream_id || mapping.publisher_session_id != route.source.session_id ||
+        mapping.subscriber_session_id != target_peer.session_id)
+    {
+        WEBRTC_LOG_WARN(
+            "orphan subscriber keyframe request consume skipped mapping mismatch mapping_stream={} route_stream={} mapping_publisher={} "
+            "route_publisher={} mapping_subscriber={} target_subscriber={} publisher_ssrc={} subscriber_ssrc={}",
+            mapping.stream_id,
+            route.source.stream_id,
+            mapping.publisher_session_id,
+            route.source.session_id,
+            mapping.subscriber_session_id,
+            target_peer.session_id,
+            mapping.publisher_ssrc,
+            mapping.subscriber_ssrc);
+
+        return;
+    }
+
+    orphan_subscriber_keyframe_request_state pending;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        const std::string key = make_subscriber_downlink_bandwidth_state_key(mapping.stream_id, mapping.subscriber_session_id);
+
+        const auto iterator = orphan_subscriber_keyframe_requests_by_key_.find(key);
+
+        if (iterator == orphan_subscriber_keyframe_requests_by_key_.end())
+        {
+            return;
+        }
+
+        pending = iterator->second;
+
+        orphan_subscriber_keyframe_requests_by_key_.erase(iterator);
+    }
+
+    WEBRTC_LOG_INFO(
+        "orphan subscriber keyframe request consumed stream={} subscriber_session={} publisher_session={} feedback={} pending_count={} "
+        "publisher_ssrc={} subscriber_ssrc={}",
+        mapping.stream_id,
+        mapping.subscriber_session_id,
+        mapping.publisher_session_id,
+        pending.feedback_name,
+        pending.request_count,
+        mapping.publisher_ssrc,
+        mapping.subscriber_ssrc);
+
+    /*
+     * Do not send RTCP PLI directly here.
+     *
+     * This function runs at SSRC mapping creation time, inside the RTP forwarding
+     * path. The existing keyframe request path already sends PLI from
+     * maybe_request_keyframe_from_publisher(...) after mapping creation, using
+     * the current publisher RTP packet and the current track_resolution.
+     *
+     * Consuming the orphan pending state here is still useful: it confirms that
+     * the orphan subscriber request was matched to the new publisher generation
+     * and prevents stale pending state from leaking after republish.
+     */
+}
+
 void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event& event)
 {
     if (!event.valid)
@@ -16985,6 +17307,8 @@ void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event&
 
     if (!mapping.has_value())
     {
+        remember_orphan_subscriber_keyframe_request(event);
+
         WEBRTC_LOG_WARN("keyframe feedback skipped unresolved media target stream={} subscriber_session={} remote={} feedback={} media_ssrc={}",
                         event.source.stream_id,
                         event.source.session_id,
@@ -17011,6 +17335,7 @@ void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event&
         mapping->rid.value_or(""),
         mapping->repaired_rid.value_or(""));
 }
+
 bool ice_udp_server::subscriber_feedback_targets_selected_rid_layer(const rtcp_feedback_route_event& event,
                                                                     const media_ssrc_mapping& primary_mapping,
                                                                     uint32_t feedback_media_ssrc,
@@ -17220,9 +17545,11 @@ std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolv
 
     resolution.feedback_media_ssrc = feedback_media_ssrc;
 
-    if (media_ssrc_mapping_is_primary_video(*feedback_mapping))
+    if (!media_ssrc_mapping_is_rtx(*feedback_mapping))
     {
-        if (!subscriber_feedback_targets_selected_rid_layer(event, *feedback_mapping, feedback_media_ssrc, true, "nack"))
+        const bool primary_video_feedback = media_ssrc_mapping_is_primary_video(*feedback_mapping);
+
+        if (primary_video_feedback && !subscriber_feedback_targets_selected_rid_layer(event, *feedback_mapping, feedback_media_ssrc, true, "nack"))
         {
             WEBRTC_LOG_DEBUG(
                 "rtp nack retransmit skipped non selected rid primary feedback stream={} subscriber={} feedback_ssrc={} publisher_ssrc={} "
@@ -17242,23 +17569,86 @@ std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolv
 
         resolution.cache_media_ssrc = feedback_mapping->publisher_ssrc;
 
-        resolution.primary_video = true;
+        resolution.primary_video = primary_video_feedback;
         resolution.rtx_feedback = false;
 
         resolution.sequences.reserve(feedback_sequence_numbers.size());
 
-        for (uint16_t sequence_number : feedback_sequence_numbers)
+        for (uint16_t subscriber_sequence_number : feedback_sequence_numbers)
         {
             nack_retransmit_sequence sequence;
 
-            sequence.feedback_sequence_number = sequence_number;
-
-            sequence.cache_sequence_number = sequence_number;
-
+            sequence.feedback_sequence_number = subscriber_sequence_number;
+            sequence.subscriber_sequence_number = subscriber_sequence_number;
+            sequence.cache_sequence_number = subscriber_sequence_number;
             sequence.rtx_feedback = false;
+
+            const std::optional<outbound_rtp_packet_identity> identity = find_outbound_rtp_packet(
+                event.source.stream_id, event.source.session_id, feedback_mapping->subscriber_ssrc, subscriber_sequence_number);
+
+            if (identity.has_value())
+            {
+                if (identity->publisher_ssrc != feedback_mapping->publisher_ssrc || identity->subscriber_ssrc != feedback_mapping->subscriber_ssrc ||
+                    identity->publisher_mid != feedback_mapping->publisher_mid || identity->subscriber_mid != feedback_mapping->subscriber_mid ||
+                    identity->kind != feedback_mapping->kind)
+                {
+                    resolution.rtx_sequence_index_miss_count += 1;
+
+                    WEBRTC_LOG_WARN(
+                        "rtp nack retransmit subscriber identity mismatch stream={} subscriber={} feedback_ssrc={} subscriber_sequence={} "
+                        "identity_publisher_ssrc={} mapping_publisher_ssrc={} identity_subscriber_ssrc={} mapping_subscriber_ssrc={} "
+                        "identity_publisher_mid={} mapping_publisher_mid={} identity_subscriber_mid={} mapping_subscriber_mid={} "
+                        "identity_kind={} mapping_kind={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        feedback_media_ssrc,
+                        subscriber_sequence_number,
+                        identity->publisher_ssrc,
+                        feedback_mapping->publisher_ssrc,
+                        identity->subscriber_ssrc,
+                        feedback_mapping->subscriber_ssrc,
+                        identity->publisher_mid,
+                        feedback_mapping->publisher_mid,
+                        identity->subscriber_mid,
+                        feedback_mapping->subscriber_mid,
+                        identity->kind,
+                        feedback_mapping->kind);
+
+                    continue;
+                }
+
+                sequence.cache_sequence_number = identity->publisher_rtp_sequence_number;
+                sequence.subscriber_sequence_number = identity->subscriber_rtp_sequence_number;
+                sequence.subscriber_timestamp = identity->subscriber_rtp_timestamp;
+                sequence.has_subscriber_rtp_identity = true;
+            }
+            else
+            {
+                resolution.rtx_sequence_index_miss_count += 1;
+
+                WEBRTC_LOG_DEBUG(
+                    "rtp nack retransmit subscriber identity not found stream={} subscriber={} feedback_ssrc={} subscriber_sequence={} "
+                    "fallback_cache_sequence={}",
+                    event.source.stream_id,
+                    event.source.remote_endpoint,
+                    feedback_media_ssrc,
+                    subscriber_sequence_number,
+                    sequence.cache_sequence_number);
+            }
 
             resolution.sequences.push_back(sequence);
         }
+
+        WEBRTC_LOG_DEBUG(
+            "rtp nack retransmit primary feedback resolved stream={} subscriber={} feedback_ssrc={} publisher_ssrc={} requested={} mapped={} "
+            "identity_miss={}",
+            event.source.stream_id,
+            event.source.remote_endpoint,
+            feedback_media_ssrc,
+            resolution.cache_media_ssrc,
+            feedback_sequence_numbers.size(),
+            resolution.sequences.size(),
+            resolution.rtx_sequence_index_miss_count);
 
         return resolution;
     }
@@ -17437,10 +17827,22 @@ std::optional<ice_udp_server::nack_retransmit_resolution> ice_udp_server::resolv
         nack_retransmit_sequence sequence;
 
         sequence.feedback_sequence_number = rtx_sequence_number;
-
         sequence.cache_sequence_number = indexed->primary_sequence_number;
-
         sequence.rtx_feedback = true;
+
+        if (indexed->has_subscriber_primary_sequence_number)
+        {
+            sequence.subscriber_sequence_number = indexed->subscriber_primary_sequence_number;
+            sequence.has_subscriber_rtp_identity = true;
+
+            const std::optional<outbound_rtp_packet_identity> identity = find_outbound_rtp_packet(
+                event.source.stream_id, event.source.session_id, primary_mapping->subscriber_ssrc, indexed->subscriber_primary_sequence_number);
+
+            if (identity.has_value())
+            {
+                sequence.subscriber_timestamp = identity->subscriber_rtp_timestamp;
+            }
+        }
 
         resolution.sequences.push_back(sequence);
     }
@@ -17588,7 +17990,7 @@ void ice_udp_server::retransmit_cached_rtp_packets(const rtcp_feedback_route_eve
 
         hit_count += 1;
 
-        auto retransmit_plain_packet = make_retransmit_plain_packet(event, *cached, ssrc_mapping);
+        auto retransmit_plain_packet = make_retransmit_plain_packet(event, *cached, ssrc_mapping, requested_sequence);
 
         if (!retransmit_plain_packet.has_value())
         {
@@ -17917,6 +18319,7 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
 
         const std::size_t erased_subscriber_downlink_pacing_states = erase_subscriber_downlink_pacing_states_for_stream_locked(stream_id);
         (void)erased_subscriber_downlink_pacing_states;
+        erase_orphan_subscriber_keyframe_requests_for_stream_locked(stream_id);
 
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
@@ -18966,15 +19369,21 @@ uint16_t ice_udp_server::next_outbound_transport_cc_sequence(std::string_view st
 
     return sequence_number;
 }
-uint16_t ice_udp_server::next_outbound_rtp_sequence(std::string_view stream_id,
-                                                    std::string_view publisher_session_id,
-                                                    std::string_view subscriber_session_id,
-                                                    uint32_t subscriber_ssrc,
-                                                    uint16_t publisher_sequence_number)
+ice_udp_server::outbound_rtp_rewrite_result ice_udp_server::next_outbound_rtp_rewrite(std::string_view stream_id,
+                                                                                      std::string_view publisher_session_id,
+                                                                                      std::string_view subscriber_session_id,
+                                                                                      uint32_t subscriber_ssrc,
+                                                                                      uint16_t publisher_sequence_number,
+                                                                                      uint32_t publisher_timestamp)
 {
+    outbound_rtp_rewrite_result result;
+
+    result.sequence_number = publisher_sequence_number;
+    result.timestamp = publisher_timestamp;
+
     if (stream_id.empty() || publisher_session_id.empty() || subscriber_session_id.empty() || subscriber_ssrc == 0)
     {
-        return publisher_sequence_number;
+        return result;
     }
 
     const std::string key = make_outbound_rtp_sequence_key(stream_id, subscriber_session_id, subscriber_ssrc);
@@ -18993,12 +19402,18 @@ uint16_t ice_udp_server::next_outbound_rtp_sequence(std::string_view stream_id,
         state.last_publisher_sequence_number = publisher_sequence_number;
         state.last_subscriber_sequence_number = publisher_sequence_number;
         state.next_subscriber_sequence_number = static_cast<uint16_t>(publisher_sequence_number + 1U);
+
+        state.last_publisher_timestamp = publisher_timestamp;
+        state.last_subscriber_timestamp = publisher_timestamp;
+
         state.packet_count = 1;
 
-        return publisher_sequence_number;
+        return result;
     }
 
-    if (state.publisher_session_id != publisher_session_id)
+    const bool publisher_switch = state.publisher_session_id != publisher_session_id;
+
+    if (publisher_switch)
     {
         state.publisher_session_id = publisher_session_id;
         state.publisher_switch_count += 1;
@@ -19006,14 +19421,98 @@ uint16_t ice_udp_server::next_outbound_rtp_sequence(std::string_view stream_id,
 
     const uint16_t subscriber_sequence_number = state.next_subscriber_sequence_number;
 
+    /*
+     * Timestamp must also stay continuous for the same outbound subscriber SSRC.
+     *
+     * When publisher switches, the new publisher RTP timestamp has a new random
+     * clock base. Do not forward that random jump to the existing WHEP receiver.
+     * Start the new publisher generation from the previous subscriber timestamp
+     * plus one RTP tick, then keep preserving publisher deltas from there.
+     *
+     * This applies to every subscriber-bound RTP stream, including audio, video,
+     * and publisher RTX RTP, because the key is the outbound subscriber SSRC.
+     */
+    uint32_t subscriber_timestamp = static_cast<uint32_t>(state.last_subscriber_timestamp + 1U);
+
+    if (!publisher_switch)
+    {
+        const uint32_t publisher_timestamp_delta = static_cast<uint32_t>(publisher_timestamp - state.last_publisher_timestamp);
+
+        subscriber_timestamp = static_cast<uint32_t>(state.last_subscriber_timestamp + publisher_timestamp_delta);
+    }
+
     state.last_publisher_sequence_number = publisher_sequence_number;
     state.last_subscriber_sequence_number = subscriber_sequence_number;
     state.next_subscriber_sequence_number = static_cast<uint16_t>(subscriber_sequence_number + 1U);
+
+    state.last_publisher_timestamp = publisher_timestamp;
+    state.last_subscriber_timestamp = subscriber_timestamp;
+
     state.packet_count += 1;
 
-    return subscriber_sequence_number;
+    result.sequence_number = subscriber_sequence_number;
+    result.timestamp = subscriber_timestamp;
+    result.sequence_number_rewrite_required = subscriber_sequence_number != publisher_sequence_number;
+    result.timestamp_rewrite_required = subscriber_timestamp != publisher_timestamp;
+    result.publisher_switch = publisher_switch;
+
+    return result;
+}
+void ice_udp_server::remember_outbound_rtp_packet(const outbound_rtp_packet_identity& identity)
+{
+    if (identity.stream_id.empty() || identity.publisher_session_id.empty() || identity.subscriber_session_id.empty() ||
+        identity.subscriber_ssrc == 0)
+    {
+        return;
+    }
+
+    const std::string key = make_outbound_rtp_packet_key(
+        identity.stream_id, identity.subscriber_session_id, identity.subscriber_ssrc, identity.subscriber_rtp_sequence_number);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const bool inserted = !outbound_rtp_packets_by_key_.contains(key);
+
+    outbound_rtp_packets_by_key_[key] = identity;
+
+    if (inserted)
+    {
+        outbound_rtp_packet_insertion_order_.push_back(key);
+    }
+
+    while (outbound_rtp_packets_by_key_.size() > k_max_outbound_rtp_packet_identities && !outbound_rtp_packet_insertion_order_.empty())
+    {
+        const std::string oldest_key = std::move(outbound_rtp_packet_insertion_order_.front());
+
+        outbound_rtp_packet_insertion_order_.pop_front();
+
+        outbound_rtp_packets_by_key_.erase(oldest_key);
+    }
 }
 
+std::optional<ice_udp_server::outbound_rtp_packet_identity> ice_udp_server::find_outbound_rtp_packet(std::string_view stream_id,
+                                                                                                     std::string_view subscriber_session_id,
+                                                                                                     uint32_t subscriber_ssrc,
+                                                                                                     uint16_t subscriber_sequence_number) const
+{
+    if (stream_id.empty() || subscriber_session_id.empty() || subscriber_ssrc == 0)
+    {
+        return std::nullopt;
+    }
+
+    const std::string key = make_outbound_rtp_packet_key(stream_id, subscriber_session_id, subscriber_ssrc, subscriber_sequence_number);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    const auto iterator = outbound_rtp_packets_by_key_.find(key);
+
+    if (iterator == outbound_rtp_packets_by_key_.end())
+    {
+        return std::nullopt;
+    }
+
+    return iterator->second;
+}
 void ice_udp_server::forget_outbound_rtp_sequences_for_session(std::string_view session_id)
 {
     if (session_id.empty())
@@ -19048,6 +19547,29 @@ void ice_udp_server::forget_outbound_rtp_sequences_for_session(std::string_view 
 
         ++iterator;
     }
+    for (auto iterator = outbound_rtp_packets_by_key_.begin(); iterator != outbound_rtp_packets_by_key_.end();)
+    {
+        if (outbound_rtp_sequence_key_matches_session(iterator->first, session_id) || iterator->second.subscriber_session_id == session_id)
+        {
+            iterator = outbound_rtp_packets_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    for (auto iterator = outbound_rtp_packet_insertion_order_.begin(); iterator != outbound_rtp_packet_insertion_order_.end();)
+    {
+        if (outbound_rtp_sequence_key_matches_session(*iterator, session_id))
+        {
+            iterator = outbound_rtp_packet_insertion_order_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
 }
 
 std::size_t ice_udp_server::erase_outbound_rtp_sequences_for_stream_locked(std::string_view stream_id)
@@ -19073,6 +19595,29 @@ std::size_t ice_udp_server::erase_outbound_rtp_sequences_for_stream_locked(std::
         ++iterator;
     }
 
+    for (auto iterator = outbound_rtp_packets_by_key_.begin(); iterator != outbound_rtp_packets_by_key_.end();)
+    {
+        if (outbound_rtp_sequence_key_matches_stream(iterator->first, stream_id))
+        {
+            iterator = outbound_rtp_packets_by_key_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
+
+    for (auto iterator = outbound_rtp_packet_insertion_order_.begin(); iterator != outbound_rtp_packet_insertion_order_.end();)
+    {
+        if (outbound_rtp_sequence_key_matches_stream(*iterator, stream_id))
+        {
+            iterator = outbound_rtp_packet_insertion_order_.erase(iterator);
+
+            continue;
+        }
+
+        ++iterator;
+    }
     return erased_count;
 }
 
@@ -20126,8 +20671,8 @@ void ice_udp_server::forget_subscriber_downlink_pacing_states_for_session(std::s
 
     std::lock_guard lock(endpoint_mutex_);
 
+    erase_orphan_subscriber_keyframe_requests_for_session_locked(session_id);
     const std::size_t erased_count = erase_subscriber_downlink_pacing_states_for_session_locked(session_id);
-
     if (erased_count > 0)
     {
         WEBRTC_LOG_DEBUG("subscriber downlink pacing states forgotten session={} count={}", session_id, erased_count);

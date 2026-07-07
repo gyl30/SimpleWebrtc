@@ -35,8 +35,17 @@ struct rtx_retransmission_mapping
 
     uint32_t publisher_primary_ssrc = 0;
     uint32_t subscriber_primary_ssrc = 0;
-    uint16_t primary_sequence_number = 0;
 
+    /*
+     * primary_sequence_number is the publisher/cache sequence used to locate
+     * the cached RTP packet.
+     *
+     * subscriber_primary_sequence_number is the OSN that must be written into
+     * RTX packets sent to the subscriber.
+     */
+    uint16_t primary_sequence_number = 0;
+    uint16_t subscriber_primary_sequence_number = 0;
+    bool has_subscriber_primary_sequence_number = false;
     uint64_t created_at_milliseconds = 0;
     uint64_t last_used_at_milliseconds = 0;
 };
@@ -63,6 +72,8 @@ class rtx_retransmission_index
                   uint32_t publisher_primary_ssrc,
                   uint32_t subscriber_primary_ssrc,
                   uint16_t primary_sequence_number,
+                  uint16_t subscriber_primary_sequence_number,
+                  bool has_subscriber_primary_sequence_number,
                   std::string_view publisher_mid,
                   std::string_view subscriber_mid,
                   std::string_view kind,
