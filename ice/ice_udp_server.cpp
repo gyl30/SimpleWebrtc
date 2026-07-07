@@ -2248,9 +2248,16 @@ ice_udp_server::subscriber_downlink_control_config make_subscriber_downlink_cont
 
     config.max_pacing_packets_per_tick = std::min<std::size_t>(config.max_pacing_packets_per_tick, 256);
 
+    config.max_pacing_packets_per_subscriber_per_tick = get_env_size_or_default(
+        "WEBRTC_SUBSCRIBER_DOWNLINK_PACING_MAX_PACKETS_PER_SUBSCRIBER_PER_TICK", config.max_pacing_packets_per_subscriber_per_tick);
+
+    config.max_pacing_packets_per_subscriber_per_tick = std::max<std::size_t>(config.max_pacing_packets_per_subscriber_per_tick, 1);
+
+    config.max_pacing_packets_per_subscriber_per_tick =
+        std::min<std::size_t>(config.max_pacing_packets_per_subscriber_per_tick, config.max_pacing_packets_per_tick);
+
     config.pacing_timer_interval_milliseconds =
         get_env_uint64_or_default("WEBRTC_SUBSCRIBER_DOWNLINK_PACING_TIMER_INTERVAL_MS", config.pacing_timer_interval_milliseconds);
-
     config.pacing_timer_interval_milliseconds = std::max<uint64_t>(config.pacing_timer_interval_milliseconds, 1);
 
     config.pacing_timer_interval_milliseconds = std::min<uint64_t>(config.pacing_timer_interval_milliseconds, 100);
@@ -2263,7 +2270,8 @@ ice_udp_server::subscriber_downlink_control_config make_subscriber_downlink_cont
         "hold_down_duration_ms={} recovering_required_healthy_windows={} hold_down_required_healthy_windows={} "
         "constrained_required_bad_windows={} steady_increase_ppm={} recovering_increase_ppm={} hold_down_increase_ppm={} "
         "constrained_decrease_ppm={} severe_constrained_decrease_ppm={} pacing_max_queue_packets={} pacing_max_queue_bytes={} "
-        "pacing_max_packet_age_ms={} pacing_max_packets_per_tick={} pacing_timer_interval_ms={}",
+        "pacing_max_packet_age_ms={} pacing_max_packets_per_tick={} pacing_max_packets_per_subscriber_per_tick={} "
+        "pacing_timer_interval_ms={}",
         subscriber_downlink_control_mode_to_string(config.mode),
         config.initial_target_bitrate_bps,
         config.min_bitrate_bps,
@@ -2291,6 +2299,7 @@ ice_udp_server::subscriber_downlink_control_config make_subscriber_downlink_cont
         config.max_pacing_queue_bytes_per_subscriber,
         config.max_pacing_packet_age_milliseconds,
         config.max_pacing_packets_per_tick,
+        config.max_pacing_packets_per_subscriber_per_tick,
         config.pacing_timer_interval_milliseconds);
     return config;
 }
@@ -5680,6 +5689,7 @@ void ice_udp_server::stop()
 
         subscriber_downlink_pacing_by_key_.clear();
         subscriber_downlink_bandwidth_by_key_.clear();
+        subscriber_downlink_pacing_round_robin_after_key.clear();
         subscriber_downlink_pacing_timer_scheduled_ = false;
 
         endpoint_last_seen_milliseconds_by_address_.clear();
@@ -5924,7 +5934,7 @@ void ice_udp_server::mark_subscriber_downlink_republish_grace_for_stream(std::st
     const uint64_t grace_until_milliseconds = now_milliseconds() + k_subscriber_downlink_republish_grace_milliseconds;
 
     std::size_t state_count = 0;
-
+    std::size_t pacing_state_count = 0;
     std::lock_guard lock(endpoint_mutex_);
 
     for (auto& [key, state] : subscriber_downlink_bandwidth_by_key_)
@@ -5968,12 +5978,17 @@ void ice_udp_server::mark_subscriber_downlink_republish_grace_for_stream(std::st
         state_count += 1;
     }
 
-    WEBRTC_LOG_INFO("subscriber downlink republish grace marked stream={} publisher_session={} subscribers={} grace_ms={} grace_until_ms={}",
-                    stream_id,
-                    publisher_session_id,
-                    state_count,
-                    k_subscriber_downlink_republish_grace_milliseconds,
-                    grace_until_milliseconds);
+    pacing_state_count = erase_subscriber_downlink_pacing_states_for_stream_locked(stream_id);
+
+    WEBRTC_LOG_INFO(
+        "subscriber downlink republish grace marked stream={} publisher_session={} subscribers={} pacing_states_erased={} grace_ms={} "
+        "grace_until_ms={}",
+        stream_id,
+        publisher_session_id,
+        state_count,
+        pacing_state_count,
+        k_subscriber_downlink_republish_grace_milliseconds,
+        grace_until_milliseconds);
 }
 void ice_udp_server::mark_subscriber_downlink_ice_restart_grace_for_session(std::string_view stream_id, std::string_view subscriber_session_id)
 {
@@ -5987,6 +6002,7 @@ void ice_udp_server::mark_subscriber_downlink_ice_restart_grace_for_session(std:
 
     std::size_t state_count = 0;
     std::size_t erased_feedback_windows = 0;
+    std::size_t erased_pacing_states = 0;
 
     std::lock_guard lock(endpoint_mutex_);
 
@@ -6045,13 +6061,16 @@ void ice_udp_server::mark_subscriber_downlink_ice_restart_grace_for_session(std:
         ++iterator;
     }
 
+    erased_pacing_states = erase_subscriber_downlink_pacing_states_for_session_locked(subscriber_session_id);
+
     WEBRTC_LOG_INFO(
-        "subscriber downlink ice restart grace marked stream={} subscriber_session={} states={} feedback_windows_erased={} grace_ms={} "
-        "grace_until_ms={}",
+        "subscriber downlink ice restart grace marked stream={} subscriber_session={} states={} feedback_windows_erased={} "
+        "pacing_states_erased={} grace_ms={} grace_until_ms={}",
         stream_id,
         subscriber_session_id,
         state_count,
         erased_feedback_windows,
+        erased_pacing_states,
         k_subscriber_downlink_republish_grace_milliseconds,
         grace_until_milliseconds);
 }
@@ -19846,16 +19865,64 @@ std::vector<ice_udp_server::subscriber_downlink_pacing_packet> ice_udp_server::p
 
     const uint64_t max_pacing_packet_age_milliseconds = downlink_config.max_pacing_packet_age_milliseconds;
     const std::size_t max_pacing_packets_per_tick = downlink_config.max_pacing_packets_per_tick;
+    const std::size_t max_pacing_packets_per_subscriber_per_tick = downlink_config.max_pacing_packets_per_subscriber_per_tick;
 
     std::vector<subscriber_downlink_pacing_packet> packets;
 
     packets.reserve(max_pacing_packets_per_tick);
+
     const uint64_t now = now_milliseconds();
 
     std::lock_guard lock(endpoint_mutex_);
 
-    for (auto& [key, pacing_state] : subscriber_downlink_pacing_by_key_)
+    std::vector<std::string> pacing_keys;
+
+    pacing_keys.reserve(subscriber_downlink_pacing_by_key_.size());
+
+    for (const auto& [key, pacing_state] : subscriber_downlink_pacing_by_key_)
     {
+        if (!pacing_state.queue.empty())
+        {
+            pacing_keys.push_back(key);
+        }
+    }
+
+    if (pacing_keys.empty())
+    {
+        subscriber_downlink_pacing_round_robin_after_key.clear();
+
+        return packets;
+    }
+
+    std::sort(pacing_keys.begin(), pacing_keys.end());
+
+    std::size_t start_index = 0;
+
+    if (!subscriber_downlink_pacing_round_robin_after_key.empty())
+    {
+        const auto iterator = std::upper_bound(pacing_keys.begin(), pacing_keys.end(), subscriber_downlink_pacing_round_robin_after_key);
+
+        if (iterator != pacing_keys.end())
+        {
+            start_index = static_cast<std::size_t>(std::distance(pacing_keys.begin(), iterator));
+        }
+    }
+
+    std::string last_served_key;
+
+    for (std::size_t offset = 0; offset < pacing_keys.size() && packets.size() < max_pacing_packets_per_tick; ++offset)
+    {
+        const std::string& key = pacing_keys[(start_index + offset) % pacing_keys.size()];
+
+        auto pacing_iterator = subscriber_downlink_pacing_by_key_.find(key);
+
+        if (pacing_iterator == subscriber_downlink_pacing_by_key_.end())
+        {
+            continue;
+        }
+
+        subscriber_downlink_pacing_state& pacing_state = pacing_iterator->second;
+
         const auto bandwidth_iterator = subscriber_downlink_bandwidth_by_key_.find(key);
 
         const subscriber_downlink_bandwidth_state* bandwidth_state =
@@ -19863,7 +19930,9 @@ std::vector<ice_udp_server::subscriber_downlink_pacing_packet> ice_udp_server::p
 
         refill_subscriber_downlink_pacing_budget(pacing_state, bandwidth_state, now);
 
-        while (!pacing_state.queue.empty())
+        std::size_t sent_for_subscriber = 0;
+
+        while (!pacing_state.queue.empty() && packets.size() < max_pacing_packets_per_tick)
         {
             subscriber_downlink_pacing_packet& front_packet = pacing_state.queue.front();
 
@@ -19881,6 +19950,11 @@ std::vector<ice_udp_server::subscriber_downlink_pacing_packet> ice_udp_server::p
                 rtp_rtcp_drop_media_forward_pacing_queue_total_.fetch_add(1, std::memory_order_relaxed);
 
                 continue;
+            }
+
+            if (sent_for_subscriber >= max_pacing_packets_per_subscriber_per_tick)
+            {
+                break;
             }
 
             if (front_packet.protected_size > pacing_state.pacing_budget_bytes)
@@ -19901,11 +19975,14 @@ std::vector<ice_udp_server::subscriber_downlink_pacing_packet> ice_udp_server::p
 
             pacing_state.queue_byte_count = pacing_state.queue_byte_count >= sent_size ? pacing_state.queue_byte_count - sent_size : 0;
 
-            if (packets.size() >= max_pacing_packets_per_tick)
-            {
-                return packets;
-            }
+            sent_for_subscriber += 1;
+            last_served_key = key;
         }
+    }
+
+    if (!last_served_key.empty())
+    {
+        subscriber_downlink_pacing_round_robin_after_key = last_served_key;
     }
 
     return packets;
@@ -20049,17 +20126,42 @@ void ice_udp_server::forget_subscriber_downlink_pacing_states_for_session(std::s
 
     std::lock_guard lock(endpoint_mutex_);
 
+    const std::size_t erased_count = erase_subscriber_downlink_pacing_states_for_session_locked(session_id);
+
+    if (erased_count > 0)
+    {
+        WEBRTC_LOG_DEBUG("subscriber downlink pacing states forgotten session={} count={}", session_id, erased_count);
+    }
+}
+std::size_t ice_udp_server::erase_subscriber_downlink_pacing_states_for_session_locked(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return 0;
+    }
+
+    std::size_t erased_count = 0;
+
     for (auto iterator = subscriber_downlink_pacing_by_key_.begin(); iterator != subscriber_downlink_pacing_by_key_.end();)
     {
         if (subscriber_downlink_pacing_state_key_matches_session(iterator->first, session_id))
         {
+            if (iterator->first == subscriber_downlink_pacing_round_robin_after_key)
+            {
+                subscriber_downlink_pacing_round_robin_after_key.clear();
+            }
+
             iterator = subscriber_downlink_pacing_by_key_.erase(iterator);
+
+            erased_count += 1;
 
             continue;
         }
 
         ++iterator;
     }
+
+    return erased_count;
 }
 
 std::size_t ice_udp_server::erase_subscriber_downlink_pacing_states_for_stream_locked(std::string_view stream_id)
@@ -20075,13 +20177,17 @@ std::size_t ice_udp_server::erase_subscriber_downlink_pacing_states_for_stream_l
     {
         if (subscriber_downlink_pacing_state_key_matches_stream(iterator->first, stream_id))
         {
+            if (iterator->first == subscriber_downlink_pacing_round_robin_after_key)
+            {
+                subscriber_downlink_pacing_round_robin_after_key.clear();
+            }
+
             iterator = subscriber_downlink_pacing_by_key_.erase(iterator);
 
             erased_count += 1;
 
             continue;
         }
-
         ++iterator;
     }
 

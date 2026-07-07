@@ -563,6 +563,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t max_pacing_queue_bytes_per_subscriber = 512000;
         uint64_t max_pacing_packet_age_milliseconds = 1000;
         std::size_t max_pacing_packets_per_tick = 32;
+        std::size_t max_pacing_packets_per_subscriber_per_tick = 4;
         uint64_t pacing_timer_interval_milliseconds = 5;
     };
     enum class subscriber_downlink_control_state
@@ -821,6 +822,9 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void forget_subscriber_downlink_bandwidth_states_for_session(std::string_view session_id);
 
     void forget_subscriber_downlink_pacing_states_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_subscriber_downlink_pacing_states_for_session_locked(std::string_view session_id);
 
     [[nodiscard]]
     std::size_t erase_subscriber_downlink_pacing_states_for_stream_locked(std::string_view stream_id);
@@ -1382,6 +1386,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, subscriber_downlink_bandwidth_state> subscriber_downlink_bandwidth_by_key_;
     std::unordered_map<std::string, subscriber_downlink_pacing_state> subscriber_downlink_pacing_by_key_;
     std::unordered_map<std::string, uint64_t> subscriber_downlink_republish_grace_until_by_key_;
+
+    std::string subscriber_downlink_pacing_round_robin_after_key;
 
     bool subscriber_downlink_pacing_timer_scheduled_ = false;
 
