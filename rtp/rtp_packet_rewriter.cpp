@@ -742,8 +742,85 @@ std::expected<bool, std::string> rewrite_header_extension_ids(std::vector<uint8_
 
     return true;
 }
-}    // namespace
 
+std::expected<rtp_packet_header, std::string> validate_rewritten_rtp_packet(std::span<const uint8_t> packet)
+{
+    auto header = parse_rtp_packet_header(packet);
+
+    if (!header)
+    {
+        std::string message = "rtp rewrite final parse failed: ";
+
+        message.append(header.error());
+
+        return std::unexpected(std::move(message));
+    }
+
+    if (header->header_size > packet.size())
+    {
+        return make_error("rtp rewrite final header size is truncated");
+    }
+
+    if (header->payload_offset > packet.size())
+    {
+        return make_error("rtp rewrite final payload offset is truncated");
+    }
+
+    if (header->payload_offset != header->header_size)
+    {
+        return make_error("rtp rewrite final payload offset does not match header size");
+    }
+
+    if (header->payload_offset + header->payload_size > packet.size())
+    {
+        return make_error("rtp rewrite final payload is truncated");
+    }
+
+    if (header->padding_size > packet.size())
+    {
+        return make_error("rtp rewrite final padding size is invalid");
+    }
+
+    if (header->payload_offset + header->payload_size + header->padding_size != packet.size())
+    {
+        return make_error("rtp rewrite final payload padding size does not match packet size");
+    }
+
+    if (header->extension)
+    {
+        if (header->extension_header_offset + 4 > packet.size())
+        {
+            return make_error("rtp rewrite final extension header is truncated");
+        }
+
+        if (header->extension_payload_offset < header->extension_header_offset + 4)
+        {
+            return make_error("rtp rewrite final extension payload offset is invalid");
+        }
+
+        if (header->extension_payload_offset + header->extension_payload_size > packet.size())
+        {
+            return make_error("rtp rewrite final extension payload is truncated");
+        }
+
+        if ((header->extension_payload_size % 4) != 0)
+        {
+            return make_error("rtp rewrite final extension payload is not 32-bit aligned");
+        }
+
+        if (header->payload_offset != header->extension_payload_offset + header->extension_payload_size)
+        {
+            return make_error("rtp rewrite final payload offset does not match extension payload end");
+        }
+    }
+    else if (header->extension_payload_size != 0)
+    {
+        return make_error("rtp rewrite final extension payload exists without extension bit");
+    }
+
+    return *header;
+}
+}    // namespace
 rtp_packet_rewrite_result_type rewrite_rtp_packet(std::span<const uint8_t> packet, const rtp_packet_rewrite_options& options)
 {
     if (packet.empty())
@@ -846,6 +923,17 @@ rtp_packet_rewrite_result_type rewrite_rtp_packet(std::span<const uint8_t> packe
             result.changed = true;
         }
     }
+
+    if (result.changed)
+    {
+        auto final_header = validate_rewritten_rtp_packet(std::span<const uint8_t>(result.packet.data(), result.packet.size()));
+
+        if (!final_header)
+        {
+            return std::unexpected(final_header.error());
+        }
+    }
+
     return result;
 }
 
