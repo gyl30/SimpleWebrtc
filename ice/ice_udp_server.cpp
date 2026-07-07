@@ -3114,7 +3114,7 @@ std::vector<uint8_t> string_to_bytes(std::string_view value)
 
     return result;
 }
-
+bool rtp_one_byte_header_extension_id_can_be_ensured(uint8_t extension_id) { return extension_id > 0 && extension_id < 15; }
 using optional_mid_ensure_result = std::expected<std::optional<rtp_header_extension_ensure>, std::string>;
 
 optional_mid_ensure_result make_outbound_mid_header_extension_ensure(const media_payload_type_mapping& mapping,
@@ -3131,6 +3131,18 @@ optional_mid_ensure_result make_outbound_mid_header_extension_ensure(const media
 
     if (!subscriber_mid_extension_id.has_value())
     {
+        return std::optional<rtp_header_extension_ensure>{};
+    }
+
+    if (!rtp_one_byte_header_extension_id_can_be_ensured(*subscriber_mid_extension_id))
+    {
+        WEBRTC_LOG_WARN("rtp outbound mid ensure skipped unsupported extmap id stream={} publisher_mid={} subscriber_mid={} kind={} extension_id={}",
+                        mapping.stream_id,
+                        mapping.publisher_mid,
+                        mapping.subscriber_mid,
+                        mapping.kind,
+                        *subscriber_mid_extension_id);
+
         return std::optional<rtp_header_extension_ensure>{};
     }
 
