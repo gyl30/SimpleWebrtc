@@ -1,5 +1,6 @@
 #include "signaling/sdp/sdp_codec_negotiator.h"
 
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cstdint>
@@ -584,6 +585,50 @@ std::optional<codec_info> normalize_supported_codec(const media_summary& media, 
     return normalized_codec;
 }
 
+uint8_t codec_answer_preference_rank(const media_summary& media, const codec_info& codec)
+{
+    if (media.kind == "audio")
+    {
+        if (is_opus_codec(codec))
+        {
+            return 0;
+        }
+
+        return 100;
+    }
+
+    if (media.kind == "video")
+    {
+        if (is_vp8_codec(codec))
+        {
+            return 0;
+        }
+
+        if (is_h264_codec(codec))
+        {
+            return 10;
+        }
+
+        return 100;
+    }
+
+    return 100;
+}
+
+void sort_primary_codecs_by_answer_preference(const media_summary& media, std::vector<codec_info>& selected_codecs)
+{
+    std::stable_sort(selected_codecs.begin(),
+                     selected_codecs.end(),
+                     [&media](const codec_info& left, const codec_info& right)
+                     {
+                         const uint8_t left_rank = codec_answer_preference_rank(media, left);
+
+                         const uint8_t right_rank = codec_answer_preference_rank(media, right);
+
+                         return left_rank < right_rank;
+                     });
+}
+
 bool media_can_send(const media_summary& media)
 {
     return media.direction == media_direction::send_only || media.direction == media_direction::send_recv;
@@ -902,6 +947,8 @@ codec_negotiation_result negotiate_codecs(const media_summary& offer_media)
         return make_media_error(offer_media, "has no supported codecs");
     }
 
+    sort_primary_codecs_by_answer_preference(offer_media, selected_codecs);
+
     append_answerable_offer_rtx_codecs(offer_media, selected_codecs);
 
     return selected_codecs;
@@ -960,6 +1007,9 @@ codec_negotiation_result negotiate_codecs(const media_summary& subscriber_media,
     {
         return make_media_error(subscriber_media, "has no publisher-compatible codecs");
     }
+
+    sort_primary_codecs_by_answer_preference(subscriber_media, selected_codecs);
+
     append_answerable_rtx_codecs(subscriber_media, publisher_media, selected_codecs);
 
     return selected_codecs;
