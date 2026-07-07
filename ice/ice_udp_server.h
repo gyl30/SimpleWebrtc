@@ -630,8 +630,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t bitrate_gate_recovery_bypass_packet_count = 0;
         uint64_t bitrate_gate_recovery_bypass_byte_count = 0;
 
+        uint64_t bitrate_gate_keyframe_request_recovery_open_count = 0;
+        uint64_t bitrate_gate_keyframe_request_recovery_refresh_count = 0;
+
         uint64_t keyframe_recovery_until_milliseconds = 0;
         uint64_t keyframe_recovery_remaining_packet_count = 0;
+        uint64_t last_keyframe_request_at_milliseconds = 0;
     };
 
     struct subscriber_downlink_pacing_packet
@@ -791,6 +795,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                 const std::optional<media_track_resolution>& track_resolution,
                                                 const srtp_packet_process_result& packet,
                                                 std::span<const uint8_t> outbound_plain_packet) const;
+
+    void open_subscriber_downlink_keyframe_request_recovery_window(const rtcp_feedback_route_event& event, const media_ssrc_mapping& mapping);
 
     [[nodiscard]]
     bool subscriber_downlink_pacing_should_enqueue_packet(const media_route_result& route,

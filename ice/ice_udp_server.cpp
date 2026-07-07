@@ -1083,8 +1083,14 @@ lifecycle_debug_subscriber_downlink_bandwidth_entry make_subscriber_downlink_ban
     entry.bitrate_gate_dropped_byte_count = state.bitrate_gate_dropped_byte_count;
     entry.bitrate_gate_keyframe_bypass_packet_count = state.bitrate_gate_keyframe_bypass_packet_count;
     entry.bitrate_gate_keyframe_bypass_byte_count = state.bitrate_gate_keyframe_bypass_byte_count;
+
+    entry.bitrate_gate_keyframe_request_recovery_open_count = state.bitrate_gate_keyframe_request_recovery_open_count;
+    entry.bitrate_gate_keyframe_request_recovery_refresh_count = state.bitrate_gate_keyframe_request_recovery_refresh_count;
+
     entry.bitrate_gate_recovery_bypass_packet_count = state.bitrate_gate_recovery_bypass_packet_count;
     entry.bitrate_gate_recovery_bypass_byte_count = state.bitrate_gate_recovery_bypass_byte_count;
+
+    entry.last_keyframe_request_at_milliseconds = state.last_keyframe_request_at_milliseconds;
 
     entry.keyframe_recovery_until_milliseconds = state.keyframe_recovery_until_milliseconds;
     entry.keyframe_recovery_remaining_packet_count = state.keyframe_recovery_remaining_packet_count;
@@ -5944,6 +5950,7 @@ void ice_udp_server::mark_subscriber_downlink_republish_grace_for_stream(std::st
         state.healthy_window_count = 0;
         state.bad_window_count = 0;
         state.unreliable_window_count = 0;
+        state.last_keyframe_request_at_milliseconds = 0;
         state.target_bitrate_bps = clamp_subscriber_downlink_republish_grace_bitrate(
             k_subscriber_downlink_republish_grace_target_bitrate_bps, state.min_bitrate_bps, state.max_bitrate_bps);
 
@@ -16968,6 +16975,7 @@ void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event&
 
         return;
     }
+    open_subscriber_downlink_keyframe_request_recovery_window(event, *mapping);
 
     WEBRTC_LOG_DEBUG(
         "keyframe feedback resolved stream={} subscriber_session={} publisher_session={} feedback={} subscriber_media_ssrc={} "
@@ -19361,6 +19369,7 @@ void ice_udp_server::remember_subscriber_downlink_bandwidth_feedback_window_lock
         state.unreliable_window_count = 0;
         state.keyframe_recovery_until_milliseconds = 0;
         state.keyframe_recovery_remaining_packet_count = 0;
+        state.last_keyframe_request_at_milliseconds = 0;
         state.target_bitrate_bps = clamp_subscriber_downlink_republish_grace_bitrate(
             k_subscriber_downlink_republish_grace_target_bitrate_bps, state.min_bitrate_bps, state.max_bitrate_bps);
 
@@ -20909,6 +20918,112 @@ bool ice_udp_server::subscriber_downlink_packet_is_keyframe(const media_route_re
     }
 
     return is_publisher_video_keyframe_payload(keyframe_codec, *payload);
+}
+void ice_udp_server::open_subscriber_downlink_keyframe_request_recovery_window(const rtcp_feedback_route_event& event,
+                                                                               const media_ssrc_mapping& mapping)
+{
+    const auto& downlink_config = ice_udp_server_runtime_config_instance().subscriber_downlink_control;
+
+    if (downlink_config.mode == subscriber_downlink_control_mode::disabled)
+    {
+        return;
+    }
+
+    if (event.source.role != media_peer_role::subscriber)
+    {
+        return;
+    }
+
+    if (!event.has_keyframe_request && event.fir_count == 0)
+    {
+        return;
+    }
+
+    if (!media_ssrc_mapping_is_primary_video(mapping))
+    {
+        return;
+    }
+
+    if (mapping.stream_id.empty() || mapping.subscriber_session_id.empty())
+    {
+        return;
+    }
+
+    if (mapping.stream_id != event.source.stream_id || mapping.subscriber_session_id != event.source.session_id)
+    {
+        WEBRTC_LOG_WARN(
+            "subscriber downlink keyframe request recovery skipped mapping mismatch event_stream={} mapping_stream={} event_subscriber={} "
+            "mapping_subscriber={} media_ssrc={} publisher_ssrc={} subscriber_ssrc={}",
+            event.source.stream_id,
+            mapping.stream_id,
+            event.source.session_id,
+            mapping.subscriber_session_id,
+            event.media_ssrc,
+            mapping.publisher_ssrc,
+            mapping.subscriber_ssrc);
+
+        return;
+    }
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    const std::string key = make_subscriber_downlink_bandwidth_state_key(mapping.stream_id, mapping.subscriber_session_id);
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    auto iterator = subscriber_downlink_bandwidth_by_key_.find(key);
+
+    if (iterator == subscriber_downlink_bandwidth_by_key_.end())
+    {
+        WEBRTC_LOG_DEBUG(
+            "subscriber downlink keyframe request recovery skipped missing bandwidth state stream={} subscriber_session={} media_ssrc={} "
+            "publisher_ssrc={} subscriber_ssrc={}",
+            mapping.stream_id,
+            mapping.subscriber_session_id,
+            event.media_ssrc,
+            mapping.publisher_ssrc,
+            mapping.subscriber_ssrc);
+
+        return;
+    }
+
+    subscriber_downlink_bandwidth_state& state = iterator->second;
+
+    const bool already_active = state.keyframe_recovery_until_milliseconds != 0 &&
+                                current_time_milliseconds <= state.keyframe_recovery_until_milliseconds &&
+                                state.keyframe_recovery_remaining_packet_count > 0;
+
+    state.keyframe_recovery_until_milliseconds = current_time_milliseconds + downlink_config.keyframe_recovery_bypass_duration_milliseconds;
+
+    state.keyframe_recovery_remaining_packet_count =
+        std::max<uint64_t>(state.keyframe_recovery_remaining_packet_count, downlink_config.keyframe_recovery_bypass_packet_count);
+
+    state.last_keyframe_request_at_milliseconds = current_time_milliseconds;
+
+    if (already_active)
+    {
+        state.bitrate_gate_keyframe_request_recovery_refresh_count += 1;
+    }
+    else
+    {
+        state.bitrate_gate_keyframe_request_recovery_open_count += 1;
+    }
+
+    WEBRTC_LOG_DEBUG(
+        "subscriber downlink keyframe request recovery opened stream={} subscriber_session={} feedback={} media_ssrc={} "
+        "publisher_ssrc={} subscriber_ssrc={} already_active={} recovery_until={} recovery_remaining_packets={} open_count={} "
+        "refresh_count={}",
+        mapping.stream_id,
+        mapping.subscriber_session_id,
+        event.feedback_name,
+        event.media_ssrc,
+        mapping.publisher_ssrc,
+        mapping.subscriber_ssrc,
+        already_active ? 1 : 0,
+        state.keyframe_recovery_until_milliseconds,
+        state.keyframe_recovery_remaining_packet_count,
+        state.bitrate_gate_keyframe_request_recovery_open_count,
+        state.bitrate_gate_keyframe_request_recovery_refresh_count);
 }
 
 void ice_udp_server::forward_media_packet(const srtp_packet_process_result& packet,
