@@ -328,6 +328,17 @@ struct srtp_transport::impl
 
         if (!unprotect_result)
         {
+            if (is_srtp_replay_error(unprotect_result.error()))
+            {
+                std::string reason = "srtp replay ignored kind=";
+
+                reason.append(srtp_packet_kind_to_string(kind));
+                reason.append(" error=");
+                reason.append(unprotect_result.error());
+
+                return make_ignored_result(kind, data.size(), reason);
+            }
+
             std::string message = "srtp inbound unprotect failed remote=";
 
             message.append(std::string(remote_endpoint));

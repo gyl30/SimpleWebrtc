@@ -430,4 +430,8 @@ std::string srtp_error_to_string(srtp_err_status_t status)
             return "unknown";
     }
 }
+bool is_srtp_replay_error(std::string_view error)
+{
+    return error.find("replay_fail") != std::string_view::npos || error.find("replay_old") != std::string_view::npos;
+}
 }    // namespace webrtc
