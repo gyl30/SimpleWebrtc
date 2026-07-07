@@ -15369,9 +15369,30 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
 
             if (outbound_mid_ensure->has_value())
             {
-                rewrite_options.ensured_header_extensions.push_back(std::move(**outbound_mid_ensure));
+                const auto& mid_ensure = **outbound_mid_ensure;
 
-                rewrite_required = true;
+                if (outbound_header_extension_ensure_would_overwrite_different_uri(
+                        *rtx_payload_type_mapping, publisher_offer, make_rtx_packet_span(), mid_ensure, sdp::k_rtp_header_extension_sdes_mid_uri))
+                {
+                    WEBRTC_LOG_WARN(
+                        "rtx retransmit outbound mid ensure skipped target id collision stream={} subscriber={} publisher_session={} "
+                        "subscriber_session={} publisher_mid={} subscriber_mid={} kind={} sequence={} extension_id={}",
+                        event.source.stream_id,
+                        event.source.remote_endpoint,
+                        primary_ssrc_mapping.publisher_session_id,
+                        primary_ssrc_mapping.subscriber_session_id,
+                        rtx_payload_type_mapping->publisher_mid,
+                        rtx_payload_type_mapping->subscriber_mid,
+                        rtx_payload_type_mapping->kind,
+                        cached_packet.sequence_number,
+                        mid_ensure.id);
+                }
+                else
+                {
+                    rewrite_options.ensured_header_extensions.push_back(std::move(**outbound_mid_ensure));
+
+                    rewrite_required = true;
+                }
             }
         }
         else
