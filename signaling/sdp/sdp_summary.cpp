@@ -45,16 +45,40 @@ bool codec_equal(const codec_info& left, const codec_info& right)
            left.encoding_parameters == right.encoding_parameters && left.fmtp == right.fmtp && left.rtcp_feedback == right.rtcp_feedback;
 }
 
-bool codec_list_equal(const std::vector<codec_info>& left, const std::vector<codec_info>& right)
+bool payload_type_list_equal_ignoring_order(const std::vector<uint16_t>& left, const std::vector<uint16_t>& right)
 {
     if (left.size() != right.size())
     {
         return false;
     }
 
-    for (std::size_t index = 0; index < left.size(); ++index)
+    std::vector<uint16_t> sorted_left = left;
+    std::vector<uint16_t> sorted_right = right;
+
+    std::sort(sorted_left.begin(), sorted_left.end());
+    std::sort(sorted_right.begin(), sorted_right.end());
+
+    return sorted_left == sorted_right;
+}
+
+bool codec_list_equal_ignoring_order(const std::vector<codec_info>& left, const std::vector<codec_info>& right)
+{
+    if (left.size() != right.size())
     {
-        if (!codec_equal(left[index], right[index]))
+        return false;
+    }
+
+    for (const auto& left_codec : left)
+    {
+        const auto right_codec =
+            std::find_if(right.begin(), right.end(), [&left_codec](const codec_info& item) { return item.payload_type == left_codec.payload_type; });
+
+        if (right_codec == right.end())
+        {
+            return false;
+        }
+
+        if (!codec_equal(left_codec, *right_codec))
         {
             return false;
         }
@@ -199,12 +223,12 @@ std::expected<void, std::string> validate_media_restart_compatibility(const medi
         return make_media_restart_error(previous_media, "maxptime changed");
     }
 
-    if (previous_media.payload_types != next_media.payload_types)
+    if (!payload_type_list_equal_ignoring_order(previous_media.payload_types, next_media.payload_types))
     {
         return make_media_restart_error(previous_media, "payload types changed");
     }
 
-    if (!codec_list_equal(previous_media.codecs, next_media.codecs))
+    if (!codec_list_equal_ignoring_order(previous_media.codecs, next_media.codecs))
     {
         return make_media_restart_error(previous_media, "codecs changed");
     }
