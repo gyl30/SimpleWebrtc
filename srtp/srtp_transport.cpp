@@ -291,6 +291,39 @@ struct srtp_transport::impl
 
         bind_peer_identity(peer, identity);
     }
+
+    std::expected<srtp_peer_context*, std::string> find_or_create_peer_for_identity_locked(std::string_view remote_endpoint)
+    {
+        if (dtls_transport_ == nullptr)
+        {
+            return make_error("dtls transport is null");
+        }
+
+        const std::string endpoint_key(remote_endpoint);
+
+        auto iterator = peers_by_endpoint_.find(endpoint_key);
+
+        if (iterator != peers_by_endpoint_.end())
+        {
+            return &iterator->second;
+        }
+
+        auto identity = dtls_transport_->get_peer_identity(remote_endpoint);
+
+        if (!identity.has_value())
+        {
+            return static_cast<srtp_peer_context*>(nullptr);
+        }
+
+        auto [created_iterator, inserted] = peers_by_endpoint_.try_emplace(endpoint_key);
+
+        (void)inserted;
+
+        bind_peer_identity(created_iterator->second, *identity);
+
+        return &created_iterator->second;
+    }
+
     srtp_transport_result handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)
     {
         const srtp_packet_kind kind = classify_packet(data);
@@ -302,7 +335,19 @@ struct srtp_transport::impl
 
         std::lock_guard lock(mutex_);
 
-        auto& peer = peers_by_endpoint_[std::string(remote_endpoint)];
+        auto peer_result = find_or_create_peer_for_identity_locked(remote_endpoint);
+
+        if (!peer_result)
+        {
+            return std::unexpected(peer_result.error());
+        }
+
+        if (*peer_result == nullptr)
+        {
+            return make_ignored_result(kind, data.size(), "dtls identity is missing");
+        }
+
+        auto& peer = **peer_result;
 
         auto ready_result = ensure_sessions_ready_locked(peer, remote_endpoint);
 
@@ -310,7 +355,6 @@ struct srtp_transport::impl
         {
             return std::unexpected(ready_result.error());
         }
-
         if (!*ready_result)
         {
             return make_ignored_result(kind, data.size(), "dtls handshake is not complete");
@@ -451,13 +495,27 @@ struct srtp_transport::impl
 
         std::lock_guard lock(mutex_);
 
-        auto& peer = peers_by_endpoint_[std::string(remote_endpoint)];
+        auto peer_result = find_or_create_peer_for_identity_locked(remote_endpoint);
+
+        if (!peer_result)
+        {
+            return std::unexpected(peer_result.error());
+        }
+
+        if (*peer_result == nullptr)
+        {
+            return make_ignored_result(kind, plain_packet.size(), "dtls identity is missing");
+        }
+
+        auto& peer = **peer_result;
 
         auto ready_result = ensure_sessions_ready_locked(peer, remote_endpoint);
-
         if (!ready_result)
         {
-            return std::unexpected(ready_result.error());
+            if (!ready_result)
+            {
+                return std::unexpected(ready_result.error());
+            }
         }
 
         if (!*ready_result)
