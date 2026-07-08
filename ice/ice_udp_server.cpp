@@ -5826,6 +5826,8 @@ void ice_udp_server::stop()
 
     started_ = false;
 
+    WEBRTC_LOG_INFO("ice udp server stop begin {}:{}", bind_host_, bind_port_);
+
     if (registry_ != nullptr && registry_callback_registered_)
     {
         registry_->set_session_removed_callback(stream_session_removed_callback{});
@@ -5955,6 +5957,7 @@ void ice_udp_server::stop()
     {
         media_router_->clear();
     }
+    WEBRTC_LOG_INFO("ice udp server stop end {}:{}", bind_host_, bind_port_);
 }
 lifecycle_debug_subscriber_runtime_residual_entry ice_udp_server::make_subscriber_runtime_residual_entry(std::string_view stream_id,
                                                                                                          std::string_view subscriber_session_id) const
