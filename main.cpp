@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -48,6 +49,13 @@ static std::string get_env_or_default(const char* name, const std::string& defau
     }
 
     return value;
+}
+
+static bool is_env_configured(const char* name)
+{
+    const char* value = std::getenv(name);
+
+    return value != nullptr && value[0] != '\0';
 }
 
 static uint16_t get_env_uint16_or_default(const char* name, uint16_t default_value)
@@ -170,6 +178,30 @@ static std::vector<std::string> make_ice_public_ip_list(const std::string& fallb
     }
 
     return addresses;
+}
+static void log_startup_config_summary(const std::string& app_path,
+                                       const std::string& log_file,
+                                       const std::string& cert_file,
+                                       const std::string& key_file,
+                                       uint16_t http_port,
+                                       const std::string& ice_bind_host,
+                                       uint16_t ice_port,
+                                       const std::string& ice_public_ip_source,
+                                       std::size_t ice_public_ip_count)
+{
+    WEBRTC_LOG_INFO(
+        "flag_startup_config_summary app_path={} log_file={} cert_file={} key_file={} http_port={} ice_bind_host={} ice_port={} "
+        "ice_public_ip_source={} ice_public_ip_count={} admin_token_configured={}",
+        app_path,
+        log_file,
+        cert_file,
+        key_file,
+        http_port,
+        ice_bind_host,
+        ice_port,
+        ice_public_ip_source,
+        ice_public_ip_count,
+        is_env_configured("WEBRTC_ADMIN_TOKEN") ? 1 : 0);
 }
 
 static webrtc::sdp::sdp_ice_candidate_options make_ice_host_candidate(std::string address, uint16_t port, std::size_t index)
@@ -294,14 +326,18 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    const uint16_t http_port = get_env_uint16_or_default("WEBRTC_HTTP_PORT", 8811);
     const std::string ice_bind_host = get_env_or_default("WEBRTC_ICE_BIND_HOST", "0.0.0.0");
     const uint16_t ice_port = get_env_uint16_or_default("WEBRTC_ICE_PORT", 8812);
     const std::string ice_public_ips_config = get_env_or_default("WEBRTC_ICE_PUBLIC_IPS", "");
     const std::string ice_public_ip = get_env_or_default("WEBRTC_ICE_PUBLIC_IP", "127.0.0.1");
-    const std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ips_config.empty() ? ice_public_ip : ice_public_ips_config);
+    const std::string ice_public_ip_source = ice_public_ips_config.empty() ? ice_public_ip : ice_public_ips_config;
+    const std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ip_source);
+
+    log_startup_config_summary(
+        app_path, abs_log_filename, cert_file, key_file, http_port, ice_bind_host, ice_port, ice_public_ip_source, ice_public_ips.size());
 
     boost::asio::io_context io_context;
-
     auto registry = std::make_shared<webrtc::stream_registry>();
     auto media_router = std::make_shared<webrtc::media_router>();
     auto ice_server = std::make_shared<webrtc::ice_udp_server>(io_context, ice_bind_host, ice_port, registry, media_router);
@@ -406,8 +442,7 @@ int main(int argc, char* argv[])
 
     tcp.accept_socket = [&ssl_ctx_, http_router](boost::asio::ip::tcp::socket socket) { on_tcp(std::move(socket), ssl_ctx_, http_router); };
 
-    std::make_shared<webrtc::tcp_server>(8811, "webrtc", io_context, std::move(tcp))->run();
-
+    std::make_shared<webrtc::tcp_server>(http_port, "webrtc", io_context, std::move(tcp))->run();
     io_context.run();
 
     return 0;
