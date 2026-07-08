@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -37,6 +38,12 @@ constexpr std::string_view k_cors_allow_headers =
 constexpr std::string_view k_cors_max_age_seconds = "600";
 
 inline constexpr std::string_view k_application_sdp = "application/sdp";
+
+inline constexpr std::size_t k_max_sdp_offer_body_bytes = 256UL * 1024UL;
+
+inline constexpr std::string_view k_sdp_offer_empty_error = "sdp_offer_empty";
+
+inline constexpr std::string_view k_sdp_offer_body_too_large_error = "sdp_offer_body_too_large";
 
 inline constexpr std::string_view k_whip_prefix = "/whip/";
 
@@ -790,6 +797,28 @@ std::string json_error_body(std::string_view message)
     body.append(R"("})");
 
     return body;
+}
+
+http_response_ptr validate_sdp_offer_body(http_request_t& request, std::string_view protocol_name, std::string_view stream_id)
+{
+    const std::string& body = request.req.body();
+
+    if (body.empty())
+    {
+        WEBRTC_LOG_WARN("{} SDP offer body empty stream={}", protocol_name, stream_id);
+
+        return make_json_http_error_response(request, 400, k_sdp_offer_empty_error, "sdp offer body is empty");
+    }
+
+    if (body.size() > k_max_sdp_offer_body_bytes)
+    {
+        WEBRTC_LOG_WARN(
+            "{} SDP offer body too large stream={} body_size={} limit={}", protocol_name, stream_id, body.size(), k_max_sdp_offer_body_bytes);
+
+        return make_json_http_error_response(request, 413, k_sdp_offer_body_too_large_error, "sdp offer body is too large");
+    }
+
+    return nullptr;
 }
 struct simulcast_rid_target_response_body
 {
@@ -1701,6 +1730,13 @@ http_response_ptr router::handle_whip_create(http_request_t& request, std::strin
         return unsupported_media_type(request);
     }
 
+    auto body_validation_error = validate_sdp_offer_body(request, "WHIP", stream_id);
+
+    if (body_validation_error != nullptr)
+    {
+        return body_validation_error;
+    }
+
     return whip_.create_publisher(request, stream_id);
 }
 
@@ -1741,6 +1777,13 @@ http_response_ptr router::handle_whep_create(http_request_t& request, std::strin
     if (!is_application_sdp(request))
     {
         return unsupported_media_type(request);
+    }
+
+    auto body_validation_error = validate_sdp_offer_body(request, "WHEP", stream_id);
+
+    if (body_validation_error != nullptr)
+    {
+        return body_validation_error;
     }
 
     return whep_.create_subscriber(request, stream_id);
