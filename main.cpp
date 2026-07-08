@@ -179,10 +179,12 @@ static std::vector<std::string> make_ice_public_ip_list(const std::string& fallb
 
     return addresses;
 }
+
 static void log_startup_config_summary(const std::string& app_path,
                                        const std::string& log_file,
-                                       const std::string& cert_file,
-                                       const std::string& key_file,
+                                       bool http_tls_enabled,
+                                       const std::string& http_cert_file,
+                                       const std::string& http_key_file,
                                        uint16_t http_port,
                                        const std::string& ice_bind_host,
                                        uint16_t ice_port,
@@ -190,12 +192,13 @@ static void log_startup_config_summary(const std::string& app_path,
                                        std::size_t ice_public_ip_count)
 {
     WEBRTC_LOG_INFO(
-        "flag_startup_config_summary app_path={} log_file={} cert_file={} key_file={} http_port={} ice_bind_host={} ice_port={} "
-        "ice_public_ip_source={} ice_public_ip_count={} admin_token_configured={}",
+        "flag_startup_config_summary app_path={} log_file={} http_tls_enabled={} http_cert_file={} http_key_file={} http_port={} "
+        "ice_bind_host={} ice_port={} ice_public_ip_source={} ice_public_ip_count={} admin_token_configured={}",
         app_path,
         log_file,
-        cert_file,
-        key_file,
+        http_tls_enabled ? 1 : 0,
+        http_cert_file,
+        http_key_file,
         http_port,
         ice_bind_host,
         ice_port,
@@ -225,6 +228,57 @@ static webrtc::sdp::sdp_ice_candidate_options make_ice_host_candidate(std::strin
     return candidate;
 }
 
+struct http_tls_config
+{
+    bool enabled = false;
+    std::string certificate_file;
+    std::string private_key_file;
+};
+
+static std::expected<http_tls_config, std::string> load_http_tls_config()
+{
+    http_tls_config config;
+
+    config.certificate_file = get_env_or_default("WEBRTC_HTTP_CERT_FILE", "");
+    config.private_key_file = get_env_or_default("WEBRTC_HTTP_KEY_FILE", "");
+
+    const bool certificate_configured = !config.certificate_file.empty();
+    const bool private_key_configured = !config.private_key_file.empty();
+
+    if (certificate_configured != private_key_configured)
+    {
+        return std::unexpected(std::string("WEBRTC_HTTP_CERT_FILE and WEBRTC_HTTP_KEY_FILE must be configured together"));
+    }
+
+    config.enabled = certificate_configured && private_key_configured;
+
+    return config;
+}
+struct webrtc_dtls_file_config
+{
+    std::string certificate_file;
+    std::string private_key_file;
+};
+
+static std::expected<webrtc_dtls_file_config, std::string> load_webrtc_dtls_file_config()
+{
+    webrtc_dtls_file_config config;
+
+    config.certificate_file = get_env_or_default("WEBRTC_DTLS_CERT_FILE", "");
+    config.private_key_file = get_env_or_default("WEBRTC_DTLS_KEY_FILE", "");
+
+    if (config.certificate_file.empty())
+    {
+        return std::unexpected(std::string("WEBRTC_DTLS_CERT_FILE is required until automatic DTLS certificate generation is implemented"));
+    }
+
+    if (config.private_key_file.empty())
+    {
+        return std::unexpected(std::string("WEBRTC_DTLS_KEY_FILE is required until automatic DTLS certificate generation is implemented"));
+    }
+
+    return config;
+}
 static bool load_server_certificate(boost::asio::ssl::context& ctx, const std::string& cert_file, const std::string& key_file)
 {
     boost::system::error_code ec;
@@ -306,26 +360,48 @@ int main(int argc, char* argv[])
 
     boost::asio::ssl::context ssl_ctx_{boost::asio::ssl::context::tls_server};
 
-    const std::string cert_file = get_env_or_default("WEBRTC_CERT_FILE", "webrtc.pem");
+    auto http_tls_config_result = load_http_tls_config();
 
-    const std::string key_file = get_env_or_default("WEBRTC_KEY_FILE", "webrtc.key");
-
-    if (!load_server_certificate(ssl_ctx_, cert_file, key_file))
+    if (!http_tls_config_result)
     {
-        WEBRTC_LOG_ERROR("load https certificate failed");
+        WEBRTC_LOG_ERROR("load http tls config failed: {}", http_tls_config_result.error());
 
         return 1;
     }
 
-    auto answer_factory_config = webrtc::make_webrtc_answer_factory_config_from_certificate(cert_file);
+    const http_tls_config http_tls = std::move(*http_tls_config_result);
+
+    if (http_tls.enabled && !load_server_certificate(ssl_ctx_, http_tls.certificate_file, http_tls.private_key_file))
+    {
+        WEBRTC_LOG_ERROR("load http tls certificate failed");
+
+        return 1;
+    }
+
+    WEBRTC_LOG_INFO("flag_http_tls_config enabled={} cert_file={} key_file={}",
+                    http_tls.enabled ? 1 : 0,
+                    http_tls.enabled ? http_tls.certificate_file : "",
+                    http_tls.enabled ? http_tls.private_key_file : "");
+
+    auto webrtc_dtls_config_result = load_webrtc_dtls_file_config();
+
+    if (!webrtc_dtls_config_result)
+    {
+        WEBRTC_LOG_ERROR("load webrtc dtls config failed: {}", webrtc_dtls_config_result.error());
+
+        return 1;
+    }
+
+    const webrtc_dtls_file_config webrtc_dtls_config = std::move(*webrtc_dtls_config_result);
+
+    auto answer_factory_config = webrtc::make_webrtc_answer_factory_config_from_certificate(webrtc_dtls_config.certificate_file);
 
     if (!answer_factory_config)
     {
-        WEBRTC_LOG_ERROR("load certificate fingerprint failed: {}", answer_factory_config.error());
+        WEBRTC_LOG_ERROR("load webrtc dtls certificate fingerprint failed: {}", answer_factory_config.error());
 
         return 1;
     }
-
     const uint16_t http_port = get_env_uint16_or_default("WEBRTC_HTTP_PORT", 8811);
     const std::string ice_bind_host = get_env_or_default("WEBRTC_ICE_BIND_HOST", "0.0.0.0");
     const uint16_t ice_port = get_env_uint16_or_default("WEBRTC_ICE_PORT", 8812);
@@ -334,8 +410,16 @@ int main(int argc, char* argv[])
     const std::string ice_public_ip_source = ice_public_ips_config.empty() ? ice_public_ip : ice_public_ips_config;
     const std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ip_source);
 
-    log_startup_config_summary(
-        app_path, abs_log_filename, cert_file, key_file, http_port, ice_bind_host, ice_port, ice_public_ip_source, ice_public_ips.size());
+    log_startup_config_summary(app_path,
+                               abs_log_filename,
+                               http_tls.enabled,
+                               http_tls.certificate_file,
+                               http_tls.private_key_file,
+                               http_port,
+                               ice_bind_host,
+                               ice_port,
+                               ice_public_ip_source,
+                               ice_public_ips.size());
 
     boost::asio::io_context io_context;
     auto registry = std::make_shared<webrtc::stream_registry>();
@@ -442,8 +526,40 @@ int main(int argc, char* argv[])
 
     tcp.accept_socket = [&ssl_ctx_, http_router](boost::asio::ip::tcp::socket socket) { on_tcp(std::move(socket), ssl_ctx_, http_router); };
 
-    std::make_shared<webrtc::tcp_server>(http_port, "webrtc", io_context, std::move(tcp))->run();
+    auto http_server = std::make_shared<webrtc::tcp_server>(http_port, "webrtc", io_context, std::move(tcp));
+
+    http_server->run();
+
+    auto shutdown_signals = std::make_shared<boost::asio::signal_set>(io_context, SIGINT, SIGTERM);
+
+    shutdown_signals->async_wait(
+        [&io_context, shutdown_signals, http_server, ice_server](const boost::system::error_code& ec, int signal_number)
+        {
+            if (ec)
+            {
+                WEBRTC_LOG_WARN("flag_process_signal_wait_failed error={}", ec.message());
+                return;
+            }
+
+            WEBRTC_LOG_INFO("flag_process_shutdown_begin signal={}", signal_number);
+
+            http_server->stop();
+
+            if (ice_server != nullptr)
+            {
+                ice_server->stop();
+            }
+
+            shutdown_signals->cancel();
+
+            WEBRTC_LOG_INFO("flag_process_shutdown_end signal={}", signal_number);
+
+            io_context.stop();
+        });
+
     io_context.run();
+
+    WEBRTC_LOG_INFO("flag_process_exit");
 
     return 0;
 }

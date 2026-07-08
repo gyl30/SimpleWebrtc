@@ -9265,20 +9265,20 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
     {
         return {};
     }
-    auto certificate_file = get_required_env("WEBRTC_CERT_FILE");
+
+    auto certificate_file = get_required_env("WEBRTC_DTLS_CERT_FILE");
 
     if (!certificate_file)
     {
         return std::unexpected(certificate_file.error());
     }
 
-    auto private_key_file = get_required_env("WEBRTC_KEY_FILE");
+    auto private_key_file = get_required_env("WEBRTC_DTLS_KEY_FILE");
 
     if (!private_key_file)
     {
         return std::unexpected(private_key_file.error());
     }
-
     dtls_context_config context_config;
 
     context_config.certificate_file = *certificate_file;

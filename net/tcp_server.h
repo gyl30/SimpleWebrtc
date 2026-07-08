@@ -45,22 +45,40 @@ class tcp_server : public std::enable_shared_from_this<tcp_server>
     }
     void set_timeout(int32_t timeout) { timeout_ = timeout; }
 
-   private:
-    void shutdown()
+    void stop()
     {
         auto self = shared_from_this();
-        boost::asio::post(io_, [this, self]() { safe_shutdown(); });
+        boost::asio::dispatch(io_, [this, self]() { safe_shutdown(); });
     }
+
+   private:
+    void shutdown() { stop(); }
+
     void safe_shutdown()
     {
         boost::system::error_code ec;
+
         timer_.cancel();
         accept_retry_timer_.cancel();
+
+        if (socket_ != nullptr)
+        {
+            socket_.reset();
+        }
+
+        if (!acceptor_.is_open())
+        {
+            return;
+        }
+
         ec = acceptor_.close(ec);
         if (ec)
         {
             WEBRTC_LOG_ERROR("{} server address :{} close error {}", name_, port_, ec.message());
+            return;
         }
+
+        WEBRTC_LOG_INFO("{} server :{} stopped", name_, port_);
     }
 
    private:
