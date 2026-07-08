@@ -703,11 +703,10 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     auto response = sdp_response(request, 201, session->local_sdp_answer());
     const std::string session_location_path = "/whep/session/" + session->session_id();
-    response->set(http::field::location, make_absolute_resource_url(request, session_location_path));
+    response->set(http::field::location, session_location_path);
     set_session_resource_headers(response, *session);
     return response;
 }
-
 http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
                                                   std::string_view session_id,
                                                   const std::shared_ptr<subscriber_session>& session)
