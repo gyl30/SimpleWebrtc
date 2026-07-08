@@ -38,14 +38,19 @@ std::string make_openssl_error(std::string_view prefix)
 
 std::expected<void, std::string> validate_config(const dtls_context_config& config)
 {
-    if (config.certificate_file.empty())
+    if (config.certificate == nullptr)
     {
-        return make_error("dtls certificate file is empty");
+        return make_error("dtls certificate is null");
     }
 
-    if (config.private_key_file.empty())
+    if (config.certificate->certificate == nullptr)
     {
-        return make_error("dtls private key file is empty");
+        return make_error("dtls x509 certificate is null");
+    }
+
+    if (config.certificate->private_key == nullptr)
+    {
+        return make_error("dtls private key is null");
     }
 
     if (config.srtp_profiles.empty())
@@ -55,7 +60,6 @@ std::expected<void, std::string> validate_config(const dtls_context_config& conf
 
     return {};
 }
-
 int accept_peer_certificate_for_fingerprint_verification(int preverify_ok, X509_STORE_CTX* store_context)
 {
     (void)preverify_ok;
@@ -115,12 +119,12 @@ dtls_context_result make_dtls_context(const dtls_context_config& config)
         return std::unexpected(make_openssl_error("dtls set min protocol version failed"));
     }
 
-    if (SSL_CTX_use_certificate_chain_file(native_context, config.certificate_file.c_str()) != 1)
+    if (SSL_CTX_use_certificate(native_context, config.certificate->certificate.get()) != 1)
     {
         return std::unexpected(make_openssl_error("dtls load certificate failed"));
     }
 
-    if (SSL_CTX_use_PrivateKey_file(native_context, config.private_key_file.c_str(), SSL_FILETYPE_PEM) != 1)
+    if (SSL_CTX_use_PrivateKey(native_context, config.certificate->private_key.get()) != 1)
     {
         return std::unexpected(make_openssl_error("dtls load private key failed"));
     }

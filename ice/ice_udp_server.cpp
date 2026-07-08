@@ -3140,22 +3140,6 @@ bool should_log_empty_rtcp_generation(const rtcp_report_service_generation& gene
 
     return has_elapsed_milliseconds(now_milliseconds, last_log_milliseconds, rtcp_empty_generation_log_interval_milliseconds());
 }
-std::expected<std::string, std::string> get_required_env(const char* name)
-{
-    const char* value = std::getenv(name);
-
-    if (value == nullptr || value[0] == '\0')
-    {
-        std::string message(name);
-
-        message.append(" is empty");
-
-        return std::unexpected(std::move(message));
-    }
-
-    return std::string(value);
-}
-
 bool is_valid_ice_username_character(char value)
 {
     const auto byte = static_cast<unsigned char>(value);
@@ -9266,27 +9250,18 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
         return {};
     }
 
-    auto certificate_file = get_required_env("WEBRTC_DTLS_CERT_FILE");
+    auto certificate = get_process_dtls_certificate();
 
-    if (!certificate_file)
+    if (!certificate)
     {
-        return std::unexpected(certificate_file.error());
+        return std::unexpected(certificate.error());
     }
 
-    auto private_key_file = get_required_env("WEBRTC_DTLS_KEY_FILE");
-
-    if (!private_key_file)
-    {
-        return std::unexpected(private_key_file.error());
-    }
     dtls_context_config context_config;
 
-    context_config.certificate_file = *certificate_file;
-
-    context_config.private_key_file = *private_key_file;
+    context_config.certificate = *certificate;
 
     auto context = make_dtls_context(context_config);
-
     if (!context)
     {
         return std::unexpected(context.error());

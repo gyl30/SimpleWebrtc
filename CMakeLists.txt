@@ -200,6 +200,7 @@ set(WEBRTC_SOURCES
     ice/stun_message.cpp
     dtls/dtls_packet.cpp
     dtls/dtls_context.cpp
+    dtls/dtls_certificate.cpp
     dtls/dtls_srtp_keying_material.cpp
     dtls/dtls_transport.cpp
     rtp/rtp_packet.cpp

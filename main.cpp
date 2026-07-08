@@ -26,6 +26,7 @@
 #include "util/random.h"
 #include "util/reflect.h"
 #include "util/scoped_exit.h"
+#include "dtls/dtls_certificate.h"
 
 static std::string get_log_dir(const std::string& app_dir) { return app_dir + "/log"; }
 
@@ -254,31 +255,7 @@ static std::expected<http_tls_config, std::string> load_http_tls_config()
 
     return config;
 }
-struct webrtc_dtls_file_config
-{
-    std::string certificate_file;
-    std::string private_key_file;
-};
 
-static std::expected<webrtc_dtls_file_config, std::string> load_webrtc_dtls_file_config()
-{
-    webrtc_dtls_file_config config;
-
-    config.certificate_file = get_env_or_default("WEBRTC_DTLS_CERT_FILE", "");
-    config.private_key_file = get_env_or_default("WEBRTC_DTLS_KEY_FILE", "");
-
-    if (config.certificate_file.empty())
-    {
-        return std::unexpected(std::string("WEBRTC_DTLS_CERT_FILE is required until automatic DTLS certificate generation is implemented"));
-    }
-
-    if (config.private_key_file.empty())
-    {
-        return std::unexpected(std::string("WEBRTC_DTLS_KEY_FILE is required until automatic DTLS certificate generation is implemented"));
-    }
-
-    return config;
-}
 static bool load_server_certificate(boost::asio::ssl::context& ctx, const std::string& cert_file, const std::string& key_file)
 {
     boost::system::error_code ec;
@@ -383,25 +360,23 @@ int main(int argc, char* argv[])
                     http_tls.enabled ? http_tls.certificate_file : "",
                     http_tls.enabled ? http_tls.private_key_file : "");
 
-    auto webrtc_dtls_config_result = load_webrtc_dtls_file_config();
+    auto dtls_certificate = webrtc::get_process_dtls_certificate();
 
-    if (!webrtc_dtls_config_result)
+    if (!dtls_certificate)
     {
-        WEBRTC_LOG_ERROR("load webrtc dtls config failed: {}", webrtc_dtls_config_result.error());
+        WEBRTC_LOG_ERROR("generate webrtc dtls certificate failed: {}", dtls_certificate.error());
 
         return 1;
     }
 
-    const webrtc_dtls_file_config webrtc_dtls_config = std::move(*webrtc_dtls_config_result);
+    webrtc::webrtc_answer_factory_config answer_factory_config;
 
-    auto answer_factory_config = webrtc::make_webrtc_answer_factory_config_from_certificate(webrtc_dtls_config.certificate_file);
+    answer_factory_config.local_fingerprint = (*dtls_certificate)->fingerprint;
 
-    if (!answer_factory_config)
-    {
-        WEBRTC_LOG_ERROR("load webrtc dtls certificate fingerprint failed: {}", answer_factory_config.error());
+    WEBRTC_LOG_INFO("flag_webrtc_dtls_certificate_generated fingerprint_algorithm={} fingerprint={}",
+                    answer_factory_config.local_fingerprint.algorithm,
+                    answer_factory_config.local_fingerprint.value);
 
-        return 1;
-    }
     const uint16_t http_port = get_env_uint16_or_default("WEBRTC_HTTP_PORT", 8811);
     const std::string ice_bind_host = get_env_or_default("WEBRTC_ICE_BIND_HOST", "0.0.0.0");
     const uint16_t ice_port = get_env_uint16_or_default("WEBRTC_ICE_PORT", 8812);
@@ -432,29 +407,28 @@ int main(int argc, char* argv[])
 
         return 1;
     }
-    answer_factory_config->media_address = ice_public_ips.front();
-    answer_factory_config->ice_candidate_address = ice_public_ips.front();
-    answer_factory_config->ice_candidate_port = ice_server->local_port();
-    answer_factory_config->ice_candidates.clear();
+    answer_factory_config.media_address = ice_public_ips.front();
+    answer_factory_config.ice_candidate_address = ice_public_ips.front();
+    answer_factory_config.ice_candidate_port = ice_server->local_port();
+    answer_factory_config.ice_candidates.clear();
 
     for (std::size_t index = 0; index < ice_public_ips.size(); ++index)
     {
-        answer_factory_config->ice_candidates.push_back(make_ice_host_candidate(ice_public_ips[index], ice_server->local_port(), index));
+        answer_factory_config.ice_candidates.push_back(make_ice_host_candidate(ice_public_ips[index], ice_server->local_port(), index));
     }
 
-    answer_factory_config->include_host_candidate = true;
-    answer_factory_config->end_of_candidates = true;
+    answer_factory_config.include_host_candidate = true;
+    answer_factory_config.end_of_candidates = true;
 
     WEBRTC_LOG_INFO(
-        "certificate fingerprint {} {}", answer_factory_config->local_fingerprint.algorithm, answer_factory_config->local_fingerprint.value);
+        "certificate fingerprint {} {}", answer_factory_config.local_fingerprint.algorithm, answer_factory_config.local_fingerprint.value);
 
-    for (const auto& candidate : answer_factory_config->ice_candidates)
+    for (const auto& candidate : answer_factory_config.ice_candidates)
     {
         WEBRTC_LOG_INFO("ice host candidate {}:{}", candidate.address, candidate.port);
     }
 
-    auto answer_factory = std::make_shared<webrtc::webrtc_answer_factory>(std::move(*answer_factory_config));
-
+    auto answer_factory = std::make_shared<webrtc::webrtc_answer_factory>(std::move(answer_factory_config));
     auto http_router = std::make_shared<webrtc::router>(registry, answer_factory, media_router);
 
     http_router->set_admin_token(get_env_or_default("WEBRTC_ADMIN_TOKEN", ""));
