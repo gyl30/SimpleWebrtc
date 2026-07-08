@@ -296,30 +296,6 @@ void append_lifecycle_acceptance_summary_prometheus_metrics(std::string& output,
 
     append_router_prometheus_metric_header(output, "simplewebrtc_rtp_cache_packets_current", "current RTP cache packet count", "gauge");
     append_router_prometheus_metric_value(output, "simplewebrtc_rtp_cache_packets_current", summary.rtp_cache_packet_count);
-
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_outbound_transport_cc_packets_current", "current outbound transport-cc packet identity count", "gauge");
-    append_router_prometheus_metric_value(output, "simplewebrtc_outbound_transport_cc_packets_current", summary.outbound_transport_cc_packet_count);
-
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_bandwidth_states_current", "current subscriber downlink bandwidth state count", "gauge");
-    append_router_prometheus_metric_value(
-        output, "simplewebrtc_subscriber_downlink_bandwidth_states_current", summary.subscriber_downlink_bandwidth_state_count);
-
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_pacing_states_current", "current subscriber downlink pacing state count", "gauge");
-    append_router_prometheus_metric_value(
-        output, "simplewebrtc_subscriber_downlink_pacing_states_current", summary.subscriber_downlink_pacing_state_count);
-
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_pacing_queue_packets_current", "current subscriber downlink pacing queued packet count", "gauge");
-    append_router_prometheus_metric_value(
-        output, "simplewebrtc_subscriber_downlink_pacing_queue_packets_current", summary.subscriber_downlink_pacing_queue_packet_count);
-
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_pacing_queue_bytes_current", "current subscriber downlink pacing queued byte count", "gauge");
-    append_router_prometheus_metric_value(
-        output, "simplewebrtc_subscriber_downlink_pacing_queue_bytes_current", summary.subscriber_downlink_pacing_queue_byte_count);
 }
 
 void append_lifecycle_resource_limit_prometheus_metrics(std::string& output, const lifecycle_debug_snapshot& snapshot)
