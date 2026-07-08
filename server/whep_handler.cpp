@@ -718,11 +718,10 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
             return json_error_response(request, 410, "whep_session_gone", "subscriber session already deleted");
         }
 
-        return json_error_response(request, 404, "subscriber session not found");
+        return json_error_response(request, 404, k_whep_session_not_found_error, "subscriber session not found");
     }
 
     auto precondition = validate_session_if_match(request, *session);
-
     if (!precondition)
     {
         WEBRTC_LOG_WARN("WHEP sdp restart precondition failed session={} error={}", session_id, precondition.error());
@@ -913,11 +912,22 @@ http_response_ptr whep_handler::patch_session(http_request_t& request, std::stri
         "WHEP",
         "subscriber session not found",
         [this, &request](int status, std::string_view error_code, std::string_view message) -> http_response_ptr
-        { return json_error_response(request, status, error_code, message); },
+        {
+            if (error_code == "trickle_ice_session_not_found")
+            {
+                return json_error_response(request, status, k_whep_session_not_found_error, message);
+            }
+
+            if (error_code == "trickle_ice_precondition_failed")
+            {
+                return json_error_response(request, status, k_whep_precondition_failed_error, message);
+            }
+
+            return json_error_response(request, status, error_code, message);
+        },
         [this, &request](const auto& updated_session) -> http_response_ptr
         {
             auto response = create_response(request, 204, "");
-
             add_common_headers(response);
 
             set_session_resource_headers(response, updated_session);
@@ -944,16 +954,14 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
         return json_error_response(request, 404, k_whep_session_not_found_error, "subscriber session not found");
     }
     auto precondition = validate_session_if_match(request, *session);
-
     if (!precondition)
     {
         WEBRTC_LOG_WARN("WHEP delete session precondition failed session={} error={}", session_id, precondition.error());
 
-        return json_error_response(request, 412, precondition.error());
+        return json_error_response(request, 412, k_whep_precondition_failed_error, precondition.error());
     }
 
     auto result = registry_->remove_subscriber_session(session_id);
-
     if (!result)
     {
         if (result.error() == stream_registry_error::subscriber_session_not_found)

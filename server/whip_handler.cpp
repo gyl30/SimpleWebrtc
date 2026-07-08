@@ -397,10 +397,10 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
             return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
         }
 
-        return json_error_response(request, 404, "publisher session not found");
+        return json_error_response(request, 404, k_whip_session_not_found_error, "publisher session not found");
     }
-    auto precondition = validate_session_if_match(request, *session);
 
+    auto precondition = validate_session_if_match(request, *session);
     if (!precondition)
     {
         WEBRTC_LOG_WARN("WHIP sdp restart precondition failed session={} error={}", session_id, precondition.error());
@@ -562,11 +562,22 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
         "WHIP",
         "publisher session not found",
         [this, &request](int status, std::string_view error_code, std::string_view message) -> http_response_ptr
-        { return json_error_response(request, status, error_code, message); },
+        {
+            if (error_code == "trickle_ice_session_not_found")
+            {
+                return json_error_response(request, status, k_whip_session_not_found_error, message);
+            }
+
+            if (error_code == "trickle_ice_precondition_failed")
+            {
+                return json_error_response(request, status, k_whip_precondition_failed_error, message);
+            }
+
+            return json_error_response(request, status, error_code, message);
+        },
         [this, &request](const auto& updated_session) -> http_response_ptr
         {
             auto response = create_response(request, 204, "");
-
             add_common_headers(response);
 
             set_session_resource_headers(response, updated_session);
