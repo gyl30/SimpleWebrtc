@@ -44,6 +44,11 @@ constexpr std::string_view k_whep_create_session_failed_error = "whep_create_ses
 constexpr std::string_view k_whep_session_not_found_error = "whep_session_not_found";
 constexpr std::string_view k_whep_delete_session_failed_error = "whep_delete_session_failed";
 constexpr std::string_view k_whep_ice_restart_incompatible_offer_error = "whep_ice_restart_incompatible_offer";
+constexpr std::string_view k_whep_ice_restart_invalid_sdp_offer_error = "whep_ice_restart_invalid_sdp_offer";
+constexpr std::string_view k_whep_ice_restart_invalid_webrtc_offer_error = "whep_ice_restart_invalid_webrtc_offer";
+constexpr std::string_view k_whep_ice_restart_invalid_offer_error = "whep_ice_restart_invalid_offer";
+constexpr std::string_view k_whep_ice_restart_sdp_answer_failed_error = "whep_ice_restart_sdp_answer_failed";
+constexpr std::string_view k_whep_ice_restart_runtime_offer_filter_failed_error = "whep_ice_restart_runtime_offer_filter_failed";
 
 std::string make_prefixed_error(std::string_view prefix, std::string_view error)
 {
@@ -624,9 +629,8 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         {
             WEBRTC_LOG_WARN("WHEP create subscriber failed stream={} publisher not found", stream_id);
 
-            return json_error_response(request, 404, "publisher not found");
+            return json_error_response(request, 404, k_whep_publisher_not_found_error, "publisher not found");
         }
-
         if (error == stream_registry_error::subscriber_session_not_found)
         {
             if (reconnect_session_id.has_value())
@@ -652,9 +656,8 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                             stream_id,
                             reconnect_session_id.value_or(""));
 
-            return json_error_response(request, 409, "previous subscriber session belongs to another stream");
+            return json_error_response(request, 409, k_whep_reconnect_stream_mismatch_error, "previous subscriber session belongs to another stream");
         }
-
         WEBRTC_LOG_ERROR("WHEP create subscriber failed stream={} error={}", stream_id, stream_registry_error_to_string(error));
         return json_error_response(request, 500, k_whep_create_session_failed_error, "create subscriber session failed");
     }
@@ -745,42 +748,42 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
     }
 
     auto publisher = registry_->find_publisher_by_stream_id(session->stream_id());
+
     if (publisher == nullptr)
     {
         WEBRTC_LOG_WARN("WHEP SDP ICE restart failed session={} stream={} publisher not found", session_id, session->stream_id());
 
-        return json_error_response(request, 404, "publisher not found");
+        return json_error_response(request, 404, k_whep_publisher_not_found_error, "publisher not found");
     }
 
     const std::string& offer = request.req.body();
-
     auto description = sdp::parse_session_description(offer);
 
     if (!description)
     {
         WEBRTC_LOG_WARN("WHEP parse SDP restart offer failed session={} error={}", session_id, description.error());
 
-        return json_error_response(request, 400, make_prefixed_error("invalid sdp offer: ", description.error()));
+        return json_error_response(
+            request, 400, k_whep_ice_restart_invalid_sdp_offer_error, make_prefixed_error("invalid sdp offer: ", description.error()));
     }
-
     auto offer_summary = sdp::extract_webrtc_offer_summary(*description);
 
     if (!offer_summary)
     {
-        WEBRTC_LOG_WARN("WHEP extract SDP restart offer failed session={} error={}", session_id, offer_summary.error());
+        WEBRTC_LOG_WARN("WHEP extract SDP restart offer summary failed session={} error={}", session_id, offer_summary.error());
 
-        return json_error_response(request, 400, make_prefixed_error("invalid webrtc offer: ", offer_summary.error()));
+        return json_error_response(
+            request, 400, k_whep_ice_restart_invalid_webrtc_offer_error, make_prefixed_error("invalid webrtc offer: ", offer_summary.error()));
     }
-
     auto validation_result = sdp::validate_whep_offer(*offer_summary);
 
     if (!validation_result)
     {
         WEBRTC_LOG_WARN("WHEP validate SDP restart offer failed session={} error={}", session_id, validation_result.error());
 
-        return json_error_response(request, 400, make_prefixed_error("invalid whep offer: ", validation_result.error()));
+        return json_error_response(
+            request, 400, k_whep_ice_restart_invalid_offer_error, make_prefixed_error("invalid whep offer: ", validation_result.error()));
     }
-
     if (!sdp::offer_has_ice_restart(session->remote_offer_summary(), *offer_summary))
     {
         WEBRTC_LOG_WARN("WHEP SDP patch without ICE restart session={} previous={} next={}",
@@ -810,7 +813,8 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
     {
         WEBRTC_LOG_WARN("WHEP build SDP restart answer failed session={} error={}", session_id, answer.error());
 
-        return json_error_response(request, 400, make_prefixed_error("cannot build sdp answer: ", answer.error()));
+        return json_error_response(
+            request, 400, k_whep_ice_restart_sdp_answer_failed_error, make_prefixed_error("cannot build sdp answer: ", answer.error()));
     }
 
     auto runtime_offer_filter = make_runtime_offer_filter_result(*offer_summary, answer->sdp);
@@ -818,8 +822,10 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
     {
         WEBRTC_LOG_WARN("WHEP runtime restart offer summary failed session={} error={}", session_id, runtime_offer_filter.error());
 
-        return json_error_response(
-            request, 400, make_prefixed_error("failed to build runtime subscriber offer summary: ", runtime_offer_filter.error()));
+        return json_error_response(request,
+                                   400,
+                                   k_whep_ice_restart_runtime_offer_filter_failed_error,
+                                   make_prefixed_error("failed to build runtime subscriber offer summary: ", runtime_offer_filter.error()));
     }
     sdp::ice_restart_offer_compatibility_options restart_options;
 
