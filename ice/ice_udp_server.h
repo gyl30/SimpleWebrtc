@@ -1313,7 +1313,6 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     bool suppress_retired_ice_credential_stun(std::string_view local_ice_ufrag, std::string_view remote_ice_ufrag, std::string_view remote_address);
 
-    [[nodiscard]]
     std::size_t expire_retired_ice_credentials_locked(uint64_t current_time_milliseconds);
 
     [[nodiscard]]
@@ -1322,7 +1321,6 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     [[nodiscard]]
     bool suppress_retired_endpoint_packet(std::string_view remote_address, std::string_view packet_kind);
 
-    [[nodiscard]]
     std::size_t expire_retired_endpoints_locked(uint64_t current_time_milliseconds);
 
     [[nodiscard]]

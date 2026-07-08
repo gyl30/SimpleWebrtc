@@ -153,20 +153,21 @@ void append_router_prometheus_labeled_metric_value(std::string& output, std::str
     output.append(std::to_string(value));
     output.push_back('\n');
 }
-
+void append_router_prometheus_labeled_metric_value(std::string& output, std::string_view name, std::string_view labels, int64_t value)
+{
+    output.append(name);
+    output.push_back('{');
+    output.append(labels);
+    output.append("} ");
+    output.append(std::to_string(value));
+    output.push_back('\n');
+}
 std::string make_transport_cc_feedback_window_labels(const lifecycle_debug_transport_cc_feedback_window_entry& window)
 {
     std::string labels;
 
     append_prometheus_label(labels, "stream_id", window.stream_id);
     append_prometheus_label(labels, "subscriber_session_id", window.subscriber_session_id);
-
-    return labels;
-}
-
-std::string make_transport_cc_feedback_window_quality_labels(const lifecycle_debug_transport_cc_feedback_window_entry& window)
-{
-    std::string labels = make_transport_cc_feedback_window_labels(window);
 
     return labels;
 }
@@ -336,7 +337,7 @@ void append_lifecycle_resource_limit_prometheus_metrics(std::string& output, con
 
         append_router_prometheus_labeled_metric_value(output, "simplewebrtc_runtime_resource_limit_current", labels, entry.current);
         append_router_prometheus_labeled_metric_value(output, "simplewebrtc_runtime_resource_limit", labels, entry.limit);
-        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_runtime_resource_limit_over", labels, entry.over_limit ? 1U : 0U);
+        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_runtime_resource_limit_over", labels, entry.over_limit ? 1LU : 0LU);
     }
 }
 
@@ -356,20 +357,6 @@ void append_lifecycle_drop_reason_prometheus_metrics(std::string& output, const 
 void append_lifecycle_downlink_quality_prometheus_metrics(std::string& output, const lifecycle_debug_snapshot& snapshot)
 {
     append_router_prometheus_metric_header(output,
-                                           "simplewebrtc_outbound_transport_cc_feedback_window_lookup_hit_rate_ppm",
-                                           "outbound transport cc lookup hit rate per window",
-                                           "gauge");
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_outbound_transport_cc_feedback_window_loss_rate_ppm", "outbound transport cc packet loss rate per window", "gauge");
-    append_router_prometheus_metric_header(output,
-                                           "simplewebrtc_outbound_transport_cc_feedback_window_received_packets",
-                                           "outbound transport cc received packet count per window",
-                                           "gauge");
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_outbound_transport_cc_feedback_window_lost_packets", "outbound transport cc lost packet count per window", "gauge");
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_outbound_transport_cc_feedback_window_observations", "outbound transport cc observation count per window", "gauge");
-    append_router_prometheus_metric_header(output,
                                            "simplewebrtc_outbound_transport_cc_feedback_window_avg_delta_us",
                                            "outbound transport cc average packet delta in microseconds",
                                            "gauge");
@@ -380,18 +367,8 @@ void append_lifecycle_downlink_quality_prometheus_metrics(std::string& output, c
 
     for (const auto& window : snapshot.outbound_transport_cc_feedback_windows)
     {
-        const std::string labels = make_transport_cc_feedback_window_quality_labels(window);
+        const std::string labels = make_transport_cc_feedback_window_labels(window);
 
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_outbound_transport_cc_feedback_window_lookup_hit_rate_ppm", labels, window.lookup_hit_rate_ppm);
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_outbound_transport_cc_feedback_window_loss_rate_ppm", labels, window.loss_rate_ppm);
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_outbound_transport_cc_feedback_window_received_packets", labels, window.received_count);
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_outbound_transport_cc_feedback_window_lost_packets", labels, window.lost_count);
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_outbound_transport_cc_feedback_window_observations", labels, window.observation_count);
         append_router_prometheus_labeled_metric_value(
             output, "simplewebrtc_outbound_transport_cc_feedback_window_avg_delta_us", labels, window.avg_delta_microseconds);
         append_router_prometheus_labeled_metric_value(
@@ -401,63 +378,30 @@ void append_lifecycle_downlink_quality_prometheus_metrics(std::string& output, c
     }
 
     append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_lookup_hit_rate_ppm", "subscriber downlink transport cc lookup hit rate", "gauge");
-    append_router_prometheus_metric_header(output, "simplewebrtc_subscriber_downlink_loss_rate_ppm", "subscriber downlink packet loss rate", "gauge");
+        output, "simplewebrtc_subscriber_downlink_received_packets", "subscriber downlink received packet count from TWCC", "gauge");
     append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_target_bitrate_bps", "subscriber downlink target bitrate", "gauge");
-    append_router_prometheus_metric_header(output, "simplewebrtc_subscriber_downlink_min_bitrate_bps", "subscriber downlink min bitrate", "gauge");
-    append_router_prometheus_metric_header(output, "simplewebrtc_subscriber_downlink_max_bitrate_bps", "subscriber downlink max bitrate", "gauge");
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_transition_count", "subscriber downlink state transition count", "gauge");
+        output, "simplewebrtc_subscriber_downlink_lost_packets", "subscriber downlink lost packet count from TWCC", "gauge");
     append_router_prometheus_metric_header(
         output, "simplewebrtc_subscriber_downlink_healthy_windows", "subscriber downlink healthy feedback window count", "gauge");
     append_router_prometheus_metric_header(
         output, "simplewebrtc_subscriber_downlink_bad_windows", "subscriber downlink bad feedback window count", "gauge");
     append_router_prometheus_metric_header(
         output, "simplewebrtc_subscriber_downlink_unreliable_windows", "subscriber downlink unreliable feedback window count", "gauge");
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_received_packets", "subscriber downlink received packet count from TWCC", "gauge");
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_lost_packets", "subscriber downlink lost packet count from TWCC", "gauge");
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_bitrate_gate_budget_bytes", "subscriber downlink bitrate gate current budget in bytes", "gauge");
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_bitrate_gate_allowed_packets", "subscriber downlink bitrate gate allowed packets", "gauge");
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_bitrate_gate_dropped_packets", "subscriber downlink bitrate gate dropped packets", "gauge");
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_bitrate_gate_allowed_bytes", "subscriber downlink bitrate gate allowed bytes", "gauge");
-    append_router_prometheus_metric_header(
-        output, "simplewebrtc_subscriber_downlink_bitrate_gate_dropped_bytes", "subscriber downlink bitrate gate dropped bytes", "gauge");
+    append_router_prometheus_metric_header(output, "simplewebrtc_subscriber_downlink_min_bitrate_bps", "subscriber downlink min bitrate", "gauge");
+    append_router_prometheus_metric_header(output, "simplewebrtc_subscriber_downlink_max_bitrate_bps", "subscriber downlink max bitrate", "gauge");
 
     for (const auto& state : snapshot.subscriber_downlink_bandwidth_states)
     {
         const std::string labels = make_subscriber_downlink_bandwidth_labels(state);
 
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_subscriber_downlink_lookup_hit_rate_ppm", labels, state.lookup_hit_rate_ppm);
-        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_loss_rate_ppm", labels, state.loss_rate_ppm);
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_subscriber_downlink_target_bitrate_bps", labels, state.target_bitrate_bps);
-        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_min_bitrate_bps", labels, state.min_bitrate_bps);
-        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_max_bitrate_bps", labels, state.max_bitrate_bps);
-        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_transition_count", labels, state.transition_count);
+        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_received_packets", labels, state.received_count);
+        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_lost_packets", labels, state.lost_count);
         append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_healthy_windows", labels, state.healthy_window_count);
         append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_bad_windows", labels, state.bad_window_count);
         append_router_prometheus_labeled_metric_value(
             output, "simplewebrtc_subscriber_downlink_unreliable_windows", labels, state.unreliable_window_count);
-        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_received_packets", labels, state.received_count);
-        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_lost_packets", labels, state.lost_count);
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_subscriber_downlink_bitrate_gate_budget_bytes", labels, state.bitrate_gate_budget_bytes);
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_subscriber_downlink_bitrate_gate_allowed_packets", labels, state.bitrate_gate_allowed_packet_count);
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_subscriber_downlink_bitrate_gate_dropped_packets", labels, state.bitrate_gate_dropped_packet_count);
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_subscriber_downlink_bitrate_gate_allowed_bytes", labels, state.bitrate_gate_allowed_byte_count);
-        append_router_prometheus_labeled_metric_value(
-            output, "simplewebrtc_subscriber_downlink_bitrate_gate_dropped_bytes", labels, state.bitrate_gate_dropped_byte_count);
+        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_min_bitrate_bps", labels, state.min_bitrate_bps);
+        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_subscriber_downlink_max_bitrate_bps", labels, state.max_bitrate_bps);
     }
 }
 

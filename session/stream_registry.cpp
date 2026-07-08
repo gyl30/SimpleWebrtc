@@ -69,6 +69,9 @@ std::string_view stream_session_kind_to_string(stream_session_kind kind)
 {
     switch (kind)
     {
+        case stream_session_kind::unknown:
+            return "unknown";
+
         case stream_session_kind::publisher:
             return "publisher";
 
