@@ -1219,6 +1219,57 @@ void update_runtime_acceptance_summary(lifecycle_debug_snapshot& snapshot)
     snapshot.runtime_acceptance_summary = std::move(summary);
 }
 
+void log_lifecycle_acceptance_summary(std::string_view event,
+                                      std::string_view reason,
+                                      std::string_view stream_id,
+                                      std::string_view session_id,
+                                      const lifecycle_debug_snapshot& snapshot)
+{
+    const lifecycle_debug_runtime_acceptance_summary& summary = snapshot.runtime_acceptance_summary;
+
+    WEBRTC_LOG_INFO(
+        "lifecycle acceptance summary event={} reason={} stream={} session={} schema={} release_gate_pass={} consistent={} full_idle_clean={} "
+        "active_runtime_clean={} delayed_runtime_clean={} registry_sessions={} registry_publishers={} registry_subscribers={} "
+        "registry_pending_sessions={} resource_limit_over={} inconsistencies={} active_residuals={} delayed_residuals={} rtp_rtcp_drops={} "
+        "drop_reasons={} endpoints={} candidate_pairs={} dtls_peers={} srtp_peers={} media_router_peers={} media_router_streams={} "
+        "media_router_active_publishers={} media_router_active_subscribers={} rtp_cache_packets={} outbound_twcc_packets={} "
+        "downlink_bandwidth_states={} downlink_pacing_states={} downlink_pacing_queue_packets={} downlink_pacing_queue_bytes={}",
+        event,
+        reason,
+        stream_id,
+        session_id,
+        summary.debug_schema_version,
+        summary.release_gate_pass ? 1 : 0,
+        summary.consistent ? 1 : 0,
+        summary.full_idle_clean ? 1 : 0,
+        summary.active_runtime_clean ? 1 : 0,
+        summary.delayed_runtime_clean ? 1 : 0,
+        summary.registry_session_count,
+        summary.registry_publisher_count,
+        summary.registry_subscriber_count,
+        summary.registry_pending_session_count,
+        summary.runtime_resource_limit_over_count,
+        summary.inconsistency_count,
+        summary.active_runtime_residual_count,
+        summary.delayed_runtime_residual_count,
+        summary.rtp_rtcp_drop_total,
+        summary.rtp_rtcp_drop_reason_count,
+        summary.endpoint_count,
+        summary.candidate_pair_count,
+        summary.dtls_peer_count,
+        summary.srtp_peer_count,
+        summary.media_router_peer_count,
+        summary.media_router_stream_count,
+        summary.media_router_active_publisher_count,
+        summary.media_router_active_subscriber_count,
+        summary.rtp_cache_packet_count,
+        summary.outbound_transport_cc_packet_count,
+        summary.subscriber_downlink_bandwidth_state_count,
+        summary.subscriber_downlink_pacing_state_count,
+        summary.subscriber_downlink_pacing_queue_packet_count,
+        summary.subscriber_downlink_pacing_queue_byte_count);
+}
+
 void append_subscriber_recovery_runtime_debug_entries(lifecycle_debug_snapshot& snapshot)
 {
     std::unordered_map<std::string, std::size_t> index_by_key;
@@ -8606,6 +8657,8 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
 
     const bool active_runtime_residual_after_idle = snapshot.registry_session_count == 0 && !snapshot.active_runtime_clean;
 
+    log_lifecycle_acceptance_summary("snapshot", reason, stream_id, session_id, snapshot);
+
     if (!snapshot.consistent || active_runtime_residual_after_idle)
     {
         WEBRTC_LOG_WARN(
@@ -8852,6 +8905,8 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
     const lifecycle_debug_snapshot snapshot = debug_state_snapshot();
 
     const bool retired_state_clean = !require_retired_endpoints_empty || snapshot.delayed_runtime_clean;
+
+    log_lifecycle_acceptance_summary("convergence_check", reason, stream_id, session_id, snapshot);
 
     if (snapshot.registry_session_count != 0)
     {
