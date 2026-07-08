@@ -1169,6 +1169,56 @@ void append_runtime_resource_limit(lifecycle_debug_snapshot& snapshot, std::stri
     snapshot.runtime_resource_limits.push_back(std::move(entry));
 }
 
+void update_runtime_acceptance_summary(lifecycle_debug_snapshot& snapshot)
+{
+    lifecycle_debug_runtime_acceptance_summary summary;
+
+    summary.debug_schema_version = snapshot.debug_schema_version;
+
+    summary.consistent = snapshot.consistent;
+    summary.full_idle_clean = snapshot.full_idle_clean;
+    summary.active_runtime_clean = snapshot.active_runtime_clean;
+    summary.delayed_runtime_clean = snapshot.delayed_runtime_clean;
+
+    summary.registry_session_count = snapshot.registry_session_count;
+    summary.registry_publisher_count = snapshot.registry_publisher_count;
+    summary.registry_subscriber_count = snapshot.registry_subscriber_count;
+    summary.registry_pending_session_count = snapshot.registry_pending_session_count;
+
+    summary.runtime_resource_limit_over_count = snapshot.runtime_resource_limit_over_count;
+
+    summary.inconsistency_count = snapshot.inconsistency_count;
+    summary.active_runtime_residual_count = to_debug_count(snapshot.residuals.size());
+    summary.delayed_runtime_residual_count = snapshot.delayed_residual_count;
+
+    summary.rtp_rtcp_drop_total = snapshot.rtp_rtcp_drop_total;
+    summary.rtp_rtcp_drop_reason_count = snapshot.rtp_rtcp_drop_reason_count;
+
+    summary.endpoint_count = snapshot.endpoint_count;
+    summary.candidate_pair_count = snapshot.candidate_pair_count;
+    summary.dtls_peer_count = snapshot.dtls_peer_count;
+    summary.srtp_peer_count = snapshot.srtp_peer_count;
+
+    summary.media_router_peer_count = snapshot.media_router_peer_count;
+    summary.media_router_stream_count = snapshot.media_router_stream_count;
+    summary.media_router_active_publisher_count = snapshot.media_router_active_publisher_count;
+    summary.media_router_active_subscriber_count = snapshot.media_router_active_subscriber_count;
+
+    summary.rtp_cache_packet_count = snapshot.rtp_cache_packet_count;
+    summary.outbound_transport_cc_packet_count = snapshot.outbound_transport_cc_packet_count;
+
+    summary.subscriber_downlink_bandwidth_state_count = snapshot.subscriber_downlink_bandwidth_state_count;
+    summary.subscriber_downlink_pacing_state_count = snapshot.subscriber_downlink_pacing_state_count;
+    summary.subscriber_downlink_pacing_queue_packet_count = snapshot.subscriber_downlink_pacing_queue_packet_count;
+    summary.subscriber_downlink_pacing_queue_byte_count = snapshot.subscriber_downlink_pacing_queue_byte_count;
+
+    summary.release_gate_pass = summary.consistent && summary.full_idle_clean && summary.runtime_resource_limit_over_count == 0 &&
+                                summary.inconsistency_count == 0 && summary.active_runtime_residual_count == 0 &&
+                                summary.delayed_runtime_residual_count == 0;
+
+    snapshot.runtime_acceptance_summary = std::move(summary);
+}
+
 void append_subscriber_recovery_runtime_debug_entries(lifecycle_debug_snapshot& snapshot)
 {
     std::unordered_map<std::string, std::size_t> index_by_key;
@@ -8529,6 +8579,9 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
     snapshot.inconsistency_count = to_debug_count(snapshot.inconsistencies.size());
     snapshot.delayed_residual_count = to_debug_count(snapshot.delayed_residuals.size());
     snapshot.consistent = snapshot.inconsistency_count == 0;
+
+    update_runtime_acceptance_summary(snapshot);
+
     return snapshot;
 }
 
