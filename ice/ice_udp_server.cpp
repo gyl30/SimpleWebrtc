@@ -1298,7 +1298,74 @@ void log_lifecycle_resource_limit_over_details(std::string_view event,
                         resource_limit.limit);
     }
 }
-
+void log_lifecycle_downlink_summary(std::string_view event,
+                                    std::string_view reason,
+                                    std::string_view stream_id,
+                                    std::string_view session_id,
+                                    const lifecycle_debug_snapshot& snapshot)
+{
+    for (const auto& state : snapshot.subscriber_downlink_bandwidth_states)
+    {
+        WEBRTC_LOG_INFO(
+            "flag_p2_downlink_summary event={} reason={} request_stream={} request_session={} stream={} subscriber={} control_mode={} "
+            "control_state={} target_bitrate_bps={} min_bitrate_bps={} max_bitrate_bps={} lookup_hit_rate_ppm={} loss_rate_ppm={} "
+            "received_packets={} lost_packets={} feedback_count={} window_observations={} window_packet_statuses={} healthy_windows={} "
+            "bad_windows={} unreliable_windows={} transition_count={} state_entered_at={} hold_down_until={} last_feedback_at={} "
+            "bitrate_gate_budget_bytes={} bitrate_gate_allowed_packets={} bitrate_gate_dropped_packets={} bitrate_gate_allowed_bytes={} "
+            "bitrate_gate_dropped_bytes={} bitrate_gate_keyframe_bypass_packets={} bitrate_gate_keyframe_bypass_bytes={} "
+            "bitrate_gate_recovery_bypass_packets={} bitrate_gate_recovery_bypass_bytes={} keyframe_recovery_until={} "
+            "keyframe_recovery_remaining_packets={} last_keyframe_request_at={} pacing_queue_packets={} pacing_queue_bytes={} "
+            "pacing_budget_bytes={} pacing_enqueued_packets={} pacing_enqueued_bytes={} pacing_sent_packets={} pacing_sent_bytes={} "
+            "pacing_dropped_packets={} pacing_dropped_bytes={} last_transition_reason={}",
+            event,
+            reason,
+            stream_id,
+            session_id,
+            state.stream_id,
+            state.subscriber_session_id,
+            state.control_mode,
+            state.control_state,
+            state.target_bitrate_bps,
+            state.min_bitrate_bps,
+            state.max_bitrate_bps,
+            state.lookup_hit_rate_ppm,
+            state.loss_rate_ppm,
+            state.received_count,
+            state.lost_count,
+            state.feedback_count,
+            state.window_observation_count,
+            state.window_packet_status_count,
+            state.healthy_window_count,
+            state.bad_window_count,
+            state.unreliable_window_count,
+            state.transition_count,
+            state.state_entered_at_milliseconds,
+            state.hold_down_until_milliseconds,
+            state.last_feedback_at_milliseconds,
+            state.bitrate_gate_budget_bytes,
+            state.bitrate_gate_allowed_packet_count,
+            state.bitrate_gate_dropped_packet_count,
+            state.bitrate_gate_allowed_byte_count,
+            state.bitrate_gate_dropped_byte_count,
+            state.bitrate_gate_keyframe_bypass_packet_count,
+            state.bitrate_gate_keyframe_bypass_byte_count,
+            state.bitrate_gate_recovery_bypass_packet_count,
+            state.bitrate_gate_recovery_bypass_byte_count,
+            state.keyframe_recovery_until_milliseconds,
+            state.keyframe_recovery_remaining_packet_count,
+            state.last_keyframe_request_at_milliseconds,
+            state.pacing_queue_packet_count,
+            state.pacing_queue_byte_count,
+            state.pacing_budget_bytes,
+            state.pacing_enqueued_packet_count,
+            state.pacing_enqueued_byte_count,
+            state.pacing_sent_packet_count,
+            state.pacing_sent_byte_count,
+            state.pacing_dropped_packet_count,
+            state.pacing_dropped_byte_count,
+            state.last_transition_reason);
+    }
+}
 void append_subscriber_recovery_runtime_debug_entries(lifecycle_debug_snapshot& snapshot)
 {
     std::unordered_map<std::string, std::size_t> index_by_key;
@@ -8688,6 +8755,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
 
     log_lifecycle_acceptance_summary("snapshot", reason, stream_id, session_id, snapshot);
     log_lifecycle_resource_limit_over_details("snapshot", reason, stream_id, session_id, snapshot);
+    log_lifecycle_downlink_summary("snapshot", reason, stream_id, session_id, snapshot);
 
     if (!snapshot.consistent || active_runtime_residual_after_idle)
     {
@@ -8938,6 +9006,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
 
     log_lifecycle_acceptance_summary("convergence_check", reason, stream_id, session_id, snapshot);
     log_lifecycle_resource_limit_over_details("convergence_check", reason, stream_id, session_id, snapshot);
+    log_lifecycle_downlink_summary("convergence_check", reason, stream_id, session_id, snapshot);
 
     if (snapshot.registry_session_count != 0)
     {
