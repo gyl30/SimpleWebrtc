@@ -154,16 +154,6 @@ void append_router_prometheus_labeled_metric_value(std::string& output, std::str
     output.push_back('\n');
 }
 
-void append_router_prometheus_labeled_metric_value(std::string& output, std::string_view name, std::string_view labels, int64_t value)
-{
-    output.append(name);
-    output.push_back('{');
-    output.append(labels);
-    output.append("} ");
-    output.append(std::to_string(value));
-    output.push_back('\n');
-}
-
 std::string make_transport_cc_feedback_window_labels(const lifecycle_debug_transport_cc_feedback_window_entry& window)
 {
     std::string labels;
@@ -184,7 +174,6 @@ std::string make_subscriber_downlink_bandwidth_labels(const lifecycle_debug_subs
 
     return labels;
 }
-
 std::string make_subscriber_recovery_runtime_labels(const lifecycle_debug_subscriber_recovery_runtime_entry& entry)
 {
     std::string labels;
@@ -200,6 +189,140 @@ std::string make_subscriber_recovery_runtime_labels(const lifecycle_debug_subscr
     return labels;
 }
 
+std::string make_runtime_resource_limit_labels(const lifecycle_debug_resource_limit_entry& entry)
+{
+    std::string labels;
+
+    append_prometheus_label(labels, "resource", entry.name);
+
+    return labels;
+}
+
+void append_lifecycle_acceptance_summary_prometheus_metrics(std::string& output, const lifecycle_debug_snapshot& snapshot)
+{
+    const lifecycle_debug_runtime_acceptance_summary& summary = snapshot.runtime_acceptance_summary;
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_runtime_debug_schema_version", "debug state schema version exposed by lifecycle snapshot", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_debug_schema_version", summary.debug_schema_version);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_runtime_release_gate_pass", "whether final runtime release gate checks pass", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_release_gate_pass", summary.release_gate_pass ? 1U : 0U);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_runtime_full_idle_clean", "whether active and delayed runtime state are clean", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_full_idle_clean", summary.full_idle_clean ? 1U : 0U);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_runtime_resource_limit_over_count", "number of runtime resource limits currently exceeded", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_resource_limit_over_count", summary.runtime_resource_limit_over_count);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_runtime_inconsistency_count", "number of lifecycle runtime consistency errors", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_inconsistency_count", summary.inconsistency_count);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_runtime_active_residual_count", "number of active runtime residual entries", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_active_residual_count", summary.active_runtime_residual_count);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_runtime_delayed_residual_count", "number of delayed runtime residual entries", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_delayed_residual_count", summary.delayed_runtime_residual_count);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_registry_sessions_current", "current registry session count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_registry_sessions_current", summary.registry_session_count);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_registry_publishers_current", "current registry publisher session count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_registry_publishers_current", summary.registry_publisher_count);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_registry_subscribers_current", "current registry subscriber session count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_registry_subscribers_current", summary.registry_subscriber_count);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_registry_pending_sessions_current", "current pending session count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_registry_pending_sessions_current", summary.registry_pending_session_count);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_runtime_endpoints_current", "current ICE endpoint count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_endpoints_current", summary.endpoint_count);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_runtime_candidate_pairs_current", "current ICE candidate pair count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_candidate_pairs_current", summary.candidate_pair_count);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_runtime_dtls_peers_current", "current DTLS peer count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_dtls_peers_current", summary.dtls_peer_count);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_runtime_srtp_peers_current", "current SRTP peer count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_runtime_srtp_peers_current", summary.srtp_peer_count);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_media_router_peers_current", "current media router peer count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_media_router_peers_current", summary.media_router_peer_count);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_media_router_streams_current", "current media router stream count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_media_router_streams_current", summary.media_router_stream_count);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_media_router_active_publishers_current", "current active publisher count in media router", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_media_router_active_publishers_current", summary.media_router_active_publisher_count);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_media_router_active_subscribers_current", "current active subscriber count in media router", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_media_router_active_subscribers_current", summary.media_router_active_subscriber_count);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_rtp_rtcp_drop_total", "total RTP/RTCP drops tracked by lifecycle debug state", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_rtp_rtcp_drop_total", summary.rtp_rtcp_drop_total);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_rtp_rtcp_drop_reason_count", "number of RTP/RTCP drop reason buckets", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_rtp_rtcp_drop_reason_count", summary.rtp_rtcp_drop_reason_count);
+
+    append_router_prometheus_metric_header(output, "simplewebrtc_rtp_cache_packets_current", "current RTP cache packet count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_rtp_cache_packets_current", summary.rtp_cache_packet_count);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_outbound_transport_cc_packets_current", "current outbound transport-cc packet identity count", "gauge");
+    append_router_prometheus_metric_value(output, "simplewebrtc_outbound_transport_cc_packets_current", summary.outbound_transport_cc_packet_count);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_bandwidth_states_current", "current subscriber downlink bandwidth state count", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_subscriber_downlink_bandwidth_states_current", summary.subscriber_downlink_bandwidth_state_count);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_states_current", "current subscriber downlink pacing state count", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_subscriber_downlink_pacing_states_current", summary.subscriber_downlink_pacing_state_count);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_queue_packets_current", "current subscriber downlink pacing queued packet count", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_subscriber_downlink_pacing_queue_packets_current", summary.subscriber_downlink_pacing_queue_packet_count);
+
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_subscriber_downlink_pacing_queue_bytes_current", "current subscriber downlink pacing queued byte count", "gauge");
+    append_router_prometheus_metric_value(
+        output, "simplewebrtc_subscriber_downlink_pacing_queue_bytes_current", summary.subscriber_downlink_pacing_queue_byte_count);
+}
+
+void append_lifecycle_resource_limit_prometheus_metrics(std::string& output, const lifecycle_debug_snapshot& snapshot)
+{
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_runtime_resource_limit_current", "current runtime resource usage by resource name", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_runtime_resource_limit", "configured runtime resource limit by resource name", "gauge");
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_runtime_resource_limit_over", "whether runtime resource usage exceeds configured limit", "gauge");
+
+    for (const auto& entry : snapshot.runtime_resource_limits)
+    {
+        const std::string labels = make_runtime_resource_limit_labels(entry);
+
+        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_runtime_resource_limit_current", labels, entry.current);
+        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_runtime_resource_limit", labels, entry.limit);
+        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_runtime_resource_limit_over", labels, entry.over_limit ? 1U : 0U);
+    }
+}
+
 void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lifecycle_debug_snapshot& snapshot)
 {
     if (!output.empty() && output.back() != '\n')
@@ -207,9 +330,11 @@ void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lif
         output.push_back('\n');
     }
 
+    append_lifecycle_acceptance_summary_prometheus_metrics(output, snapshot);
+    append_lifecycle_resource_limit_prometheus_metrics(output, snapshot);
+
     append_router_prometheus_metric_header(output, "simplewebrtc_runtime_active_clean", "whether active runtime state is clean", "gauge");
     append_router_prometheus_metric_value(output, "simplewebrtc_runtime_active_clean", snapshot.active_runtime_clean ? 1U : 0U);
-
     append_router_prometheus_metric_header(output, "simplewebrtc_runtime_delayed_clean", "whether delayed runtime state is clean", "gauge");
     append_router_prometheus_metric_value(output, "simplewebrtc_runtime_delayed_clean", snapshot.delayed_runtime_clean ? 1U : 0U);
 
@@ -866,7 +991,7 @@ std::string make_simulcast_rid_target_response_body(const simulcast_rid_target_r
     return serialize_struct(body);
 }
 
-std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return std::string_view(value.data(), value.size()); }
+std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return {value.data(), value.size()}; }
 
 std::optional<simulcast_rid_target_request> make_simulcast_rid_target_request_from_query(http_request_t& request, bool clear)
 {
