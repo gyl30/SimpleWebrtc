@@ -70,6 +70,10 @@ constexpr std::string_view k_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sde
 constexpr std::string_view k_absolute_send_time_extension_uri = "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
 constexpr std::string_view k_audio_level_extension_uri = "urn:ietf:params:rtp-hdrext:ssrc-audio-level";
 
+constexpr std::size_t k_max_retired_endpoints = 512;
+
+constexpr std::size_t k_max_retired_ice_credentials = 512;
+
 constexpr uint64_t k_fnv_offset_basis = 1469598103934665603ULL;
 
 constexpr uint64_t k_fnv_prime = 1099511628211ULL;
@@ -23380,6 +23384,8 @@ void ice_udp_server::retire_endpoint_locked(std::string_view remote_address,
         return;
     }
 
+    expire_retired_endpoints_locked(current_time_milliseconds);
+
     const std::string remote_key(remote_address);
 
     retired_endpoint_state& state = retired_endpoints_by_address_[remote_key];
@@ -23394,6 +23400,16 @@ void ice_udp_server::retire_endpoint_locked(std::string_view remote_address,
     state.session_id = std::string(session_id);
 
     state.reason = std::string(reason);
+
+    const std::size_t pruned_count = prune_retired_endpoints_to_limit_locked(current_time_milliseconds, remote_key);
+
+    if (pruned_count != 0)
+    {
+        WEBRTC_LOG_INFO("ice udp retired endpoint limit prune count={} size={} limit={}",
+                        pruned_count,
+                        retired_endpoints_by_address_.size(),
+                        k_max_retired_endpoints);
+    }
 
     WEBRTC_LOG_DEBUG("ice udp endpoint retired remote={} session={} reason={} ttl_ms={}",
                      remote_address,
@@ -23500,6 +23516,7 @@ void ice_udp_server::retire_session_endpoint_for_ice_restart(const stream_restar
      */
     retire_endpoint_locked(iterator->second, "", now_milliseconds(), reason);
 }
+
 void ice_udp_server::retire_ice_credentials_locked(std::string_view local_ice_ufrag,
                                                    std::string_view remote_ice_ufrag,
                                                    std::string_view stream_id,
@@ -23512,7 +23529,11 @@ void ice_udp_server::retire_ice_credentials_locked(std::string_view local_ice_uf
         return;
     }
 
-    retired_ice_credential_state& state = retired_ice_credentials_by_local_ufrag_[std::string(local_ice_ufrag)];
+    expire_retired_ice_credentials_locked(current_time_milliseconds);
+
+    const std::string local_ice_ufrag_key(local_ice_ufrag);
+
+    retired_ice_credential_state& state = retired_ice_credentials_by_local_ufrag_[local_ice_ufrag_key];
 
     if (state.expires_at_milliseconds != 0 && current_time_milliseconds >= state.expires_at_milliseconds)
     {
@@ -23530,6 +23551,16 @@ void ice_udp_server::retire_ice_credentials_locked(std::string_view local_ice_uf
     state.remote_ice_ufrag = std::string(remote_ice_ufrag);
 
     state.reason = std::string(reason);
+
+    const std::size_t pruned_count = prune_retired_ice_credentials_to_limit_locked(current_time_milliseconds, local_ice_ufrag_key);
+
+    if (pruned_count != 0)
+    {
+        WEBRTC_LOG_INFO("ice retired credential limit prune count={} size={} limit={}",
+                        pruned_count,
+                        retired_ice_credentials_by_local_ufrag_.size(),
+                        k_max_retired_ice_credentials);
+    }
 
     WEBRTC_LOG_DEBUG("ice credentials retired stream={} session={} local_ufrag={} remote_ufrag={} reason={} ttl_ms={}",
                      stream_id,
@@ -23629,6 +23660,56 @@ std::size_t ice_udp_server::expire_retired_ice_credentials_locked(uint64_t curre
     }
 
     return expired_count;
+}
+
+std::size_t ice_udp_server::prune_retired_ice_credentials_to_limit_locked(uint64_t current_time_milliseconds,
+                                                                          std::string_view protected_local_ice_ufrag)
+{
+    std::size_t pruned_count = 0;
+
+    while (retired_ice_credentials_by_local_ufrag_.size() > k_max_retired_ice_credentials)
+    {
+        auto oldest_iterator = retired_ice_credentials_by_local_ufrag_.end();
+
+        for (auto iterator = retired_ice_credentials_by_local_ufrag_.begin(); iterator != retired_ice_credentials_by_local_ufrag_.end(); ++iterator)
+        {
+            if (std::string_view(iterator->first) == protected_local_ice_ufrag)
+            {
+                continue;
+            }
+
+            if (oldest_iterator == retired_ice_credentials_by_local_ufrag_.end() ||
+                iterator->second.expires_at_milliseconds < oldest_iterator->second.expires_at_milliseconds)
+            {
+                oldest_iterator = iterator;
+            }
+        }
+
+        if (oldest_iterator == retired_ice_credentials_by_local_ufrag_.end())
+        {
+            return pruned_count;
+        }
+
+        const retired_ice_credential_state state = oldest_iterator->second;
+
+        WEBRTC_LOG_WARN(
+            "ice retired credential pruned by limit stream={} session={} local_ufrag={} remote_ufrag={} reason={} expires_at={} now={} "
+            "suppressed_stun_packets={}",
+            state.stream_id,
+            state.session_id,
+            state.local_ice_ufrag,
+            state.remote_ice_ufrag,
+            state.reason,
+            state.expires_at_milliseconds,
+            current_time_milliseconds,
+            state.suppressed_stun_packets);
+
+        retired_ice_credentials_by_local_ufrag_.erase(oldest_iterator);
+
+        pruned_count += 1;
+    }
+
+    return pruned_count;
 }
 
 void ice_udp_server::unretire_endpoint_locked(std::string_view remote_address)
@@ -23857,6 +23938,51 @@ std::size_t ice_udp_server::expire_retired_endpoints_locked(uint64_t current_tim
     }
 
     return expired_count;
+}
+
+std::size_t ice_udp_server::prune_retired_endpoints_to_limit_locked(uint64_t current_time_milliseconds, std::string_view protected_remote_address)
+{
+    std::size_t pruned_count = 0;
+
+    while (retired_endpoints_by_address_.size() > k_max_retired_endpoints)
+    {
+        auto oldest_iterator = retired_endpoints_by_address_.end();
+
+        for (auto iterator = retired_endpoints_by_address_.begin(); iterator != retired_endpoints_by_address_.end(); ++iterator)
+        {
+            if (std::string_view(iterator->first) == protected_remote_address)
+            {
+                continue;
+            }
+
+            if (oldest_iterator == retired_endpoints_by_address_.end() ||
+                iterator->second.expires_at_milliseconds < oldest_iterator->second.expires_at_milliseconds)
+            {
+                oldest_iterator = iterator;
+            }
+        }
+
+        if (oldest_iterator == retired_endpoints_by_address_.end())
+        {
+            return pruned_count;
+        }
+
+        const retired_endpoint_state state = oldest_iterator->second;
+
+        WEBRTC_LOG_WARN("ice udp retired endpoint pruned by limit remote={} session={} reason={} expires_at={} now={} suppressed_packets={}",
+                        oldest_iterator->first,
+                        state.session_id,
+                        state.reason,
+                        state.expires_at_milliseconds,
+                        current_time_milliseconds,
+                        state.suppressed_packets);
+
+        retired_endpoints_by_address_.erase(oldest_iterator);
+
+        pruned_count += 1;
+    }
+
+    return pruned_count;
 }
 
 std::size_t ice_udp_server::erase_orphan_endpoint_indexes_locked()

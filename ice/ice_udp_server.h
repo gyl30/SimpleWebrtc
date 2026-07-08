@@ -1317,9 +1317,17 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::size_t expire_retired_ice_credentials_locked(uint64_t current_time_milliseconds);
 
     [[nodiscard]]
+    std::size_t prune_retired_ice_credentials_to_limit_locked(uint64_t current_time_milliseconds, std::string_view protected_local_ice_ufrag);
+
+    [[nodiscard]]
     bool suppress_retired_endpoint_packet(std::string_view remote_address, std::string_view packet_kind);
 
+    [[nodiscard]]
     std::size_t expire_retired_endpoints_locked(uint64_t current_time_milliseconds);
+
+    [[nodiscard]]
+    std::size_t prune_retired_endpoints_to_limit_locked(uint64_t current_time_milliseconds, std::string_view protected_remote_address);
+
     [[nodiscard]]
     std::size_t erase_orphan_endpoint_indexes_locked();
 
