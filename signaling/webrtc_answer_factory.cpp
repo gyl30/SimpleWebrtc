@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "ice/ice_credentials.h"
-#include "security/certificate_fingerprint.h"
 #include "signaling/sdp/sdp_answer_builder.h"
 
 namespace webrtc
@@ -308,21 +307,6 @@ validation_result validate_ice_candidates_config(const webrtc_answer_factory_con
     return {};
 }
 }    // namespace
-
-webrtc_answer_factory_config_result make_webrtc_answer_factory_config_from_certificate(std::string_view certificate_file)
-{
-    auto fingerprint = load_certificate_fingerprint(certificate_file);
-
-    if (!fingerprint)
-    {
-        return std::unexpected(fingerprint.error());
-    }
-
-    webrtc_answer_factory_config config;
-    config.local_fingerprint = std::move(*fingerprint);
-
-    return config;
-}
 
 webrtc_answer_factory::webrtc_answer_factory(webrtc_answer_factory_config config)
     : config_(std::move(config)), next_session_id_(make_initial_session_id())

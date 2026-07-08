@@ -60,12 +60,7 @@ struct generated_sdp_answer
     std::vector<sdp::sdp_answer_media_source> media_sources;
 };
 
-using webrtc_answer_factory_config_result = std::expected<webrtc_answer_factory_config, std::string>;
-
 using generated_sdp_answer_result = std::expected<generated_sdp_answer, std::string>;
-
-[[nodiscard]]
-webrtc_answer_factory_config_result make_webrtc_answer_factory_config_from_certificate(std::string_view certificate_file);
 
 class webrtc_answer_factory
 {
