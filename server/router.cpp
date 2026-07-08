@@ -198,6 +198,16 @@ std::string make_runtime_resource_limit_labels(const lifecycle_debug_resource_li
     return labels;
 }
 
+std::string make_lifecycle_drop_reason_labels(const lifecycle_debug_drop_reason_entry& entry)
+{
+    std::string labels;
+
+    append_prometheus_label(labels, "category", entry.category);
+    append_prometheus_label(labels, "reason", entry.reason);
+
+    return labels;
+}
+
 void append_lifecycle_acceptance_summary_prometheus_metrics(std::string& output, const lifecycle_debug_snapshot& snapshot)
 {
     const lifecycle_debug_runtime_acceptance_summary& summary = snapshot.runtime_acceptance_summary;
@@ -323,6 +333,19 @@ void append_lifecycle_resource_limit_prometheus_metrics(std::string& output, con
     }
 }
 
+void append_lifecycle_drop_reason_prometheus_metrics(std::string& output, const lifecycle_debug_snapshot& snapshot)
+{
+    append_router_prometheus_metric_header(
+        output, "simplewebrtc_rtp_rtcp_drop_reason_total", "RTP/RTCP drops grouped by lifecycle debug drop category and reason", "gauge");
+
+    for (const auto& entry : snapshot.rtp_rtcp_drop_reasons)
+    {
+        const std::string labels = make_lifecycle_drop_reason_labels(entry);
+
+        append_router_prometheus_labeled_metric_value(output, "simplewebrtc_rtp_rtcp_drop_reason_total", labels, entry.count);
+    }
+}
+
 void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lifecycle_debug_snapshot& snapshot)
 {
     if (!output.empty() && output.back() != '\n')
@@ -332,6 +355,7 @@ void append_lifecycle_recovery_prometheus_metrics(std::string& output, const lif
 
     append_lifecycle_acceptance_summary_prometheus_metrics(output, snapshot);
     append_lifecycle_resource_limit_prometheus_metrics(output, snapshot);
+    append_lifecycle_drop_reason_prometheus_metrics(output, snapshot);
 
     append_router_prometheus_metric_header(output, "simplewebrtc_runtime_active_clean", "whether active runtime state is clean", "gauge");
     append_router_prometheus_metric_value(output, "simplewebrtc_runtime_active_clean", snapshot.active_runtime_clean ? 1U : 0U);
@@ -1054,7 +1078,7 @@ std::optional<std::string_view> bearer_token_from_authorization(std::string_view
         return std::nullopt;
     }
 
-    if (authorization.substr(0, k_bearer_prefix.size()) != k_bearer_prefix)
+    if (!authorization.starts_with(k_bearer_prefix))
     {
         return std::nullopt;
     }
