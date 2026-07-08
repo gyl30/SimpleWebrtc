@@ -1228,8 +1228,8 @@ void log_lifecycle_acceptance_summary(std::string_view event,
     const lifecycle_debug_runtime_acceptance_summary& summary = snapshot.runtime_acceptance_summary;
 
     WEBRTC_LOG_INFO(
-        "lifecycle acceptance summary event={} reason={} stream={} session={} schema={} release_gate_pass={} consistent={} full_idle_clean={} "
-        "active_runtime_clean={} delayed_runtime_clean={} registry_sessions={} registry_publishers={} registry_subscribers={} "
+        "flag_runtime_acceptance_summary event={} reason={} stream={} session={} schema={} release_gate_pass={} consistent={} "
+        "full_idle_clean={} active_runtime_clean={} delayed_runtime_clean={} registry_sessions={} registry_publishers={} registry_subscribers={} "
         "registry_pending_sessions={} resource_limit_over={} inconsistencies={} active_residuals={} delayed_residuals={} rtp_rtcp_drops={} "
         "drop_reasons={} endpoints={} candidate_pairs={} dtls_peers={} srtp_peers={} media_router_peers={} media_router_streams={} "
         "media_router_active_publishers={} media_router_active_subscribers={} rtp_cache_packets={} outbound_twcc_packets={} "
@@ -1268,6 +1268,35 @@ void log_lifecycle_acceptance_summary(std::string_view event,
         summary.subscriber_downlink_pacing_state_count,
         summary.subscriber_downlink_pacing_queue_packet_count,
         summary.subscriber_downlink_pacing_queue_byte_count);
+}
+
+void log_lifecycle_resource_limit_over_details(std::string_view event,
+                                               std::string_view reason,
+                                               std::string_view stream_id,
+                                               std::string_view session_id,
+                                               const lifecycle_debug_snapshot& snapshot)
+{
+    if (snapshot.runtime_resource_limit_over_count == 0)
+    {
+        return;
+    }
+
+    for (const auto& resource_limit : snapshot.runtime_resource_limits)
+    {
+        if (!resource_limit.over_limit)
+        {
+            continue;
+        }
+
+        WEBRTC_LOG_WARN("flag_resource_limit_over event={} reason={} stream={} session={} resource={} current={} limit={}",
+                        event,
+                        reason,
+                        stream_id,
+                        session_id,
+                        resource_limit.name,
+                        resource_limit.current,
+                        resource_limit.limit);
+    }
 }
 
 void append_subscriber_recovery_runtime_debug_entries(lifecycle_debug_snapshot& snapshot)
@@ -8658,6 +8687,7 @@ void ice_udp_server::log_lifecycle_snapshot(std::string_view reason, std::string
     const bool active_runtime_residual_after_idle = snapshot.registry_session_count == 0 && !snapshot.active_runtime_clean;
 
     log_lifecycle_acceptance_summary("snapshot", reason, stream_id, session_id, snapshot);
+    log_lifecycle_resource_limit_over_details("snapshot", reason, stream_id, session_id, snapshot);
 
     if (!snapshot.consistent || active_runtime_residual_after_idle)
     {
@@ -8907,6 +8937,7 @@ void ice_udp_server::log_lifecycle_convergence_check(std::string_view reason,
     const bool retired_state_clean = !require_retired_endpoints_empty || snapshot.delayed_runtime_clean;
 
     log_lifecycle_acceptance_summary("convergence_check", reason, stream_id, session_id, snapshot);
+    log_lifecycle_resource_limit_over_details("convergence_check", reason, stream_id, session_id, snapshot);
 
     if (snapshot.registry_session_count != 0)
     {
