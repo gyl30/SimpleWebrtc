@@ -1152,6 +1152,23 @@ void finish_subscriber_recovery_runtime_entry(lifecycle_debug_subscriber_recover
 
 uint64_t to_debug_count(std::size_t value) { return static_cast<uint64_t>(value); }
 
+void append_runtime_resource_limit(lifecycle_debug_snapshot& snapshot, std::string_view name, uint64_t current, uint64_t limit)
+{
+    lifecycle_debug_resource_limit_entry entry;
+
+    entry.name = std::string(name);
+    entry.current = current;
+    entry.limit = limit;
+    entry.over_limit = limit != 0 && current > limit;
+
+    if (entry.over_limit)
+    {
+        snapshot.runtime_resource_limit_over_count += 1;
+    }
+
+    snapshot.runtime_resource_limits.push_back(std::move(entry));
+}
+
 void append_subscriber_recovery_runtime_debug_entries(lifecycle_debug_snapshot& snapshot)
 {
     std::unordered_map<std::string, std::size_t> index_by_key;
@@ -1494,6 +1511,11 @@ bool contains_string(const std::vector<std::string>& values, std::string_view va
     return std::any_of(values.begin(), values.end(), [value](const std::string& candidate) { return candidate == value; });
 }
 
+bool contains_unordered_string(const std::unordered_set<std::string>& values, std::string_view value)
+{
+    return values.find(std::string(value)) != values.end();
+}
+
 bool pending_session_cleanup_candidate_is_older(const pending_session_cleanup_candidate& left, const pending_session_cleanup_candidate& right)
 {
     if (left.reference_time_milliseconds != right.reference_time_milliseconds)
@@ -1793,15 +1815,15 @@ void add_lifecycle_delayed_residual(lifecycle_debug_snapshot& snapshot, std::str
 bool lifecycle_active_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
 {
     return snapshot.endpoint_count == 0 && snapshot.endpoint_session_index_count == 0 && snapshot.endpoint_reverse_index_count == 0 &&
-           snapshot.endpoint_last_seen_count == 0 && snapshot.candidate_pair_count == 0 && snapshot.selected_candidate_pair_count == 0 &&
-           snapshot.candidate_pair_consent_in_flight_count == 0 && snapshot.candidate_pair_consent_failure_count == 0 &&
-           snapshot.candidate_pair_consent_stale_count == 0 && snapshot.payload_type_mapping_count == 0 &&
-           snapshot.keyframe_request_state_count == 0 && snapshot.dtls_peer_count == 0 && snapshot.srtp_peer_count == 0 &&
-           snapshot.media_router_peer_count == 0 && snapshot.media_router_stream_count == 0 && snapshot.media_router_active_publisher_count == 0 &&
-           snapshot.media_router_active_subscriber_count == 0 && snapshot.track_binding_count == 0 && snapshot.ssrc_mapping_count == 0 &&
-           snapshot.identity_authority_rid_layer_binding_count == 0 && snapshot.identity_authority_track_binding_count == 0 &&
-           snapshot.identity_authority_forward_binding_count == 0 && snapshot.rtcp_report_source_count == 0 &&
-           snapshot.rtcp_report_stats_source_count == 0 && snapshot.rtcp_transport_cc_source_count == 0 &&
+           snapshot.endpoint_last_seen_count == 0 && snapshot.publisher_absent_stream_count == 0 && snapshot.candidate_pair_count == 0 &&
+           snapshot.selected_candidate_pair_count == 0 && snapshot.candidate_pair_consent_in_flight_count == 0 &&
+           snapshot.candidate_pair_consent_failure_count == 0 && snapshot.candidate_pair_consent_stale_count == 0 &&
+           snapshot.payload_type_mapping_count == 0 && snapshot.keyframe_request_state_count == 0 && snapshot.dtls_peer_count == 0 &&
+           snapshot.srtp_peer_count == 0 && snapshot.media_router_peer_count == 0 && snapshot.media_router_stream_count == 0 &&
+           snapshot.media_router_active_publisher_count == 0 && snapshot.media_router_active_subscriber_count == 0 &&
+           snapshot.track_binding_count == 0 && snapshot.ssrc_mapping_count == 0 && snapshot.identity_authority_rid_layer_binding_count == 0 &&
+           snapshot.identity_authority_track_binding_count == 0 && snapshot.identity_authority_forward_binding_count == 0 &&
+           snapshot.rtcp_report_source_count == 0 && snapshot.rtcp_report_stats_source_count == 0 && snapshot.rtcp_transport_cc_source_count == 0 &&
            snapshot.rtcp_transport_cc_pending_packet_count == 0 && snapshot.rtp_cache_packet_count == 0 &&
            snapshot.rtx_sequence_allocator_count == 0 && snapshot.rtx_retransmission_index_count == 0 &&
            snapshot.nack_retransmit_throttle_count == 0 && snapshot.fir_sequence_number_state_count == 0 &&
@@ -6830,6 +6852,41 @@ std::vector<std::string> ice_udp_server::collect_orphan_subscriber_session_ids(u
         }
     }
 
+    {
+        std::vector<std::string> stale_absent_stream_ids;
+
+        {
+            std::lock_guard lock(endpoint_mutex_);
+
+            for (const auto& [stream_id, absent_since_milliseconds] : publisher_absent_since_milliseconds_by_stream_id_)
+            {
+                (void)absent_since_milliseconds;
+
+                if (contains_unordered_string(streams_with_publisher, stream_id))
+                {
+                    stale_absent_stream_ids.push_back(stream_id);
+
+                    continue;
+                }
+
+                if (!subscriber_session_ids_by_stream.contains(stream_id))
+                {
+                    stale_absent_stream_ids.push_back(stream_id);
+                }
+            }
+
+            for (const auto& stream_id : stale_absent_stream_ids)
+            {
+                publisher_absent_since_milliseconds_by_stream_id_.erase(stream_id);
+            }
+        }
+
+        for (const auto& stream_id : stale_absent_stream_ids)
+        {
+            WEBRTC_LOG_INFO("publisher absent stream cleared stream={} reason=orphan cleanup stale stream", stream_id);
+        }
+    }
+
     std::vector<pending_session_cleanup_candidate> orphan_candidates;
 
     for (const auto& [stream_id, subscriber_session_ids] : subscriber_session_ids_by_stream)
@@ -8182,6 +8239,10 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot, "candidate pair remains count=" + std::to_string(snapshot.candidate_pair_count));
         }
+        if (snapshot.publisher_absent_stream_count != 0)
+        {
+            add_lifecycle_residual(snapshot, "publisher absent stream remains count=" + std::to_string(snapshot.publisher_absent_stream_count));
+        }
 
         if (snapshot.selected_candidate_pair_count != 0)
         {
@@ -8430,6 +8491,35 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
                                            "retired ice credential suppressed stun packet count=" +
                                                std::to_string(snapshot.retired_ice_credential_suppressed_stun_packet_count));
         }
+    }
+
+    const auto& runtime_config = ice_udp_server_runtime_config_instance();
+
+    append_runtime_resource_limit(snapshot, "registry_pending_sessions", snapshot.registry_pending_session_count, k_max_pending_sessions);
+    append_runtime_resource_limit(snapshot, "retired_endpoints", snapshot.retired_endpoint_count, k_max_retired_endpoints);
+    append_runtime_resource_limit(snapshot, "retired_ice_credentials", snapshot.retired_ice_credential_count, k_max_retired_ice_credentials);
+    append_runtime_resource_limit(snapshot, "rtp_cache_packets", snapshot.rtp_cache_packet_count, runtime_config.rtp_packet_cache.max_packets);
+    append_runtime_resource_limit(
+        snapshot, "rtx_retransmission_index", snapshot.rtx_retransmission_index_count, runtime_config.rtx_retransmission_index.max_entries);
+    append_runtime_resource_limit(
+        snapshot, "nack_retransmit_throttle", snapshot.nack_retransmit_throttle_count, runtime_config.nack_retransmit_throttle.max_entries);
+    append_runtime_resource_limit(
+        snapshot, "rtcp_transport_cc_sources", snapshot.rtcp_transport_cc_source_count, runtime_config.rtcp_transport_cc_feedback.max_sources);
+    append_runtime_resource_limit(snapshot,
+                                  "rtcp_transport_cc_pending_packets",
+                                  snapshot.rtcp_transport_cc_pending_packet_count,
+                                  runtime_config.rtcp_transport_cc_feedback.max_pending_packets_total);
+    append_runtime_resource_limit(
+        snapshot, "outbound_transport_cc_packets", snapshot.outbound_transport_cc_packet_count, k_max_outbound_transport_cc_packet_identities);
+    append_runtime_resource_limit(
+        snapshot,
+        "outbound_transport_cc_feedback_window_observations",
+        snapshot.outbound_transport_cc_feedback_window_observation_count,
+        snapshot.outbound_transport_cc_feedback_window_count * static_cast<uint64_t>(k_max_outbound_transport_cc_feedback_observations_per_window));
+
+    if (snapshot.runtime_resource_limit_over_count != 0)
+    {
+        add_lifecycle_inconsistency(snapshot, "runtime resource limit exceeded count=" + std::to_string(snapshot.runtime_resource_limit_over_count));
     }
 
     snapshot.active_runtime_clean = snapshot.registry_session_count == 0 && lifecycle_active_runtime_state_is_empty(snapshot);

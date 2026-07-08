@@ -372,30 +372,25 @@ struct srtp_transport::impl
 
         if (!unprotect_result)
         {
+            std::string reason;
+
             if (is_srtp_replay_error(unprotect_result.error()))
             {
-                std::string reason = "srtp replay ignored kind=";
-
-                reason.append(srtp_packet_kind_to_string(kind));
-                reason.append(" error=");
-                reason.append(unprotect_result.error());
-
-                return make_ignored_result(kind, data.size(), reason);
+                reason = "srtp replay ignored kind=";
+            }
+            else
+            {
+                reason = "srtp unprotect failed ignored kind=";
             }
 
-            std::string message = "srtp inbound unprotect failed remote=";
+            reason.append(srtp_packet_kind_to_string(kind));
+            reason.append(" error=");
+            reason.append(unprotect_result.error());
 
-            message.append(std::string(remote_endpoint));
-            message.append(" kind=");
-            message.append(srtp_packet_kind_to_string(kind));
-            message.append(" error=");
-            message.append(unprotect_result.error());
-
-            return std::unexpected(std::move(message));
+            return make_ignored_result(kind, data.size(), reason);
         }
 
         const std::size_t unprotected_size = *unprotect_result;
-
         packet.resize(unprotected_size);
 
         auto result = make_unprotected_result(kind, data.size(), std::move(packet));
