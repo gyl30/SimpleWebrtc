@@ -1686,6 +1686,48 @@ void append_lifecycle_debug_drop_reason(lifecycle_debug_snapshot& snapshot, std:
     snapshot.rtp_rtcp_drop_total += count;
     snapshot.rtp_rtcp_drop_reasons.push_back(std::move(entry));
 }
+
+enum class inbound_srtp_ignored_drop_reason
+{
+    non_rtp_rtcp,
+    dtls_identity_missing,
+    dtls_not_ready,
+    srtp_replay,
+    srtp_unprotect_failed,
+    other,
+};
+
+bool text_contains(std::string_view value, std::string_view pattern) { return value.find(pattern) != std::string_view::npos; }
+
+inbound_srtp_ignored_drop_reason classify_inbound_srtp_ignored_drop_reason(std::string_view reason)
+{
+    if (text_contains(reason, "packet is not rtp or rtcp"))
+    {
+        return inbound_srtp_ignored_drop_reason::non_rtp_rtcp;
+    }
+
+    if (text_contains(reason, "dtls identity is missing"))
+    {
+        return inbound_srtp_ignored_drop_reason::dtls_identity_missing;
+    }
+
+    if (text_contains(reason, "dtls handshake is not complete"))
+    {
+        return inbound_srtp_ignored_drop_reason::dtls_not_ready;
+    }
+
+    if (text_contains(reason, "srtp replay ignored"))
+    {
+        return inbound_srtp_ignored_drop_reason::srtp_replay;
+    }
+
+    if (text_contains(reason, "srtp unprotect failed ignored"))
+    {
+        return inbound_srtp_ignored_drop_reason::srtp_unprotect_failed;
+    }
+
+    return inbound_srtp_ignored_drop_reason::other;
+}
 std::string optional_string_or_empty(const std::optional<std::string>& value)
 {
     if (!value.has_value())
@@ -7857,14 +7899,28 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot, "rtp_inbound", "current session gate", rtp_rtcp_drop_inbound_session_gate_total_.load(std::memory_order_relaxed));
     append_lifecycle_debug_drop_reason(
         snapshot, "rtp_inbound", "media runtime gate", rtp_rtcp_drop_inbound_runtime_gate_total_.load(std::memory_order_relaxed));
+
     append_lifecycle_debug_drop_reason(
         snapshot, "rtp_inbound", "srtp transport missing", rtp_rtcp_drop_inbound_transport_missing_total_.load(std::memory_order_relaxed));
     append_lifecycle_debug_drop_reason(
         snapshot, "rtp_inbound", "srtp unprotect failed", rtp_rtcp_drop_inbound_srtp_failed_total_.load(std::memory_order_relaxed));
     append_lifecycle_debug_drop_reason(
-        snapshot, "rtp_inbound", "srtp unprotect ignored", rtp_rtcp_drop_inbound_srtp_ignored_total_.load(std::memory_order_relaxed));
+        snapshot, "rtp_inbound", "srtp ignored non rtp rtcp", rtp_rtcp_drop_inbound_srtp_non_rtp_rtcp_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(snapshot,
+                                       "rtp_inbound",
+                                       "srtp ignored dtls identity missing",
+                                       rtp_rtcp_drop_inbound_srtp_dtls_identity_missing_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtp_inbound", "srtp ignored dtls not ready", rtp_rtcp_drop_inbound_srtp_dtls_not_ready_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtp_inbound", "srtp replay ignored", rtp_rtcp_drop_inbound_srtp_replay_ignored_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtp_inbound", "srtp unprotect ignored", rtp_rtcp_drop_inbound_srtp_unprotect_ignored_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot, "rtp_inbound", "srtp ignored other", rtp_rtcp_drop_inbound_srtp_ignored_other_total_.load(std::memory_order_relaxed));
     append_lifecycle_debug_drop_reason(
         snapshot, "rtp_inbound", "media router unknown peer", rtp_rtcp_drop_inbound_unknown_peer_total_.load(std::memory_order_relaxed));
+
     append_lifecycle_debug_drop_reason(
         snapshot, "rtp_inbound", "publisher identity gate", rtp_rtcp_drop_inbound_identity_gate_total_.load(std::memory_order_relaxed));
 
@@ -11895,6 +11951,34 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     if (result->state == srtp_packet_process_state::ignored)
     {
         rtp_rtcp_drop_inbound_srtp_ignored_total_.fetch_add(1, std::memory_order_relaxed);
+
+        switch (classify_inbound_srtp_ignored_drop_reason(result->reason))
+        {
+            case inbound_srtp_ignored_drop_reason::non_rtp_rtcp:
+                rtp_rtcp_drop_inbound_srtp_non_rtp_rtcp_total_.fetch_add(1, std::memory_order_relaxed);
+                break;
+
+            case inbound_srtp_ignored_drop_reason::dtls_identity_missing:
+                rtp_rtcp_drop_inbound_srtp_dtls_identity_missing_total_.fetch_add(1, std::memory_order_relaxed);
+                break;
+
+            case inbound_srtp_ignored_drop_reason::dtls_not_ready:
+                rtp_rtcp_drop_inbound_srtp_dtls_not_ready_total_.fetch_add(1, std::memory_order_relaxed);
+                break;
+
+            case inbound_srtp_ignored_drop_reason::srtp_replay:
+                rtp_rtcp_drop_inbound_srtp_replay_ignored_total_.fetch_add(1, std::memory_order_relaxed);
+                break;
+
+            case inbound_srtp_ignored_drop_reason::srtp_unprotect_failed:
+                rtp_rtcp_drop_inbound_srtp_unprotect_ignored_total_.fetch_add(1, std::memory_order_relaxed);
+                break;
+
+            case inbound_srtp_ignored_drop_reason::other:
+                rtp_rtcp_drop_inbound_srtp_ignored_other_total_.fetch_add(1, std::memory_order_relaxed);
+                break;
+        }
+
         WEBRTC_LOG_DEBUG("srtp inbound packet ignored remote={} kind={} size={} reason={}",
                          remote_address,
                          srtp_packet_kind_to_string(result->kind),
@@ -11903,7 +11987,6 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
 
         return;
     }
-
     WEBRTC_LOG_DEBUG("srtp inbound packet accepted remote={} kind={} size={} plain_size={} ssrc={} payload_type={}",
                      remote_address,
                      srtp_packet_kind_to_string(result->kind),

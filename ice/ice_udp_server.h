@@ -1546,6 +1546,12 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::atomic<uint64_t> rtp_rtcp_drop_inbound_transport_missing_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_inbound_srtp_failed_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_inbound_srtp_ignored_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_srtp_non_rtp_rtcp_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_srtp_dtls_identity_missing_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_srtp_dtls_not_ready_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_srtp_replay_ignored_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_srtp_unprotect_ignored_total_{0};
+    std::atomic<uint64_t> rtp_rtcp_drop_inbound_srtp_ignored_other_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_inbound_unknown_peer_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_inbound_identity_gate_total_{0};
 
