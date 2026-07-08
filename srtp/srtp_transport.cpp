@@ -505,19 +505,16 @@ struct srtp_transport::impl
         auto& peer = **peer_result;
 
         auto ready_result = ensure_sessions_ready_locked(peer, remote_endpoint);
+
         if (!ready_result)
         {
-            if (!ready_result)
-            {
-                return std::unexpected(ready_result.error());
-            }
+            return std::unexpected(ready_result.error());
         }
 
         if (!*ready_result)
         {
             return make_ignored_result(kind, plain_packet.size(), "dtls handshake is not complete");
         }
-
         if (!peer.outbound_session.has_value())
         {
             return make_error("srtp outbound session is empty");
