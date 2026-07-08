@@ -21,7 +21,7 @@
 
 namespace webrtc
 {
-enum class stream_registry_error
+enum class stream_registry_error : uint8_t
 {
     none = 0,
     stream_already_has_publisher,
@@ -32,8 +32,9 @@ enum class stream_registry_error
     publisher_republish_stream_mismatch,
 };
 
-enum class stream_session_kind
+enum class stream_session_kind : uint8_t
 {
+    unknown,
     publisher,
     subscriber,
 };

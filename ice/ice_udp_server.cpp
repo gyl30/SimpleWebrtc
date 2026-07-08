@@ -74,6 +74,19 @@ constexpr std::size_t k_max_retired_endpoints = 512;
 
 constexpr std::size_t k_max_retired_ice_credentials = 512;
 
+constexpr std::size_t k_max_pending_sessions = 256;
+
+constexpr std::size_t k_max_orphan_subscriber_sessions = 256;
+
+struct pending_session_cleanup_candidate
+{
+    std::string session_id;
+    std::string stream_id;
+    stream_session_kind kind = stream_session_kind::unknown;
+    uint64_t reference_time_milliseconds = 0;
+    uint64_t age_milliseconds = 0;
+};
+
 constexpr uint64_t k_fnv_offset_basis = 1469598103934665603ULL;
 
 constexpr uint64_t k_fnv_prime = 1099511628211ULL;
@@ -1478,15 +1491,34 @@ uint64_t now_milliseconds() { return timestamp::now().milliseconds(); }
 
 bool contains_string(const std::vector<std::string>& values, std::string_view value)
 {
-    for (const auto& current : values)
+    return std::any_of(values.begin(), values.end(), [value](const std::string& candidate) { return candidate == value; });
+}
+
+bool pending_session_cleanup_candidate_is_older(const pending_session_cleanup_candidate& left, const pending_session_cleanup_candidate& right)
+{
+    if (left.reference_time_milliseconds != right.reference_time_milliseconds)
     {
-        if (current == value)
-        {
-            return true;
-        }
+        return left.reference_time_milliseconds < right.reference_time_milliseconds;
     }
 
-    return false;
+    return left.session_id < right.session_id;
+}
+
+void append_pending_session_cleanup_candidate(std::vector<pending_session_cleanup_candidate>& candidates,
+                                              const stream_session_lifecycle_snapshot& snapshot,
+                                              uint64_t current_time_milliseconds)
+{
+    pending_session_cleanup_candidate candidate;
+
+    candidate.session_id = snapshot.session_id;
+    candidate.stream_id = snapshot.stream_id;
+    candidate.kind = snapshot.kind;
+    candidate.reference_time_milliseconds =
+        snapshot.updated_at_milliseconds != 0 ? snapshot.updated_at_milliseconds : snapshot.created_at_milliseconds;
+    candidate.age_milliseconds =
+        current_time_milliseconds > candidate.reference_time_milliseconds ? current_time_milliseconds - candidate.reference_time_milliseconds : 0;
+
+    candidates.push_back(std::move(candidate));
 }
 
 std::string make_subscriber_forward_group_key(std::string_view stream_id,
@@ -6611,76 +6643,121 @@ std::vector<std::string> ice_udp_server::collect_pending_session_ids(uint64_t cu
 
     const std::vector<stream_session_lifecycle_snapshot> snapshots = registry_->session_lifecycle_snapshots();
 
+    std::vector<pending_session_cleanup_candidate> pending_publishers;
+    std::vector<pending_session_cleanup_candidate> pending_subscribers;
+
     for (const auto& snapshot : snapshots)
     {
-        if (snapshot.kind != stream_session_kind::publisher)
-        {
-            continue;
-        }
-
         if (!is_pending_connection_state(snapshot.state))
         {
             continue;
         }
 
-        const uint64_t reference_time_milliseconds =
-            snapshot.updated_at_milliseconds != 0 ? snapshot.updated_at_milliseconds : snapshot.created_at_milliseconds;
-
-        const uint64_t age_milliseconds =
-            current_time_milliseconds > reference_time_milliseconds ? current_time_milliseconds - reference_time_milliseconds : 0;
-
-        if (age_milliseconds < pending_session_timeout_milliseconds_)
+        if (snapshot.kind == stream_session_kind::publisher)
         {
+            append_pending_session_cleanup_candidate(pending_publishers, snapshot, current_time_milliseconds);
+
             continue;
         }
 
-        if (!contains_string(expired_session_ids, snapshot.session_id))
+        if (snapshot.kind == stream_session_kind::subscriber)
         {
-            expired_session_ids.push_back(snapshot.session_id);
-        }
-
-        if (!contains_string(expired_publisher_stream_ids, snapshot.stream_id))
-        {
-            expired_publisher_stream_ids.push_back(snapshot.stream_id);
+            append_pending_session_cleanup_candidate(pending_subscribers, snapshot, current_time_milliseconds);
         }
     }
 
-    for (const auto& snapshot : snapshots)
+    for (const auto& candidate : pending_publishers)
     {
-        if (snapshot.kind != stream_session_kind::subscriber)
+        if (candidate.age_milliseconds < pending_session_timeout_milliseconds_)
         {
             continue;
         }
 
-        if (contains_string(expired_publisher_stream_ids, snapshot.stream_id))
+        if (!contains_string(expired_session_ids, candidate.session_id))
+        {
+            expired_session_ids.push_back(candidate.session_id);
+        }
+
+        if (!contains_string(expired_publisher_stream_ids, candidate.stream_id))
+        {
+            expired_publisher_stream_ids.push_back(candidate.stream_id);
+        }
+    }
+
+    for (const auto& candidate : pending_subscribers)
+    {
+        if (contains_string(expired_publisher_stream_ids, candidate.stream_id))
         {
             continue;
         }
 
-        if (!is_pending_connection_state(snapshot.state))
+        if (candidate.age_milliseconds < pending_session_timeout_milliseconds_)
         {
             continue;
         }
 
-        const uint64_t reference_time_milliseconds =
-            snapshot.updated_at_milliseconds != 0 ? snapshot.updated_at_milliseconds : snapshot.created_at_milliseconds;
+        if (!contains_string(expired_session_ids, candidate.session_id))
+        {
+            expired_session_ids.push_back(candidate.session_id);
+        }
+    }
 
-        const uint64_t age_milliseconds =
-            current_time_milliseconds > reference_time_milliseconds ? current_time_milliseconds - reference_time_milliseconds : 0;
+    const std::size_t pending_session_count = pending_publishers.size() + pending_subscribers.size();
 
-        if (age_milliseconds < pending_session_timeout_milliseconds_)
+    if (pending_session_count <= k_max_pending_sessions)
+    {
+        return expired_session_ids;
+    }
+
+    std::vector<pending_session_cleanup_candidate> pending_candidates;
+
+    pending_candidates.reserve(pending_session_count);
+
+    pending_candidates.insert(pending_candidates.end(), pending_publishers.begin(), pending_publishers.end());
+    pending_candidates.insert(pending_candidates.end(), pending_subscribers.begin(), pending_subscribers.end());
+
+    std::sort(pending_candidates.begin(), pending_candidates.end(), pending_session_cleanup_candidate_is_older);
+
+    std::size_t overflow_count = pending_session_count - k_max_pending_sessions;
+
+    for (const auto& candidate : pending_candidates)
+    {
+        if (overflow_count == 0)
+        {
+            break;
+        }
+
+        if (contains_string(expired_session_ids, candidate.session_id))
         {
             continue;
         }
 
-        if (!contains_string(expired_session_ids, snapshot.session_id))
+        if (candidate.kind == stream_session_kind::subscriber && contains_string(expired_publisher_stream_ids, candidate.stream_id))
         {
-            expired_session_ids.push_back(snapshot.session_id);
+            continue;
         }
+
+        WEBRTC_LOG_WARN("pending session pruned by limit session={} stream={} kind={} age_ms={} count={} limit={}",
+                        candidate.session_id,
+                        candidate.stream_id,
+                        stream_session_kind_to_string(candidate.kind),
+                        candidate.age_milliseconds,
+                        pending_session_count,
+                        k_max_pending_sessions);
+
+        expired_session_ids.push_back(candidate.session_id);
+
+        if (candidate.kind == stream_session_kind::publisher && !contains_string(expired_publisher_stream_ids, candidate.stream_id))
+        {
+            expired_publisher_stream_ids.push_back(candidate.stream_id);
+        }
+
+        overflow_count -= 1;
     }
 
     return expired_session_ids;
 }
+
 void ice_udp_server::mark_publisher_absent_for_stream(std::string_view stream_id, std::string_view reason)
 {
     if (stream_id.empty() || orphan_subscriber_timeout_milliseconds_ == 0)
@@ -6753,6 +6830,8 @@ std::vector<std::string> ice_udp_server::collect_orphan_subscriber_session_ids(u
         }
     }
 
+    std::vector<pending_session_cleanup_candidate> orphan_candidates;
+
     for (const auto& [stream_id, subscriber_session_ids] : subscriber_session_ids_by_stream)
     {
         if (subscriber_session_ids.empty())
@@ -6790,6 +6869,19 @@ std::vector<std::string> ice_udp_server::collect_orphan_subscriber_session_ids(u
         const uint64_t absent_age_milliseconds =
             current_time_milliseconds >= absent_since_milliseconds ? current_time_milliseconds - absent_since_milliseconds : 0;
 
+        for (const auto& subscriber_session_id : subscriber_session_ids)
+        {
+            pending_session_cleanup_candidate candidate;
+
+            candidate.session_id = subscriber_session_id;
+            candidate.stream_id = stream_id;
+            candidate.kind = stream_session_kind::subscriber;
+            candidate.reference_time_milliseconds = absent_since_milliseconds;
+            candidate.age_milliseconds = absent_age_milliseconds;
+
+            orphan_candidates.push_back(std::move(candidate));
+        }
+
         if (absent_age_milliseconds < orphan_subscriber_timeout_milliseconds_)
         {
             WEBRTC_LOG_DEBUG("orphan subscriber grace active stream={} subscriber_count={} absent_age_ms={} timeout_ms={}",
@@ -6816,6 +6908,37 @@ std::vector<std::string> ice_udp_server::collect_orphan_subscriber_session_ids(u
         }
 
         forget_publisher_absent_for_stream(stream_id, "orphan subscriber expired");
+    }
+
+    if (orphan_candidates.size() > k_max_orphan_subscriber_sessions)
+    {
+        std::sort(orphan_candidates.begin(), orphan_candidates.end(), pending_session_cleanup_candidate_is_older);
+
+        std::size_t overflow_count = orphan_candidates.size() - k_max_orphan_subscriber_sessions;
+
+        for (const auto& candidate : orphan_candidates)
+        {
+            if (overflow_count == 0)
+            {
+                break;
+            }
+
+            if (contains_string(expired_session_ids, candidate.session_id))
+            {
+                continue;
+            }
+
+            WEBRTC_LOG_WARN("orphan subscriber pruned by limit session={} stream={} absent_age_ms={} count={} limit={}",
+                            candidate.session_id,
+                            candidate.stream_id,
+                            candidate.age_milliseconds,
+                            orphan_candidates.size(),
+                            k_max_orphan_subscriber_sessions);
+
+            expired_session_ids.push_back(candidate.session_id);
+
+            overflow_count -= 1;
+        }
     }
 
     return expired_session_ids;
@@ -7156,7 +7279,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.endpoint_reverse_index_count = to_debug_count(session_id_by_endpoint_address_.size());
 
         snapshot.endpoint_last_seen_count = to_debug_count(endpoint_last_seen_milliseconds_by_address_.size());
-
+        snapshot.publisher_absent_stream_count = to_debug_count(publisher_absent_since_milliseconds_by_stream_id_.size());
         snapshot.candidate_pair_count = to_debug_count(candidate_pairs_by_key_.size());
 
         for (const auto& [key, pair] : candidate_pairs_by_key_)
