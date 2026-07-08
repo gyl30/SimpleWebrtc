@@ -94,6 +94,35 @@ bool is_application_sdp_restart_request(http_request_t& request)
 
     return restart_content_type_matches(content_type, k_restart_application_sdp);
 }
+
+http_response_ptr validate_sdp_restart_body(http_request_t& request,
+                                            std::string_view protocol_name,
+                                            std::string_view session_id,
+                                            std::string_view empty_error_code,
+                                            std::string_view too_large_error_code)
+{
+    const std::string& body = request.req.body();
+
+    if (body.empty())
+    {
+        WEBRTC_LOG_WARN("{} SDP restart body empty session={}", protocol_name, session_id);
+
+        return make_json_http_error_response(request, 400, empty_error_code, "sdp restart body is empty");
+    }
+
+    if (body.size() > k_trickle_ice_max_patch_body_bytes)
+    {
+        WEBRTC_LOG_WARN("{} SDP restart body too large session={} body_size={} limit={}",
+                        protocol_name,
+                        session_id,
+                        body.size(),
+                        k_trickle_ice_max_patch_body_bytes);
+
+        return make_json_http_error_response(request, 413, too_large_error_code, "sdp restart body is too large");
+    }
+
+    return nullptr;
+}
 constexpr std::string_view k_whip_replace_session_header = "WHIP-Replace-Session";
 
 std::string_view trim_ascii_whitespace(std::string_view value)
@@ -376,20 +405,27 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
     {
         WEBRTC_LOG_WARN("WHIP sdp restart precondition failed session={} error={}", session_id, precondition.error());
 
-        return json_error_response(request, 412, precondition.error());
+        return json_error_response(request, 412, k_whip_precondition_failed_error, precondition.error());
+    }
+
+    auto body_validation_error =
+        validate_sdp_restart_body(request, "WHIP", session_id, "whip_sdp_restart_body_empty", "whip_sdp_restart_body_too_large");
+
+    if (body_validation_error != nullptr)
+    {
+        return body_validation_error;
     }
 
     if (answer_factory_ == nullptr)
     {
         WEBRTC_LOG_ERROR("WHIP answer factory is not configured session={}", session_id);
 
-        return json_error_response(request, 500, "answer factory is not configured");
+        return json_error_response(request, 500, k_whip_answer_factory_unavailable_error, "answer factory is not configured");
     }
 
     const std::string& offer = request.req.body();
 
     auto description = sdp::parse_session_description(offer);
-
     if (!description)
     {
         WEBRTC_LOG_WARN("WHIP parse SDP restart offer failed session={} error={}", session_id, description.error());
