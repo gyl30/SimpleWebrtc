@@ -49,17 +49,18 @@ class plain_http_session : public std::enable_shared_from_this<plain_http_sessio
 
     void on_read(boost::beast::error_code ec, std::size_t /*bytes_transferred*/)
     {
-        if (ec == boost::beast::http::error::end_of_stream)
+        if (ec)
         {
-            WEBRTC_LOG_DEBUG("{} read end of stream", id_);
+            if (is_http_expected_close_error(ec))
+            {
+                WEBRTC_LOG_DEBUG("{} read closed {}", id_, ec.message());
+                return;
+            }
+
+            WEBRTC_LOG_ERROR("{} read failed {}", id_, ec.message());
             return;
         }
 
-        if (ec)
-        {
-            WEBRTC_LOG_ERROR("{} failed {}", id_, ec.message());
-            return;
-        }
         http_request_t req;
         req.req = parser_->release();
         auto response = handler_.http(req);
@@ -77,7 +78,6 @@ class plain_http_session : public std::enable_shared_from_this<plain_http_sessio
         boost::beast::http::async_write(
             stream_, *res, [this, self, req_ptr, res](boost::beast::error_code ec, std::size_t bytes) { on_write(req_ptr, ec, bytes); });
     }
-
     void on_write(const http_request_ptr& req, boost::beast::error_code ec, std::size_t bytes_transferred)
     {
         writing_ = false;

@@ -47,6 +47,12 @@ class tls_http_session : public std::enable_shared_from_this<tls_http_session>
     {
         if (ec)
         {
+            if (is_http_expected_close_error(ec))
+            {
+                WEBRTC_LOG_DEBUG("{} ssl handshake closed {}", id_, ec.message());
+                return;
+            }
+
             WEBRTC_LOG_ERROR("{} ssl handshake failed {}", id_, ec.message());
             return;
         }
@@ -55,7 +61,6 @@ class tls_http_session : public std::enable_shared_from_this<tls_http_session>
 
         do_read();
     }
-
     void do_read()
     {
         parser_.emplace();
@@ -76,16 +81,16 @@ class tls_http_session : public std::enable_shared_from_this<tls_http_session>
     {
         boost::ignore_unused(bytes_transferred);
 
-        if (ec == boost::beast::http::error::end_of_stream)
-        {
-            WEBRTC_LOG_DEBUG("{} read end of stream", id_);
-            shutdown();
-            return;
-        }
-
         if (ec)
         {
-            WEBRTC_LOG_ERROR("{} failed {}", id_, ec.message());
+            if (is_http_expected_close_error(ec))
+            {
+                WEBRTC_LOG_DEBUG("{} read closed {}", id_, ec.message());
+                shutdown();
+                return;
+            }
+
+            WEBRTC_LOG_ERROR("{} read failed {}", id_, ec.message());
             return;
         }
 
@@ -112,6 +117,13 @@ class tls_http_session : public std::enable_shared_from_this<tls_http_session>
         boost::ignore_unused(bytes_transferred);
         if (ec)
         {
+            if (is_http_expected_close_error(ec))
+            {
+                WEBRTC_LOG_DEBUG("{} write closed {}", id_, ec.message());
+                shutdown();
+                return;
+            }
+
             WEBRTC_LOG_ERROR("{} write failed {}", id_, ec.message());
             shutdown();
             return;
@@ -125,7 +137,6 @@ class tls_http_session : public std::enable_shared_from_this<tls_http_session>
         }
         do_read();
     }
-
     void safe_shutdown()
     {
         WEBRTC_LOG_DEBUG("{} safe shutdown", id_);

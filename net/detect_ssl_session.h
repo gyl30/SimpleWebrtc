@@ -36,7 +36,13 @@ class detect_ssl_session : public std::enable_shared_from_this<detect_ssl_sessio
     {
         if (ec)
         {
-            WEBRTC_LOG_ERROR("detect ssl session error {}", ec.message());
+            if (is_http_expected_close_error(ec))
+            {
+                WEBRTC_LOG_DEBUG("{} detect ssl session closed {}", id_, ec.message());
+                return;
+            }
+
+            WEBRTC_LOG_ERROR("{} detect ssl session error {}", id_, ec.message());
             return;
         }
 
