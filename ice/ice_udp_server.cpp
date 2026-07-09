@@ -129,6 +129,8 @@ inline constexpr std::size_t k_max_outbound_rtp_packet_identities = 65536;
 constexpr uint64_t k_subscriber_downlink_republish_grace_milliseconds = 8000;
 constexpr uint64_t k_subscriber_downlink_republish_grace_target_bitrate_bps = 2000000;
 
+bool should_log_direct_publisher_rtx_drop(uint64_t count) { return count <= 10 || count % 300 == 0; }
+
 std::string make_subscriber_downlink_republish_grace_key(std::string_view stream_id, std::string_view subscriber_session_id)
 {
     std::string key;
@@ -5931,6 +5933,8 @@ void ice_udp_server::stop()
         pending_selected_rid_keyframe_request_keys_.clear();
 
         pending_selected_rid_keyframe_request_state_by_key_.clear();
+
+        direct_publisher_rtx_drop_counts_.clear();
 
         extmap_rewrite_state_by_key_.clear();
         outbound_rtp_sequence_by_key_.clear();
@@ -16255,7 +16259,28 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
         rtx_packet->size());
     return rtx_packet.value();
 }
+uint64_t ice_udp_server::record_direct_publisher_rtx_drop(std::string_view stream_id,
+                                                          std::string_view publisher_session_id,
+                                                          std::string_view subscriber_session_id)
+{
+    std::string key;
 
+    key.reserve(stream_id.size() + publisher_session_id.size() + subscriber_session_id.size() + 2);
+
+    key.append(stream_id);
+    key.push_back('\n');
+    key.append(publisher_session_id);
+    key.push_back('\n');
+    key.append(subscriber_session_id);
+
+    auto [iterator, inserted] = direct_publisher_rtx_drop_counts_.try_emplace(std::move(key), 0);
+
+    (void)inserted;
+
+    iterator->second += 1;
+
+    return iterator->second;
+}
 std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(const srtp_packet_process_result& packet,
                                                                               const media_route_result& route,
                                                                               const std::optional<media_track_resolution>& track_resolution,
@@ -16451,6 +16476,50 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
     const std::span<const uint8_t> plain_packet_span(packet.plain_packet.data(), packet.plain_packet.size());
 
+    if (payload_type_mapping.has_value() && ssrc_mapping.has_value() && route.source.role == media_peer_role::publisher &&
+        target_peer.role == media_peer_role::subscriber && payload_type_mapping->rtx && is_video_media_kind(payload_type_mapping->kind))
+    {
+        const uint64_t drop_count =
+            record_direct_publisher_rtx_drop(payload_type_mapping->stream_id, route.source.session_id, target_peer.session_id);
+
+        if (should_log_direct_publisher_rtx_drop(drop_count))
+        {
+            auto publisher_header = parse_rtp_packet_header(plain_packet_span);
+
+            int publisher_rtx_osn = -1;
+            std::size_t publisher_rtx_payload_size = 0;
+
+            auto publisher_rtx = parse_rtp_rtx_packet(plain_packet_span);
+
+            if (publisher_rtx)
+            {
+                publisher_rtx_osn = static_cast<int>(publisher_rtx->original_sequence_number);
+                publisher_rtx_payload_size = publisher_rtx->original_payload_size;
+            }
+
+            WEBRTC_LOG_INFO(
+                "direct publisher video rtx dropped stream={} publisher_session={} subscriber_session={} mid={} "
+                "reason=publisher_origin_rtx_not_forwarded publisher_ssrc={} "
+                "subscriber_ssrc={} publisher_pt={} subscriber_pt={} publisher_seq={} publisher_ts={} publisher_rtx_osn={} "
+                "publisher_rtx_payload_size={} drop_count={}",
+                payload_type_mapping->stream_id,
+                route.source.session_id,
+                target_peer.session_id,
+                payload_type_mapping->subscriber_mid,
+                publisher_header ? publisher_header->ssrc : packet.ssrc,
+                ssrc_mapping->subscriber_ssrc,
+                publisher_header ? static_cast<unsigned int>(publisher_header->payload_type) : static_cast<unsigned int>(packet.payload_type),
+                payload_type_mapping->subscriber_payload_type,
+                publisher_header ? publisher_header->sequence_number : packet.sequence_number,
+                publisher_header ? publisher_header->timestamp : 0,
+                publisher_rtx_osn,
+                publisher_rtx_payload_size,
+                drop_count);
+        }
+
+        return std::nullopt;
+    }
+
     /*
      * Keep RTP sequence numbers and timestamps continuous for each outbound
      * subscriber SSRC.
@@ -16487,7 +16556,6 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
                                                                                    ssrc_mapping->subscriber_ssrc,
                                                                                    publisher_header->sequence_number,
                                                                                    publisher_header->timestamp);
-
         if (outbound_rtp.sequence_number_rewrite_required)
         {
             options.sequence_number = outbound_rtp.sequence_number;

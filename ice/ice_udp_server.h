@@ -1433,6 +1433,10 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     void erase_orphan_subscriber_keyframe_requests_for_stream_locked(std::string_view stream_id);
 
+    [[nodiscard]] uint64_t record_direct_publisher_rtx_drop(std::string_view stream_id,
+                                                            std::string_view publisher_session_id,
+                                                            std::string_view subscriber_session_id);
+
    private:
     boost::asio::io_context& io_context_;
 
@@ -1521,6 +1525,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
+
+    std::unordered_map<std::string, uint64_t> direct_publisher_rtx_drop_counts_;
 
     bool started_ = false;
     bool registry_callback_registered_ = false;
