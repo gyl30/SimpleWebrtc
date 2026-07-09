@@ -4666,6 +4666,40 @@ optional_rtx_header_extension_id_rewrite_result make_rtx_repaired_rid_header_ext
 
 void log_rtcp_feedback_route_event(const rtcp_feedback_route_event& event)
 {
+    const bool expected_subscriber_feedback_without_target =
+        event.action == media_route_action::route_to_publisher && event.source.role == media_peer_role::subscriber &&
+        event.target_endpoints.empty() && (event.has_transport_cc || event.has_keyframe_request || event.has_generic_nack || event.has_remb);
+
+    if (expected_subscriber_feedback_without_target)
+    {
+        WEBRTC_LOG_DEBUG(
+            "rtcp feedback route target unavailable event={} action={} role={} stream={} session={} remote={} targets={} packet_type={} "
+            "format={} feedback={} ssrc={} sender_ssrc={} media_ssrc={} nack_count={} fir_count={} keyframe_request={} generic_nack={} "
+            "transport_cc={} remb={} remb_bitrate={}",
+            rtcp_feedback_event_type_to_string(event.event_type),
+            media_route_action_to_string(event.action),
+            media_peer_role_to_string(event.source.role),
+            event.source.stream_id,
+            event.source.session_id,
+            event.source.remote_endpoint,
+            event.target_endpoints.size(),
+            static_cast<unsigned int>(event.packet_type),
+            static_cast<unsigned int>(event.feedback_format),
+            event.feedback_name,
+            event.ssrc,
+            event.sender_ssrc,
+            event.media_ssrc,
+            event.nack_count,
+            event.fir_count,
+            event.has_keyframe_request ? 1 : 0,
+            event.has_generic_nack ? 1 : 0,
+            event.has_transport_cc ? 1 : 0,
+            event.has_remb ? 1 : 0,
+            event.remb_bitrate_bps);
+
+        return;
+    }
+
     const bool has_hard_event = event.action == media_route_action::none || event.source.role == media_peer_role::unknown ||
                                 event.event_type == rtcp_feedback_event_type::none || event.target_endpoints.empty();
 
@@ -14963,15 +14997,14 @@ std::optional<media_ssrc_mapping> ice_udp_server::resolve_keyframe_feedback_prim
 
     if (!mapping.has_value())
     {
-        WEBRTC_LOG_WARN("keyframe feedback mapping not found stream={} subscriber_session={} subscriber_ssrc={} feedback={}",
-                        event.source.stream_id,
-                        event.source.session_id,
-                        event.media_ssrc,
-                        event.feedback_name);
+        WEBRTC_LOG_DEBUG("keyframe feedback mapping not found stream={} subscriber_session={} subscriber_ssrc={} feedback={}",
+                         event.source.stream_id,
+                         event.source.session_id,
+                         event.media_ssrc,
+                         event.feedback_name);
 
         return std::nullopt;
     }
-
     if (mapping->stream_id != event.source.stream_id || mapping->subscriber_session_id != event.source.session_id)
     {
         WEBRTC_LOG_WARN(
@@ -17932,12 +17965,12 @@ void ice_udp_server::handle_rtcp_feedback_event(const rtcp_feedback_route_event&
     {
         remember_orphan_subscriber_keyframe_request(event);
 
-        WEBRTC_LOG_WARN("keyframe feedback skipped unresolved media target stream={} subscriber_session={} remote={} feedback={} media_ssrc={}",
-                        event.source.stream_id,
-                        event.source.session_id,
-                        event.source.remote_endpoint,
-                        event.feedback_name,
-                        event.media_ssrc);
+        WEBRTC_LOG_DEBUG("keyframe feedback queued unresolved media target stream={} subscriber_session={} remote={} feedback={} media_ssrc={}",
+                         event.source.stream_id,
+                         event.source.session_id,
+                         event.source.remote_endpoint,
+                         event.feedback_name,
+                         event.media_ssrc);
 
         return;
     }
