@@ -313,9 +313,23 @@ static void on_tcp(boost::asio::ip::tcp::socket socket, boost::asio::ssl::contex
 
 int main(int argc, char* argv[])
 {
-    (void)argc;
+    if (argc <= 0 || argv == nullptr || argv[0] == nullptr || argv[0][0] == '\0')
+    {
+        std::fprintf(stderr, "resolve executable path failed: argv[0] is empty\n");
 
-    std::string app_path = webrtc::file_abs_path(argv[0]);
+        return 1;
+    }
+
+    auto app_path_result = webrtc::file_abs_path(argv[0]);
+
+    if (!app_path_result)
+    {
+        std::fprintf(stderr, "resolve executable path failed: %s\n", app_path_result.error().c_str());
+
+        return 1;
+    }
+
+    std::string app_path = std::move(*app_path_result);
 
     std::string app_dir = webrtc::file_dir(app_path);
 
@@ -324,13 +338,14 @@ int main(int argc, char* argv[])
     std::string log_dir = get_log_dir(app_dir);
 
     std::string log_name = get_log_fileaname(app_name);
+
     std::string abs_log_filename = log_dir + "/" + log_name;
 
     auto log_init_result = webrtc::init_log(abs_log_filename);
 
     if (!log_init_result)
     {
-        std::println(stderr, "initialize log failed {}", log_init_result.error());
+        std::println(stderr, "initialize log failed: {}", log_init_result.error());
         return 1;
     }
 
