@@ -351,7 +351,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
         bool sequence_number_rewrite_required = false;
         bool timestamp_rewrite_required = false;
-        bool publisher_switch = false;
+        bool source_switch = false;
     };
 
     struct outbound_rtp_sequence_rewrite_state
@@ -361,6 +361,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string subscriber_session_id;
 
         uint32_t subscriber_ssrc = 0;
+        uint32_t publisher_ssrc = 0;
 
         uint16_t last_publisher_sequence_number = 0;
         uint16_t last_subscriber_sequence_number = 0;
@@ -370,7 +371,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint32_t last_subscriber_timestamp = 0;
 
         uint64_t packet_count = 0;
-        uint64_t publisher_switch_count = 0;
+        uint64_t source_switch_count = 0;
     };
 
     struct outbound_rtp_packet_identity
@@ -412,6 +413,21 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string previous_rid;
         std::string target_rid;
         std::string target_policy;
+
+        std::string pending_target_rid;
+        std::string pending_target_policy;
+
+        uint32_t pending_target_primary_ssrc = 0;
+        uint32_t pending_target_repair_ssrc = 0;
+
+        uint64_t pending_switch_since_milliseconds = 0;
+        uint64_t pending_switch_expires_at_milliseconds = 0;
+        uint64_t pending_switch_last_timeout_milliseconds = 0;
+
+        uint64_t pending_switch_packet_count = 0;
+        uint64_t pending_switch_keyframe_count = 0;
+        uint64_t pending_switch_commit_count = 0;
+        uint64_t pending_switch_timeout_count = 0;
 
         bool manual_target_active = false;
 
@@ -857,6 +873,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                           std::string_view publisher_session_id,
                                                           std::string_view subscriber_session_id,
                                                           uint32_t subscriber_ssrc,
+                                                          uint32_t publisher_ssrc,
                                                           uint16_t publisher_sequence_number,
                                                           uint32_t publisher_timestamp);
 
@@ -1043,7 +1060,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                   const media_route_result& route,
                                                                   const std::optional<media_track_resolution>& track_resolution,
                                                                   const std::vector<rtcp_feedback_route_event>& feedback_events,
-                                                                  const media_peer_info& target_peer);
+                                                                  const media_peer_info& target_peer,
+                                                                  bool& expected_filter);
 
     [[nodiscard]]
     std::optional<media_payload_type_mapping> find_rtx_payload_type_mapping(const media_payload_type_mapping_table& table,
@@ -1129,6 +1147,22 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                            const media_track_resolution& track_resolution,
                                                            std::size_t packet_size,
                                                            uint64_t current_time_milliseconds);
+
+    [[nodiscard]]
+    bool publisher_rtp_rid_is_selected_for_subscriber(const sdp::webrtc_offer_summary& publisher_offer,
+                                                      const srtp_packet_process_result& packet,
+                                                      const media_route_result& route,
+                                                      const media_peer_info& target_peer,
+                                                      const media_track_resolution& track_resolution,
+                                                      const std::optional<std::string>& runtime_target_rid,
+                                                      std::optional<media_identity_rid_layer_binding>& selected_layer,
+                                                      std::vector<std::string>& selected_rid_preference,
+                                                      std::string& selected_rid_policy);
+
+    [[nodiscard]]
+    std::expected<void, std::string> request_simulcast_rid_keyframe(const simulcast_rid_target_request& request,
+                                                                    const media_identity_rid_layer_binding& target_layer);
+
     [[nodiscard]]
     std::optional<std::string> runtime_selected_rid_target_for_subscriber(const media_route_result& route,
                                                                           const media_peer_info& target_peer,
@@ -1637,6 +1671,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_target_endpoint_missing_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_target_peer_missing_total_{0};
 
+    std::atomic<uint64_t> rtp_rtcp_drop_media_forward_expected_filter_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_rewrite_failed_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_rewrite_empty_total_{0};
     std::atomic<uint64_t> rtp_rtcp_drop_media_forward_runtime_gate_total_{0};

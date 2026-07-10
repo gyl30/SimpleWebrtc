@@ -5250,6 +5250,43 @@ bool is_publisher_video_keyframe_payload(publisher_video_keyframe_codec codec, s
 
     return false;
 }
+
+bool is_publisher_video_keyframe_packet(const sdp::webrtc_offer_summary& publisher_offer,
+                                        const srtp_packet_process_result& packet,
+                                        const media_track_resolution& track_resolution)
+{
+    if (packet.kind != srtp_packet_kind::rtp || packet.plain_packet.empty() || track_resolution.rtx ||
+        !track_resolution.resolved || !is_video_media_kind(track_resolution.kind))
+    {
+        return false;
+    }
+
+    const std::span<const uint8_t> packet_span(packet.plain_packet.data(), packet.plain_packet.size());
+
+    auto header = parse_rtp_packet_header(packet_span);
+
+    if (!header)
+    {
+        return false;
+    }
+
+    auto payload = rtp_payload_span(packet_span, *header);
+
+    if (!payload.has_value())
+    {
+        return false;
+    }
+
+    const std::optional<std::string> codec_name =
+        find_offer_codec_name_by_payload_type(publisher_offer, track_resolution.mid, static_cast<uint16_t>(header->payload_type));
+
+    if (!codec_name.has_value())
+    {
+        return false;
+    }
+
+    return is_publisher_video_keyframe_payload(publisher_video_keyframe_codec_from_name(*codec_name), *payload);
+}
 simulcast_rid_preference_policy parse_simulcast_rid_preference_policy(std::string_view value)
 {
     const std::string normalized = lower_ascii_copy(value);
@@ -7447,6 +7484,94 @@ void ice_udp_server::remove_expired_session(std::string_view session_id, std::st
 
 uint16_t ice_udp_server::local_port() const { return bind_port_; }
 
+std::expected<void, std::string> ice_udp_server::request_simulcast_rid_keyframe(
+    const simulcast_rid_target_request& request,
+    const media_identity_rid_layer_binding& target_layer)
+{
+    if (srtp_transport_ == nullptr)
+    {
+        return make_error("srtp transport unavailable");
+    }
+
+    if (target_layer.primary_ssrc == 0)
+    {
+        return make_error("target rid primary ssrc is empty");
+    }
+
+    std::optional<std::string> remote_address = remote_address_for_session(request.publisher_session_id);
+
+    if (!remote_address.has_value() || remote_address->empty())
+    {
+        return make_error("publisher endpoint not found");
+    }
+
+    auto remote_endpoint = find_remote_endpoint(*remote_address);
+
+    if (!remote_endpoint.has_value())
+    {
+        return make_error("publisher endpoint not found");
+    }
+
+    if (!outbound_media_runtime_ready(
+            *remote_address, request.publisher_session_id, request.stream_id, media_peer_role::publisher, "simulcast rid keyframe request protect"))
+    {
+        return make_error("publisher media runtime not ready");
+    }
+
+    const keyframe_request_feedback_type feedback_type =
+        select_keyframe_request_feedback_type(request.stream_id, request.publisher_session_id, request.mid, request.kind);
+
+    if (feedback_type == keyframe_request_feedback_type::none)
+    {
+        return make_error("publisher keyframe feedback unsupported");
+    }
+
+    media_peer_info publisher_peer;
+    publisher_peer.role = media_peer_role::publisher;
+    publisher_peer.stream_id = request.stream_id;
+    publisher_peer.session_id = request.publisher_session_id;
+    publisher_peer.remote_endpoint = *remote_address;
+
+    const uint32_t sender_ssrc = make_rtcp_report_local_ssrc(publisher_peer, target_layer.primary_ssrc);
+
+    auto plain_packet =
+        make_keyframe_request_packet(feedback_type, request.stream_id, sender_ssrc, target_layer.primary_ssrc);
+
+    if (!plain_packet.has_value())
+    {
+        return make_error("target rid keyframe request build failed");
+    }
+
+    auto protected_packet = srtp_transport_->protect_outbound_packet(
+        std::span<const uint8_t>(plain_packet->data(), plain_packet->size()), *remote_address, srtp_packet_kind::rtcp);
+
+    if (!protected_packet)
+    {
+        return std::unexpected(protected_packet.error());
+    }
+
+    if (protected_packet->state == srtp_packet_process_state::ignored)
+    {
+        return make_error(std::string("target rid keyframe request ignored: ") + protected_packet->reason);
+    }
+
+    send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
+
+    WEBRTC_LOG_INFO(
+        "simulcast target rid keyframe request sent stream={} publisher_session={} subscriber_session={} mid={} kind={} target_rid={} feedback={} sender_ssrc={} media_ssrc={}",
+        request.stream_id,
+        request.publisher_session_id,
+        request.subscriber_session_id,
+        request.mid,
+        request.kind,
+        request.target_rid,
+        keyframe_request_feedback_type_to_string(feedback_type),
+        sender_ssrc,
+        target_layer.primary_ssrc);
+
+    return {};
+}
+
 simulcast_rid_target_expected ice_udp_server::set_runtime_selected_rid_target(const simulcast_rid_target_request& request)
 {
     auto validation_result = validate_simulcast_rid_target_request(request);
@@ -7456,71 +7581,260 @@ simulcast_rid_target_expected ice_udp_server::set_runtime_selected_rid_target(co
         return std::unexpected(validation_result.error());
     }
 
+    if (registry_ == nullptr)
+    {
+        return make_error("session registry unavailable");
+    }
+
+    auto publisher = registry_->find_publisher_by_session_id(request.publisher_session_id);
+
+    if (publisher == nullptr)
+    {
+        return make_error("publisher session not found");
+    }
+
+    auto subscriber = registry_->find_subscriber_by_session_id(request.subscriber_session_id);
+
+    if (subscriber == nullptr)
+    {
+        return make_error("subscriber session not found");
+    }
+
+    if (publisher->stream_id() != request.stream_id)
+    {
+        return make_error("publisher stream does not match request");
+    }
+
+    if (subscriber->stream_id() != request.stream_id)
+    {
+        return make_error("subscriber stream does not match request");
+    }
+
+    if (!accepted_offer_media_matches_mid_and_kind(
+            publisher->remote_offer_summary(), publisher->accepted_remote_media_mline_indexes(), request.mid, request.kind))
+    {
+        return make_error("publisher accepted video mid not found");
+    }
+
+    const sdp::media_summary* publisher_media = find_offer_media_by_mid(publisher->remote_offer_summary(), request.mid);
+
+    if (publisher_media == nullptr)
+    {
+        return make_error("publisher media not found");
+    }
+
+    const std::vector<std::string> negotiated_rids = make_default_simulcast_rid_preference(*publisher_media);
+
+    if (!simulcast_rid_preference_contains(negotiated_rids, request.target_rid))
+    {
+        return make_error("target rid is not negotiated");
+    }
+
+    /*
+     * Publisher simulcast runtime state is the authoritative source for
+     * currently active inbound RID layers.
+     *
+     * The current publisher inbound path does not populate
+     * media_identity_authority RID-layer bindings. The runtime layer table is
+     * updated from every resolved primary/RTX packet and already powers the
+     * publisher simulcast quality snapshot.
+     */
+    std::optional<media_identity_rid_layer_binding> target_layer;
+
+    {
+        const std::string publisher_layer_key =
+            make_publisher_simulcast_layer_key(
+                request.stream_id,
+                request.publisher_session_id,
+                request.mid,
+                request.kind,
+                request.target_rid);
+
+        std::lock_guard lock(endpoint_mutex_);
+
+        const auto layer_iterator =
+            publisher_simulcast_layer_state_by_key_.find(
+                publisher_layer_key);
+
+        if (layer_iterator ==
+                publisher_simulcast_layer_state_by_key_.end() ||
+            layer_iterator->second.primary_ssrc == 0 ||
+            layer_iterator->second.primary_packet_count == 0)
+        {
+            return make_error("target rid layer is not active");
+        }
+
+        const publisher_simulcast_layer_runtime_state& runtime_layer =
+            layer_iterator->second;
+
+        media_identity_rid_layer_binding layer;
+
+        layer.stream_id = runtime_layer.stream_id;
+        layer.session_id = runtime_layer.publisher_session_id;
+        layer.mid = runtime_layer.mid;
+        layer.kind = runtime_layer.kind;
+        layer.rid = runtime_layer.rid;
+
+        layer.primary_ssrc = runtime_layer.primary_ssrc;
+        layer.repair_ssrc = runtime_layer.repair_ssrc;
+
+        layer.primary_payload_type =
+            runtime_layer.primary_payload_type;
+        layer.repair_payload_type =
+            runtime_layer.repair_payload_type;
+
+        target_layer = std::move(layer);
+    }
+
     const std::string key =
         make_selected_rid_layer_key(request.stream_id, request.publisher_session_id, request.subscriber_session_id, request.mid, request.kind);
 
     const uint64_t current_time_milliseconds = now_milliseconds();
 
-    std::lock_guard lock(endpoint_mutex_);
-
-    runtime_selected_rid_target_state& target_state = runtime_selected_rid_targets_by_key_[key];
-
-    const bool changed = target_state.target_rid != request.target_rid || target_state.policy != "manual_api";
-
-    target_state.stream_id = request.stream_id;
-    target_state.publisher_session_id = request.publisher_session_id;
-    target_state.subscriber_session_id = request.subscriber_session_id;
-    target_state.mid = request.mid;
-    target_state.kind = request.kind;
-    target_state.target_rid = request.target_rid;
-    target_state.policy = "manual_api";
-    target_state.reason = request.reason.empty() ? "manual simulcast rid target" : request.reason;
-    target_state.updated_at_milliseconds = current_time_milliseconds;
-
-    auto selected_state_iterator = selected_rid_layer_state_by_key_.find(key);
-
-    const bool selected_state_found = selected_state_iterator != selected_rid_layer_state_by_key_.end();
-
-    if (selected_state_found)
-    {
-        selected_rid_layer_runtime_state& selected_state = selected_state_iterator->second;
-
-        remember_runtime_selected_rid_target_locked(
-            key, selected_state, request.target_rid, "manual_api", target_state.reason, current_time_milliseconds);
-
-        if (selected_state.rid != request.target_rid)
-        {
-            selected_state.last_switch_reason = "manual target pending:" + request.target_rid;
-        }
-    }
-    WEBRTC_LOG_INFO(
-        "simulcast manual rid target set stream={} publisher_session={} subscriber_session={} mid={} kind={} target_rid={} changed={} "
-        "selected_state_found={} reason={}",
-        request.stream_id,
-        request.publisher_session_id,
-        request.subscriber_session_id,
-        request.mid,
-        request.kind,
-        request.target_rid,
-        changed ? 1 : 0,
-        selected_state_found ? 1 : 0,
-        target_state.reason);
-
+    bool request_keyframe_now = false;
     simulcast_rid_target_result result;
 
-    result.stream_id = target_state.stream_id;
-    result.publisher_session_id = target_state.publisher_session_id;
-    result.subscriber_session_id = target_state.subscriber_session_id;
-    result.mid = target_state.mid;
-    result.kind = target_state.kind;
-    result.target_rid = target_state.target_rid;
-    result.policy = target_state.policy;
-    result.reason = target_state.reason;
-    result.changed = changed;
-    result.cleared = false;
-    result.selected_state_found = selected_state_found;
-    result.updated_at_milliseconds = target_state.updated_at_milliseconds;
-    result.applied_count = target_state.applied_count;
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        runtime_selected_rid_target_state& target_state = runtime_selected_rid_targets_by_key_[key];
+
+        const bool changed = target_state.target_rid != request.target_rid || target_state.policy != "manual_api";
+
+        target_state.stream_id = request.stream_id;
+        target_state.publisher_session_id = request.publisher_session_id;
+        target_state.subscriber_session_id = request.subscriber_session_id;
+        target_state.mid = request.mid;
+        target_state.kind = request.kind;
+        target_state.target_rid = request.target_rid;
+        target_state.policy = "manual_api";
+        target_state.reason = request.reason.empty() ? "manual simulcast rid target" : request.reason;
+        target_state.updated_at_milliseconds = current_time_milliseconds;
+
+        auto selected_state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+        const bool selected_state_found = selected_state_iterator != selected_rid_layer_state_by_key_.end();
+
+        if (selected_state_found)
+        {
+            selected_rid_layer_runtime_state& selected_state = selected_state_iterator->second;
+
+            remember_runtime_selected_rid_target_locked(
+                key, selected_state, request.target_rid, "manual_api", target_state.reason, current_time_milliseconds);
+
+            if (selected_state.rid != request.target_rid)
+            {
+                const bool pending_request_changed = selected_state.pending_target_rid != request.target_rid ||
+                                                     selected_state.pending_target_primary_ssrc != target_layer->primary_ssrc;
+                const bool pending_request_expired = selected_state.pending_switch_expires_at_milliseconds != 0 &&
+                                                     current_time_milliseconds >=
+                                                         selected_state.pending_switch_expires_at_milliseconds;
+
+                selected_state.pending_target_rid = request.target_rid;
+                selected_state.pending_target_policy = "manual_api";
+                selected_state.pending_target_primary_ssrc = target_layer->primary_ssrc;
+                selected_state.pending_target_repair_ssrc = target_layer->repair_ssrc;
+                selected_state.pending_switch_since_milliseconds = current_time_milliseconds;
+                selected_state.pending_switch_expires_at_milliseconds =
+                    current_time_milliseconds + k_selected_rid_keyframe_request_pending_timeout_milliseconds;
+                selected_state.pending_switch_last_timeout_milliseconds = 0;
+                selected_state.pending_switch_packet_count = 0;
+                selected_state.last_switch_reason = "waiting target keyframe:" + request.target_rid;
+
+                request_keyframe_now = changed || pending_request_changed || pending_request_expired;
+            }
+            else
+            {
+                if (changed)
+                {
+                    target_state.applied_count += 1;
+                }
+
+                selected_state.pending_target_rid.clear();
+                selected_state.pending_target_policy.clear();
+                selected_state.pending_target_primary_ssrc = 0;
+                selected_state.pending_target_repair_ssrc = 0;
+                selected_state.pending_switch_since_milliseconds = 0;
+                selected_state.pending_switch_expires_at_milliseconds = 0;
+                selected_state.pending_switch_last_timeout_milliseconds = 0;
+                selected_state.pending_switch_packet_count = 0;
+            }
+        }
+        else
+        {
+            request_keyframe_now = changed;
+        }
+
+        WEBRTC_LOG_INFO(
+            "simulcast manual rid target set stream={} publisher_session={} subscriber_session={} mid={} kind={} target_rid={} changed={} selected_state_found={} request_keyframe={} target_primary_ssrc={} target_repair_ssrc={} reason={}",
+            request.stream_id,
+            request.publisher_session_id,
+            request.subscriber_session_id,
+            request.mid,
+            request.kind,
+            request.target_rid,
+            changed ? 1 : 0,
+            selected_state_found ? 1 : 0,
+            request_keyframe_now ? 1 : 0,
+            target_layer->primary_ssrc,
+            target_layer->repair_ssrc,
+            target_state.reason);
+
+        result.stream_id = target_state.stream_id;
+        result.publisher_session_id = target_state.publisher_session_id;
+        result.subscriber_session_id = target_state.subscriber_session_id;
+        result.mid = target_state.mid;
+        result.kind = target_state.kind;
+        result.target_rid = target_state.target_rid;
+        result.policy = target_state.policy;
+        result.reason = target_state.reason;
+        result.changed = changed;
+        result.cleared = false;
+        result.selected_state_found = selected_state_found;
+        result.updated_at_milliseconds = target_state.updated_at_milliseconds;
+        result.applied_count = target_state.applied_count;
+    }
+
+    if (request_keyframe_now)
+    {
+        auto keyframe_result = request_simulcast_rid_keyframe(request, *target_layer);
+
+        std::lock_guard lock(endpoint_mutex_);
+
+        auto selected_state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+        if (selected_state_iterator != selected_rid_layer_state_by_key_.end())
+        {
+            selected_rid_layer_runtime_state& selected_state = selected_state_iterator->second;
+
+            selected_state.keyframe_request_attempt_count += 1;
+            selected_state.last_keyframe_request_milliseconds = now_milliseconds();
+
+            if (keyframe_result)
+            {
+                selected_state.keyframe_request_success_count += 1;
+                selected_state.last_keyframe_request_result = "sent";
+                selected_state.last_keyframe_request_reason = "manual target switch";
+            }
+            else
+            {
+                selected_state.last_keyframe_request_result = "failed";
+                selected_state.last_keyframe_request_reason = keyframe_result.error();
+            }
+        }
+
+        if (!keyframe_result)
+        {
+            WEBRTC_LOG_WARN(
+                "simulcast manual target keyframe request failed stream={} publisher_session={} subscriber_session={} mid={} target_rid={} error={}",
+                request.stream_id,
+                request.publisher_session_id,
+                request.subscriber_session_id,
+                request.mid,
+                request.target_rid,
+                keyframe_result.error());
+        }
+    }
 
     return result;
 }
@@ -7538,63 +7852,154 @@ simulcast_rid_target_expected ice_udp_server::clear_runtime_selected_rid_target(
         return std::unexpected(validation_result.error());
     }
 
-    const std::string key = make_selected_rid_layer_key(
-        clear_request.stream_id, clear_request.publisher_session_id, clear_request.subscriber_session_id, clear_request.mid, clear_request.kind);
+    if (registry_ == nullptr)
+    {
+        return make_error("session registry unavailable");
+    }
+
+    auto publisher = registry_->find_publisher_by_session_id(clear_request.publisher_session_id);
+
+    if (publisher == nullptr)
+    {
+        return make_error("publisher session not found");
+    }
+
+    auto subscriber = registry_->find_subscriber_by_session_id(clear_request.subscriber_session_id);
+
+    if (subscriber == nullptr)
+    {
+        return make_error("subscriber session not found");
+    }
+
+    if (publisher->stream_id() != clear_request.stream_id)
+    {
+        return make_error("publisher stream does not match request");
+    }
+
+    if (subscriber->stream_id() != clear_request.stream_id)
+    {
+        return make_error("subscriber stream does not match request");
+    }
+
+    if (!accepted_offer_media_matches_mid_and_kind(
+            publisher->remote_offer_summary(), publisher->accepted_remote_media_mline_indexes(), clear_request.mid, clear_request.kind))
+    {
+        return make_error("publisher accepted video mid not found");
+    }
+
+    const std::string key = make_selected_rid_layer_key(clear_request.stream_id,
+                                                        clear_request.publisher_session_id,
+                                                        clear_request.subscriber_session_id,
+                                                        clear_request.mid,
+                                                        clear_request.kind);
 
     const uint64_t current_time_milliseconds = now_milliseconds();
 
-    std::lock_guard lock(endpoint_mutex_);
-
-    const auto target_iterator = runtime_selected_rid_targets_by_key_.find(key);
-
+    bool request_keyframe_now = false;
     simulcast_rid_target_result result;
 
-    result.stream_id = clear_request.stream_id;
-    result.publisher_session_id = clear_request.publisher_session_id;
-    result.subscriber_session_id = clear_request.subscriber_session_id;
-    result.mid = clear_request.mid;
-    result.kind = clear_request.kind;
-    result.policy = "manual_api";
-    result.reason = clear_request.reason.empty() ? "manual simulcast rid target cleared" : clear_request.reason;
-    result.cleared = target_iterator != runtime_selected_rid_targets_by_key_.end();
-    result.changed = result.cleared;
-    result.updated_at_milliseconds = current_time_milliseconds;
-
-    if (target_iterator != runtime_selected_rid_targets_by_key_.end())
     {
-        result.target_rid = target_iterator->second.target_rid;
-        result.applied_count = target_iterator->second.applied_count;
+        std::lock_guard lock(endpoint_mutex_);
 
-        runtime_selected_rid_targets_by_key_.erase(target_iterator);
+        const auto target_iterator = runtime_selected_rid_targets_by_key_.find(key);
+
+        result.stream_id = clear_request.stream_id;
+        result.publisher_session_id = clear_request.publisher_session_id;
+        result.subscriber_session_id = clear_request.subscriber_session_id;
+        result.mid = clear_request.mid;
+        result.kind = clear_request.kind;
+        result.policy = "manual_api";
+        result.reason = clear_request.reason.empty() ? "manual simulcast rid target cleared" : clear_request.reason;
+        result.cleared = target_iterator != runtime_selected_rid_targets_by_key_.end();
+        result.changed = result.cleared;
+        result.updated_at_milliseconds = current_time_milliseconds;
+
+        if (target_iterator != runtime_selected_rid_targets_by_key_.end())
+        {
+            result.target_rid = target_iterator->second.target_rid;
+            result.applied_count = target_iterator->second.applied_count;
+
+            runtime_selected_rid_targets_by_key_.erase(target_iterator);
+        }
+
+        auto selected_state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+        result.selected_state_found = selected_state_iterator != selected_rid_layer_state_by_key_.end();
+
+        if (selected_state_iterator != selected_rid_layer_state_by_key_.end())
+        {
+            selected_rid_layer_runtime_state& selected_state = selected_state_iterator->second;
+
+            selected_state.target_rid.clear();
+            selected_state.target_policy.clear();
+            selected_state.pending_target_rid.clear();
+            selected_state.pending_target_policy.clear();
+            selected_state.pending_target_primary_ssrc = 0;
+            selected_state.pending_target_repair_ssrc = 0;
+            selected_state.pending_switch_since_milliseconds = 0;
+            selected_state.pending_switch_expires_at_milliseconds = 0;
+            selected_state.pending_switch_last_timeout_milliseconds = 0;
+            selected_state.pending_switch_packet_count = 0;
+            selected_state.manual_target_active = false;
+            selected_state.last_adaptive_decision = "manual_clear";
+            selected_state.last_adaptive_decision_reason = result.reason;
+            selected_state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+
+            request_keyframe_now = result.cleared;
+        }
+
+        WEBRTC_LOG_INFO(
+            "simulcast manual rid target cleared stream={} publisher_session={} subscriber_session={} mid={} kind={} cleared={} selected_state_found={} request_keyframe={} reason={}",
+            clear_request.stream_id,
+            clear_request.publisher_session_id,
+            clear_request.subscriber_session_id,
+            clear_request.mid,
+            clear_request.kind,
+            result.cleared ? 1 : 0,
+            result.selected_state_found ? 1 : 0,
+            request_keyframe_now ? 1 : 0,
+            result.reason);
     }
 
-    auto selected_state_iterator = selected_rid_layer_state_by_key_.find(key);
-
-    result.selected_state_found = selected_state_iterator != selected_rid_layer_state_by_key_.end();
-
-    if (selected_state_iterator != selected_rid_layer_state_by_key_.end())
+    if (request_keyframe_now)
     {
-        selected_rid_layer_runtime_state& selected_state = selected_state_iterator->second;
+        auto keyframe_result = request_keyframe(clear_request.stream_id);
 
-        selected_state.target_rid.clear();
-        selected_state.target_policy.clear();
-        selected_state.manual_target_active = false;
-        selected_state.last_adaptive_decision = "manual_clear";
-        selected_state.last_adaptive_decision_reason = result.reason;
-        selected_state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+        std::lock_guard lock(endpoint_mutex_);
+
+        auto selected_state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+        if (selected_state_iterator != selected_rid_layer_state_by_key_.end())
+        {
+            selected_rid_layer_runtime_state& selected_state = selected_state_iterator->second;
+
+            selected_state.keyframe_request_attempt_count += 1;
+            selected_state.last_keyframe_request_milliseconds = now_milliseconds();
+
+            if (keyframe_result)
+            {
+                selected_state.keyframe_request_success_count += 1;
+                selected_state.last_keyframe_request_result = "sent";
+                selected_state.last_keyframe_request_reason = "manual target cleared";
+            }
+            else
+            {
+                selected_state.last_keyframe_request_result = "failed";
+                selected_state.last_keyframe_request_reason = keyframe_result.error();
+            }
+        }
+
+        if (!keyframe_result)
+        {
+            WEBRTC_LOG_WARN(
+                "simulcast manual target clear keyframe request failed stream={} publisher_session={} subscriber_session={} mid={} error={}",
+                clear_request.stream_id,
+                clear_request.publisher_session_id,
+                clear_request.subscriber_session_id,
+                clear_request.mid,
+                keyframe_result.error());
+        }
     }
-
-    WEBRTC_LOG_INFO(
-        "simulcast manual rid target cleared stream={} publisher_session={} subscriber_session={} mid={} kind={} cleared={} selected_state_found={} "
-        "reason={}",
-        clear_request.stream_id,
-        clear_request.publisher_session_id,
-        clear_request.subscriber_session_id,
-        clear_request.mid,
-        clear_request.kind,
-        result.cleared ? 1 : 0,
-        result.selected_state_found ? 1 : 0,
-        result.reason);
 
     return result;
 }
@@ -7908,6 +8313,22 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             entry.previous_rid = state.previous_rid;
             entry.target_rid = state.target_rid;
             entry.target_policy = state.target_policy;
+
+            entry.pending_target_rid = state.pending_target_rid;
+            entry.pending_target_policy = state.pending_target_policy;
+            entry.pending_target_primary_ssrc = state.pending_target_primary_ssrc;
+            entry.pending_target_repair_ssrc = state.pending_target_repair_ssrc;
+            entry.pending_switch_since_milliseconds = state.pending_switch_since_milliseconds;
+            entry.pending_switch_expires_at_milliseconds = state.pending_switch_expires_at_milliseconds;
+            entry.pending_switch_remaining_ttl_milliseconds =
+                state.pending_switch_expires_at_milliseconds > current_time_milliseconds
+                    ? state.pending_switch_expires_at_milliseconds - current_time_milliseconds
+                    : 0;
+            entry.pending_switch_last_timeout_milliseconds = state.pending_switch_last_timeout_milliseconds;
+            entry.pending_switch_packet_count = state.pending_switch_packet_count;
+            entry.pending_switch_keyframe_count = state.pending_switch_keyframe_count;
+            entry.pending_switch_commit_count = state.pending_switch_commit_count;
+            entry.pending_switch_timeout_count = state.pending_switch_timeout_count;
 
             entry.effective_target_rid = state.target_rid;
             entry.effective_target_policy = state.target_policy;
@@ -8728,6 +9149,13 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
                                        rtp_rtcp_drop_media_forward_target_endpoint_missing_total_.load(std::memory_order_relaxed));
     append_lifecycle_debug_drop_reason(
         snapshot, "media_forward", "target peer missing", rtp_rtcp_drop_media_forward_target_peer_missing_total_.load(std::memory_order_relaxed));
+    append_lifecycle_debug_drop_reason(
+        snapshot,
+        "media_forward",
+        "expected filter",
+        rtp_rtcp_drop_media_forward_expected_filter_total_.load(
+            std::memory_order_relaxed));
+
     append_lifecycle_debug_drop_reason(
         snapshot, "media_forward", "rewrite failed", rtp_rtcp_drop_media_forward_rewrite_failed_total_.load(std::memory_order_relaxed));
 
@@ -13052,6 +13480,28 @@ bool ice_udp_server::remember_media_identity_forward_mapping(const media_ssrc_ma
         return true;
     }
 
+    /*
+     * The legacy identity authority has a one-to-one subscriber-SSRC reverse
+     * index. Primary simulcast RID aliases intentionally share one stable
+     * WHEP video SSRC, so the mapper plus selected RID runtime state is the
+     * authoritative identity for this case.
+     */
+    if (media_ssrc_mapping_is_primary_video(ssrc_mapping) &&
+        ssrc_mapping.rid.has_value() &&
+        !ssrc_mapping.rid->empty() &&
+        ssrc_mapper_ != nullptr)
+    {
+        const std::vector<media_ssrc_mapping> aliases =
+            ssrc_mapper_->find_all_by_subscriber_ssrc(
+                ssrc_mapping.subscriber_session_id,
+                ssrc_mapping.subscriber_ssrc);
+
+        if (aliases.size() > 1)
+        {
+            return true;
+        }
+    }
+
     auto identity_result = identity_authority_->remember_forward_mapping(ssrc_mapping, payload_type_mapping);
 
     if (!identity_result)
@@ -13076,12 +13526,71 @@ bool ice_udp_server::remember_media_identity_forward_mapping(const media_ssrc_ma
 
     return true;
 }
-std::optional<media_ssrc_mapping> ice_udp_server::find_identity_ssrc_mapping_by_subscriber_ssrc(std::string_view subscriber_session_id,
-                                                                                                uint32_t subscriber_ssrc) const
+std::optional<media_ssrc_mapping>
+ice_udp_server::find_identity_ssrc_mapping_by_subscriber_ssrc(
+    std::string_view subscriber_session_id,
+    uint32_t subscriber_ssrc) const
 {
-    if (identity_authority_ != nullptr)
+    if (ssrc_mapper_ != nullptr)
     {
-        auto mapping = identity_authority_->find_ssrc_mapping_by_subscriber_ssrc(subscriber_session_id, subscriber_ssrc);
+        std::vector<media_ssrc_mapping> mappings =
+            ssrc_mapper_->find_all_by_subscriber_ssrc(
+                subscriber_session_id,
+                subscriber_ssrc);
+
+        if (mappings.size() == 1)
+        {
+            return mappings.front();
+        }
+
+        if (mappings.size() > 1)
+        {
+            std::lock_guard lock(endpoint_mutex_);
+
+            for (const media_ssrc_mapping& mapping : mappings)
+            {
+                if (!media_ssrc_mapping_is_primary_video(mapping))
+                {
+                    continue;
+                }
+
+                const std::string key =
+                    make_selected_rid_layer_key(
+                        mapping.stream_id,
+                        mapping.publisher_session_id,
+                        mapping.subscriber_session_id,
+                        mapping.publisher_mid,
+                        mapping.kind);
+
+                const auto state_iterator =
+                    selected_rid_layer_state_by_key_.find(key);
+
+                if (state_iterator ==
+                    selected_rid_layer_state_by_key_.end())
+                {
+                    continue;
+                }
+
+                const selected_rid_layer_runtime_state& state =
+                    state_iterator->second;
+
+                if (state.primary_ssrc == mapping.publisher_ssrc)
+                {
+                    return mapping;
+                }
+            }
+
+            WEBRTC_LOG_DEBUG(
+                "subscriber ssrc alias active mapping unresolved subscriber_session={} subscriber_ssrc={} mapping_count={}",
+                subscriber_session_id,
+                subscriber_ssrc,
+                mappings.size());
+        }
+
+        auto mapping =
+            ssrc_mapper_->find_by_subscriber_ssrc(
+                subscriber_session_id,
+                subscriber_ssrc);
 
         if (mapping.has_value())
         {
@@ -13089,12 +13598,14 @@ std::optional<media_ssrc_mapping> ice_udp_server::find_identity_ssrc_mapping_by_
         }
     }
 
-    if (ssrc_mapper_ == nullptr)
+    if (identity_authority_ != nullptr)
     {
-        return std::nullopt;
+        return identity_authority_->find_ssrc_mapping_by_subscriber_ssrc(
+            subscriber_session_id,
+            subscriber_ssrc);
     }
 
-    return ssrc_mapper_->find_by_subscriber_ssrc(subscriber_session_id, subscriber_ssrc);
+    return std::nullopt;
 }
 
 std::optional<media_ssrc_mapping> ice_udp_server::find_identity_ssrc_mapping_by_publisher_ssrc(std::string_view stream_id,
@@ -14881,47 +15392,419 @@ std::optional<std::string> resolve_packet_rid_for_selection(const std::shared_pt
     return std::nullopt;
 }
 
-bool publisher_rtp_rid_is_selected_for_subscriber(const sdp::webrtc_offer_summary& publisher_offer,
-                                                  const std::shared_ptr<media_identity_authority>& identity_authority,
-                                                  const media_route_result& route,
-                                                  const media_peer_info& target_peer,
-                                                  const media_track_resolution& track_resolution,
-                                                  const std::optional<std::string>& runtime_target_rid,
-                                                  std::optional<media_identity_rid_layer_binding>& selected_layer,
-                                                  std::vector<std::string>& selected_rid_preference,
-                                                  std::string& selected_rid_policy)
+bool ice_udp_server::publisher_rtp_rid_is_selected_for_subscriber(
+    const sdp::webrtc_offer_summary& publisher_offer,
+    const srtp_packet_process_result& packet,
+    const media_route_result& route,
+    const media_peer_info& target_peer,
+    const media_track_resolution& track_resolution,
+    const std::optional<std::string>& runtime_target_rid,
+    std::optional<media_identity_rid_layer_binding>& selected_layer,
+    std::vector<std::string>& selected_rid_preference,
+    std::string& selected_rid_policy)
 {
-    selected_layer = find_selected_rid_layer_for_subscriber(
-        publisher_offer, identity_authority, route, target_peer, track_resolution, runtime_target_rid, selected_rid_preference, selected_rid_policy);
-    if (!selected_layer.has_value())
+    selected_layer.reset();
+    selected_rid_preference.clear();
+    selected_rid_policy.clear();
+
+    if (route.source.role != media_peer_role::publisher ||
+        target_peer.role != media_peer_role::subscriber)
     {
         return true;
     }
 
-    const std::optional<std::string> packet_rid = resolve_packet_rid_for_selection(identity_authority, route, track_resolution);
+    if (!track_resolution.resolved ||
+        track_resolution.mid.empty() ||
+        track_resolution.kind.empty() ||
+        !is_video_media_kind(track_resolution.kind))
+    {
+        return true;
+    }
+
+    const sdp::media_summary* publisher_media =
+        find_offer_media_by_mid(
+            publisher_offer,
+            track_resolution.mid);
+
+    if (publisher_media == nullptr)
+    {
+        return true;
+    }
+
+    const simulcast_rid_preference_result preference =
+        make_simulcast_rid_preference_for_subscriber(
+            *publisher_media,
+            target_peer);
+
+    selected_rid_preference = preference.preferred_rids;
+    selected_rid_policy = preference.policy;
+
+    if (runtime_target_rid.has_value() &&
+        !runtime_target_rid->empty())
+    {
+        const bool target_available =
+            simulcast_rid_preference_contains(
+                selected_rid_preference,
+                *runtime_target_rid);
+
+        if (target_available)
+        {
+            selected_rid_preference =
+                make_simulcast_target_first_preference(
+                    std::move(selected_rid_preference),
+                    *runtime_target_rid);
+
+            selected_rid_policy =
+                "runtime_target:" +
+                *runtime_target_rid +
+                "+" +
+                selected_rid_policy;
+        }
+        else
+        {
+            selected_rid_policy.append(
+                "+runtime_target_missing:");
+            selected_rid_policy.append(
+                *runtime_target_rid);
+        }
+    }
+
+    if (selected_rid_preference.empty())
+    {
+        return true;
+    }
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        for (const std::string& preferred_rid :
+             selected_rid_preference)
+        {
+            const std::string publisher_layer_key =
+                make_publisher_simulcast_layer_key(
+                    route.source.stream_id,
+                    route.source.session_id,
+                    track_resolution.mid,
+                    track_resolution.kind,
+                    preferred_rid);
+
+            const auto layer_iterator =
+                publisher_simulcast_layer_state_by_key_.find(
+                    publisher_layer_key);
+
+            if (layer_iterator ==
+                    publisher_simulcast_layer_state_by_key_.end() ||
+                layer_iterator->second.primary_ssrc == 0 ||
+                layer_iterator->second.primary_packet_count == 0)
+            {
+                continue;
+            }
+
+            const publisher_simulcast_layer_runtime_state&
+                runtime_layer = layer_iterator->second;
+
+            media_identity_rid_layer_binding layer;
+
+            layer.stream_id = runtime_layer.stream_id;
+            layer.session_id =
+                runtime_layer.publisher_session_id;
+            layer.mid = runtime_layer.mid;
+            layer.kind = runtime_layer.kind;
+            layer.rid = runtime_layer.rid;
+
+            layer.primary_ssrc =
+                runtime_layer.primary_ssrc;
+            layer.repair_ssrc =
+                runtime_layer.repair_ssrc;
+
+            layer.primary_payload_type =
+                runtime_layer.primary_payload_type;
+            layer.repair_payload_type =
+                runtime_layer.repair_payload_type;
+
+            selected_layer = std::move(layer);
+
+            break;
+        }
+    }
+
+    if (!selected_layer.has_value())
+    {
+        WEBRTC_LOG_DEBUG(
+            "simulcast runtime rid layer unavailable stream={} publisher_session={} subscriber_session={} mid={} kind={} runtime_target={} candidate_count={}",
+            route.source.stream_id,
+            route.source.session_id,
+            target_peer.session_id,
+            track_resolution.mid,
+            track_resolution.kind,
+            runtime_target_rid.value_or(""),
+            selected_rid_preference.size());
+
+        return true;
+    }
+
+    WEBRTC_LOG_DEBUG(
+        "simulcast runtime rid preference selected stream={} publisher_session={} subscriber_session={} mid={} kind={} policy={} selected_rid={} primary_ssrc={} repair_ssrc={} candidate_count={}",
+        route.source.stream_id,
+        route.source.session_id,
+        target_peer.session_id,
+        track_resolution.mid,
+        track_resolution.kind,
+        selected_rid_policy,
+        selected_layer->rid,
+        selected_layer->primary_ssrc,
+        selected_layer->repair_ssrc,
+        selected_rid_preference.size());
+
+    const std::optional<std::string> packet_rid =
+        resolve_packet_rid_for_selection(identity_authority_, route, track_resolution);
 
     if (!packet_rid.has_value() || packet_rid->empty())
     {
         return true;
     }
 
-    if (selected_layer->rid == *packet_rid)
-    {
-        return true;
-    }
-
-    WEBRTC_LOG_DEBUG(
-        "simulcast rid layer skipped stream={} publisher_session={} subscriber_session={} mid={} packet_rid={} selected_rid={} ssrc={} rtx={}",
+    const std::string key = make_selected_rid_layer_key(
         route.source.stream_id,
         route.source.session_id,
         target_peer.session_id,
         track_resolution.mid,
-        *packet_rid,
-        selected_layer->rid,
-        track_resolution.ssrc,
-        track_resolution.rtx ? 1 : 0);
+        track_resolution.kind);
 
-    return false;
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    auto state_iterator = selected_rid_layer_state_by_key_.find(key);
+
+    if (state_iterator == selected_rid_layer_state_by_key_.end() || state_iterator->second.rid.empty())
+    {
+        if (selected_layer->rid != *packet_rid)
+        {
+            WEBRTC_LOG_DEBUG(
+                "simulcast initial rid packet skipped stream={} publisher_session={} subscriber_session={} mid={} packet_rid={} selected_rid={} ssrc={} rtx={}",
+                route.source.stream_id,
+                route.source.session_id,
+                target_peer.session_id,
+                track_resolution.mid,
+                *packet_rid,
+                selected_layer->rid,
+                track_resolution.ssrc,
+                track_resolution.rtx ? 1 : 0);
+
+            return false;
+        }
+
+        if (runtime_target_rid.has_value() && !runtime_target_rid->empty())
+        {
+            if (track_resolution.rtx)
+            {
+                return false;
+            }
+
+            if (!is_publisher_video_keyframe_packet(publisher_offer, packet, track_resolution))
+            {
+                WEBRTC_LOG_DEBUG(
+                    "simulcast initial target waits keyframe stream={} publisher_session={} subscriber_session={} mid={} target_rid={} ssrc={}",
+                    route.source.stream_id,
+                    route.source.session_id,
+                    target_peer.session_id,
+                    track_resolution.mid,
+                    selected_layer->rid,
+                    track_resolution.ssrc);
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    selected_rid_layer_runtime_state& state = state_iterator->second;
+
+    const std::string desired_rid = selected_layer->rid;
+    const std::string active_rid = state.rid;
+
+    const auto clear_pending_switch = [&state]()
+    {
+        state.pending_target_rid.clear();
+        state.pending_target_policy.clear();
+        state.pending_target_primary_ssrc = 0;
+        state.pending_target_repair_ssrc = 0;
+        state.pending_switch_since_milliseconds = 0;
+        state.pending_switch_expires_at_milliseconds = 0;
+        state.pending_switch_packet_count = 0;
+    };
+
+    const auto select_active_layer = [&]()
+    {
+        selected_layer->stream_id = state.stream_id;
+        selected_layer->session_id = state.publisher_session_id;
+        selected_layer->mid = state.mid;
+        selected_layer->kind = state.kind;
+        selected_layer->rid = state.rid;
+        selected_layer->primary_ssrc = state.primary_ssrc;
+        selected_layer->repair_ssrc = state.repair_ssrc;
+    };
+
+    if (desired_rid == active_rid)
+    {
+        clear_pending_switch();
+        state.pending_switch_last_timeout_milliseconds = 0;
+
+        if (*packet_rid == active_rid)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    const bool pending_target_changed = !state.pending_target_rid.empty() && state.pending_target_rid != desired_rid;
+
+    if (pending_target_changed)
+    {
+        clear_pending_switch();
+        state.pending_switch_last_timeout_milliseconds = 0;
+    }
+
+    const bool retry_allowed = state.pending_switch_last_timeout_milliseconds == 0 ||
+                               current_time_milliseconds >= state.pending_switch_last_timeout_milliseconds +
+                                                                        k_selected_rid_keyframe_request_pending_timeout_milliseconds;
+
+    if (state.pending_target_rid.empty() && retry_allowed)
+    {
+        state.pending_target_rid = desired_rid;
+        state.pending_target_policy = state.target_policy.empty() ? selected_rid_policy : state.target_policy;
+        state.pending_target_primary_ssrc = selected_layer->primary_ssrc;
+        state.pending_target_repair_ssrc = selected_layer->repair_ssrc;
+        state.pending_switch_since_milliseconds = current_time_milliseconds;
+        state.pending_switch_expires_at_milliseconds =
+            current_time_milliseconds + k_selected_rid_keyframe_request_pending_timeout_milliseconds;
+        state.pending_switch_packet_count = 0;
+        state.last_switch_reason = "waiting target keyframe:" + desired_rid;
+
+        WEBRTC_LOG_INFO(
+            "simulcast rid switch pending stream={} publisher_session={} subscriber_session={} mid={} kind={} active_rid={} target_rid={} target_policy={} target_primary_ssrc={} target_repair_ssrc={} expires_at_ms={}",
+            state.stream_id,
+            state.publisher_session_id,
+            state.subscriber_session_id,
+            state.mid,
+            state.kind,
+            state.rid,
+            state.pending_target_rid,
+            state.pending_target_policy,
+            state.pending_target_primary_ssrc,
+            state.pending_target_repair_ssrc,
+            state.pending_switch_expires_at_milliseconds);
+    }
+
+    if (!state.pending_target_rid.empty() && state.pending_switch_expires_at_milliseconds != 0 &&
+        current_time_milliseconds >= state.pending_switch_expires_at_milliseconds)
+    {
+        const std::string timed_out_target = state.pending_target_rid;
+
+        state.pending_switch_timeout_count += 1;
+        state.pending_switch_last_timeout_milliseconds = current_time_milliseconds;
+        state.last_switch_reason = "target keyframe timeout:" + timed_out_target;
+
+        clear_pending_switch();
+
+        WEBRTC_LOG_WARN(
+            "simulcast rid switch timeout stream={} publisher_session={} subscriber_session={} mid={} kind={} active_rid={} target_rid={} timeout_count={}",
+            state.stream_id,
+            state.publisher_session_id,
+            state.subscriber_session_id,
+            state.mid,
+            state.kind,
+            state.rid,
+            timed_out_target,
+            state.pending_switch_timeout_count);
+    }
+
+    if (*packet_rid == active_rid)
+    {
+        select_active_layer();
+        selected_rid_policy = "active_while_pending:" + desired_rid + "+" + selected_rid_policy;
+
+        return true;
+    }
+
+    if (state.pending_target_rid.empty() || *packet_rid != state.pending_target_rid)
+    {
+        return false;
+    }
+
+    state.pending_switch_packet_count += 1;
+
+    if (track_resolution.rtx)
+    {
+        return false;
+    }
+
+    if (!is_publisher_video_keyframe_packet(publisher_offer, packet, track_resolution))
+    {
+        return false;
+    }
+
+    state.pending_switch_keyframe_count += 1;
+
+    const std::string previous_rid = state.rid;
+
+    state.previous_rid = previous_rid;
+    state.rid = selected_layer->rid;
+    state.primary_ssrc = selected_layer->primary_ssrc;
+    state.repair_ssrc = selected_layer->repair_ssrc;
+    state.selection_policy = selected_rid_policy;
+    state.rid_preference = selected_rid_preference;
+
+    state.switch_count += 1;
+    state.pending_switch_commit_count += 1;
+    state.last_switch_milliseconds = current_time_milliseconds;
+    state.last_switch_reason = "target keyframe committed:" + state.pending_target_policy;
+
+    state.packet_count = 0;
+    state.byte_count = 0;
+    state.primary_packet_count = 0;
+    state.primary_byte_count = 0;
+    state.repair_packet_count = 0;
+    state.repair_byte_count = 0;
+    state.last_packet_milliseconds = 0;
+    state.bitrate_window_started_milliseconds = 0;
+    state.bitrate_window_byte_count = 0;
+    state.bitrate_bps = 0;
+    state.nack_feedback_count = 0;
+    state.nack_sequence_count = 0;
+    state.last_nack_milliseconds = 0;
+
+    state.pending_switch_last_timeout_milliseconds = 0;
+    clear_pending_switch();
+
+    auto target_iterator = runtime_selected_rid_targets_by_key_.find(key);
+
+    if (target_iterator != runtime_selected_rid_targets_by_key_.end() && target_iterator->second.target_rid == state.rid)
+    {
+        target_iterator->second.applied_count += 1;
+    }
+
+    pending_selected_rid_keyframe_request_keys_.erase(key);
+    pending_selected_rid_keyframe_request_state_by_key_.erase(key);
+
+    WEBRTC_LOG_INFO(
+        "simulcast rid switch committed stream={} publisher_session={} subscriber_session={} mid={} kind={} previous_rid={} selected_rid={} primary_ssrc={} repair_ssrc={} switch_count={} commit_count={}",
+        state.stream_id,
+        state.publisher_session_id,
+        state.subscriber_session_id,
+        state.mid,
+        state.kind,
+        previous_rid,
+        state.rid,
+        state.primary_ssrc,
+        state.repair_ssrc,
+        state.switch_count,
+        state.pending_switch_commit_count);
+
+    return true;
 }
 
 uint32_t find_whep_preferred_subscriber_ssrc(
@@ -15939,6 +16822,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
                                                                                primary_ssrc_mapping.publisher_session_id,
                                                                                primary_ssrc_mapping.subscriber_session_id,
                                                                                rtx_ssrc_mapping->subscriber_ssrc,
+                                                                               rtx_ssrc_mapping->publisher_ssrc,
                                                                                cached_packet.sequence_number,
                                                                                cached_packet.timestamp);
 
@@ -16612,8 +17496,11 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
                                                                               const media_route_result& route,
                                                                               const std::optional<media_track_resolution>& track_resolution,
                                                                               const std::vector<rtcp_feedback_route_event>& feedback_events,
-                                                                              const media_peer_info& target_peer)
+                                                                              const media_peer_info& target_peer,
+                                                                              bool& expected_filter)
 {
+    expected_filter = false;
+
     std::vector<uint8_t> original_packet;
 
     original_packet.assign(packet.plain_packet.begin(), packet.plain_packet.end());
@@ -16669,7 +17556,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
         const std::optional<std::string> runtime_target_rid = runtime_selected_rid_target_for_subscriber(route, target_peer, *track_resolution);
 
         if (!publisher_rtp_rid_is_selected_for_subscriber(publisher->remote_offer_summary(),
-                                                          identity_authority_,
+                                                          packet,
                                                           route,
                                                           target_peer,
                                                           *track_resolution,
@@ -16678,6 +17565,12 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
                                                           selected_rid_preference,
                                                           selected_rid_policy))
         {
+            /*
+             * A non-selected simulcast RID is an expected forwarding filter,
+             * not a packet rewrite failure.
+             */
+            expected_filter = true;
+
             return std::nullopt;
         }
 
@@ -16844,6 +17737,13 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
                 drop_count);
         }
 
+        /*
+         * Publisher-origin video RTX is intentionally blocked. Subscriber
+         * repair is generated from the SFU outbound cache, so this is an
+         * expected forwarding filter rather than a rewrite failure.
+         */
+        expected_filter = true;
+
         return std::nullopt;
     }
 
@@ -16881,6 +17781,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
                                                                                    route.source.session_id,
                                                                                    target_peer.session_id,
                                                                                    ssrc_mapping->subscriber_ssrc,
+                                                                                   publisher_header->ssrc,
                                                                                    publisher_header->sequence_number,
                                                                                    publisher_header->timestamp);
         if (outbound_rtp.sequence_number_rewrite_required)
@@ -16925,14 +17826,15 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
 
         remember_outbound_rtp_packet(identity);
 
-        if (outbound_rtp.publisher_switch)
+        if (outbound_rtp.source_switch)
         {
             WEBRTC_LOG_INFO(
-                "rtp outbound continuity publisher switched stream={} old_or_new_publisher_session={} subscriber_session={} subscriber_ssrc={} "
+                "rtp outbound continuity source switched stream={} publisher_session={} subscriber_session={} publisher_ssrc={} subscriber_ssrc={} "
                 "publisher_sequence={} subscriber_sequence={} publisher_timestamp={} subscriber_timestamp={} kind={} rtx={}",
                 payload_type_mapping->stream_id,
                 route.source.session_id,
                 target_peer.session_id,
+                publisher_header->ssrc,
                 ssrc_mapping->subscriber_ssrc,
                 publisher_header->sequence_number,
                 outbound_rtp.sequence_number,
@@ -19677,7 +20579,6 @@ void ice_udp_server::remember_runtime_selected_rid_target_locked(std::string_vie
     target_state.policy = std::string(policy);
     target_state.reason = std::string(reason);
     target_state.updated_at_milliseconds = current_time_milliseconds;
-    target_state.applied_count += 1;
 
     state.target_rid = std::string(target_rid);
     state.target_policy = std::string(policy);
@@ -20682,28 +21583,39 @@ uint16_t ice_udp_server::next_outbound_transport_cc_sequence(std::string_view st
 
     return sequence_number;
 }
-ice_udp_server::outbound_rtp_rewrite_result ice_udp_server::next_outbound_rtp_rewrite(std::string_view stream_id,
-                                                                                      std::string_view publisher_session_id,
-                                                                                      std::string_view subscriber_session_id,
-                                                                                      uint32_t subscriber_ssrc,
-                                                                                      uint16_t publisher_sequence_number,
-                                                                                      uint32_t publisher_timestamp)
+ice_udp_server::outbound_rtp_rewrite_result ice_udp_server::next_outbound_rtp_rewrite(
+    std::string_view stream_id,
+    std::string_view publisher_session_id,
+    std::string_view subscriber_session_id,
+    uint32_t subscriber_ssrc,
+    uint32_t publisher_ssrc,
+    uint16_t publisher_sequence_number,
+    uint32_t publisher_timestamp)
 {
     outbound_rtp_rewrite_result result;
 
     result.sequence_number = publisher_sequence_number;
     result.timestamp = publisher_timestamp;
 
-    if (stream_id.empty() || publisher_session_id.empty() || subscriber_session_id.empty() || subscriber_ssrc == 0)
+    if (stream_id.empty() ||
+        publisher_session_id.empty() ||
+        subscriber_session_id.empty() ||
+        subscriber_ssrc == 0 ||
+        publisher_ssrc == 0)
     {
         return result;
     }
 
-    const std::string key = make_outbound_rtp_sequence_key(stream_id, subscriber_session_id, subscriber_ssrc);
+    const std::string key =
+        make_outbound_rtp_sequence_key(
+            stream_id,
+            subscriber_session_id,
+            subscriber_ssrc);
 
     std::lock_guard lock(endpoint_mutex_);
 
-    outbound_rtp_sequence_rewrite_state& state = outbound_rtp_sequence_by_key_[key];
+    outbound_rtp_sequence_rewrite_state& state =
+        outbound_rtp_sequence_by_key_[key];
 
     if (state.stream_id.empty())
     {
@@ -20711,10 +21623,14 @@ ice_udp_server::outbound_rtp_rewrite_result ice_udp_server::next_outbound_rtp_re
         state.publisher_session_id = publisher_session_id;
         state.subscriber_session_id = subscriber_session_id;
         state.subscriber_ssrc = subscriber_ssrc;
+        state.publisher_ssrc = publisher_ssrc;
 
-        state.last_publisher_sequence_number = publisher_sequence_number;
-        state.last_subscriber_sequence_number = publisher_sequence_number;
-        state.next_subscriber_sequence_number = static_cast<uint16_t>(publisher_sequence_number + 1U);
+        state.last_publisher_sequence_number =
+            publisher_sequence_number;
+        state.last_subscriber_sequence_number =
+            publisher_sequence_number;
+        state.next_subscriber_sequence_number =
+            static_cast<uint16_t>(publisher_sequence_number + 1U);
 
         state.last_publisher_timestamp = publisher_timestamp;
         state.last_subscriber_timestamp = publisher_timestamp;
@@ -20724,39 +21640,49 @@ ice_udp_server::outbound_rtp_rewrite_result ice_udp_server::next_outbound_rtp_re
         return result;
     }
 
-    const bool publisher_switch = state.publisher_session_id != publisher_session_id;
+    const bool source_switch =
+        state.publisher_session_id != publisher_session_id ||
+        state.publisher_ssrc != publisher_ssrc;
 
-    if (publisher_switch)
+    if (source_switch)
     {
         state.publisher_session_id = publisher_session_id;
-        state.publisher_switch_count += 1;
+        state.publisher_ssrc = publisher_ssrc;
+        state.source_switch_count += 1;
     }
 
-    const uint16_t subscriber_sequence_number = state.next_subscriber_sequence_number;
+    const uint16_t subscriber_sequence_number =
+        state.next_subscriber_sequence_number;
 
     /*
-     * Timestamp must also stay continuous for the same outbound subscriber SSRC.
-     *
-     * When publisher switches, the new publisher RTP timestamp has a new random
-     * clock base. Do not forward that random jump to the existing WHEP receiver.
-     * Start the new publisher generation from the previous subscriber timestamp
-     * plus one RTP tick, then keep preserving publisher deltas from there.
-     *
-     * This applies to every subscriber-bound RTP stream, including audio, video,
-     * and publisher RTX RTP, because the key is the outbound subscriber SSRC.
+     * Timestamp continuity belongs to the stable outbound subscriber SSRC.
+     * A publisher generation change and a simulcast RID/SSRC switch both
+     * introduce a different publisher RTP clock history. Start the new source
+     * immediately after the last subscriber timestamp, then preserve deltas
+     * while packets continue from that source.
      */
-    uint32_t subscriber_timestamp = static_cast<uint32_t>(state.last_subscriber_timestamp + 1U);
+    uint32_t subscriber_timestamp =
+        static_cast<uint32_t>(state.last_subscriber_timestamp + 1U);
 
-    if (!publisher_switch)
+    if (!source_switch)
     {
-        const uint32_t publisher_timestamp_delta = static_cast<uint32_t>(publisher_timestamp - state.last_publisher_timestamp);
+        const uint32_t publisher_timestamp_delta =
+            static_cast<uint32_t>(
+                publisher_timestamp -
+                state.last_publisher_timestamp);
 
-        subscriber_timestamp = static_cast<uint32_t>(state.last_subscriber_timestamp + publisher_timestamp_delta);
+        subscriber_timestamp =
+            static_cast<uint32_t>(
+                state.last_subscriber_timestamp +
+                publisher_timestamp_delta);
     }
 
-    state.last_publisher_sequence_number = publisher_sequence_number;
-    state.last_subscriber_sequence_number = subscriber_sequence_number;
-    state.next_subscriber_sequence_number = static_cast<uint16_t>(subscriber_sequence_number + 1U);
+    state.last_publisher_sequence_number =
+        publisher_sequence_number;
+    state.last_subscriber_sequence_number =
+        subscriber_sequence_number;
+    state.next_subscriber_sequence_number =
+        static_cast<uint16_t>(subscriber_sequence_number + 1U);
 
     state.last_publisher_timestamp = publisher_timestamp;
     state.last_subscriber_timestamp = subscriber_timestamp;
@@ -20765,9 +21691,11 @@ ice_udp_server::outbound_rtp_rewrite_result ice_udp_server::next_outbound_rtp_re
 
     result.sequence_number = subscriber_sequence_number;
     result.timestamp = subscriber_timestamp;
-    result.sequence_number_rewrite_required = subscriber_sequence_number != publisher_sequence_number;
-    result.timestamp_rewrite_required = subscriber_timestamp != publisher_timestamp;
-    result.publisher_switch = publisher_switch;
+    result.sequence_number_rewrite_required =
+        subscriber_sequence_number != publisher_sequence_number;
+    result.timestamp_rewrite_required =
+        subscriber_timestamp != publisher_timestamp;
+    result.source_switch = source_switch;
 
     return result;
 }
@@ -23224,15 +24152,38 @@ void ice_udp_server::forward_media_packet(const srtp_packet_process_result& pack
             continue;
         }
 
-        auto outbound_plain_packet = make_forward_plain_packet(packet, route, track_resolution, feedback_events, *target_peer);
+        bool expected_filter = false;
+
+        auto outbound_plain_packet =
+            make_forward_plain_packet(
+                packet,
+                route,
+                track_resolution,
+                feedback_events,
+                *target_peer,
+                expected_filter);
+
         if (!outbound_plain_packet.has_value())
         {
-            rtp_rtcp_drop_media_forward_rewrite_failed_total_.fetch_add(1, std::memory_order_relaxed);
-            WEBRTC_LOG_WARN("media forward skipped rewrite failed stream={} source={} target={} kind={}",
-                            route.source.stream_id,
-                            route.source.remote_endpoint,
-                            target_address,
-                            srtp_packet_kind_to_string(packet.kind));
+            if (expected_filter)
+            {
+                rtp_rtcp_drop_media_forward_expected_filter_total_.fetch_add(
+                    1,
+                    std::memory_order_relaxed);
+
+                continue;
+            }
+
+            rtp_rtcp_drop_media_forward_rewrite_failed_total_.fetch_add(
+                1,
+                std::memory_order_relaxed);
+
+            WEBRTC_LOG_WARN(
+                "media forward skipped rewrite failed stream={} source={} target={} kind={}",
+                route.source.stream_id,
+                route.source.remote_endpoint,
+                target_address,
+                srtp_packet_kind_to_string(packet.kind));
 
             continue;
         }

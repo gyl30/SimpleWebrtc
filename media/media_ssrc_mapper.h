@@ -97,6 +97,10 @@ class media_ssrc_mapper
     std::optional<media_ssrc_mapping> find_by_subscriber_ssrc(std::string_view subscriber_session_id, uint32_t subscriber_ssrc) const;
 
     [[nodiscard]]
+    std::vector<media_ssrc_mapping> find_all_by_subscriber_ssrc(std::string_view subscriber_session_id,
+                                                                 uint32_t subscriber_ssrc) const;
+
+    [[nodiscard]]
     std::vector<media_ssrc_mapping> find_by_subscriber_session(std::string_view subscriber_session_id) const;
 
     [[nodiscard]]

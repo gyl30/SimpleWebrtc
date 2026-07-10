@@ -136,6 +136,22 @@ bool preferred_subscriber_ssrc_is_usable(uint32_t preferred_subscriber_ssrc, uin
     return true;
 }
 
+bool primary_video_mappings_can_share_subscriber_ssrc(const media_ssrc_mapping& existing,
+                                                       std::string_view stream_id,
+                                                       std::string_view subscriber_session_id,
+                                                       std::string_view subscriber_mid,
+                                                       std::string_view kind,
+                                                       bool rtx)
+{
+    return !rtx &&
+           !existing.rtx &&
+           kind == "video" &&
+           existing.kind == "video" &&
+           existing.stream_id == stream_id &&
+           existing.subscriber_session_id == subscriber_session_id &&
+           existing.subscriber_mid == subscriber_mid;
+}
+
 }    // namespace
 
 media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping(std::string_view stream_id,
@@ -244,11 +260,50 @@ media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping_with_subscrib
 
     if (preferred_subscriber_ssrc_is_usable(preferred_subscriber_ssrc, publisher_ssrc))
     {
-        const std::string preferred_subscriber_key = make_subscriber_key(subscriber_session_id, preferred_subscriber_ssrc);
+        const std::string preferred_subscriber_key =
+            make_subscriber_key(
+                subscriber_session_id,
+                preferred_subscriber_ssrc);
 
-        if (!publisher_key_by_subscriber_key_.contains(preferred_subscriber_key))
+        const auto reverse_iterator =
+            publisher_key_by_subscriber_key_.find(
+                preferred_subscriber_key);
+
+        bool preferred_subscriber_ssrc_available =
+            reverse_iterator ==
+            publisher_key_by_subscriber_key_.end();
+
+        if (!preferred_subscriber_ssrc_available)
         {
-            mapping.subscriber_ssrc = preferred_subscriber_ssrc;
+            const auto existing_iterator =
+                mappings_by_publisher_key_.find(
+                    reverse_iterator->second);
+
+            if (existing_iterator ==
+                mappings_by_publisher_key_.end())
+            {
+                publisher_key_by_subscriber_key_.erase(
+                    reverse_iterator);
+
+                preferred_subscriber_ssrc_available = true;
+            }
+            else
+            {
+                preferred_subscriber_ssrc_available =
+                    primary_video_mappings_can_share_subscriber_ssrc(
+                        existing_iterator->second,
+                        stream_id,
+                        subscriber_session_id,
+                        subscriber_mid,
+                        kind,
+                        rtx);
+            }
+        }
+
+        if (preferred_subscriber_ssrc_available)
+        {
+            mapping.subscriber_ssrc =
+                preferred_subscriber_ssrc;
         }
     }
 
@@ -268,7 +323,15 @@ media_ssrc_mapping_result media_ssrc_mapper::get_or_create_mapping_with_subscrib
 
     mappings_by_publisher_key_[publisher_key] = mapping;
 
-    publisher_key_by_subscriber_key_[subscriber_key] = publisher_key;
+    /*
+     * A primary simulcast RID alias may intentionally share the stable WHEP
+     * media SSRC with another publisher RID. Keep the legacy reverse entry
+     * deterministic; ice_udp_server resolves an alias to the current active
+     * RID through selected_rid_layer_state_by_key_.
+     */
+    publisher_key_by_subscriber_key_.try_emplace(
+        subscriber_key,
+        publisher_key);
 
     return mapping;
 }
@@ -325,6 +388,37 @@ std::optional<media_ssrc_mapping> media_ssrc_mapper::find_by_subscriber_ssrc(std
 
     return mapping_iterator->second;
 }
+
+std::vector<media_ssrc_mapping>
+media_ssrc_mapper::find_all_by_subscriber_ssrc(
+    std::string_view subscriber_session_id,
+    uint32_t subscriber_ssrc) const
+{
+    std::vector<media_ssrc_mapping> mappings;
+
+    if (subscriber_session_id.empty() || subscriber_ssrc == 0)
+    {
+        return mappings;
+    }
+
+    std::lock_guard lock(mutex_);
+
+    for (const auto& [publisher_key, mapping] :
+         mappings_by_publisher_key_)
+    {
+        (void)publisher_key;
+
+        if (mapping.subscriber_session_id ==
+                subscriber_session_id &&
+            mapping.subscriber_ssrc == subscriber_ssrc)
+        {
+            mappings.push_back(mapping);
+        }
+    }
+
+    return mappings;
+}
+
 
 void media_ssrc_mapper::forget_session(std::string_view session_id)
 {
@@ -513,11 +607,60 @@ void media_ssrc_mapper::erase_mapping_locked(const std::string& publisher_key)
         return;
     }
 
-    const std::string subscriber_key = make_subscriber_key(iterator->second.subscriber_session_id, iterator->second.subscriber_ssrc);
+    const std::string subscriber_session_id =
+        iterator->second.subscriber_session_id;
+    const uint32_t subscriber_ssrc =
+        iterator->second.subscriber_ssrc;
+    const std::string subscriber_key =
+        make_subscriber_key(
+            subscriber_session_id,
+            subscriber_ssrc);
+
+    const auto reverse_iterator =
+        publisher_key_by_subscriber_key_.find(subscriber_key);
+
+    const bool reverse_points_to_erased_mapping =
+        reverse_iterator !=
+            publisher_key_by_subscriber_key_.end() &&
+        reverse_iterator->second == publisher_key;
+
+    mappings_by_publisher_key_.erase(iterator);
+
+    if (!reverse_points_to_erased_mapping)
+    {
+        return;
+    }
 
     publisher_key_by_subscriber_key_.erase(subscriber_key);
 
-    mappings_by_publisher_key_.erase(iterator);
+    const media_ssrc_mapping* replacement_mapping = nullptr;
+    std::string replacement_publisher_key;
+
+    for (const auto& [candidate_publisher_key, candidate] :
+         mappings_by_publisher_key_)
+    {
+        if (candidate.subscriber_session_id !=
+                subscriber_session_id ||
+            candidate.subscriber_ssrc != subscriber_ssrc)
+        {
+            continue;
+        }
+
+        if (replacement_mapping == nullptr ||
+            candidate.last_used_at_milliseconds >
+                replacement_mapping->last_used_at_milliseconds)
+        {
+            replacement_mapping = &candidate;
+            replacement_publisher_key =
+                candidate_publisher_key;
+        }
+    }
+
+    if (replacement_mapping != nullptr)
+    {
+        publisher_key_by_subscriber_key_[subscriber_key] =
+            std::move(replacement_publisher_key);
+    }
 }
 
 bool media_ssrc_mapping_requires_rewrite(const media_ssrc_mapping& mapping) { return mapping.publisher_ssrc != mapping.subscriber_ssrc; }
