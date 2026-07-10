@@ -97,6 +97,9 @@ bool media_has_rtp_header_extension_uri(const media_summary& media, std::string_
 bool media_has_rtx_codec(const media_summary& media);
 
 [[nodiscard]]
+bool media_payload_type_is_rtx(const media_summary& media, uint16_t payload_type);
+
+[[nodiscard]]
 bool media_has_rid(const media_summary& media, std::string_view rid);
 
 [[nodiscard]]

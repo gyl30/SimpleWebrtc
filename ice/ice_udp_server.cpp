@@ -82,6 +82,8 @@ constexpr std::size_t k_max_pending_subscriber_runtime_residual_checks = 256;
 
 constexpr std::size_t k_max_direct_publisher_rtx_drop_counter_entries = 4096;
 
+constexpr std::size_t k_max_publisher_simulcast_layer_states = 4096;
+
 struct pending_session_cleanup_candidate
 {
     std::string session_id;
@@ -322,6 +324,49 @@ std::string make_selected_rid_layer_key(std::string_view stream_id,
     key.append(mid);
     key.push_back('|');
     key.append(kind);
+    return key;
+}
+std::string make_publisher_simulcast_layer_key(
+    std::string_view stream_id, std::string_view publisher_session_id, std::string_view mid, std::string_view kind, std::string_view rid)
+{
+    std::string key;
+
+    key.reserve(stream_id.size() + publisher_session_id.size() + mid.size() + kind.size() + rid.size() + 4);
+
+    key.append(stream_id);
+    key.push_back('|');
+    key.append(publisher_session_id);
+    key.push_back('|');
+    key.append(mid);
+    key.push_back('|');
+    key.append(kind);
+    key.push_back('|');
+    key.append(rid);
+
+    return key;
+}
+std::string make_publisher_simulcast_layer_forward_key(std::string_view stream_id,
+                                                       std::string_view publisher_session_id,
+                                                       std::string_view publisher_mid,
+                                                       std::string_view kind,
+                                                       uint32_t publisher_primary_ssrc)
+{
+    std::string key;
+
+    const std::string publisher_ssrc = std::to_string(publisher_primary_ssrc);
+
+    key.reserve(stream_id.size() + publisher_session_id.size() + publisher_mid.size() + kind.size() + publisher_ssrc.size() + 4);
+
+    key.append(stream_id);
+    key.push_back('|');
+    key.append(publisher_session_id);
+    key.push_back('|');
+    key.append(publisher_mid);
+    key.push_back('|');
+    key.append(kind);
+    key.push_back('|');
+    key.append(publisher_ssrc);
+
     return key;
 }
 
@@ -2031,15 +2076,15 @@ bool lifecycle_active_runtime_state_is_empty(const lifecycle_debug_snapshot& sna
            snapshot.rtx_sequence_allocator_count == 0 && snapshot.rtx_retransmission_index_count == 0 &&
            snapshot.nack_retransmit_throttle_count == 0 && snapshot.fir_sequence_number_state_count == 0 &&
            snapshot.publisher_video_ssrc_state_count == 0 && snapshot.pending_republish_keyframe_request_count == 0 &&
-           snapshot.selected_rid_layer_state_count == 0 && snapshot.pending_selected_rid_keyframe_request_count == 0 &&
-           snapshot.selected_rid_keyframe_pending_metadata_count == 0 && snapshot.extmap_rewrite_state_count == 0 &&
-           snapshot.outbound_transport_cc_sequence_count == 0 && snapshot.outbound_transport_cc_packet_count == 0 &&
-           snapshot.outbound_transport_cc_reverse_index_count == 0 && snapshot.outbound_transport_cc_feedback_window_count == 0 &&
-           snapshot.outbound_transport_cc_feedback_window_observation_count == 0 && snapshot.subscriber_downlink_bandwidth_state_count == 0 &&
-           snapshot.subscriber_downlink_pacing_state_count == 0 && snapshot.subscriber_downlink_pacing_queue_packet_count == 0 &&
-           snapshot.subscriber_downlink_pacing_queue_byte_count == 0 && snapshot.orphan_subscriber_keyframe_request_count == 0 &&
-           snapshot.direct_publisher_rtx_drop_counter_entry_count == 0 && snapshot.pending_subscriber_runtime_residual_check_count == 0 &&
-           snapshot.subscriber_runtime_residual_count == 0;
+           snapshot.publisher_simulcast_layer_state_count == 0 && snapshot.selected_rid_layer_state_count == 0 &&
+           snapshot.pending_selected_rid_keyframe_request_count == 0 && snapshot.selected_rid_keyframe_pending_metadata_count == 0 &&
+           snapshot.extmap_rewrite_state_count == 0 && snapshot.outbound_transport_cc_sequence_count == 0 &&
+           snapshot.outbound_transport_cc_packet_count == 0 && snapshot.outbound_transport_cc_reverse_index_count == 0 &&
+           snapshot.outbound_transport_cc_feedback_window_count == 0 && snapshot.outbound_transport_cc_feedback_window_observation_count == 0 &&
+           snapshot.subscriber_downlink_bandwidth_state_count == 0 && snapshot.subscriber_downlink_pacing_state_count == 0 &&
+           snapshot.subscriber_downlink_pacing_queue_packet_count == 0 && snapshot.subscriber_downlink_pacing_queue_byte_count == 0 &&
+           snapshot.orphan_subscriber_keyframe_request_count == 0 && snapshot.direct_publisher_rtx_drop_counter_entry_count == 0 &&
+           snapshot.pending_subscriber_runtime_residual_check_count == 0 && snapshot.subscriber_runtime_residual_count == 0;
 }
 
 bool lifecycle_delayed_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
@@ -5933,9 +5978,11 @@ void ice_udp_server::stop()
 
         pending_republish_keyframe_state_by_stream_.clear();
 
+        publisher_simulcast_layer_state_by_key_.clear();
+        publisher_simulcast_layer_capacity_warning_logged_ = false;
+
         selected_rid_layer_state_by_key_.clear();
         subscriber_downlink_republish_grace_until_by_key_.clear();
-
         runtime_selected_rid_targets_by_key_.clear();
 
         pending_selected_rid_keyframe_request_keys_.clear();
@@ -6167,6 +6214,7 @@ void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
     }
 
     forget_extmap_rewrite_states_for_session(session_id);
+    forget_publisher_simulcast_layer_states_for_session(session_id);
     forget_selected_rid_layer_states_for_session(session_id);
     forget_outbound_rtp_sequences_for_session(session_id);
     forget_outbound_transport_cc_sequences_for_session(session_id);
@@ -7780,12 +7828,14 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.direct_publisher_rtx_drop_counter_entry_count = to_debug_count(direct_publisher_rtx_drop_counts_.size());
         snapshot.fir_sequence_number_state_count = to_debug_count(fir_sequence_number_by_key_.size());
         snapshot.publisher_video_ssrc_state_count = to_debug_count(publisher_video_ssrc_by_stream_.size());
+        snapshot.publisher_simulcast_layer_state_count = to_debug_count(publisher_simulcast_layer_state_by_key_.size());
         snapshot.pending_republish_keyframe_request_count = to_debug_count(pending_republish_keyframe_state_by_stream_.size());
         snapshot.selected_rid_layer_state_count = to_debug_count(selected_rid_layer_state_by_key_.size());
         snapshot.pending_selected_rid_keyframe_request_count = to_debug_count(pending_selected_rid_keyframe_request_keys_.size());
         snapshot.selected_rid_keyframe_pending_metadata_count = to_debug_count(pending_selected_rid_keyframe_request_state_by_key_.size());
         snapshot.simulcast_rid_preference_policy = std::string(simulcast_rid_preference_policy_to_string(simulcast_rid_preference_policy_from_env()));
         snapshot.extmap_rewrite_state_count = to_debug_count(extmap_rewrite_state_by_key_.size());
+        snapshot.publisher_simulcast_layers.reserve(publisher_simulcast_layer_state_by_key_.size());
         snapshot.selected_rid_layers.reserve(selected_rid_layer_state_by_key_.size());
         snapshot.outbound_transport_cc_sequence_count = to_debug_count(outbound_transport_cc_sequence_by_key_.size());
         snapshot.outbound_transport_cc_packet_count = to_debug_count(outbound_transport_cc_packets_by_key_.size());
@@ -7821,6 +7871,52 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             snapshot.subscriber_downlink_bandwidth_states.push_back(
                 make_subscriber_downlink_bandwidth_debug_entry(state, pacing_state, downlink_control_mode));
         }
+
+        for (const auto& [key, state] : publisher_simulcast_layer_state_by_key_)
+        {
+            (void)key;
+            lifecycle_debug_publisher_simulcast_layer_entry entry;
+
+            entry.stream_id = state.stream_id;
+            entry.publisher_session_id = state.publisher_session_id;
+
+            entry.mid = state.mid;
+            entry.kind = state.kind;
+            entry.rid = state.rid;
+
+            entry.primary_ssrc = state.primary_ssrc;
+            entry.repair_ssrc = state.repair_ssrc;
+
+            entry.primary_payload_type = state.primary_payload_type;
+
+            entry.repair_payload_type = state.repair_payload_type;
+
+            entry.packet_count = state.packet_count;
+            entry.byte_count = state.byte_count;
+
+            entry.primary_packet_count = state.primary_packet_count;
+
+            entry.primary_byte_count = state.primary_byte_count;
+
+            entry.repair_packet_count = state.repair_packet_count;
+
+            entry.repair_byte_count = state.repair_byte_count;
+
+            entry.first_packet_milliseconds = state.first_packet_milliseconds;
+
+            entry.last_packet_milliseconds = state.last_packet_milliseconds;
+
+            entry.last_packet_age_milliseconds = state.last_packet_milliseconds != 0 && current_time_milliseconds > state.last_packet_milliseconds
+                                                     ? current_time_milliseconds - state.last_packet_milliseconds
+                                                     : 0;
+
+            entry.bitrate_bps = state.bitrate_bps;
+
+            entry.selected_subscriber_count = 0;
+
+            snapshot.publisher_simulcast_layers.push_back(std::move(entry));
+        }
+
         for (const auto& [key, state] : selected_rid_layer_state_by_key_)
         {
             lifecycle_debug_selected_rid_layer_entry entry;
@@ -8221,6 +8317,54 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
             snapshot.identity_forward_bindings.push_back(std::move(entry));
         }
+        std::unordered_map<std::string, std::unordered_set<std::string>> subscriber_session_ids_by_publisher_layer_key;
+
+        subscriber_session_ids_by_publisher_layer_key.reserve(snapshot.publisher_simulcast_layers.size());
+
+        for (const auto& binding : forward_bindings)
+        {
+            /*
+             * Count the primary forwarding relationship. RTX forward
+             * bindings represent repair transport for the same subscriber
+             * and must not increase the subscriber count.
+             */
+            if (binding.rtx)
+            {
+                continue;
+            }
+
+            if (binding.packet_count == 0 || binding.publisher_ssrc == 0 || binding.stream_id.empty() || binding.publisher_session_id.empty() ||
+                binding.subscriber_session_id.empty() || binding.publisher_mid.empty() || binding.kind.empty())
+            {
+                continue;
+            }
+
+            const std::string layer_key = make_publisher_simulcast_layer_forward_key(
+                binding.stream_id, binding.publisher_session_id, binding.publisher_mid, binding.kind, binding.publisher_ssrc);
+
+            subscriber_session_ids_by_publisher_layer_key[layer_key].insert(binding.subscriber_session_id);
+        }
+
+        for (auto& layer : snapshot.publisher_simulcast_layers)
+        {
+            if (layer.primary_ssrc == 0)
+            {
+                continue;
+            }
+
+            const std::string layer_key =
+                make_publisher_simulcast_layer_forward_key(layer.stream_id, layer.publisher_session_id, layer.mid, layer.kind, layer.primary_ssrc);
+
+            const auto iterator = subscriber_session_ids_by_publisher_layer_key.find(layer_key);
+
+            if (iterator == subscriber_session_ids_by_publisher_layer_key.end())
+            {
+                continue;
+            }
+
+            layer.selected_subscriber_count = static_cast<uint64_t>(iterator->second.size());
+        }
+
         snapshot.subscriber_forward_groups = make_subscriber_forward_groups(forward_bindings);
 
         snapshot.subscriber_forward_group_count = to_debug_count(snapshot.subscriber_forward_groups.size());
@@ -8729,6 +8873,12 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
                 snapshot, "pending republish keyframe request remains count=" + std::to_string(snapshot.pending_republish_keyframe_request_count));
         }
 
+        if (snapshot.publisher_simulcast_layer_state_count != 0)
+        {
+            add_lifecycle_residual(snapshot,
+                                   "publisher simulcast layer state remains count=" + std::to_string(snapshot.publisher_simulcast_layer_state_count));
+        }
+
         if (snapshot.selected_rid_layer_state_count != 0)
         {
             add_lifecycle_residual(snapshot, "selected rid layer state remains count=" + std::to_string(snapshot.selected_rid_layer_state_count));
@@ -8901,6 +9051,9 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
                                   "pending_subscriber_runtime_residual_checks",
                                   snapshot.pending_subscriber_runtime_residual_check_count,
                                   k_max_pending_subscriber_runtime_residual_checks);
+
+    append_runtime_resource_limit(
+        snapshot, "publisher_simulcast_layer_states", snapshot.publisher_simulcast_layer_state_count, k_max_publisher_simulcast_layer_states);
 
     append_runtime_resource_limit(snapshot,
                                   "direct_publisher_rtx_drop_counters",
@@ -12685,13 +12838,23 @@ void ice_udp_server::handle_rtp_or_rtcp_packet(std::span<const uint8_t> data, co
     if (!publisher_rtp_identity_is_allowed(route, *result, track_resolution))
     {
         rtp_rtcp_drop_inbound_identity_gate_total_.fetch_add(1, std::memory_order_relaxed);
+
         return;
+    }
+
+    /*
+     * Observe each publisher RTP packet once, before subscriber fanout.
+     * Do not place this inside forward_media_packet(), otherwise the same
+     * publisher packet would be counted once per subscriber.
+     */
+    if (result->kind == srtp_packet_kind::rtp && track_resolution.has_value() && track_resolution->resolved)
+    {
+        remember_publisher_simulcast_layer_packet(route, *track_resolution, result->plain_packet.size());
     }
 
     complete_republish_keyframe_request_pending_for_publisher_keyframe(*result, route, track_resolution);
 
     cache_inbound_rtp_packet(*result, route, track_resolution);
-
     if (result->kind == srtp_packet_kind::rtcp && result->rtcp_has_bye)
     {
         handle_rtcp_bye_packet(*result, route);
@@ -19216,6 +19379,7 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
 
     std::size_t erased_payload_type_mappings = 0;
     std::size_t erased_keyframe_request_states = 0;
+    std::size_t erased_publisher_simulcast_layer_states = 0;
     std::size_t erased_pending_residual_checks = 0;
     std::size_t erased_direct_publisher_rtx_drop_counters = 0;
     {
@@ -19223,8 +19387,9 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
 
         erased_payload_type_mappings = erase_payload_type_mappings_for_stream_locked(stream_id);
         erased_keyframe_request_states = erase_keyframe_request_states_for_stream_locked(stream_id);
-        const std::size_t erased_extmap_rewrite_states = erase_extmap_rewrite_states_for_stream_locked(stream_id);
+        std::size_t erased_extmap_rewrite_states = erase_extmap_rewrite_states_for_stream_locked(stream_id);
         (void)erased_extmap_rewrite_states;
+        erased_publisher_simulcast_layer_states = erase_publisher_simulcast_layer_states_for_stream_locked(stream_id);
         const std::size_t erased_selected_rid_states = erase_selected_rid_layer_states_for_stream_locked(stream_id);
         (void)erased_selected_rid_states;
         const std::size_t erased_outbound_rtp_sequences = erase_outbound_rtp_sequences_for_stream_locked(stream_id);
@@ -19288,9 +19453,13 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
             erased_direct_publisher_rtx_drop_counters);
     }
     WEBRTC_LOG_INFO(
-        "ice udp stream runtime state cleanup stream={} cache_erased={} cache_packets_before={} cache_packets_erased={} "
-        "remaining_cache_packets={} media_router_streams_before={} media_router_streams_after={} payload_type_mappings_erased={} "
-        "keyframe_request_states_erased={}",
+        "ice udp stream runtime state cleanup stream={} "
+        "cache_erased={} cache_packets_before={} "
+        "cache_packets_erased={} remaining_cache_packets={} "
+        "media_router_streams_before={} media_router_streams_after={} "
+        "payload_type_mappings_erased={} "
+        "keyframe_request_states_erased={} "
+        "publisher_simulcast_layer_states_erased={}",
         stream_id,
         cache_erased ? 1 : 0,
         cache_packets_before,
@@ -19299,7 +19468,8 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         media_router_stream_count_before,
         media_router_stream_count_after,
         erased_payload_type_mappings,
-        erased_keyframe_request_states);
+        erased_keyframe_request_states,
+        erased_publisher_simulcast_layer_states);
 }
 std::unordered_set<std::string> ice_udp_server::collect_republish_keyframe_eligible_subscribers(std::string_view stream_id) const
 {
@@ -19765,7 +19935,247 @@ void ice_udp_server::maybe_update_adaptive_selected_rid_target_locked(std::strin
     state.last_adaptive_decision_reason = "quality window healthy";
     state.last_adaptive_decision_milliseconds = current_time_milliseconds;
 }
+void ice_udp_server::remember_publisher_simulcast_layer_packet(const media_route_result& route,
+                                                               const media_track_resolution& track_resolution,
+                                                               std::size_t packet_size)
+{
+    if (route.source.role != media_peer_role::publisher)
+    {
+        return;
+    }
 
+    if (!track_resolution.resolved || !is_video_media_kind(track_resolution.kind))
+    {
+        return;
+    }
+
+    if (route.source.stream_id.empty() || route.source.session_id.empty() || track_resolution.mid.empty() || track_resolution.kind.empty())
+    {
+        return;
+    }
+
+    if (!track_resolution.stream_id.empty() && track_resolution.stream_id != route.source.stream_id)
+    {
+        WEBRTC_LOG_WARN(
+            "publisher simulcast layer ignored stream mismatch "
+            "route_stream={} resolution_stream={} publisher_session={} "
+            "mid={} kind={}",
+            route.source.stream_id,
+            track_resolution.stream_id,
+            route.source.session_id,
+            track_resolution.mid,
+            track_resolution.kind);
+
+        return;
+    }
+
+    if (!track_resolution.session_id.empty() && track_resolution.session_id != route.source.session_id)
+    {
+        WEBRTC_LOG_WARN(
+            "publisher simulcast layer ignored session mismatch "
+            "stream={} route_publisher_session={} "
+            "resolution_publisher_session={} mid={} kind={}",
+            route.source.stream_id,
+            route.source.session_id,
+            track_resolution.session_id,
+            track_resolution.mid,
+            track_resolution.kind);
+
+        return;
+    }
+
+    std::string_view rid;
+
+    if (track_resolution.rtx)
+    {
+        if (!track_resolution.repaired_rid.has_value() || track_resolution.repaired_rid->empty())
+        {
+            return;
+        }
+
+        rid = *track_resolution.repaired_rid;
+    }
+    else
+    {
+        if (!track_resolution.rid.has_value() || track_resolution.rid->empty())
+        {
+            return;
+        }
+
+        rid = *track_resolution.rid;
+    }
+
+    const std::string key =
+        make_publisher_simulcast_layer_key(route.source.stream_id, route.source.session_id, track_resolution.mid, track_resolution.kind, rid);
+
+    const uint64_t current_time_milliseconds = now_milliseconds();
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    auto iterator = publisher_simulcast_layer_state_by_key_.find(key);
+
+    if (iterator == publisher_simulcast_layer_state_by_key_.end())
+    {
+        /*
+         * A publisher layer is anchored by primary RTP.
+         *
+         * Chromium can send padding/probing packets on an RTX SSRC before
+         * the corresponding primary encoding becomes active. Creating a
+         * runtime layer from such a packet would leave a repair-only ghost
+         * entry with primary_ssrc=0 and bitrate_bps=0.
+         *
+         * Once primary RTP creates the layer, later repair packets are
+         * accumulated normally.
+         */
+        if (track_resolution.rtx)
+        {
+            return;
+        }
+
+        if (publisher_simulcast_layer_state_by_key_.size() >= k_max_publisher_simulcast_layer_states)
+        {
+            if (!publisher_simulcast_layer_capacity_warning_logged_)
+            {
+                publisher_simulcast_layer_capacity_warning_logged_ = true;
+
+                WEBRTC_LOG_WARN(
+                    "publisher simulcast layer state capacity reached "
+                    "stream={} publisher_session={} mid={} kind={} "
+                    "rid={} limit={}",
+                    route.source.stream_id,
+                    route.source.session_id,
+                    track_resolution.mid,
+                    track_resolution.kind,
+                    rid,
+                    k_max_publisher_simulcast_layer_states);
+            }
+
+            return;
+        }
+
+        publisher_simulcast_layer_runtime_state state;
+
+        state.stream_id = route.source.stream_id;
+        state.publisher_session_id = route.source.session_id;
+        state.mid = track_resolution.mid;
+        state.kind = track_resolution.kind;
+        state.rid = std::string(rid);
+        state.first_packet_milliseconds = current_time_milliseconds;
+
+        auto [inserted_iterator, inserted] = publisher_simulcast_layer_state_by_key_.emplace(key, std::move(state));
+
+        if (!inserted)
+        {
+            return;
+        }
+
+        iterator = inserted_iterator;
+    }
+
+    remember_publisher_simulcast_layer_quality_packet_locked(iterator->second, track_resolution, packet_size, current_time_milliseconds);
+}
+
+void ice_udp_server::remember_publisher_simulcast_layer_quality_packet_locked(publisher_simulcast_layer_runtime_state& state,
+                                                                              const media_track_resolution& track_resolution,
+                                                                              std::size_t packet_size,
+                                                                              uint64_t current_time_milliseconds)
+{
+    const uint64_t current_byte_count = static_cast<uint64_t>(packet_size);
+
+    state.packet_count += 1;
+    state.byte_count += current_byte_count;
+
+    if (state.first_packet_milliseconds == 0)
+    {
+        state.first_packet_milliseconds = current_time_milliseconds;
+    }
+
+    state.last_packet_milliseconds = current_time_milliseconds;
+
+    if (track_resolution.rtx)
+    {
+        state.repair_packet_count += 1;
+        state.repair_byte_count += current_byte_count;
+
+        state.repair_ssrc = track_resolution.rtx_repair_ssrc != 0 ? track_resolution.rtx_repair_ssrc : track_resolution.ssrc;
+
+        state.repair_payload_type = static_cast<uint16_t>(track_resolution.payload_type);
+
+        if (state.primary_ssrc == 0 && track_resolution.rtx_primary_ssrc != 0)
+        {
+            state.primary_ssrc = track_resolution.rtx_primary_ssrc;
+        }
+    }
+    else
+    {
+        state.primary_packet_count += 1;
+        state.primary_byte_count += current_byte_count;
+
+        state.primary_ssrc = track_resolution.ssrc;
+        state.primary_payload_type = static_cast<uint16_t>(track_resolution.payload_type);
+    }
+
+    if (state.bitrate_window_started_milliseconds == 0)
+    {
+        state.bitrate_window_started_milliseconds = current_time_milliseconds;
+
+        state.bitrate_window_byte_count = current_byte_count;
+
+        return;
+    }
+
+    state.bitrate_window_byte_count += current_byte_count;
+
+    const uint64_t elapsed_milliseconds = current_time_milliseconds > state.bitrate_window_started_milliseconds
+                                              ? current_time_milliseconds - state.bitrate_window_started_milliseconds
+                                              : 0;
+
+    if (elapsed_milliseconds < 1000)
+    {
+        return;
+    }
+
+    state.bitrate_bps = (state.bitrate_window_byte_count * 8000U) / elapsed_milliseconds;
+
+    state.bitrate_window_started_milliseconds = current_time_milliseconds;
+
+    state.bitrate_window_byte_count = 0;
+}
+
+void ice_udp_server::forget_publisher_simulcast_layer_states_for_session(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(endpoint_mutex_);
+
+    std::erase_if(publisher_simulcast_layer_state_by_key_, [session_id](const auto& item) { return item.second.publisher_session_id == session_id; });
+
+    if (publisher_simulcast_layer_state_by_key_.size() < k_max_publisher_simulcast_layer_states)
+    {
+        publisher_simulcast_layer_capacity_warning_logged_ = false;
+    }
+}
+
+std::size_t ice_udp_server::erase_publisher_simulcast_layer_states_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    const std::size_t erased_count =
+        std::erase_if(publisher_simulcast_layer_state_by_key_, [stream_id](const auto& item) { return item.second.stream_id == stream_id; });
+
+    if (publisher_simulcast_layer_state_by_key_.size() < k_max_publisher_simulcast_layer_states)
+    {
+        publisher_simulcast_layer_capacity_warning_logged_ = false;
+    }
+
+    return erased_count;
+}
 void ice_udp_server::remember_selected_rid_layer_quality_packet_locked(selected_rid_layer_runtime_state& state,
                                                                        const media_track_resolution& track_resolution,
                                                                        std::size_t packet_size,

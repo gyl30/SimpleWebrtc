@@ -277,6 +277,10 @@ void fill_resolution_rtx_from_media(media_track_resolution& resolution, const sd
     resolution.rtx_primary_ssrc = 0;
     resolution.rtx_repair_ssrc = 0;
 
+    /*
+     * FID remains the strongest SSRC-level identity when the publisher
+     * includes explicit a=ssrc-group:FID signaling.
+     */
     const std::optional<uint32_t> primary_ssrc = sdp::find_rtx_primary_ssrc(media, resolution.ssrc);
 
     if (primary_ssrc.has_value())
@@ -288,11 +292,26 @@ void fill_resolution_rtx_from_media(media_track_resolution& resolution, const sd
         return;
     }
 
+    /*
+     * RID-based simulcast commonly uses repaired-rid without advertising
+     * a static FID group for every encoding. In that case, the negotiated
+     * RTX payload type is authoritative for classifying the packet as RTX.
+     *
+     * repaired-rid is parsed separately and provides the primary layer
+     * identity. Do not invent a primary SSRC when the SDP has no FID group.
+     */
+    if (sdp::media_payload_type_is_rtx(media, static_cast<uint16_t>(resolution.payload_type)))
+    {
+        resolution.rtx = true;
+        resolution.rtx_repair_ssrc = resolution.ssrc;
+
+        return;
+    }
+
     const std::optional<uint32_t> repair_ssrc = sdp::find_rtx_repair_ssrc(media, resolution.ssrc);
 
     if (repair_ssrc.has_value())
     {
-        resolution.rtx = false;
         resolution.rtx_primary_ssrc = resolution.ssrc;
         resolution.rtx_repair_ssrc = *repair_ssrc;
     }
@@ -315,11 +334,23 @@ void fill_binding_rtx_from_media(media_track_resolver::media_track_binding& bind
         return;
     }
 
+    /*
+     * Keep binding classification consistent with media_track_resolution.
+     * For RID simulcast without FID, classify by the negotiated RTX PT and
+     * preserve the repair SSRC. repaired-rid carries the layer identity.
+     */
+    if (sdp::media_payload_type_is_rtx(media, static_cast<uint16_t>(binding.payload_type)))
+    {
+        binding.rtx = true;
+        binding.rtx_repair_ssrc = binding.ssrc;
+
+        return;
+    }
+
     const std::optional<uint32_t> repair_ssrc = sdp::find_rtx_repair_ssrc(media, binding.ssrc);
 
     if (repair_ssrc.has_value())
     {
-        binding.rtx = false;
         binding.rtx_primary_ssrc = binding.ssrc;
         binding.rtx_repair_ssrc = *repair_ssrc;
     }

@@ -1515,6 +1515,20 @@ bool media_has_rtx_codec(const media_summary& media)
 
     return false;
 }
+bool media_payload_type_is_rtx(const media_summary& media, uint16_t payload_type)
+{
+    for (const auto& codec : media.codecs)
+    {
+        if (codec.payload_type != payload_type)
+        {
+            continue;
+        }
+
+        return equals_ignore_case_ascii(codec.name, "rtx");
+    }
+
+    return false;
+}
 
 bool media_has_rid(const media_summary& media, std::string_view rid)
 {

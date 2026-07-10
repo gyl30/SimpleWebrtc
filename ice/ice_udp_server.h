@@ -465,6 +465,37 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string last_keyframe_request_result;
         std::string last_keyframe_request_reason;
     };
+    struct publisher_simulcast_layer_runtime_state
+    {
+        std::string stream_id;
+        std::string publisher_session_id;
+
+        std::string mid;
+        std::string kind;
+        std::string rid;
+
+        uint32_t primary_ssrc = 0;
+        uint32_t repair_ssrc = 0;
+
+        uint16_t primary_payload_type = 0;
+        uint16_t repair_payload_type = 0;
+
+        uint64_t packet_count = 0;
+        uint64_t byte_count = 0;
+
+        uint64_t primary_packet_count = 0;
+        uint64_t primary_byte_count = 0;
+
+        uint64_t repair_packet_count = 0;
+        uint64_t repair_byte_count = 0;
+
+        uint64_t first_packet_milliseconds = 0;
+        uint64_t last_packet_milliseconds = 0;
+
+        uint64_t bitrate_window_started_milliseconds = 0;
+        uint64_t bitrate_window_byte_count = 0;
+        uint64_t bitrate_bps = 0;
+    };
     struct selected_rid_keyframe_request_pending_state
     {
         uint64_t pending_since_milliseconds = 0;
@@ -1080,6 +1111,20 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                                             const media_route_result& route,
                                                                             const std::optional<media_track_resolution>& track_resolution);
 
+    void remember_publisher_simulcast_layer_packet(const media_route_result& route,
+                                                   const media_track_resolution& track_resolution,
+                                                   std::size_t packet_size);
+
+    void remember_publisher_simulcast_layer_quality_packet_locked(publisher_simulcast_layer_runtime_state& state,
+                                                                  const media_track_resolution& track_resolution,
+                                                                  std::size_t packet_size,
+                                                                  uint64_t current_time_milliseconds);
+
+    void forget_publisher_simulcast_layer_states_for_session(std::string_view session_id);
+
+    [[nodiscard]]
+    std::size_t erase_publisher_simulcast_layer_states_for_stream_locked(std::string_view stream_id);
+
     void remember_selected_rid_layer_quality_packet_locked(selected_rid_layer_runtime_state& state,
                                                            const media_track_resolution& track_resolution,
                                                            std::size_t packet_size,
@@ -1515,6 +1560,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, uint8_t> fir_sequence_number_by_key_;
     std::unordered_map<std::string, uint32_t> publisher_video_ssrc_by_stream_;
     std::unordered_map<std::string, republish_keyframe_request_state> pending_republish_keyframe_state_by_stream_;
+    std::unordered_map<std::string, publisher_simulcast_layer_runtime_state> publisher_simulcast_layer_state_by_key_;
     std::unordered_map<std::string, selected_rid_layer_runtime_state> selected_rid_layer_state_by_key_;
     std::unordered_map<std::string, runtime_selected_rid_target_state> runtime_selected_rid_targets_by_key_;
     std::unordered_set<std::string> pending_selected_rid_keyframe_request_keys_;
@@ -1544,6 +1590,8 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
 
     std::unordered_map<std::string, direct_publisher_rtx_drop_counter_state> direct_publisher_rtx_drop_counts_;
+
+    bool publisher_simulcast_layer_capacity_warning_logged_ = false;
 
     bool started_ = false;
     bool registry_callback_registered_ = false;
