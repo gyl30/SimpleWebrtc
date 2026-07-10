@@ -339,9 +339,34 @@ struct lifecycle_debug_twcc_feedback_source_entry
     uint64_t sender_ssrc = 0;
     uint64_t media_ssrc = 0;
 
+    bool identity_ready = false;
+
     uint64_t feedback_packet_count = 0;
     uint64_t total_feedback_packet_count = 0;
     uint64_t pending_packet_count = 0;
+
+    uint64_t observed_packet_count = 0;
+    uint64_t observed_primary_packet_count = 0;
+    uint64_t observed_rtx_packet_count = 0;
+    uint64_t duplicate_packet_count = 0;
+
+    uint64_t total_feedback_packet_status_count = 0;
+    uint64_t total_feedback_received_packet_count = 0;
+    uint64_t total_feedback_not_received_packet_count = 0;
+    uint64_t total_feedback_small_delta_count = 0;
+    uint64_t total_feedback_large_delta_count = 0;
+
+    uint64_t last_feedback_base_sequence_number = 0;
+    uint64_t last_feedback_packet_status_count = 0;
+    uint64_t last_feedback_received_packet_count = 0;
+    uint64_t last_feedback_not_received_packet_count = 0;
+    uint64_t last_feedback_small_delta_count = 0;
+    uint64_t last_feedback_large_delta_count = 0;
+
+    bool has_pending_transport_sequence_numbers = false;
+    uint64_t first_pending_transport_sequence_number = 0;
+    uint64_t last_pending_transport_sequence_number = 0;
+    uint64_t pending_transport_sequence_span = 0;
 
     uint64_t feedback_interval_milliseconds = 0;
     uint64_t stale_source_milliseconds = 0;
@@ -567,7 +592,7 @@ struct lifecycle_debug_resource_limit_entry
     bool over_limit = false;
 };
 
-inline constexpr uint64_t k_lifecycle_debug_schema_version = 4;
+inline constexpr uint64_t k_lifecycle_debug_schema_version = 5;
 
 struct lifecycle_debug_runtime_acceptance_summary
 {
@@ -828,7 +853,7 @@ REFLECT_STRUCT(
 
 REFLECT_STRUCT(
     webrtc::lifecycle_debug_twcc_feedback_source_entry,
-    (stream_id)(session_id)(remote_endpoint)(mid)(kind)(sender_ssrc)(media_ssrc)(feedback_packet_count)(total_feedback_packet_count)(pending_packet_count)(feedback_interval_milliseconds)(stale_source_milliseconds)(next_due_milliseconds)(last_active_milliseconds)(last_feedback_milliseconds)(oldest_pending_packet_milliseconds)(newest_pending_packet_milliseconds));
+    (stream_id)(session_id)(remote_endpoint)(mid)(kind)(sender_ssrc)(media_ssrc)(identity_ready)(feedback_packet_count)(total_feedback_packet_count)(pending_packet_count)(observed_packet_count)(observed_primary_packet_count)(observed_rtx_packet_count)(duplicate_packet_count)(total_feedback_packet_status_count)(total_feedback_received_packet_count)(total_feedback_not_received_packet_count)(total_feedback_small_delta_count)(total_feedback_large_delta_count)(last_feedback_base_sequence_number)(last_feedback_packet_status_count)(last_feedback_received_packet_count)(last_feedback_not_received_packet_count)(last_feedback_small_delta_count)(last_feedback_large_delta_count)(has_pending_transport_sequence_numbers)(first_pending_transport_sequence_number)(last_pending_transport_sequence_number)(pending_transport_sequence_span)(feedback_interval_milliseconds)(stale_source_milliseconds)(next_due_milliseconds)(last_active_milliseconds)(last_feedback_milliseconds)(oldest_pending_packet_milliseconds)(newest_pending_packet_milliseconds));
 
 REFLECT_STRUCT(webrtc::lifecycle_debug_rtp_cache_stream_entry, (stream_id)(packet_count)(byte_count)(min_ssrc)(max_ssrc));
 

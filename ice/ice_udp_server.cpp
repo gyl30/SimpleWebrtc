@@ -345,31 +345,6 @@ std::string make_publisher_simulcast_layer_key(
 
     return key;
 }
-std::string make_publisher_simulcast_layer_forward_key(std::string_view stream_id,
-                                                       std::string_view publisher_session_id,
-                                                       std::string_view publisher_mid,
-                                                       std::string_view kind,
-                                                       uint32_t publisher_primary_ssrc)
-{
-    std::string key;
-
-    const std::string publisher_ssrc = std::to_string(publisher_primary_ssrc);
-
-    key.reserve(stream_id.size() + publisher_session_id.size() + publisher_mid.size() + kind.size() + publisher_ssrc.size() + 4);
-
-    key.append(stream_id);
-    key.push_back('|');
-    key.append(publisher_session_id);
-    key.push_back('|');
-    key.append(publisher_mid);
-    key.push_back('|');
-    key.append(kind);
-    key.push_back('|');
-    key.append(publisher_ssrc);
-
-    return key;
-}
-
 std::string make_extmap_rewrite_runtime_state_key(std::string_view stream_id,
                                                   std::string_view publisher_session_id,
                                                   std::string_view subscriber_session_id,
@@ -8317,52 +8292,157 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
             snapshot.identity_forward_bindings.push_back(std::move(entry));
         }
-        std::unordered_map<std::string, std::unordered_set<std::string>> subscriber_session_ids_by_publisher_layer_key;
+        /*
+         * selected_subscriber_count means the subscriber sessions whose
+         * current selected RID is this publisher layer. A forward binding is
+         * historical/mapping state and may exist for every simulcast layer,
+         * so it must not be counted as a current selection.
+         */
+        std::unordered_map<
+            std::string,
+            std::unordered_set<std::string>>
+            selected_subscriber_session_ids_by_layer_key;
 
-        subscriber_session_ids_by_publisher_layer_key.reserve(snapshot.publisher_simulcast_layers.size());
+        std::unordered_set<std::string>
+            subscriber_sessions_with_selected_rid_state;
 
-        for (const auto& binding : forward_bindings)
+        for (const auto& [selected_key, selected_state] :
+             selected_rid_layer_state_by_key_)
         {
-            /*
-             * Count the primary forwarding relationship. RTX forward
-             * bindings represent repair transport for the same subscriber
-             * and must not increase the subscriber count.
-             */
-            if (binding.rtx)
-            {
-                continue;
-            }
+            (void)selected_key;
 
-            if (binding.packet_count == 0 || binding.publisher_ssrc == 0 || binding.stream_id.empty() || binding.publisher_session_id.empty() ||
-                binding.subscriber_session_id.empty() || binding.publisher_mid.empty() || binding.kind.empty())
-            {
-                continue;
-            }
-
-            const std::string layer_key = make_publisher_simulcast_layer_forward_key(
-                binding.stream_id, binding.publisher_session_id, binding.publisher_mid, binding.kind, binding.publisher_ssrc);
-
-            subscriber_session_ids_by_publisher_layer_key[layer_key].insert(binding.subscriber_session_id);
-        }
-
-        for (auto& layer : snapshot.publisher_simulcast_layers)
-        {
-            if (layer.primary_ssrc == 0)
+            if (selected_state.stream_id.empty() ||
+                selected_state.publisher_session_id.empty() ||
+                selected_state.subscriber_session_id.empty() ||
+                selected_state.mid.empty() ||
+                selected_state.kind.empty() ||
+                selected_state.rid.empty())
             {
                 continue;
             }
 
             const std::string layer_key =
-                make_publisher_simulcast_layer_forward_key(layer.stream_id, layer.publisher_session_id, layer.mid, layer.kind, layer.primary_ssrc);
+                make_publisher_simulcast_layer_key(
+                    selected_state.stream_id,
+                    selected_state.publisher_session_id,
+                    selected_state.mid,
+                    selected_state.kind,
+                    selected_state.rid);
 
-            const auto iterator = subscriber_session_ids_by_publisher_layer_key.find(layer_key);
+            selected_subscriber_session_ids_by_layer_key[layer_key]
+                .insert(selected_state.subscriber_session_id);
 
-            if (iterator == subscriber_session_ids_by_publisher_layer_key.end())
+            subscriber_sessions_with_selected_rid_state.insert(
+                selected_state.subscriber_session_id);
+        }
+
+        /*
+         * When only one publisher layer exists for a media section the
+         * selection state may intentionally be absent. In that unambiguous
+         * case, use primary forward bindings as a fallback for subscribers
+         * that do not already have an explicit selected RID state.
+         */
+        std::unordered_map<std::string, uint64_t>
+            publisher_layer_count_by_media_key;
+
+        std::unordered_map<std::string, std::string>
+            sole_layer_key_by_media_key;
+
+        for (const auto& layer : snapshot.publisher_simulcast_layers)
+        {
+            const std::string media_key =
+                make_publisher_simulcast_layer_key(
+                    layer.stream_id,
+                    layer.publisher_session_id,
+                    layer.mid,
+                    layer.kind,
+                    "");
+
+            publisher_layer_count_by_media_key[media_key] += 1;
+
+            sole_layer_key_by_media_key[media_key] =
+                make_publisher_simulcast_layer_key(
+                    layer.stream_id,
+                    layer.publisher_session_id,
+                    layer.mid,
+                    layer.kind,
+                    layer.rid);
+        }
+
+        for (const auto& binding : forward_bindings)
+        {
+            if (binding.rtx ||
+                binding.packet_count == 0 ||
+                binding.stream_id.empty() ||
+                binding.publisher_session_id.empty() ||
+                binding.subscriber_session_id.empty() ||
+                binding.publisher_mid.empty() ||
+                binding.kind.empty())
             {
                 continue;
             }
 
-            layer.selected_subscriber_count = static_cast<uint64_t>(iterator->second.size());
+            if (subscriber_sessions_with_selected_rid_state.contains(
+                    binding.subscriber_session_id))
+            {
+                continue;
+            }
+
+            const std::string media_key =
+                make_publisher_simulcast_layer_key(
+                    binding.stream_id,
+                    binding.publisher_session_id,
+                    binding.publisher_mid,
+                    binding.kind,
+                    "");
+
+            const auto count_iterator =
+                publisher_layer_count_by_media_key.find(media_key);
+
+            if (count_iterator ==
+                    publisher_layer_count_by_media_key.end() ||
+                count_iterator->second != 1)
+            {
+                continue;
+            }
+
+            const auto layer_iterator =
+                sole_layer_key_by_media_key.find(media_key);
+
+            if (layer_iterator ==
+                sole_layer_key_by_media_key.end())
+            {
+                continue;
+            }
+
+            selected_subscriber_session_ids_by_layer_key[
+                layer_iterator->second]
+                .insert(binding.subscriber_session_id);
+        }
+
+        for (auto& layer : snapshot.publisher_simulcast_layers)
+        {
+            const std::string layer_key =
+                make_publisher_simulcast_layer_key(
+                    layer.stream_id,
+                    layer.publisher_session_id,
+                    layer.mid,
+                    layer.kind,
+                    layer.rid);
+
+            const auto iterator =
+                selected_subscriber_session_ids_by_layer_key.find(
+                    layer_key);
+
+            if (iterator ==
+                selected_subscriber_session_ids_by_layer_key.end())
+            {
+                continue;
+            }
+
+            layer.selected_subscriber_count =
+                static_cast<uint64_t>(
+                    iterator->second.size());
         }
 
         snapshot.subscriber_forward_groups = make_subscriber_forward_groups(forward_bindings);
@@ -8447,17 +8527,39 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
                 entry.sender_ssrc = source.sender_ssrc;
                 entry.media_ssrc = source.media_ssrc;
+                entry.identity_ready = source.identity_ready;
 
                 entry.feedback_packet_count = source.feedback_packet_count;
+                entry.total_feedback_packet_count = source.total_feedback_packet_count;
                 entry.pending_packet_count = source.pending_packet_count;
 
-                entry.next_due_milliseconds = source.next_due_milliseconds;
-                entry.last_active_milliseconds = source.last_active_milliseconds;
+                entry.observed_packet_count = source.observed_packet_count;
+                entry.observed_primary_packet_count = source.observed_primary_packet_count;
+                entry.observed_rtx_packet_count = source.observed_rtx_packet_count;
+                entry.duplicate_packet_count = source.duplicate_packet_count;
 
-                entry.total_feedback_packet_count = source.total_feedback_packet_count;
+                entry.total_feedback_packet_status_count = source.total_feedback_packet_status_count;
+                entry.total_feedback_received_packet_count = source.total_feedback_received_packet_count;
+                entry.total_feedback_not_received_packet_count = source.total_feedback_not_received_packet_count;
+                entry.total_feedback_small_delta_count = source.total_feedback_small_delta_count;
+                entry.total_feedback_large_delta_count = source.total_feedback_large_delta_count;
+
+                entry.last_feedback_base_sequence_number = source.last_feedback_base_sequence_number;
+                entry.last_feedback_packet_status_count = source.last_feedback_packet_status_count;
+                entry.last_feedback_received_packet_count = source.last_feedback_received_packet_count;
+                entry.last_feedback_not_received_packet_count = source.last_feedback_not_received_packet_count;
+                entry.last_feedback_small_delta_count = source.last_feedback_small_delta_count;
+                entry.last_feedback_large_delta_count = source.last_feedback_large_delta_count;
+
+                entry.has_pending_transport_sequence_numbers = source.has_pending_transport_sequence_numbers;
+                entry.first_pending_transport_sequence_number = source.first_pending_transport_sequence_number;
+                entry.last_pending_transport_sequence_number = source.last_pending_transport_sequence_number;
+                entry.pending_transport_sequence_span = source.pending_transport_sequence_span;
+
                 entry.feedback_interval_milliseconds = source.feedback_interval_milliseconds;
                 entry.stale_source_milliseconds = source.stale_source_milliseconds;
                 entry.next_due_milliseconds = source.next_due_milliseconds;
+                entry.last_active_milliseconds = source.last_active_milliseconds;
                 entry.last_feedback_milliseconds = source.last_feedback_milliseconds;
                 entry.oldest_pending_packet_milliseconds = source.oldest_pending_packet_milliseconds;
                 entry.newest_pending_packet_milliseconds = source.newest_pending_packet_milliseconds;
@@ -11257,7 +11359,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
             current_session_gate_skipped_count += 1;
             rtp_rtcp_drop_rtcp_report_session_gate_total_.fetch_add(1, std::memory_order_relaxed);
             rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+                feedback_packet.stream_id, feedback_packet.session_id, feedback_packet.remote_endpoint);
 
             WEBRTC_LOG_DEBUG("rtcp transport cc source forgotten by current session gate stream={} session={} remote={} media_ssrc={} reason={}",
                              feedback_packet.stream_id,
@@ -11269,119 +11371,32 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
             continue;
         }
 
-        if (identity_authority_ == nullptr)
+        /*
+         * Feedback identity was captured from a resolved authenticated
+         * publisher RTP packet. Do not require a forwarding identity binding
+         * when returning Transport-CC feedback to that publisher.
+         */
+        if (feedback_packet.sender_ssrc == 0 ||
+            feedback_packet.media_ssrc == 0 ||
+            feedback_packet.mid.empty() ||
+            feedback_packet.kind.empty())
         {
             identity_gate_skipped_count += 1;
 
             rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
-
-            WEBRTC_LOG_DEBUG("rtcp transport cc source forgotten identity authority unavailable stream={} session={} remote={} media_ssrc={}",
-                             feedback_packet.stream_id,
-                             feedback_packet.session_id,
-                             feedback_packet.remote_endpoint,
-                             feedback_packet.media_ssrc);
-
-            continue;
-        }
-
-        const std::optional<media_identity_track_binding> track_binding =
-            identity_authority_->find_track_by_peer_ssrc(feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
-
-        if (!track_binding.has_value())
-        {
-            identity_gate_skipped_count += 1;
-
-            rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
-
-            WEBRTC_LOG_DEBUG("rtcp transport cc source forgotten missing media identity stream={} session={} remote={} sender_ssrc={} media_ssrc={}",
-                             feedback_packet.stream_id,
-                             feedback_packet.session_id,
-                             feedback_packet.remote_endpoint,
-                             feedback_packet.sender_ssrc,
-                             feedback_packet.media_ssrc);
-
-            continue;
-        }
-        if (feedback_packet.mid.empty() || feedback_packet.kind.empty())
-        {
-            identity_gate_skipped_count += 1;
-
-            rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
-
-            WEBRTC_LOG_DEBUG(
-                "rtcp transport cc source forgotten incomplete feedback identity stream={} session={} remote={} media_ssrc={} mid={} kind={}",
                 feedback_packet.stream_id,
                 feedback_packet.session_id,
-                feedback_packet.remote_endpoint,
-                feedback_packet.media_ssrc,
-                feedback_packet.mid,
-                feedback_packet.kind);
+                feedback_packet.remote_endpoint);
 
-            continue;
-        }
-        if (track_binding->stream_id != feedback_packet.stream_id || track_binding->session_id != feedback_packet.session_id ||
-            track_binding->remote_endpoint != feedback_packet.remote_endpoint || track_binding->ssrc != feedback_packet.media_ssrc ||
-            track_binding->mid != feedback_packet.mid || track_binding->kind != feedback_packet.kind)
-        {
-            identity_gate_skipped_count += 1;
-
-            rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
-
-            WEBRTC_LOG_WARN(
-                "rtcp transport cc source forgotten identity mismatch stream={} session={} remote={} sender_ssrc={} media_ssrc={} mid={} kind={} "
-                "binding_stream={} binding_session={} binding_remote={} binding_ssrc={} binding_mid={} binding_kind={}",
+            WEBRTC_LOG_DEBUG(
+                "rtcp transport cc source forgotten incomplete feedback identity stream={} session={} remote={} sender_ssrc={} media_ssrc={} mid={} kind={}",
                 feedback_packet.stream_id,
                 feedback_packet.session_id,
                 feedback_packet.remote_endpoint,
                 feedback_packet.sender_ssrc,
                 feedback_packet.media_ssrc,
                 feedback_packet.mid,
-                feedback_packet.kind,
-                track_binding->stream_id,
-                track_binding->session_id,
-                track_binding->remote_endpoint,
-                track_binding->ssrc,
-                track_binding->mid,
-                track_binding->kind);
-            continue;
-        }
-
-        if (track_binding->rtx)
-        {
-            identity_gate_skipped_count += 1;
-
-            rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
-
-            WEBRTC_LOG_DEBUG("rtcp transport cc source forgotten rtx identity stream={} session={} remote={} media_ssrc={} mid={} kind={}",
-                             feedback_packet.stream_id,
-                             feedback_packet.session_id,
-                             feedback_packet.remote_endpoint,
-                             feedback_packet.media_ssrc,
-                             track_binding->mid,
-                             track_binding->kind);
-
-            continue;
-        }
-
-        if (track_binding->mid.empty() || track_binding->kind.empty())
-        {
-            identity_gate_skipped_count += 1;
-
-            rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
-
-            WEBRTC_LOG_DEBUG("rtcp transport cc source forgotten incomplete identity stream={} session={} remote={} media_ssrc={} mid={} kind={}",
-                             feedback_packet.stream_id,
-                             feedback_packet.session_id,
-                             feedback_packet.remote_endpoint,
-                             feedback_packet.media_ssrc,
-                             track_binding->mid,
-                             track_binding->kind);
+                feedback_packet.kind);
 
             continue;
         }
@@ -11391,7 +11406,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
             identity_gate_skipped_count += 1;
 
             rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+                feedback_packet.stream_id, feedback_packet.session_id, feedback_packet.remote_endpoint);
 
             WEBRTC_LOG_WARN("rtcp transport cc source forgotten non publisher session stream={} session={} remote={} media_ssrc={}",
                             feedback_packet.stream_id,
@@ -11417,7 +11432,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
             identity_gate_skipped_count += 1;
 
             rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+                feedback_packet.stream_id, feedback_packet.session_id, feedback_packet.remote_endpoint);
 
             WEBRTC_LOG_WARN(
                 "rtcp transport cc source forgotten sender ssrc mismatch stream={} session={} remote={} media_ssrc={} sender_ssrc={} "
@@ -11428,8 +11443,8 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
                 feedback_packet.media_ssrc,
                 feedback_packet.sender_ssrc,
                 expected_sender_ssrc,
-                track_binding->mid,
-                track_binding->kind);
+                feedback_packet.mid,
+                feedback_packet.kind);
 
             continue;
         }
@@ -11441,7 +11456,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
             endpoint_not_found_count += 1;
 
             rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+                feedback_packet.stream_id, feedback_packet.session_id, feedback_packet.remote_endpoint);
 
             WEBRTC_LOG_WARN("rtcp transport cc endpoint not found stream={} session={} remote={} media_ssrc={} source_forgot=1",
                             feedback_packet.stream_id,
@@ -11461,7 +11476,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
             send_session_gate_skipped_count += 1;
 
             rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+                feedback_packet.stream_id, feedback_packet.session_id, feedback_packet.remote_endpoint);
 
             WEBRTC_LOG_DEBUG(
                 "rtcp transport cc protect skipped outbound runtime not ready stream={} session={} remote={} media_ssrc={} mid={} kind={}",
@@ -11469,8 +11484,8 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
                 feedback_packet.session_id,
                 feedback_packet.remote_endpoint,
                 feedback_packet.media_ssrc,
-                track_binding->mid,
-                track_binding->kind);
+                feedback_packet.mid,
+                feedback_packet.kind);
 
             continue;
         }
@@ -11489,8 +11504,8 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
                 feedback_packet.session_id,
                 feedback_packet.remote_endpoint,
                 feedback_packet.media_ssrc,
-                track_binding->mid,
-                track_binding->kind,
+                feedback_packet.mid,
+                feedback_packet.kind,
                 feedback_packet.base_sequence_number,
                 feedback_packet.packet_status_count,
                 protected_packet.error());
@@ -11507,8 +11522,8 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
                              feedback_packet.session_id,
                              feedback_packet.remote_endpoint,
                              feedback_packet.media_ssrc,
-                             track_binding->mid,
-                             track_binding->kind,
+                             feedback_packet.mid,
+                             feedback_packet.kind,
                              protected_packet->reason);
 
             continue;
@@ -11522,7 +11537,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
             send_session_gate_skipped_count += 1;
 
             rtcp_transport_cc_feedback_service_->forget_source(
-                feedback_packet.session_id, feedback_packet.remote_endpoint, feedback_packet.media_ssrc);
+                feedback_packet.stream_id, feedback_packet.session_id, feedback_packet.remote_endpoint);
 
             WEBRTC_LOG_DEBUG("rtcp transport cc send skipped by current session gate stream={} session={} remote={} media_ssrc={} reason={}",
                              feedback_packet.stream_id,
@@ -11536,17 +11551,21 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
 
         WEBRTC_LOG_DEBUG(
             "rtcp transport cc send stream={} session={} remote={} sender_ssrc={} media_ssrc={} mid={} kind={} base_seq={} count={} "
-            "feedback_count={} protected_size={}",
+            "feedback_count={} received={} not_received={} small_delta={} large_delta={} protected_size={}",
             feedback_packet.stream_id,
             feedback_packet.session_id,
             feedback_packet.remote_endpoint,
             feedback_packet.sender_ssrc,
             feedback_packet.media_ssrc,
-            track_binding->mid,
-            track_binding->kind,
+            feedback_packet.mid,
+            feedback_packet.kind,
             feedback_packet.base_sequence_number,
             feedback_packet.packet_status_count,
             static_cast<unsigned int>(feedback_packet.feedback_packet_count),
+            feedback_packet.received_packet_count,
+            feedback_packet.not_received_packet_count,
+            feedback_packet.small_delta_count,
+            feedback_packet.large_delta_count,
             protected_packet->protected_packet.size());
 
         send_response(std::move(protected_packet->protected_packet), *remote_endpoint);
@@ -11562,13 +11581,15 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
     rtp_rtcp_drop_twcc_protect_ignored_total_.fetch_add(static_cast<uint64_t>(protect_ignored_count), std::memory_order_relaxed);
     const bool has_hard_error = !generation.errors.empty() || endpoint_not_found_count != 0 || protect_failed_count != 0;
 
-    const bool has_soft_event = generation.stale_sources_expired != 0 || generation.skipped_sources != 0 || protect_ignored_count != 0 ||
-                                current_session_gate_skipped_count != 0 || identity_gate_skipped_count != 0 || send_session_gate_skipped_count != 0;
+    const bool has_soft_event = generation.stale_sources_expired != 0 || generation.skipped_sources != 0 ||
+                                generation.identity_unready_sources != 0 || protect_ignored_count != 0 ||
+                                current_session_gate_skipped_count != 0 || identity_gate_skipped_count != 0 ||
+                                send_session_gate_skipped_count != 0;
 
     if (has_hard_error)
     {
         WEBRTC_LOG_WARN(
-            "rtcp transport cc generation summary sources={} pending={} packets={} sent={} stale_expired={} skipped_sources={} "
+            "rtcp transport cc generation summary sources={} pending={} packets={} sent={} stale_expired={} skipped_sources={} identity_unready_sources={} "
             "current_session_gate_skipped={} identity_gate_skipped={} send_session_gate_skipped={} endpoint_not_found={} protect_failed={} "
             "protect_ignored={} errors={}",
             generation.source_count,
@@ -11577,6 +11598,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
             sent_count,
             generation.stale_sources_expired,
             generation.skipped_sources,
+            generation.identity_unready_sources,
             current_session_gate_skipped_count,
             identity_gate_skipped_count,
             send_session_gate_skipped_count,
@@ -11591,7 +11613,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
     if (has_soft_event)
     {
         WEBRTC_LOG_INFO(
-            "rtcp transport cc generation summary sources={} pending={} packets={} sent={} stale_expired={} skipped_sources={} "
+            "rtcp transport cc generation summary sources={} pending={} packets={} sent={} stale_expired={} skipped_sources={} identity_unready_sources={} "
             "current_session_gate_skipped={} identity_gate_skipped={} send_session_gate_skipped={} endpoint_not_found={} protect_failed={} "
             "protect_ignored={} errors={}",
             generation.source_count,
@@ -11600,6 +11622,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
             sent_count,
             generation.stale_sources_expired,
             generation.skipped_sources,
+            generation.identity_unready_sources,
             current_session_gate_skipped_count,
             identity_gate_skipped_count,
             send_session_gate_skipped_count,
@@ -11612,7 +11635,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
     }
 
     WEBRTC_LOG_DEBUG(
-        "rtcp transport cc generation summary sources={} pending={} packets={} sent={} stale_expired={} skipped_sources={} "
+        "rtcp transport cc generation summary sources={} pending={} packets={} sent={} stale_expired={} skipped_sources={} identity_unready_sources={} "
         "current_session_gate_skipped={} identity_gate_skipped={} send_session_gate_skipped={} endpoint_not_found={} protect_failed={} "
         "protect_ignored={} errors={}",
         generation.source_count,
@@ -11621,6 +11644,7 @@ void ice_udp_server::send_rtcp_transport_cc_feedback(uint64_t current_time_milli
         sent_count,
         generation.stale_sources_expired,
         generation.skipped_sources,
+        generation.identity_unready_sources,
         current_session_gate_skipped_count,
         identity_gate_skipped_count,
         send_session_gate_skipped_count,
@@ -13177,21 +13201,6 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
     {
         return;
     }
-    if (track_resolution.has_value() && track_resolution->resolved && track_resolution->rtx)
-    {
-        WEBRTC_LOG_DEBUG(
-            "rtcp stats inbound rtp skipped rtx repair stream={} session={} remote={} ssrc={} primary_ssrc={} repair_ssrc={} payload_type={}",
-            peer.stream_id,
-            peer.session_id,
-            peer.remote_endpoint,
-            track_resolution->ssrc,
-            track_resolution->rtx_primary_ssrc,
-            track_resolution->rtx_repair_ssrc,
-            static_cast<unsigned int>(track_resolution->payload_type));
-
-        return;
-    }
-
     auto header = parse_rtp_packet_header(std::span<const uint8_t>(packet.plain_packet.data(), packet.plain_packet.size()));
     if (!header)
     {
@@ -13229,16 +13238,8 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
                 *track_resolution->transport_wide_sequence_number,
                 publisher->accepted_remote_media_mline_indexes().size());
         }
-        else if (identity_authority_ == nullptr)
-        {
-            WEBRTC_LOG_DEBUG("rtcp transport cc observe skipped identity authority unavailable stream={} session={} remote={} ssrc={} twcc={}",
-                             peer.stream_id,
-                             peer.session_id,
-                             peer.remote_endpoint,
-                             header->ssrc,
-                             *track_resolution->transport_wide_sequence_number);
-        }
-        else if (track_resolution->mid.empty() || track_resolution->kind.empty())
+        else if (track_resolution->mid.empty() ||
+                 track_resolution->kind.empty())
         {
             WEBRTC_LOG_DEBUG(
                 "rtcp transport cc observe skipped incomplete track resolution stream={} session={} remote={} ssrc={} mid={} kind={} twcc={}",
@@ -13252,92 +13253,55 @@ void ice_udp_server::observe_inbound_rtp_stats(const media_peer_info& peer,
         }
         else
         {
-            const std::optional<media_identity_track_binding> track_binding =
-                identity_authority_->find_track_by_peer_ssrc(peer.remote_endpoint, header->ssrc);
+            /*
+             * The resolved publisher RTP track is the authoritative inbound
+             * identity for Transport-CC observation. Forwarding identity
+             * bindings are not guaranteed to exist at this point.
+             *
+             * Audio, video and RTX packets on the same BUNDLE transport all
+             * contribute to the same transport-wide sequence window.
+             */
+            rtcp_transport_cc_observed_packet transport_cc_packet;
 
-            if (!track_binding.has_value())
+            transport_cc_packet.stream_id = peer.stream_id;
+            transport_cc_packet.session_id = peer.session_id;
+            transport_cc_packet.remote_endpoint = peer.remote_endpoint;
+
+            transport_cc_packet.mid = track_resolution->mid;
+            transport_cc_packet.kind = track_resolution->kind;
+
+            transport_cc_packet.sender_ssrc =
+                make_rtcp_report_local_ssrc(peer, header->ssrc);
+
+            transport_cc_packet.media_ssrc = header->ssrc;
+
+            transport_cc_packet.transport_sequence_number =
+                *track_resolution->transport_wide_sequence_number;
+
+            transport_cc_packet.arrival_time_milliseconds =
+                now_milliseconds();
+
+            transport_cc_packet.rtx = track_resolution->rtx;
+
+            auto transport_cc_observe_result =
+                rtcp_transport_cc_feedback_service_
+                    ->observe_received_packet(transport_cc_packet);
+
+            if (!transport_cc_observe_result)
             {
                 WEBRTC_LOG_DEBUG(
-                    "rtcp transport cc observe skipped missing media identity stream={} session={} remote={} ssrc={} mid={} kind={} twcc={}",
+                    "rtcp transport cc observe skipped stream={} session={} remote={} ssrc={} mid={} kind={} rid={} repaired_rid={} rtx={} twcc={} error={}",
                     peer.stream_id,
                     peer.session_id,
                     peer.remote_endpoint,
                     header->ssrc,
                     track_resolution->mid,
                     track_resolution->kind,
-                    *track_resolution->transport_wide_sequence_number);
-            }
-            else if (track_binding->stream_id != peer.stream_id || track_binding->session_id != peer.session_id ||
-                     track_binding->remote_endpoint != peer.remote_endpoint || track_binding->ssrc != header->ssrc ||
-                     track_binding->mid != track_resolution->mid || track_binding->kind != track_resolution->kind)
-            {
-                WEBRTC_LOG_WARN(
-                    "rtcp transport cc observe skipped identity mismatch stream={} session={} remote={} ssrc={} mid={} kind={} "
-                    "binding_stream={} binding_session={} binding_remote={} binding_ssrc={} binding_mid={} binding_kind={} twcc={}",
-                    peer.stream_id,
-                    peer.session_id,
-                    peer.remote_endpoint,
-                    header->ssrc,
-                    track_resolution->mid,
-                    track_resolution->kind,
-                    track_binding->stream_id,
-                    track_binding->session_id,
-                    track_binding->remote_endpoint,
-                    track_binding->ssrc,
-                    track_binding->mid,
-                    track_binding->kind,
-                    *track_resolution->transport_wide_sequence_number);
-            }
-            else if (track_binding->rtx)
-            {
-                WEBRTC_LOG_DEBUG("rtcp transport cc observe skipped rtx identity stream={} session={} remote={} ssrc={} mid={} kind={} twcc={}",
-                                 peer.stream_id,
-                                 peer.session_id,
-                                 peer.remote_endpoint,
-                                 header->ssrc,
-                                 track_binding->mid,
-                                 track_binding->kind,
-                                 *track_resolution->transport_wide_sequence_number);
-            }
-            else
-            {
-                rtcp_transport_cc_observed_packet transport_cc_packet;
-
-                transport_cc_packet.stream_id = peer.stream_id;
-
-                transport_cc_packet.session_id = peer.session_id;
-
-                transport_cc_packet.remote_endpoint = peer.remote_endpoint;
-
-                transport_cc_packet.mid = track_binding->mid;
-
-                transport_cc_packet.kind = track_binding->kind;
-
-                transport_cc_packet.sender_ssrc = make_rtcp_report_local_ssrc(peer, header->ssrc);
-                transport_cc_packet.media_ssrc = header->ssrc;
-
-                transport_cc_packet.transport_sequence_number = *track_resolution->transport_wide_sequence_number;
-
-                transport_cc_packet.arrival_time_milliseconds = now_milliseconds();
-
-                auto transport_cc_observe_result = rtcp_transport_cc_feedback_service_->observe_received_packet(transport_cc_packet);
-
-                if (!transport_cc_observe_result)
-                {
-                    WEBRTC_LOG_DEBUG(
-                        "rtcp transport cc observe skipped stream={} session={} remote={} ssrc={} mid={} kind={} rid={} repaired_rid={} twcc={} "
-                        "error={}",
-                        peer.stream_id,
-                        peer.session_id,
-                        peer.remote_endpoint,
-                        header->ssrc,
-                        track_binding->mid,
-                        track_binding->kind,
-                        track_binding->rid.value_or(""),
-                        track_binding->repaired_rid.value_or(""),
-                        *track_resolution->transport_wide_sequence_number,
-                        transport_cc_observe_result.error());
-                }
+                    track_resolution->rid.value_or(""),
+                    track_resolution->repaired_rid.value_or(""),
+                    track_resolution->rtx ? 1 : 0,
+                    *track_resolution->transport_wide_sequence_number,
+                    transport_cc_observe_result.error());
             }
         }
     }

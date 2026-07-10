@@ -646,6 +646,22 @@ media_track_resolution_result media_track_resolver::resolve_inbound_rtp(std::str
 
                     fill_resolution_from_values(resolution, values);
 
+                    /*
+                     * Chromium may stop repeating RID/repaired-RID after the
+                     * SSRC has been bound. Preserve the stable RID identity
+                     * remembered by the SSRC binding when the current packet
+                     * omits those header extensions.
+                     */
+                    if (!resolution.rid.has_value())
+                    {
+                        resolution.rid = binding->rid;
+                    }
+
+                    if (!resolution.repaired_rid.has_value())
+                    {
+                        resolution.repaired_rid = binding->repaired_rid;
+                    }
+
                     media_track_binding updated_binding = *binding;
 
                     updated_binding.payload_type = header->payload_type;

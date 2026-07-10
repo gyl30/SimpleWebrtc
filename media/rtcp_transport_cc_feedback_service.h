@@ -26,6 +26,8 @@ struct rtcp_transport_cc_observed_packet
 
     uint16_t transport_sequence_number = 0;
     uint64_t arrival_time_milliseconds = 0;
+
+    bool rtx = false;
 };
 struct rtcp_transport_cc_feedback_packet
 {
@@ -42,6 +44,11 @@ struct rtcp_transport_cc_feedback_packet
     uint16_t packet_status_count = 0;
     uint8_t feedback_packet_count = 0;
 
+    uint64_t received_packet_count = 0;
+    uint64_t not_received_packet_count = 0;
+    uint64_t small_delta_count = 0;
+    uint64_t large_delta_count = 0;
+
     std::vector<uint8_t> packet;
 };
 
@@ -54,6 +61,7 @@ struct rtcp_transport_cc_feedback_generation
     std::size_t pending_packet_count = 0;
     std::size_t stale_sources_expired = 0;
     std::size_t skipped_sources = 0;
+    std::size_t identity_unready_sources = 0;
 };
 
 struct rtcp_transport_cc_feedback_source_snapshot
@@ -68,9 +76,34 @@ struct rtcp_transport_cc_feedback_source_snapshot
     uint32_t sender_ssrc = 0;
     uint32_t media_ssrc = 0;
 
+    bool identity_ready = false;
+
     uint64_t feedback_packet_count = 0;
     uint64_t total_feedback_packet_count = 0;
     uint64_t pending_packet_count = 0;
+
+    uint64_t observed_packet_count = 0;
+    uint64_t observed_primary_packet_count = 0;
+    uint64_t observed_rtx_packet_count = 0;
+    uint64_t duplicate_packet_count = 0;
+
+    uint64_t total_feedback_packet_status_count = 0;
+    uint64_t total_feedback_received_packet_count = 0;
+    uint64_t total_feedback_not_received_packet_count = 0;
+    uint64_t total_feedback_small_delta_count = 0;
+    uint64_t total_feedback_large_delta_count = 0;
+
+    uint64_t last_feedback_base_sequence_number = 0;
+    uint64_t last_feedback_packet_status_count = 0;
+    uint64_t last_feedback_received_packet_count = 0;
+    uint64_t last_feedback_not_received_packet_count = 0;
+    uint64_t last_feedback_small_delta_count = 0;
+    uint64_t last_feedback_large_delta_count = 0;
+
+    bool has_pending_transport_sequence_numbers = false;
+    uint64_t first_pending_transport_sequence_number = 0;
+    uint64_t last_pending_transport_sequence_number = 0;
+    uint64_t pending_transport_sequence_span = 0;
 
     uint64_t feedback_interval_milliseconds = 0;
     uint64_t stale_source_milliseconds = 0;
@@ -93,6 +126,7 @@ struct rtcp_transport_cc_feedback_config
     std::size_t max_pending_packets_total = 65536;
 
     uint16_t max_packets_per_feedback = 64;
+    std::size_t max_feedback_packets_per_source_per_generation = 16;
 };
 using rtcp_transport_cc_feedback_result = std::expected<void, std::string>;
 
@@ -124,7 +158,7 @@ class rtcp_transport_cc_feedback_service
 
     void forget_peer(std::string_view remote_endpoint);
 
-    void forget_source(std::string_view session_id, std::string_view remote_endpoint, uint32_t media_ssrc);
+    void forget_source(std::string_view stream_id, std::string_view session_id, std::string_view remote_endpoint);
     void clear();
 
     [[nodiscard]]
@@ -161,12 +195,32 @@ class rtcp_transport_cc_feedback_service
         uint64_t last_active_milliseconds = 0;
         uint64_t last_feedback_milliseconds = 0;
 
+        uint64_t observed_packet_count = 0;
+        uint64_t observed_primary_packet_count = 0;
+        uint64_t observed_rtx_packet_count = 0;
+        uint64_t duplicate_packet_count = 0;
+
+        uint64_t total_feedback_packet_status_count = 0;
+        uint64_t total_feedback_received_packet_count = 0;
+        uint64_t total_feedback_not_received_packet_count = 0;
+        uint64_t total_feedback_small_delta_count = 0;
+        uint64_t total_feedback_large_delta_count = 0;
+
+        uint16_t last_feedback_base_sequence_number = 0;
+        uint16_t last_feedback_packet_status_count = 0;
+        uint64_t last_feedback_received_packet_count = 0;
+        uint64_t last_feedback_not_received_packet_count = 0;
+        uint64_t last_feedback_small_delta_count = 0;
+        uint64_t last_feedback_large_delta_count = 0;
+
         std::vector<observed_packet_state> packets;
     };
 
    private:
     [[nodiscard]]
-    static std::string make_source_key(std::string_view session_id, std::string_view remote_endpoint, uint32_t media_ssrc);
+    static std::string make_source_key(std::string_view stream_id,
+                                       std::string_view session_id,
+                                       std::string_view remote_endpoint);
 
     [[nodiscard]]
     std::size_t pending_packet_count_locked() const;

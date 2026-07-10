@@ -476,17 +476,24 @@ rtcp_transport_cc_feedback_service::rtcp_transport_cc_feedback_service(rtcp_tran
     {
         config_.max_packets_per_feedback = 64;
     }
+
+    if (config_.max_feedback_packets_per_source_per_generation == 0)
+    {
+        config_.max_feedback_packets_per_source_per_generation = 16;
+    }
 }
 
-std::string rtcp_transport_cc_feedback_service::make_source_key(std::string_view session_id, std::string_view remote_endpoint, uint32_t media_ssrc)
+std::string rtcp_transport_cc_feedback_service::make_source_key(std::string_view stream_id,
+                                                                  std::string_view session_id,
+                                                                  std::string_view remote_endpoint)
 {
     std::string key;
 
+    append_key_part(key, stream_id);
+
     append_key_part(key, session_id);
 
-    append_key_part(key, remote_endpoint);
-
-    key.append(std::to_string(media_ssrc));
+    key.append(remote_endpoint);
 
     return key;
 }
@@ -536,7 +543,8 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::validate_o
     return {};
 }
 
-rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_received_packet(const rtcp_transport_cc_observed_packet& packet)
+rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_received_packet(
+    const rtcp_transport_cc_observed_packet& packet)
 {
     auto validation_result = validate_observed_packet(packet);
 
@@ -545,7 +553,12 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_re
         return std::unexpected(validation_result.error());
     }
 
-    const std::string key = make_source_key(packet.session_id, packet.remote_endpoint, packet.media_ssrc);
+    /*
+     * Transport-wide sequence numbers share one counter across every RTP
+     * packet sent over the same BUNDLE transport. Do not split the feedback
+     * window by media SSRC, MID, kind, or RTX identity.
+     */
+    const std::string key = make_source_key(packet.stream_id, packet.session_id, packet.remote_endpoint);
 
     std::lock_guard lock(mutex_);
 
@@ -568,53 +581,47 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_re
     if (inserted)
     {
         source.stream_id = packet.stream_id;
-
         source.session_id = packet.session_id;
-
         source.remote_endpoint = packet.remote_endpoint;
-
-        source.mid = packet.mid;
-
-        source.kind = packet.kind;
-
-        source.sender_ssrc = packet.sender_ssrc;
-
-        source.media_ssrc = packet.media_ssrc;
-
         source.next_due_milliseconds = packet.arrival_time_milliseconds + config_.feedback_interval_milliseconds;
     }
-    else if (source.stream_id != packet.stream_id || source.session_id != packet.session_id || source.remote_endpoint != packet.remote_endpoint ||
-             source.mid != packet.mid || source.kind != packet.kind || source.sender_ssrc != packet.sender_ssrc ||
-             source.media_ssrc != packet.media_ssrc)
+    else if (source.stream_id != packet.stream_id || source.session_id != packet.session_id ||
+             source.remote_endpoint != packet.remote_endpoint)
     {
-        source.stream_id = packet.stream_id;
+        return make_error("transport cc feedback transport identity mismatch");
+    }
 
-        source.session_id = packet.session_id;
-
-        source.remote_endpoint = packet.remote_endpoint;
-
+    /*
+     * Keep one stable primary media identity for the RTCP feedback header
+     * and the outbound identity gate. RTX packets are still observed in the
+     * transport sequence window, but they must not become that identity.
+     */
+    if (!packet.rtx && source.media_ssrc == 0)
+    {
         source.mid = packet.mid;
-
         source.kind = packet.kind;
-
         source.sender_ssrc = packet.sender_ssrc;
-
         source.media_ssrc = packet.media_ssrc;
-
-        source.feedback_packet_count = 0;
-
-        source.total_feedback_packet_count = 0;
-        source.last_feedback_milliseconds = 0;
-        source.packets.clear();
-
-        source.next_due_milliseconds = packet.arrival_time_milliseconds + config_.feedback_interval_milliseconds;
     }
 
     source.last_active_milliseconds = packet.arrival_time_milliseconds;
+    source.observed_packet_count += 1;
+
+    if (packet.rtx)
+    {
+        source.observed_rtx_packet_count += 1;
+    }
+    else
+    {
+        source.observed_primary_packet_count += 1;
+    }
+
     for (const auto& observed_packet : source.packets)
     {
         if (observed_packet.transport_sequence_number == packet.transport_sequence_number)
         {
+            source.duplicate_packet_count += 1;
+
             return {};
         }
     }
@@ -632,7 +639,6 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_re
     observed_packet_state observed;
 
     observed.transport_sequence_number = packet.transport_sequence_number;
-
     observed.arrival_time_milliseconds = packet.arrival_time_milliseconds;
 
     source.packets.push_back(observed);
@@ -645,8 +651,14 @@ rtcp_transport_cc_feedback_result rtcp_transport_cc_feedback_service::observe_re
     return {};
 }
 
-std::expected<rtcp_transport_cc_feedback_packet, std::string> rtcp_transport_cc_feedback_service::make_feedback_packet(source_state& source)
+std::expected<rtcp_transport_cc_feedback_packet, std::string>
+rtcp_transport_cc_feedback_service::make_feedback_packet(source_state& source)
 {
+    if (source.sender_ssrc == 0 || source.media_ssrc == 0 || source.mid.empty() || source.kind.empty())
+    {
+        return make_error("transport cc feedback source identity is not ready");
+    }
+
     std::vector<feedback_observed_packet> feedback_packets;
 
     feedback_packets.reserve(source.packets.size());
@@ -656,27 +668,71 @@ std::expected<rtcp_transport_cc_feedback_packet, std::string> rtcp_transport_cc_
         feedback_observed_packet feedback_packet;
 
         feedback_packet.transport_sequence_number = packet.transport_sequence_number;
-
         feedback_packet.arrival_time_milliseconds = packet.arrival_time_milliseconds;
 
         feedback_packets.push_back(feedback_packet);
     }
 
     auto plan = make_feedback_build_plan(feedback_packets, config_.max_packets_per_feedback);
+
     if (!plan)
     {
         return std::unexpected(plan.error());
     }
 
-    source.feedback_packet_count = static_cast<uint8_t>(source.feedback_packet_count + 1U);
-    source.total_feedback_packet_count += 1;
+    uint64_t received_packet_count = 0;
+    uint64_t not_received_packet_count = 0;
+    uint64_t small_delta_count = 0;
+    uint64_t large_delta_count = 0;
 
-    auto packet = write_transport_cc_feedback_packet(source.sender_ssrc, source.media_ssrc, source.feedback_packet_count, *plan);
+    for (const auto& status : plan->statuses)
+    {
+        switch (status.status)
+        {
+            case k_transport_cc_status_not_received:
+                not_received_packet_count += 1;
+                break;
+
+            case k_transport_cc_status_small_delta:
+                received_packet_count += 1;
+                small_delta_count += 1;
+                break;
+
+            case k_transport_cc_status_large_delta:
+                received_packet_count += 1;
+                large_delta_count += 1;
+                break;
+
+            default:
+                return make_error("transport cc feedback plan contains unsupported status");
+        }
+    }
+
+    const uint8_t feedback_packet_count = static_cast<uint8_t>(source.feedback_packet_count + 1U);
+
+    auto packet =
+        write_transport_cc_feedback_packet(source.sender_ssrc, source.media_ssrc, feedback_packet_count, *plan);
 
     if (!packet)
     {
         return std::unexpected(packet.error());
     }
+
+    source.feedback_packet_count = feedback_packet_count;
+    source.total_feedback_packet_count += 1;
+
+    source.total_feedback_packet_status_count += plan->packet_status_count;
+    source.total_feedback_received_packet_count += received_packet_count;
+    source.total_feedback_not_received_packet_count += not_received_packet_count;
+    source.total_feedback_small_delta_count += small_delta_count;
+    source.total_feedback_large_delta_count += large_delta_count;
+
+    source.last_feedback_base_sequence_number = plan->base_sequence_number;
+    source.last_feedback_packet_status_count = plan->packet_status_count;
+    source.last_feedback_received_packet_count = received_packet_count;
+    source.last_feedback_not_received_packet_count = not_received_packet_count;
+    source.last_feedback_small_delta_count = small_delta_count;
+    source.last_feedback_large_delta_count = large_delta_count;
 
     rtcp_transport_cc_feedback_packet result;
 
@@ -689,13 +745,21 @@ std::expected<rtcp_transport_cc_feedback_packet, std::string> rtcp_transport_cc_
     result.media_ssrc = source.media_ssrc;
     result.base_sequence_number = plan->base_sequence_number;
     result.packet_status_count = plan->packet_status_count;
-    result.feedback_packet_count = source.feedback_packet_count;
+    result.feedback_packet_count = feedback_packet_count;
+    result.received_packet_count = received_packet_count;
+    result.not_received_packet_count = not_received_packet_count;
+    result.small_delta_count = small_delta_count;
+    result.large_delta_count = large_delta_count;
     result.packet = std::move(*packet);
+
     source.packets.erase(
         std::remove_if(source.packets.begin(),
                        source.packets.end(),
                        [&plan](const observed_packet_state& observed)
-                       { return sequence_distance(plan->base_sequence_number, observed.transport_sequence_number) < plan->packet_status_count; }),
+                       {
+                           return sequence_distance(plan->base_sequence_number, observed.transport_sequence_number) <
+                                  plan->packet_status_count;
+                       }),
         source.packets.end());
 
     return result;
@@ -750,18 +814,47 @@ rtcp_transport_cc_feedback_generation rtcp_transport_cc_feedback_service::genera
             continue;
         }
 
-        auto packet = make_feedback_packet(source);
-
-        source.next_due_milliseconds = now_milliseconds + config_.feedback_interval_milliseconds;
-
-        if (!packet)
+        if (source.sender_ssrc == 0 || source.media_ssrc == 0 || source.mid.empty() || source.kind.empty())
         {
-            generation.errors.push_back(packet.error());
+            generation.identity_unready_sources += 1;
+            source.next_due_milliseconds = now_milliseconds + config_.feedback_interval_milliseconds;
 
             continue;
         }
-        source.last_feedback_milliseconds = now_milliseconds;
-        generation.packets.push_back(std::move(*packet));
+
+        std::size_t generated_for_source = 0;
+
+        while (!source.packets.empty() &&
+               generated_for_source < config_.max_feedback_packets_per_source_per_generation)
+        {
+            const std::size_t pending_before = source.packets.size();
+
+            auto packet = make_feedback_packet(source);
+
+            if (!packet)
+            {
+                generation.errors.push_back(packet.error());
+
+                break;
+            }
+
+            generation.packets.push_back(std::move(*packet));
+            generated_for_source += 1;
+
+            if (source.packets.size() >= pending_before)
+            {
+                generation.errors.push_back("transport cc feedback generation made no pending packet progress");
+
+                break;
+            }
+        }
+
+        source.next_due_milliseconds = now_milliseconds + config_.feedback_interval_milliseconds;
+
+        if (generated_for_source != 0)
+        {
+            source.last_feedback_milliseconds = now_milliseconds;
+        }
     }
 
     return generation;
@@ -832,14 +925,16 @@ void rtcp_transport_cc_feedback_service::forget_peer(std::string_view remote_end
         ++iterator;
     }
 }
-void rtcp_transport_cc_feedback_service::forget_source(std::string_view session_id, std::string_view remote_endpoint, uint32_t media_ssrc)
+void rtcp_transport_cc_feedback_service::forget_source(std::string_view stream_id,
+                                                        std::string_view session_id,
+                                                        std::string_view remote_endpoint)
 {
-    if (session_id.empty() || remote_endpoint.empty() || media_ssrc == 0)
+    if (stream_id.empty() || session_id.empty() || remote_endpoint.empty())
     {
         return;
     }
 
-    const std::string key = make_source_key(session_id, remote_endpoint, media_ssrc);
+    const std::string key = make_source_key(stream_id, session_id, remote_endpoint);
 
     std::lock_guard lock(mutex_);
 
@@ -879,7 +974,8 @@ std::size_t rtcp_transport_cc_feedback_service::pending_packet_count() const
 
     return pending_packet_count_locked();
 }
-std::vector<rtcp_transport_cc_feedback_source_snapshot> rtcp_transport_cc_feedback_service::source_snapshot() const
+std::vector<rtcp_transport_cc_feedback_source_snapshot>
+rtcp_transport_cc_feedback_service::source_snapshot() const
 {
     std::vector<rtcp_transport_cc_feedback_source_snapshot> snapshot;
 
@@ -902,10 +998,30 @@ std::vector<rtcp_transport_cc_feedback_source_snapshot> rtcp_transport_cc_feedba
 
         entry.sender_ssrc = source.sender_ssrc;
         entry.media_ssrc = source.media_ssrc;
+        entry.identity_ready =
+            source.sender_ssrc != 0 && source.media_ssrc != 0 && !source.mid.empty() && !source.kind.empty();
 
         entry.feedback_packet_count = source.feedback_packet_count;
         entry.total_feedback_packet_count = source.total_feedback_packet_count;
         entry.pending_packet_count = source.packets.size();
+
+        entry.observed_packet_count = source.observed_packet_count;
+        entry.observed_primary_packet_count = source.observed_primary_packet_count;
+        entry.observed_rtx_packet_count = source.observed_rtx_packet_count;
+        entry.duplicate_packet_count = source.duplicate_packet_count;
+
+        entry.total_feedback_packet_status_count = source.total_feedback_packet_status_count;
+        entry.total_feedback_received_packet_count = source.total_feedback_received_packet_count;
+        entry.total_feedback_not_received_packet_count = source.total_feedback_not_received_packet_count;
+        entry.total_feedback_small_delta_count = source.total_feedback_small_delta_count;
+        entry.total_feedback_large_delta_count = source.total_feedback_large_delta_count;
+
+        entry.last_feedback_base_sequence_number = source.last_feedback_base_sequence_number;
+        entry.last_feedback_packet_status_count = source.last_feedback_packet_status_count;
+        entry.last_feedback_received_packet_count = source.last_feedback_received_packet_count;
+        entry.last_feedback_not_received_packet_count = source.last_feedback_not_received_packet_count;
+        entry.last_feedback_small_delta_count = source.last_feedback_small_delta_count;
+        entry.last_feedback_large_delta_count = source.last_feedback_large_delta_count;
 
         entry.feedback_interval_milliseconds = config_.feedback_interval_milliseconds;
         entry.stale_source_milliseconds = config_.stale_source_milliseconds;
@@ -914,17 +1030,39 @@ std::vector<rtcp_transport_cc_feedback_source_snapshot> rtcp_transport_cc_feedba
         entry.last_active_milliseconds = source.last_active_milliseconds;
         entry.last_feedback_milliseconds = source.last_feedback_milliseconds;
 
-        for (const auto& pending_packet : source.packets)
+        if (!source.packets.empty())
         {
-            if (entry.oldest_pending_packet_milliseconds == 0 || pending_packet.arrival_time_milliseconds < entry.oldest_pending_packet_milliseconds)
+            entry.has_pending_transport_sequence_numbers = true;
+            entry.first_pending_transport_sequence_number = source.packets.front().transport_sequence_number;
+
+            uint16_t last_pending_transport_sequence_number = source.packets.front().transport_sequence_number;
+            uint16_t maximum_distance = 0;
+
+            for (const auto& pending_packet : source.packets)
             {
-                entry.oldest_pending_packet_milliseconds = pending_packet.arrival_time_milliseconds;
+                const uint16_t distance =
+                    sequence_distance(source.packets.front().transport_sequence_number, pending_packet.transport_sequence_number);
+
+                if (distance >= maximum_distance)
+                {
+                    maximum_distance = distance;
+                    last_pending_transport_sequence_number = pending_packet.transport_sequence_number;
+                }
+
+                if (entry.oldest_pending_packet_milliseconds == 0 ||
+                    pending_packet.arrival_time_milliseconds < entry.oldest_pending_packet_milliseconds)
+                {
+                    entry.oldest_pending_packet_milliseconds = pending_packet.arrival_time_milliseconds;
+                }
+
+                if (pending_packet.arrival_time_milliseconds > entry.newest_pending_packet_milliseconds)
+                {
+                    entry.newest_pending_packet_milliseconds = pending_packet.arrival_time_milliseconds;
+                }
             }
 
-            if (pending_packet.arrival_time_milliseconds > entry.newest_pending_packet_milliseconds)
-            {
-                entry.newest_pending_packet_milliseconds = pending_packet.arrival_time_milliseconds;
-            }
+            entry.last_pending_transport_sequence_number = last_pending_transport_sequence_number;
+            entry.pending_transport_sequence_span = static_cast<uint64_t>(maximum_distance) + 1U;
         }
 
         snapshot.push_back(std::move(entry));
@@ -932,4 +1070,5 @@ std::vector<rtcp_transport_cc_feedback_source_snapshot> rtcp_transport_cc_feedba
 
     return snapshot;
 }
+
 }    // namespace webrtc
