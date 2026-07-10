@@ -850,14 +850,6 @@ const media_summary* find_matching_publisher_media(const media_summary& subscrib
         return nullptr;
     }
 
-    for (const auto& publisher_media : publisher_offer.media)
-    {
-        if (publisher_media.mid == subscriber_media.mid && publisher_media.kind == subscriber_media.kind && media_can_send(publisher_media))
-        {
-            return &publisher_media;
-        }
-    }
-
     const std::optional<std::size_t> subscriber_ordinal = find_receive_capable_media_ordinal_by_kind(subscriber_offer, subscriber_media);
 
     if (!subscriber_ordinal.has_value())
@@ -865,11 +857,16 @@ const media_summary* find_matching_publisher_media(const media_summary& subscrib
         return nullptr;
     }
 
-    const std::size_t publisher_kind_count = count_send_capable_media_by_kind(publisher_offer, subscriber_media.kind);
-
     const std::size_t subscriber_kind_count = count_receive_capable_media_by_kind(subscriber_offer, subscriber_media.kind);
 
-    if (publisher_kind_count != subscriber_kind_count)
+    const std::size_t publisher_kind_count = count_send_capable_media_by_kind(publisher_offer, subscriber_media.kind);
+
+    /*
+     * Publisher and subscriber MID namespaces are independent.
+     * Match media sections by kind-local ordinal so SDP answer
+     * generation and runtime RTP mapping use the same authority.
+     */
+    if (subscriber_kind_count == 0 || subscriber_kind_count != publisher_kind_count)
     {
         return nullptr;
     }

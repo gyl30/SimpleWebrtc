@@ -888,12 +888,9 @@ const sdp::media_summary* find_matching_subscriber_media(const sdp::media_summar
                                                          const sdp::webrtc_offer_summary& publisher_offer,
                                                          const sdp::webrtc_offer_summary& subscriber_offer)
 {
-    for (const auto& subscriber_media : subscriber_offer.media)
+    if (!media_can_send(publisher_media))
     {
-        if (subscriber_media.mid == publisher_media.mid && subscriber_media.kind == publisher_media.kind && media_can_receive(subscriber_media))
-        {
-            return &subscriber_media;
-        }
+        return nullptr;
     }
 
     const std::optional<std::size_t> publisher_ordinal = find_send_capable_media_ordinal_by_kind(publisher_offer, publisher_media);
@@ -907,7 +904,16 @@ const sdp::media_summary* find_matching_subscriber_media(const sdp::media_summar
 
     const std::size_t subscriber_kind_count = count_receive_capable_media_by_kind(subscriber_offer, publisher_media.kind);
 
-    if (publisher_kind_count != subscriber_kind_count)
+    /*
+     * WHIP and WHEP offers belong to independent PeerConnections.
+     * MID values are local to each offer and must not be used as
+     * cross-session track identities.
+     *
+     * The current forwarding model requires an equal number of
+     * send-capable and receive-capable media sections for each kind,
+     * then maps them by their kind-local ordinal.
+     */
+    if (publisher_kind_count == 0 || publisher_kind_count != subscriber_kind_count)
     {
         return nullptr;
     }

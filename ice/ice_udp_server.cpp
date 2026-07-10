@@ -16816,8 +16816,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
         }
     }
 
-    if (payload_type_mapping.has_value() && media_payload_type_mapping_allows_rid_header_extension_rewrite(*payload_type_mapping) &&
-        registry_ != nullptr)
+    if (payload_type_mapping.has_value() && registry_ != nullptr)
     {
         auto publisher = registry_->find_publisher_by_session_id(route.source.session_id);
 
@@ -17089,7 +17088,8 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(co
                 publisher->accepted_remote_media_mline_indexes().size(),
                 subscriber->accepted_remote_media_mline_indexes().size());
         }
-        if (publisher_subscriber_media_has_negotiated_rid_header_extension(*publisher, *subscriber, *payload_type_mapping))
+        if (media_payload_type_mapping_allows_rid_header_extension_rewrite(*payload_type_mapping) &&
+            publisher_subscriber_media_has_negotiated_rid_header_extension(*publisher, *subscriber, *payload_type_mapping))
         {
             const std::string_view rid_extension_uri = payload_type_mapping->rtx ? sdp::k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri
                                                                                  : sdp::k_rtp_header_extension_sdes_rtp_stream_id_uri;
