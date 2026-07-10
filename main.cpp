@@ -1,7 +1,9 @@
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <print>
 #include <string>
 #include <utility>
 #include <vector>
@@ -322,15 +324,19 @@ int main(int argc, char* argv[])
     std::string log_dir = get_log_dir(app_dir);
 
     std::string log_name = get_log_fileaname(app_name);
-
     std::string abs_log_filename = log_dir + "/" + log_name;
 
-    webrtc::init_log(abs_log_filename);
+    auto log_init_result = webrtc::init_log(abs_log_filename);
+
+    if (!log_init_result)
+    {
+        std::println(stderr, "initialize log failed {}", log_init_result.error());
+        return 1;
+    }
 
     DEFER(webrtc::shutdown_log());
 
     WEBRTC_LOG_INFO("OpenSSL    version {}", OPENSSL_VERSION_STR);
-
     WEBRTC_LOG_INFO("Boost      version {}", BOOST_LIB_VERSION);
 
     WEBRTC_LOG_INFO("spdlog     version {}.{}.{}", SPDLOG_VER_MAJOR, SPDLOG_VER_MINOR, SPDLOG_VER_PATCH);
