@@ -756,6 +756,14 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string subscriber_session_id;
         uint64_t scheduled_at_milliseconds = 0;
     };
+    struct direct_publisher_rtx_drop_counter_state
+    {
+        std::string stream_id;
+        std::string publisher_session_id;
+        std::string subscriber_session_id;
+
+        uint64_t drop_count = 0;
+    };
 
    private:
     void handle_transport_cc_feedback_event(const rtcp_feedback_route_event& event);
@@ -1429,9 +1437,18 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     void consume_orphan_subscriber_keyframe_request_after_mapping_created(const media_ssrc_mapping& mapping,
                                                                           const media_route_result& route,
                                                                           const media_peer_info& target_peer);
+
     void erase_orphan_subscriber_keyframe_requests_for_session_locked(std::string_view session_id);
 
     void erase_orphan_subscriber_keyframe_requests_for_stream_locked(std::string_view stream_id);
+
+    std::size_t erase_pending_subscriber_runtime_residual_checks_for_session_locked(std::string_view session_id) const;
+
+    std::size_t erase_pending_subscriber_runtime_residual_checks_for_stream_locked(std::string_view stream_id) const;
+
+    std::size_t erase_direct_publisher_rtx_drop_counters_for_session_locked(std::string_view session_id);
+
+    std::size_t erase_direct_publisher_rtx_drop_counters_for_stream_locked(std::string_view stream_id);
 
     [[nodiscard]] uint64_t record_direct_publisher_rtx_drop(std::string_view stream_id,
                                                             std::string_view publisher_session_id,
@@ -1487,7 +1504,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::array<uint8_t, 4096> receive_buffer_{};
 
     mutable std::mutex endpoint_mutex_;
-    std::vector<pending_subscriber_runtime_residual_check> pending_subscriber_runtime_residual_checks_;
+    mutable std::vector<pending_subscriber_runtime_residual_check> pending_subscriber_runtime_residual_checks_;
     std::unordered_map<std::string, boost::asio::ip::udp::endpoint> endpoints_by_address_;
     std::unordered_map<std::string, std::string> endpoint_address_by_session_id_;
     std::unordered_map<std::string, std::string> session_id_by_endpoint_address_;
@@ -1526,7 +1543,7 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
     std::unordered_map<std::string, retired_endpoint_state> retired_endpoints_by_address_;
     std::unordered_map<std::string, retired_ice_credential_state> retired_ice_credentials_by_local_ufrag_;
 
-    std::unordered_map<std::string, uint64_t> direct_publisher_rtx_drop_counts_;
+    std::unordered_map<std::string, direct_publisher_rtx_drop_counter_state> direct_publisher_rtx_drop_counts_;
 
     bool started_ = false;
     bool registry_callback_registered_ = false;

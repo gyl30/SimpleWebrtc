@@ -78,6 +78,10 @@ constexpr std::size_t k_max_pending_sessions = 256;
 
 constexpr std::size_t k_max_orphan_subscriber_sessions = 256;
 
+constexpr std::size_t k_max_pending_subscriber_runtime_residual_checks = 256;
+
+constexpr std::size_t k_max_direct_publisher_rtx_drop_counter_entries = 4096;
+
 struct pending_session_cleanup_candidate
 {
     std::string session_id;
@@ -2030,9 +2034,12 @@ bool lifecycle_active_runtime_state_is_empty(const lifecycle_debug_snapshot& sna
            snapshot.selected_rid_layer_state_count == 0 && snapshot.pending_selected_rid_keyframe_request_count == 0 &&
            snapshot.selected_rid_keyframe_pending_metadata_count == 0 && snapshot.extmap_rewrite_state_count == 0 &&
            snapshot.outbound_transport_cc_sequence_count == 0 && snapshot.outbound_transport_cc_packet_count == 0 &&
-           snapshot.outbound_transport_cc_feedback_window_count == 0 && snapshot.outbound_transport_cc_feedback_window_observation_count == 0 &&
-           snapshot.subscriber_downlink_bandwidth_state_count == 0 && snapshot.subscriber_downlink_pacing_state_count == 0 &&
-           snapshot.subscriber_downlink_pacing_queue_packet_count == 0 && snapshot.subscriber_downlink_pacing_queue_byte_count == 0;
+           snapshot.outbound_transport_cc_reverse_index_count == 0 && snapshot.outbound_transport_cc_feedback_window_count == 0 &&
+           snapshot.outbound_transport_cc_feedback_window_observation_count == 0 && snapshot.subscriber_downlink_bandwidth_state_count == 0 &&
+           snapshot.subscriber_downlink_pacing_state_count == 0 && snapshot.subscriber_downlink_pacing_queue_packet_count == 0 &&
+           snapshot.subscriber_downlink_pacing_queue_byte_count == 0 && snapshot.orphan_subscriber_keyframe_request_count == 0 &&
+           snapshot.direct_publisher_rtx_drop_counter_entry_count == 0 && snapshot.pending_subscriber_runtime_residual_check_count == 0 &&
+           snapshot.subscriber_runtime_residual_count == 0;
 }
 
 bool lifecycle_delayed_runtime_state_is_empty(const lifecycle_debug_snapshot& snapshot)
@@ -5909,6 +5916,7 @@ void ice_udp_server::stop()
 
         endpoints_by_address_.clear();
 
+        pending_subscriber_runtime_residual_checks_.clear();
         endpoint_address_by_session_id_.clear();
 
         session_id_by_endpoint_address_.clear();
@@ -5944,11 +5952,14 @@ void ice_udp_server::stop()
         outbound_transport_cc_packets_by_key_.clear();
         outbound_transport_cc_packet_insertion_order_.clear();
         outbound_transport_cc_feedback_windows_by_key_.clear();
+        outbound_transport_cc_packet_key_by_rtp_key_.clear();
 
         subscriber_downlink_pacing_by_key_.clear();
         subscriber_downlink_bandwidth_by_key_.clear();
         subscriber_downlink_pacing_round_robin_after_key.clear();
         subscriber_downlink_pacing_timer_scheduled_ = false;
+        orphan_subscriber_keyframe_requests_by_key_.clear();
+        subscriber_downlink_republish_grace_until_by_key_.clear();
 
         endpoint_last_seen_milliseconds_by_address_.clear();
 
@@ -6100,6 +6111,10 @@ void ice_udp_server::schedule_subscriber_runtime_residual_check(std::string_view
 
     if (residual.residual_count == 0)
     {
+        std::lock_guard lock(endpoint_mutex_);
+
+        erase_pending_subscriber_runtime_residual_checks_for_session_locked(subscriber_session_id);
+
         return;
     }
 
@@ -6109,17 +6124,39 @@ void ice_udp_server::schedule_subscriber_runtime_residual_check(std::string_view
     check.subscriber_session_id = std::string(subscriber_session_id);
     check.scheduled_at_milliseconds = now_milliseconds();
 
-    std::lock_guard lock(endpoint_mutex_);
+    bool capacity_reached = false;
 
-    for (const auto& pending : pending_subscriber_runtime_residual_checks_)
     {
-        if (pending.subscriber_session_id == check.subscriber_session_id)
+        std::lock_guard lock(endpoint_mutex_);
+
+        for (const auto& pending : pending_subscriber_runtime_residual_checks_)
         {
-            return;
+            if (pending.subscriber_session_id == check.subscriber_session_id)
+            {
+                return;
+            }
+        }
+
+        if (pending_subscriber_runtime_residual_checks_.size() >= k_max_pending_subscriber_runtime_residual_checks)
+        {
+            capacity_reached = true;
+        }
+        else
+        {
+            pending_subscriber_runtime_residual_checks_.push_back(std::move(check));
         }
     }
 
-    pending_subscriber_runtime_residual_checks_.push_back(std::move(check));
+    if (capacity_reached)
+    {
+        WEBRTC_LOG_WARN(
+            "subscriber runtime residual check capacity reached "
+            "stream={} subscriber_session={} residual_count={} limit={}",
+            stream_id,
+            subscriber_session_id,
+            residual.residual_count,
+            k_max_pending_subscriber_runtime_residual_checks);
+    }
 }
 
 void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
@@ -6181,6 +6218,28 @@ void ice_udp_server::forget_session_runtime_state(std::string_view session_id)
     if (nack_retransmit_throttle_ != nullptr)
     {
         nack_retransmit_throttle_->forget_session(session_id);
+    }
+
+    std::size_t erased_pending_residual_checks = 0;
+    std::size_t erased_direct_publisher_rtx_drop_counters = 0;
+
+    {
+        std::lock_guard lock(endpoint_mutex_);
+
+        erased_pending_residual_checks = erase_pending_subscriber_runtime_residual_checks_for_session_locked(session_id);
+
+        erased_direct_publisher_rtx_drop_counters = erase_direct_publisher_rtx_drop_counters_for_session_locked(session_id);
+    }
+
+    if (erased_pending_residual_checks != 0 || erased_direct_publisher_rtx_drop_counters != 0)
+    {
+        WEBRTC_LOG_DEBUG(
+            "session diagnostic runtime state forgotten "
+            "session={} pending_residual_checks_erased={} "
+            "direct_publisher_rtx_drop_counters_erased={}",
+            session_id,
+            erased_pending_residual_checks,
+            erased_direct_publisher_rtx_drop_counters);
     }
 }
 void ice_udp_server::mark_subscriber_downlink_republish_grace_for_stream(std::string_view stream_id, std::string_view publisher_session_id)
@@ -6286,6 +6345,53 @@ void ice_udp_server::erase_orphan_subscriber_keyframe_requests_for_stream_locked
 
         ++iterator;
     }
+}
+std::size_t ice_udp_server::erase_pending_subscriber_runtime_residual_checks_for_session_locked(std::string_view session_id) const
+{
+    if (session_id.empty())
+    {
+        return 0;
+    }
+
+    return std::erase_if(pending_subscriber_runtime_residual_checks_,
+                         [session_id](const pending_subscriber_runtime_residual_check& check) { return check.subscriber_session_id == session_id; });
+}
+
+std::size_t ice_udp_server::erase_pending_subscriber_runtime_residual_checks_for_stream_locked(std::string_view stream_id) const
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    return std::erase_if(pending_subscriber_runtime_residual_checks_,
+                         [stream_id](const pending_subscriber_runtime_residual_check& check) { return check.stream_id == stream_id; });
+}
+
+std::size_t ice_udp_server::erase_direct_publisher_rtx_drop_counters_for_session_locked(std::string_view session_id)
+{
+    if (session_id.empty())
+    {
+        return 0;
+    }
+
+    return std::erase_if(direct_publisher_rtx_drop_counts_,
+                         [session_id](const auto& item)
+                         {
+                             const direct_publisher_rtx_drop_counter_state& state = item.second;
+
+                             return state.publisher_session_id == session_id || state.subscriber_session_id == session_id;
+                         });
+}
+
+std::size_t ice_udp_server::erase_direct_publisher_rtx_drop_counters_for_stream_locked(std::string_view stream_id)
+{
+    if (stream_id.empty())
+    {
+        return 0;
+    }
+
+    return std::erase_if(direct_publisher_rtx_drop_counts_, [stream_id](const auto& item) { return item.second.stream_id == stream_id; });
 }
 
 void ice_udp_server::mark_subscriber_downlink_ice_restart_grace_for_session(std::string_view stream_id, std::string_view subscriber_session_id)
@@ -7670,6 +7776,8 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         }
         snapshot.payload_type_mapping_count = to_debug_count(payload_type_mappings_by_key_.size());
         snapshot.keyframe_request_state_count = to_debug_count(keyframe_request_last_time_milliseconds_by_key_.size());
+        snapshot.orphan_subscriber_keyframe_request_count = to_debug_count(orphan_subscriber_keyframe_requests_by_key_.size());
+        snapshot.direct_publisher_rtx_drop_counter_entry_count = to_debug_count(direct_publisher_rtx_drop_counts_.size());
         snapshot.fir_sequence_number_state_count = to_debug_count(fir_sequence_number_by_key_.size());
         snapshot.publisher_video_ssrc_state_count = to_debug_count(publisher_video_ssrc_by_stream_.size());
         snapshot.pending_republish_keyframe_request_count = to_debug_count(pending_republish_keyframe_state_by_stream_.size());
@@ -7681,6 +7789,7 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         snapshot.selected_rid_layers.reserve(selected_rid_layer_state_by_key_.size());
         snapshot.outbound_transport_cc_sequence_count = to_debug_count(outbound_transport_cc_sequence_by_key_.size());
         snapshot.outbound_transport_cc_packet_count = to_debug_count(outbound_transport_cc_packets_by_key_.size());
+        snapshot.outbound_transport_cc_reverse_index_count = to_debug_count(outbound_transport_cc_packet_key_by_rtp_key_.size());
         snapshot.outbound_transport_cc_feedback_window_count = to_debug_count(outbound_transport_cc_feedback_windows_by_key_.size());
 
         snapshot.outbound_transport_cc_feedback_window_observation_count =
@@ -8240,6 +8349,17 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
         snapshot.rtcp_transport_cc_pending_packet_count = to_debug_count(rtcp_transport_cc_feedback_service_->pending_packet_count());
     }
+    if (snapshot.pending_subscriber_runtime_residual_check_count != 0)
+    {
+        add_lifecycle_residual(
+            snapshot,
+            "pending subscriber runtime residual check remains count=" + std::to_string(snapshot.pending_subscriber_runtime_residual_check_count));
+    }
+
+    if (snapshot.subscriber_runtime_residual_count != 0)
+    {
+        add_lifecycle_residual(snapshot, "subscriber runtime residual remains count=" + std::to_string(snapshot.subscriber_runtime_residual_count));
+    }
     {
         std::vector<pending_subscriber_runtime_residual_check> pending_checks;
 
@@ -8248,6 +8368,10 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
             pending_checks = pending_subscriber_runtime_residual_checks_;
         }
+
+        std::vector<std::string> resolved_session_ids;
+
+        resolved_session_ids.reserve(pending_checks.size());
 
         snapshot.subscriber_runtime_residuals.reserve(pending_checks.size());
 
@@ -8258,12 +8382,30 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 
             if (entry.residual_count == 0)
             {
+                resolved_session_ids.push_back(check.subscriber_session_id);
+
                 continue;
             }
 
-            snapshot.subscriber_runtime_residual_count += 1;
-
             snapshot.subscriber_runtime_residuals.push_back(std::move(entry));
+        }
+
+        snapshot.subscriber_runtime_residual_count = to_debug_count(snapshot.subscriber_runtime_residuals.size());
+
+        {
+            std::lock_guard lock(endpoint_mutex_);
+
+            if (!resolved_session_ids.empty())
+            {
+                std::erase_if(pending_subscriber_runtime_residual_checks_,
+                              [&resolved_session_ids](const pending_subscriber_runtime_residual_check& check)
+                              {
+                                  return std::find(resolved_session_ids.begin(), resolved_session_ids.end(), check.subscriber_session_id) !=
+                                         resolved_session_ids.end();
+                              });
+            }
+
+            snapshot.pending_subscriber_runtime_residual_check_count = to_debug_count(pending_subscriber_runtime_residual_checks_.size());
         }
     }
 
@@ -8559,7 +8701,18 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot, "keyframe request state remains count=" + std::to_string(snapshot.keyframe_request_state_count));
         }
+        if (snapshot.orphan_subscriber_keyframe_request_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot, "orphan subscriber keyframe request remains count=" + std::to_string(snapshot.orphan_subscriber_keyframe_request_count));
+        }
 
+        if (snapshot.direct_publisher_rtx_drop_counter_entry_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot,
+                "direct publisher rtx drop counter remains count=" + std::to_string(snapshot.direct_publisher_rtx_drop_counter_entry_count));
+        }
         if (snapshot.fir_sequence_number_state_count != 0)
         {
             add_lifecycle_residual(snapshot, "fir sequence number state remains count=" + std::to_string(snapshot.fir_sequence_number_state_count));
@@ -8609,6 +8762,11 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
         {
             add_lifecycle_residual(snapshot,
                                    "outbound transport cc packet remains count=" + std::to_string(snapshot.outbound_transport_cc_packet_count));
+        }
+        if (snapshot.outbound_transport_cc_reverse_index_count != 0)
+        {
+            add_lifecycle_residual(
+                snapshot, "outbound transport cc reverse index remains count=" + std::to_string(snapshot.outbound_transport_cc_reverse_index_count));
         }
         if (snapshot.outbound_transport_cc_feedback_window_count != 0)
         {
@@ -8733,6 +8891,21 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
                                   runtime_config.rtcp_transport_cc_feedback.max_pending_packets_total);
     append_runtime_resource_limit(
         snapshot, "outbound_transport_cc_packets", snapshot.outbound_transport_cc_packet_count, k_max_outbound_transport_cc_packet_identities);
+
+    append_runtime_resource_limit(snapshot,
+                                  "outbound_transport_cc_reverse_index",
+                                  snapshot.outbound_transport_cc_reverse_index_count,
+                                  k_max_outbound_transport_cc_packet_identities);
+
+    append_runtime_resource_limit(snapshot,
+                                  "pending_subscriber_runtime_residual_checks",
+                                  snapshot.pending_subscriber_runtime_residual_check_count,
+                                  k_max_pending_subscriber_runtime_residual_checks);
+
+    append_runtime_resource_limit(snapshot,
+                                  "direct_publisher_rtx_drop_counters",
+                                  snapshot.direct_publisher_rtx_drop_counter_entry_count,
+                                  k_max_direct_publisher_rtx_drop_counter_entries);
     append_runtime_resource_limit(
         snapshot,
         "outbound_transport_cc_feedback_window_observations",
@@ -16259,6 +16432,7 @@ std::optional<std::vector<uint8_t>> ice_udp_server::make_rtx_retransmit_plain_pa
         rtx_packet->size());
     return rtx_packet.value();
 }
+
 uint64_t ice_udp_server::record_direct_publisher_rtx_drop(std::string_view stream_id,
                                                           std::string_view publisher_session_id,
                                                           std::string_view subscriber_session_id)
@@ -16273,14 +16447,40 @@ uint64_t ice_udp_server::record_direct_publisher_rtx_drop(std::string_view strea
     key.push_back('\n');
     key.append(subscriber_session_id);
 
-    auto [iterator, inserted] = direct_publisher_rtx_drop_counts_.try_emplace(std::move(key), 0);
+    std::lock_guard lock(endpoint_mutex_);
 
-    (void)inserted;
+    auto iterator = direct_publisher_rtx_drop_counts_.find(key);
 
-    iterator->second += 1;
+    if (iterator == direct_publisher_rtx_drop_counts_.end())
+    {
+        /*
+         * This is diagnostic/log-throttling state only. Keep it strictly
+         * bounded even if a lifecycle bug or hostile session churn prevents
+         * normal session cleanup.
+         */
+        if (direct_publisher_rtx_drop_counts_.size() >= k_max_direct_publisher_rtx_drop_counter_entries && !direct_publisher_rtx_drop_counts_.empty())
+        {
+            direct_publisher_rtx_drop_counts_.erase(direct_publisher_rtx_drop_counts_.begin());
+        }
 
-    return iterator->second;
+        direct_publisher_rtx_drop_counter_state state;
+
+        state.stream_id = std::string(stream_id);
+        state.publisher_session_id = std::string(publisher_session_id);
+        state.subscriber_session_id = std::string(subscriber_session_id);
+
+        auto [inserted_iterator, inserted] = direct_publisher_rtx_drop_counts_.try_emplace(std::move(key), std::move(state));
+
+        (void)inserted;
+
+        iterator = inserted_iterator;
+    }
+
+    iterator->second.drop_count += 1;
+
+    return iterator->second.drop_count;
 }
+
 std::optional<std::vector<uint8_t>> ice_udp_server::make_forward_plain_packet(const srtp_packet_process_result& packet,
                                                                               const media_route_result& route,
                                                                               const std::optional<media_track_resolution>& track_resolution,
@@ -19016,6 +19216,8 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
 
     std::size_t erased_payload_type_mappings = 0;
     std::size_t erased_keyframe_request_states = 0;
+    std::size_t erased_pending_residual_checks = 0;
+    std::size_t erased_direct_publisher_rtx_drop_counters = 0;
     {
         std::lock_guard lock(endpoint_mutex_);
 
@@ -19044,6 +19246,9 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         const std::size_t erased_subscriber_downlink_pacing_states = erase_subscriber_downlink_pacing_states_for_stream_locked(stream_id);
         (void)erased_subscriber_downlink_pacing_states;
         erase_orphan_subscriber_keyframe_requests_for_stream_locked(stream_id);
+        erased_pending_residual_checks = erase_pending_subscriber_runtime_residual_checks_for_stream_locked(stream_id);
+
+        erased_direct_publisher_rtx_drop_counters = erase_direct_publisher_rtx_drop_counters_for_stream_locked(stream_id);
 
         for (auto iterator = fir_sequence_number_by_key_.begin(); iterator != fir_sequence_number_by_key_.end();)
         {
@@ -19071,6 +19276,16 @@ void ice_udp_server::cleanup_stream_runtime_state(std::string_view stream_id)
         }
 
         pending_republish_keyframe_state_by_stream_.erase(std::string(stream_id));
+    }
+    if (erased_pending_residual_checks != 0 || erased_direct_publisher_rtx_drop_counters != 0)
+    {
+        WEBRTC_LOG_DEBUG(
+            "stream diagnostic runtime state forgotten "
+            "stream={} pending_residual_checks_erased={} "
+            "direct_publisher_rtx_drop_counters_erased={}",
+            stream_id,
+            erased_pending_residual_checks,
+            erased_direct_publisher_rtx_drop_counters);
     }
     WEBRTC_LOG_INFO(
         "ice udp stream runtime state cleanup stream={} cache_erased={} cache_packets_before={} cache_packets_erased={} "
