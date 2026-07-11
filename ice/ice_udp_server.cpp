@@ -20584,7 +20584,7 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
     std::string_view key, selected_rid_layer_runtime_state& state, const std::vector<std::string>& rid_preference, uint64_t current_time_milliseconds)
 {
     state.adaptive_enabled = simulcast_adaptive_enabled_from_env();
-    state.adaptive_decision_source = state.adaptive_enabled ? "nack_only" : "disabled";
+    state.adaptive_decision_source = state.adaptive_enabled ? "nack_fallback" : "disabled";
 
     const subscriber_downlink_control_config& downlink_config =
         ice_udp_server_runtime_config_instance().subscriber_downlink_control;
@@ -20604,29 +20604,36 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
 
     const std::string downlink_key = make_subscriber_downlink_bandwidth_state_key(state.stream_id, state.subscriber_session_id);
     const auto downlink_iterator = subscriber_downlink_bandwidth_by_key_.find(downlink_key);
+    const subscriber_downlink_bandwidth_state* downlink_state = nullptr;
 
     if (downlink_iterator != subscriber_downlink_bandwidth_by_key_.end())
     {
-        const subscriber_downlink_bandwidth_state& downlink_state = downlink_iterator->second;
+        downlink_state = &downlink_iterator->second;
 
-        state.adaptive_downlink_control_state = std::string(subscriber_downlink_control_state_to_string(downlink_state.control_state));
-        state.adaptive_downlink_target_bitrate_bps = downlink_state.target_bitrate_bps;
+        state.adaptive_downlink_control_state = std::string(subscriber_downlink_control_state_to_string(downlink_state->control_state));
+        state.adaptive_downlink_target_bitrate_bps = downlink_state->target_bitrate_bps;
 
-        if (downlink_state.last_feedback_at_milliseconds != 0 && current_time_milliseconds > downlink_state.last_feedback_at_milliseconds)
+        if (downlink_state->last_feedback_at_milliseconds != 0 &&
+            current_time_milliseconds > downlink_state->last_feedback_at_milliseconds)
         {
-            state.adaptive_downlink_feedback_age_milliseconds = current_time_milliseconds - downlink_state.last_feedback_at_milliseconds;
+            state.adaptive_downlink_feedback_age_milliseconds =
+                current_time_milliseconds - downlink_state->last_feedback_at_milliseconds;
         }
 
-        const uint64_t max_feedback_age_milliseconds = simulcast_adaptive_downlink_max_feedback_age_milliseconds_from_env();
-        const bool feedback_fresh =
-            downlink_state.last_feedback_at_milliseconds != 0 &&
-            (current_time_milliseconds <= downlink_state.last_feedback_at_milliseconds ||
-             current_time_milliseconds - downlink_state.last_feedback_at_milliseconds <= max_feedback_age_milliseconds);
+        const uint64_t max_feedback_age_milliseconds =
+            simulcast_adaptive_downlink_max_feedback_age_milliseconds_from_env();
 
-        state.adaptive_downlink_reliable = downlink_config.mode != subscriber_downlink_control_mode::disabled &&
-                                           downlink_state.control_state != subscriber_downlink_control_state::probing &&
-                                           downlink_state.window_observation_count >= downlink_config.probe_observation_count &&
-                                           downlink_state.lookup_hit_rate_ppm >= downlink_config.min_reliable_lookup_hit_rate_ppm && feedback_fresh;
+        const bool feedback_fresh =
+            downlink_state->last_feedback_at_milliseconds != 0 &&
+            (current_time_milliseconds <= downlink_state->last_feedback_at_milliseconds ||
+             current_time_milliseconds - downlink_state->last_feedback_at_milliseconds <= max_feedback_age_milliseconds);
+
+        state.adaptive_downlink_reliable =
+            downlink_config.mode != subscriber_downlink_control_mode::disabled &&
+            downlink_state->control_state != subscriber_downlink_control_state::probing &&
+            downlink_state->window_observation_count >= downlink_config.probe_observation_count &&
+            downlink_state->lookup_hit_rate_ppm >= downlink_config.min_reliable_lookup_hit_rate_ppm &&
+            feedback_fresh;
     }
 
     if (!state.adaptive_enabled)
@@ -20738,6 +20745,11 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
                      quality_layers.end(),
                      [](const quality_layer& left, const quality_layer& right)
                      {
+                         if (left.primary_bitrate_bps != right.primary_bitrate_bps)
+                         {
+                             return left.primary_bitrate_bps > right.primary_bitrate_bps;
+                         }
+
                          if (left.bitrate_bps != right.bitrate_bps)
                          {
                              return left.bitrate_bps > right.bitrate_bps;
@@ -20917,35 +20929,116 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
         return request;
     };
 
-    if (delta_nack_sequences == 0)
+    const bool manual_target_active = runtime_selected_rid_target_is_manual_locked(key);
+    const bool downlink_observe_only = downlink_config.mode == subscriber_downlink_control_mode::observe_only;
+    const bool downlink_switch_enabled = downlink_config.mode == subscriber_downlink_control_mode::enabled;
+
+    const bool downlink_decision_available =
+        downlink_state != nullptr &&
+        state.adaptive_downlink_reliable &&
+        state.adaptive_current_layer_primary_bitrate_bps != 0 &&
+        state.adaptive_keep_required_bitrate_bps != 0;
+
+    const auto apply_downlink_target =
+        [&](std::string_view target_rid,
+            std::string_view policy,
+            std::string_view reason,
+            std::string_view decision_source) -> std::optional<adaptive_selected_rid_switch_request>
     {
-        if (state.adaptive_healthy_since_milliseconds == 0)
+        state.adaptive_decision_source = std::string(decision_source);
+
+        if (manual_target_active || downlink_observe_only)
         {
-            state.adaptive_healthy_since_milliseconds = current_time_milliseconds;
+            std::string suggestion_reason(reason);
+
+            if (manual_target_active)
+            {
+                suggestion_reason.append(" but manual target is active");
+            }
+            else
+            {
+                suggestion_reason.append(" in observe-only mode");
+            }
+
+            remember_adaptive_selected_rid_suggestion_locked(
+                state, target_rid, policy, suggestion_reason, current_time_milliseconds);
+
+            WEBRTC_LOG_INFO(
+                "simulcast adaptive downlink suggestion stream={} publisher_session={} subscriber_session={} mid={} kind={} "
+                "current_rid={} target_rid={} policy={} source={} manual_target_active={} observe_only={} downlink_state={} "
+                "target_bitrate_bps={} keep_required_bitrate_bps={} upgrade_required_bitrate_bps={}",
+                state.stream_id,
+                state.publisher_session_id,
+                state.subscriber_session_id,
+                state.mid,
+                state.kind,
+                state.rid,
+                target_rid,
+                policy,
+                decision_source,
+                manual_target_active ? 1 : 0,
+                downlink_observe_only ? 1 : 0,
+                state.adaptive_downlink_control_state,
+                state.adaptive_downlink_target_bitrate_bps,
+                state.adaptive_keep_required_bitrate_bps,
+                state.adaptive_upgrade_required_bitrate_bps);
+
+            return std::nullopt;
         }
-    }
-    else
-    {
-        state.adaptive_healthy_since_milliseconds = 0;
-    }
+
+        if (!downlink_switch_enabled)
+        {
+            return std::nullopt;
+        }
+
+        auto request = prepare_switch(target_rid, policy, reason);
+
+        WEBRTC_LOG_INFO(
+            "simulcast adaptive downlink target pending stream={} publisher_session={} subscriber_session={} mid={} kind={} "
+            "current_rid={} target_rid={} policy={} source={} downlink_state={} target_bitrate_bps={} "
+            "keep_required_bitrate_bps={} upgrade_required_bitrate_bps={} request_keyframe={}",
+            state.stream_id,
+            state.publisher_session_id,
+            state.subscriber_session_id,
+            state.mid,
+            state.kind,
+            state.rid,
+            target_rid,
+            policy,
+            decision_source,
+            state.adaptive_downlink_control_state,
+            state.adaptive_downlink_target_bitrate_bps,
+            state.adaptive_keep_required_bitrate_bps,
+            state.adaptive_upgrade_required_bitrate_bps,
+            request.has_value() ? 1 : 0);
+
+        return request;
+    };
 
     const uint64_t downgrade_ratio_per_mille = simulcast_adaptive_downgrade_nack_ratio_per_mille_from_env();
 
-    const bool downgrade_required = delta_nack_sequences * 1000U >= delta_primary_packets * downgrade_ratio_per_mille;
+    const bool nack_downgrade_required =
+        delta_nack_sequences * 1000U >= delta_primary_packets * downgrade_ratio_per_mille;
 
-    if (downgrade_required && *current_index + 1 < state.adaptive_quality_order.size())
+    if (nack_downgrade_required && *current_index + 1 < state.adaptive_quality_order.size())
     {
+        state.adaptive_decision_source = "nack";
+
         const std::string& target_rid = state.adaptive_quality_order[*current_index + 1];
 
-        if (runtime_selected_rid_target_is_manual_locked(key))
+        if (manual_target_active)
         {
             remember_adaptive_selected_rid_suggestion_locked(
-                state, target_rid, "adaptive_downgrade", "nack ratio exceeded threshold but manual target is active", current_time_milliseconds);
+                state,
+                target_rid,
+                "adaptive_downgrade",
+                "nack ratio exceeded threshold but manual target is active",
+                current_time_milliseconds);
 
             WEBRTC_LOG_INFO(
-                "simulcast adaptive downgrade suggestion suppressed by manual target stream={} publisher_session={} subscriber_session={} mid={} "
-                "kind={} current_rid={} manual_target_rid={} suggested_rid={} packets={} nack_sequences={} threshold_per_mille={} "
-                "quality_order_size={}",
+                "simulcast adaptive downgrade suggestion suppressed by manual target stream={} publisher_session={} "
+                "subscriber_session={} mid={} kind={} current_rid={} manual_target_rid={} suggested_rid={} packets={} "
+                "nack_sequences={} threshold_per_mille={} quality_order_size={}",
                 state.stream_id,
                 state.publisher_session_id,
                 state.subscriber_session_id,
@@ -20965,8 +21058,9 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
         auto request = prepare_switch(target_rid, "adaptive_downgrade", "nack ratio exceeded threshold");
 
         WEBRTC_LOG_INFO(
-            "simulcast adaptive downgrade target pending stream={} publisher_session={} subscriber_session={} mid={} kind={} current_rid={} "
-            "target_rid={} packets={} nack_sequences={} threshold_per_mille={} quality_order_size={} request_keyframe={}",
+            "simulcast adaptive downgrade target pending stream={} publisher_session={} subscriber_session={} mid={} kind={} "
+            "current_rid={} target_rid={} packets={} nack_sequences={} threshold_per_mille={} quality_order_size={} "
+            "request_keyframe={}",
             state.stream_id,
             state.publisher_session_id,
             state.subscriber_session_id,
@@ -20983,10 +21077,36 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
         return request;
     }
 
+    const bool has_lower_layer = *current_index + 1 < state.adaptive_quality_order.size();
+
+    if (downlink_decision_available && has_lower_layer)
+    {
+        const std::string& lower_rid = state.adaptive_quality_order[*current_index + 1];
+
+        if (downlink_state->control_state == subscriber_downlink_control_state::constrained)
+        {
+            return apply_downlink_target(
+                lower_rid,
+                "adaptive_downgrade",
+                "subscriber downlink state is constrained",
+                "downlink_state");
+        }
+
+        if (state.adaptive_downlink_target_bitrate_bps < state.adaptive_keep_required_bitrate_bps)
+        {
+            return apply_downlink_target(
+                lower_rid,
+                "adaptive_downgrade",
+                "subscriber target bitrate is below current layer keep threshold",
+                "downlink_bitrate");
+        }
+    }
+
     const uint64_t post_downgrade_hold_milliseconds = simulcast_adaptive_post_downgrade_hold_milliseconds_from_env();
 
-    const bool post_downgrade_hold_active = state.target_policy == "adaptive_downgrade" && state.last_switch_milliseconds != 0 &&
-                                            current_time_milliseconds < state.last_switch_milliseconds + post_downgrade_hold_milliseconds;
+    const bool post_downgrade_hold_active =
+        state.target_policy == "adaptive_downgrade" && state.last_switch_milliseconds != 0 &&
+        current_time_milliseconds < state.last_switch_milliseconds + post_downgrade_hold_milliseconds;
 
     if (post_downgrade_hold_active)
     {
@@ -20995,25 +21115,73 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
         state.last_adaptive_decision_reason = "post downgrade hold active";
         state.last_adaptive_decision_milliseconds = current_time_milliseconds;
 
+        if (downlink_decision_available)
+        {
+            state.adaptive_decision_source = "downlink_bitrate";
+        }
+
         return std::nullopt;
     }
+
+    const bool has_higher_layer = *current_index > 0;
+
+    const bool downlink_upgrade_candidate =
+        downlink_decision_available && has_higher_layer &&
+        downlink_state->control_state == subscriber_downlink_control_state::steady &&
+        state.adaptive_next_higher_layer_primary_bitrate_bps != 0 &&
+        state.adaptive_upgrade_required_bitrate_bps != 0 &&
+        state.adaptive_downlink_target_bitrate_bps >= state.adaptive_upgrade_required_bitrate_bps &&
+        delta_nack_sequences == 0;
+
+    const bool nack_fallback_upgrade_candidate =
+        !downlink_decision_available && has_higher_layer && delta_nack_sequences == 0;
+
+    if (downlink_upgrade_candidate || nack_fallback_upgrade_candidate)
+    {
+        if (state.adaptive_healthy_since_milliseconds == 0)
+        {
+            state.adaptive_healthy_since_milliseconds = current_time_milliseconds;
+        }
+    }
+    else
+    {
+        state.adaptive_healthy_since_milliseconds = 0;
+    }
+
     const uint64_t stable_window_milliseconds = simulcast_adaptive_upgrade_stable_window_milliseconds_from_env();
 
-    const bool stable_for_upgrade = delta_nack_sequences == 0 && state.adaptive_healthy_since_milliseconds != 0 &&
-                                    current_time_milliseconds >= state.adaptive_healthy_since_milliseconds + stable_window_milliseconds;
+    const bool stable_for_upgrade =
+        state.adaptive_healthy_since_milliseconds != 0 &&
+        current_time_milliseconds >= state.adaptive_healthy_since_milliseconds + stable_window_milliseconds;
 
-    if (stable_for_upgrade && *current_index > 0)
+    if (stable_for_upgrade && has_higher_layer)
     {
         const std::string& target_rid = state.adaptive_quality_order[*current_index - 1];
 
-        if (runtime_selected_rid_target_is_manual_locked(key))
+        if (downlink_upgrade_candidate)
+        {
+            return apply_downlink_target(
+                target_rid,
+                "adaptive_upgrade",
+                "steady subscriber downlink has bitrate headroom",
+                "downlink_bitrate");
+        }
+
+        state.adaptive_decision_source = "nack_fallback";
+
+        if (manual_target_active)
         {
             remember_adaptive_selected_rid_suggestion_locked(
-                state, target_rid, "adaptive_upgrade", "stable window without nack but manual target is active", current_time_milliseconds);
+                state,
+                target_rid,
+                "adaptive_upgrade",
+                "stable window without nack but manual target is active",
+                current_time_milliseconds);
 
             WEBRTC_LOG_INFO(
-                "simulcast adaptive upgrade suggestion suppressed by manual target stream={} publisher_session={} subscriber_session={} mid={} "
-                "kind={} current_rid={} manual_target_rid={} suggested_rid={} stable_window_ms={} quality_order_size={}",
+                "simulcast adaptive upgrade suggestion suppressed by manual target stream={} publisher_session={} "
+                "subscriber_session={} mid={} kind={} current_rid={} manual_target_rid={} suggested_rid={} "
+                "stable_window_ms={} quality_order_size={}",
                 state.stream_id,
                 state.publisher_session_id,
                 state.subscriber_session_id,
@@ -21031,8 +21199,8 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
         auto request = prepare_switch(target_rid, "adaptive_upgrade", "stable window without nack");
 
         WEBRTC_LOG_INFO(
-            "simulcast adaptive upgrade target pending stream={} publisher_session={} subscriber_session={} mid={} kind={} current_rid={} "
-            "target_rid={} stable_window_ms={} quality_order_size={} request_keyframe={}",
+            "simulcast adaptive upgrade target pending stream={} publisher_session={} subscriber_session={} mid={} kind={} "
+            "current_rid={} target_rid={} stable_window_ms={} quality_order_size={} request_keyframe={}",
             state.stream_id,
             state.publisher_session_id,
             state.subscriber_session_id,
@@ -21048,8 +21216,39 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
     }
 
     state.last_adaptive_decision = "keep";
-    state.last_adaptive_decision_reason = downgrade_required ? "already at lowest active layer" : "quality window healthy";
     state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+
+    if (downlink_decision_available)
+    {
+        state.adaptive_decision_source = "downlink_bitrate";
+
+        if (downlink_state->control_state != subscriber_downlink_control_state::steady)
+        {
+            state.last_adaptive_decision_reason = "subscriber downlink state blocks upgrade";
+        }
+        else if (!has_higher_layer)
+        {
+            state.last_adaptive_decision_reason = "already at highest active layer";
+        }
+        else if (state.adaptive_upgrade_required_bitrate_bps == 0)
+        {
+            state.last_adaptive_decision_reason = "next layer bitrate is unavailable";
+        }
+        else if (state.adaptive_downlink_target_bitrate_bps < state.adaptive_upgrade_required_bitrate_bps)
+        {
+            state.last_adaptive_decision_reason = "subscriber target bitrate lacks upgrade headroom";
+        }
+        else
+        {
+            state.last_adaptive_decision_reason = "subscriber downlink upgrade stability window pending";
+        }
+    }
+    else
+    {
+        state.adaptive_decision_source = "nack_fallback";
+        state.last_adaptive_decision_reason =
+            nack_downgrade_required ? "already at lowest active layer" : "nack fallback quality window healthy";
+    }
 
     return std::nullopt;
 }
