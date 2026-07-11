@@ -7905,12 +7905,18 @@ simulcast_rid_target_expected ice_udp_server::clear_runtime_selected_rid_target(
     const uint64_t current_time_milliseconds = now_milliseconds();
 
     bool request_keyframe_now = false;
+    bool adaptive_handoff = false;
+    std::string retained_rid;
+
     simulcast_rid_target_result result;
 
     {
         std::lock_guard lock(endpoint_mutex_);
 
         const auto target_iterator = runtime_selected_rid_targets_by_key_.find(key);
+
+        const bool manual_target_found = target_iterator != runtime_selected_rid_targets_by_key_.end() &&
+                                         target_iterator->second.policy == "manual_api" && !target_iterator->second.target_rid.empty();
 
         result.stream_id = clear_request.stream_id;
         result.publisher_session_id = clear_request.publisher_session_id;
@@ -7919,11 +7925,11 @@ simulcast_rid_target_expected ice_udp_server::clear_runtime_selected_rid_target(
         result.kind = clear_request.kind;
         result.policy = "manual_api";
         result.reason = clear_request.reason.empty() ? "manual simulcast rid target cleared" : clear_request.reason;
-        result.cleared = target_iterator != runtime_selected_rid_targets_by_key_.end();
-        result.changed = result.cleared;
+        result.cleared = manual_target_found;
+        result.changed = manual_target_found;
         result.updated_at_milliseconds = current_time_milliseconds;
 
-        if (target_iterator != runtime_selected_rid_targets_by_key_.end())
+        if (manual_target_found)
         {
             result.target_rid = target_iterator->second.target_rid;
             result.applied_count = target_iterator->second.applied_count;
@@ -7935,12 +7941,10 @@ simulcast_rid_target_expected ice_udp_server::clear_runtime_selected_rid_target(
 
         result.selected_state_found = selected_state_iterator != selected_rid_layer_state_by_key_.end();
 
-        if (selected_state_iterator != selected_rid_layer_state_by_key_.end())
+        if (manual_target_found && selected_state_iterator != selected_rid_layer_state_by_key_.end())
         {
             selected_rid_layer_runtime_state& selected_state = selected_state_iterator->second;
 
-            selected_state.target_rid.clear();
-            selected_state.target_policy.clear();
             selected_state.pending_target_rid.clear();
             selected_state.pending_target_policy.clear();
             selected_state.pending_target_primary_ssrc = 0;
@@ -7950,16 +7954,67 @@ simulcast_rid_target_expected ice_udp_server::clear_runtime_selected_rid_target(
             selected_state.pending_switch_last_timeout_milliseconds = 0;
             selected_state.pending_switch_packet_count = 0;
             selected_state.manual_target_active = false;
-            selected_state.last_adaptive_decision = "manual_clear";
-            selected_state.last_adaptive_decision_reason = result.reason;
-            selected_state.last_adaptive_decision_milliseconds = current_time_milliseconds;
 
-            request_keyframe_now = result.cleared;
+            const bool adaptive_enabled = simulcast_adaptive_enabled_from_env();
+
+            if (adaptive_enabled && !selected_state.rid.empty())
+            {
+                /*
+                 * Releasing a manual target must not immediately fall
+                 * back to the offer preference. Keep the currently
+                 * committed RID as a non-manual runtime target and let
+                 * the adaptive controller replace it with the next
+                 * adjacent RID after evaluating the downlink state.
+                 */
+                runtime_selected_rid_target_state& handoff_target = runtime_selected_rid_targets_by_key_[key];
+
+                handoff_target.stream_id = selected_state.stream_id;
+                handoff_target.publisher_session_id = selected_state.publisher_session_id;
+                handoff_target.subscriber_session_id = selected_state.subscriber_session_id;
+                handoff_target.mid = selected_state.mid;
+                handoff_target.kind = selected_state.kind;
+                handoff_target.target_rid = selected_state.rid;
+                handoff_target.policy = "adaptive_handoff";
+                handoff_target.reason = "manual target cleared; adaptive control handoff";
+                handoff_target.updated_at_milliseconds = current_time_milliseconds;
+                handoff_target.applied_count = 0;
+
+                selected_state.target_rid = selected_state.rid;
+                selected_state.target_policy = "adaptive_handoff";
+                selected_state.manual_target_active = false;
+
+                selected_state.last_adaptive_check_milliseconds = 0;
+                selected_state.adaptive_healthy_since_milliseconds = 0;
+
+                selected_state.last_adaptive_decision = "manual_clear_handoff";
+                selected_state.last_adaptive_decision_reason = handoff_target.reason;
+                selected_state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+
+                selected_state.last_switch_reason = "manual target cleared; adaptive control retained current rid";
+
+                adaptive_handoff = true;
+                retained_rid = selected_state.rid;
+            }
+            else
+            {
+                selected_state.target_rid.clear();
+                selected_state.target_policy.clear();
+
+                selected_state.last_adaptive_decision = "manual_clear";
+                selected_state.last_adaptive_decision_reason = result.reason;
+                selected_state.last_adaptive_decision_milliseconds = current_time_milliseconds;
+
+                request_keyframe_now = true;
+            }
         }
 
         WEBRTC_LOG_INFO(
-            "simulcast manual rid target cleared stream={} publisher_session={} subscriber_session={} mid={} kind={} cleared={} "
-            "selected_state_found={} request_keyframe={} reason={}",
+            "simulcast manual rid target cleared "
+            "stream={} publisher_session={} "
+            "subscriber_session={} mid={} kind={} "
+            "cleared={} selected_state_found={} "
+            "adaptive_handoff={} retained_rid={} "
+            "request_keyframe={} reason={}",
             clear_request.stream_id,
             clear_request.publisher_session_id,
             clear_request.subscriber_session_id,
@@ -7967,6 +8022,8 @@ simulcast_rid_target_expected ice_udp_server::clear_runtime_selected_rid_target(
             clear_request.kind,
             result.cleared ? 1 : 0,
             result.selected_state_found ? 1 : 0,
+            adaptive_handoff ? 1 : 0,
+            retained_rid,
             request_keyframe_now ? 1 : 0,
             result.reason);
     }
@@ -8002,7 +8059,9 @@ simulcast_rid_target_expected ice_udp_server::clear_runtime_selected_rid_target(
         if (!keyframe_result)
         {
             WEBRTC_LOG_WARN(
-                "simulcast manual target clear keyframe request failed stream={} publisher_session={} subscriber_session={} mid={} error={}",
+                "simulcast manual target clear keyframe request failed "
+                "stream={} publisher_session={} "
+                "subscriber_session={} mid={} error={}",
                 clear_request.stream_id,
                 clear_request.publisher_session_id,
                 clear_request.subscriber_session_id,
@@ -8013,6 +8072,7 @@ simulcast_rid_target_expected ice_udp_server::clear_runtime_selected_rid_target(
 
     return result;
 }
+
 lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
 {
     lifecycle_debug_snapshot snapshot;
@@ -20586,8 +20646,7 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
     state.adaptive_enabled = simulcast_adaptive_enabled_from_env();
     state.adaptive_decision_source = state.adaptive_enabled ? "nack_fallback" : "disabled";
 
-    const subscriber_downlink_control_config& downlink_config =
-        ice_udp_server_runtime_config_instance().subscriber_downlink_control;
+    const subscriber_downlink_control_config& downlink_config = ice_udp_server_runtime_config_instance().subscriber_downlink_control;
 
     state.adaptive_downlink_control_mode = std::string(subscriber_downlink_control_mode_to_string(downlink_config.mode));
     state.adaptive_downlink_control_state.clear();
@@ -20613,27 +20672,21 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
         state.adaptive_downlink_control_state = std::string(subscriber_downlink_control_state_to_string(downlink_state->control_state));
         state.adaptive_downlink_target_bitrate_bps = downlink_state->target_bitrate_bps;
 
-        if (downlink_state->last_feedback_at_milliseconds != 0 &&
-            current_time_milliseconds > downlink_state->last_feedback_at_milliseconds)
+        if (downlink_state->last_feedback_at_milliseconds != 0 && current_time_milliseconds > downlink_state->last_feedback_at_milliseconds)
         {
-            state.adaptive_downlink_feedback_age_milliseconds =
-                current_time_milliseconds - downlink_state->last_feedback_at_milliseconds;
+            state.adaptive_downlink_feedback_age_milliseconds = current_time_milliseconds - downlink_state->last_feedback_at_milliseconds;
         }
 
-        const uint64_t max_feedback_age_milliseconds =
-            simulcast_adaptive_downlink_max_feedback_age_milliseconds_from_env();
+        const uint64_t max_feedback_age_milliseconds = simulcast_adaptive_downlink_max_feedback_age_milliseconds_from_env();
 
-        const bool feedback_fresh =
-            downlink_state->last_feedback_at_milliseconds != 0 &&
-            (current_time_milliseconds <= downlink_state->last_feedback_at_milliseconds ||
-             current_time_milliseconds - downlink_state->last_feedback_at_milliseconds <= max_feedback_age_milliseconds);
+        const bool feedback_fresh = downlink_state->last_feedback_at_milliseconds != 0 &&
+                                    (current_time_milliseconds <= downlink_state->last_feedback_at_milliseconds ||
+                                     current_time_milliseconds - downlink_state->last_feedback_at_milliseconds <= max_feedback_age_milliseconds);
 
-        state.adaptive_downlink_reliable =
-            downlink_config.mode != subscriber_downlink_control_mode::disabled &&
-            downlink_state->control_state != subscriber_downlink_control_state::probing &&
-            downlink_state->window_observation_count >= downlink_config.probe_observation_count &&
-            downlink_state->lookup_hit_rate_ppm >= downlink_config.min_reliable_lookup_hit_rate_ppm &&
-            feedback_fresh;
+        state.adaptive_downlink_reliable = downlink_config.mode != subscriber_downlink_control_mode::disabled &&
+                                           downlink_state->control_state != subscriber_downlink_control_state::probing &&
+                                           downlink_state->window_observation_count >= downlink_config.probe_observation_count &&
+                                           downlink_state->lookup_hit_rate_ppm >= downlink_config.min_reliable_lookup_hit_rate_ppm && feedback_fresh;
     }
 
     if (!state.adaptive_enabled)
@@ -20793,15 +20846,10 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
         return std::nullopt;
     }
 
-    const auto find_quality_layer =
-        [&](std::string_view rid) -> const quality_layer*
+    const auto find_quality_layer = [&](std::string_view rid) -> const quality_layer*
     {
-        const auto iterator = std::find_if(quality_layers.begin(),
-                                           quality_layers.end(),
-                                           [rid](const quality_layer& layer)
-                                           {
-                                               return layer.rid == rid;
-                                           });
+        const auto iterator =
+            std::find_if(quality_layers.begin(), quality_layers.end(), [rid](const quality_layer& layer) { return layer.rid == rid; });
 
         return iterator == quality_layers.end() ? nullptr : &*iterator;
     };
@@ -20933,17 +20981,13 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
     const bool downlink_observe_only = downlink_config.mode == subscriber_downlink_control_mode::observe_only;
     const bool downlink_switch_enabled = downlink_config.mode == subscriber_downlink_control_mode::enabled;
 
-    const bool downlink_decision_available =
-        downlink_state != nullptr &&
-        state.adaptive_downlink_reliable &&
-        state.adaptive_current_layer_primary_bitrate_bps != 0 &&
-        state.adaptive_keep_required_bitrate_bps != 0;
+    const bool downlink_decision_available = downlink_state != nullptr && state.adaptive_downlink_reliable &&
+                                             state.adaptive_current_layer_primary_bitrate_bps != 0 && state.adaptive_keep_required_bitrate_bps != 0;
 
-    const auto apply_downlink_target =
-        [&](std::string_view target_rid,
-            std::string_view policy,
-            std::string_view reason,
-            std::string_view decision_source) -> std::optional<adaptive_selected_rid_switch_request>
+    const auto apply_downlink_target = [&](std::string_view target_rid,
+                                           std::string_view policy,
+                                           std::string_view reason,
+                                           std::string_view decision_source) -> std::optional<adaptive_selected_rid_switch_request>
     {
         state.adaptive_decision_source = std::string(decision_source);
 
@@ -20960,8 +21004,7 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
                 suggestion_reason.append(" in observe-only mode");
             }
 
-            remember_adaptive_selected_rid_suggestion_locked(
-                state, target_rid, policy, suggestion_reason, current_time_milliseconds);
+            remember_adaptive_selected_rid_suggestion_locked(state, target_rid, policy, suggestion_reason, current_time_milliseconds);
 
             WEBRTC_LOG_INFO(
                 "simulcast adaptive downlink suggestion stream={} publisher_session={} subscriber_session={} mid={} kind={} "
@@ -21017,8 +21060,7 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
 
     const uint64_t downgrade_ratio_per_mille = simulcast_adaptive_downgrade_nack_ratio_per_mille_from_env();
 
-    const bool nack_downgrade_required =
-        delta_nack_sequences * 1000U >= delta_primary_packets * downgrade_ratio_per_mille;
+    const bool nack_downgrade_required = delta_nack_sequences * 1000U >= delta_primary_packets * downgrade_ratio_per_mille;
 
     if (nack_downgrade_required && *current_index + 1 < state.adaptive_quality_order.size())
     {
@@ -21029,11 +21071,7 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
         if (manual_target_active)
         {
             remember_adaptive_selected_rid_suggestion_locked(
-                state,
-                target_rid,
-                "adaptive_downgrade",
-                "nack ratio exceeded threshold but manual target is active",
-                current_time_milliseconds);
+                state, target_rid, "adaptive_downgrade", "nack ratio exceeded threshold but manual target is active", current_time_milliseconds);
 
             WEBRTC_LOG_INFO(
                 "simulcast adaptive downgrade suggestion suppressed by manual target stream={} publisher_session={} "
@@ -21085,28 +21123,20 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
 
         if (downlink_state->control_state == subscriber_downlink_control_state::constrained)
         {
-            return apply_downlink_target(
-                lower_rid,
-                "adaptive_downgrade",
-                "subscriber downlink state is constrained",
-                "downlink_state");
+            return apply_downlink_target(lower_rid, "adaptive_downgrade", "subscriber downlink state is constrained", "downlink_state");
         }
 
         if (state.adaptive_downlink_target_bitrate_bps < state.adaptive_keep_required_bitrate_bps)
         {
             return apply_downlink_target(
-                lower_rid,
-                "adaptive_downgrade",
-                "subscriber target bitrate is below current layer keep threshold",
-                "downlink_bitrate");
+                lower_rid, "adaptive_downgrade", "subscriber target bitrate is below current layer keep threshold", "downlink_bitrate");
         }
     }
 
     const uint64_t post_downgrade_hold_milliseconds = simulcast_adaptive_post_downgrade_hold_milliseconds_from_env();
 
-    const bool post_downgrade_hold_active =
-        state.target_policy == "adaptive_downgrade" && state.last_switch_milliseconds != 0 &&
-        current_time_milliseconds < state.last_switch_milliseconds + post_downgrade_hold_milliseconds;
+    const bool post_downgrade_hold_active = state.target_policy == "adaptive_downgrade" && state.last_switch_milliseconds != 0 &&
+                                            current_time_milliseconds < state.last_switch_milliseconds + post_downgrade_hold_milliseconds;
 
     if (post_downgrade_hold_active)
     {
@@ -21126,15 +21156,11 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
     const bool has_higher_layer = *current_index > 0;
 
     const bool downlink_upgrade_candidate =
-        downlink_decision_available && has_higher_layer &&
-        downlink_state->control_state == subscriber_downlink_control_state::steady &&
-        state.adaptive_next_higher_layer_primary_bitrate_bps != 0 &&
-        state.adaptive_upgrade_required_bitrate_bps != 0 &&
-        state.adaptive_downlink_target_bitrate_bps >= state.adaptive_upgrade_required_bitrate_bps &&
-        delta_nack_sequences == 0;
+        downlink_decision_available && has_higher_layer && downlink_state->control_state == subscriber_downlink_control_state::steady &&
+        state.adaptive_next_higher_layer_primary_bitrate_bps != 0 && state.adaptive_upgrade_required_bitrate_bps != 0 &&
+        state.adaptive_downlink_target_bitrate_bps >= state.adaptive_upgrade_required_bitrate_bps && delta_nack_sequences == 0;
 
-    const bool nack_fallback_upgrade_candidate =
-        !downlink_decision_available && has_higher_layer && delta_nack_sequences == 0;
+    const bool nack_fallback_upgrade_candidate = !downlink_decision_available && has_higher_layer && delta_nack_sequences == 0;
 
     if (downlink_upgrade_candidate || nack_fallback_upgrade_candidate)
     {
@@ -21150,9 +21176,8 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
 
     const uint64_t stable_window_milliseconds = simulcast_adaptive_upgrade_stable_window_milliseconds_from_env();
 
-    const bool stable_for_upgrade =
-        state.adaptive_healthy_since_milliseconds != 0 &&
-        current_time_milliseconds >= state.adaptive_healthy_since_milliseconds + stable_window_milliseconds;
+    const bool stable_for_upgrade = state.adaptive_healthy_since_milliseconds != 0 &&
+                                    current_time_milliseconds >= state.adaptive_healthy_since_milliseconds + stable_window_milliseconds;
 
     if (stable_for_upgrade && has_higher_layer)
     {
@@ -21160,11 +21185,7 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
 
         if (downlink_upgrade_candidate)
         {
-            return apply_downlink_target(
-                target_rid,
-                "adaptive_upgrade",
-                "steady subscriber downlink has bitrate headroom",
-                "downlink_bitrate");
+            return apply_downlink_target(target_rid, "adaptive_upgrade", "steady subscriber downlink has bitrate headroom", "downlink_bitrate");
         }
 
         state.adaptive_decision_source = "nack_fallback";
@@ -21172,11 +21193,7 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
         if (manual_target_active)
         {
             remember_adaptive_selected_rid_suggestion_locked(
-                state,
-                target_rid,
-                "adaptive_upgrade",
-                "stable window without nack but manual target is active",
-                current_time_milliseconds);
+                state, target_rid, "adaptive_upgrade", "stable window without nack but manual target is active", current_time_milliseconds);
 
             WEBRTC_LOG_INFO(
                 "simulcast adaptive upgrade suggestion suppressed by manual target stream={} publisher_session={} "
@@ -21246,8 +21263,7 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
     else
     {
         state.adaptive_decision_source = "nack_fallback";
-        state.last_adaptive_decision_reason =
-            nack_downgrade_required ? "already at lowest active layer" : "nack fallback quality window healthy";
+        state.last_adaptive_decision_reason = nack_downgrade_required ? "already at lowest active layer" : "nack fallback quality window healthy";
     }
 
     return std::nullopt;
