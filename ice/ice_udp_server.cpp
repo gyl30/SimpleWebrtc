@@ -5545,6 +5545,27 @@ uint64_t simulcast_adaptive_post_downgrade_hold_milliseconds_from_env()
     return simulcast_uint64_from_env("WEBRTC_SIMULCAST_ADAPTIVE_POST_DOWNGRADE_HOLD_MS", 8000);
 }
 
+uint64_t simulcast_adaptive_downlink_max_feedback_age_milliseconds_from_env()
+{
+    return simulcast_uint64_from_env("WEBRTC_SIMULCAST_ADAPTIVE_DOWNLINK_MAX_FEEDBACK_AGE_MS", 2000);
+}
+
+int64_t make_signed_bitrate_margin(uint64_t available_bitrate_bps, uint64_t required_bitrate_bps)
+{
+    constexpr uint64_t k_max_signed_value = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+
+    if (available_bitrate_bps >= required_bitrate_bps)
+    {
+        const uint64_t difference = available_bitrate_bps - required_bitrate_bps;
+
+        return static_cast<int64_t>(std::min(difference, k_max_signed_value));
+    }
+
+    const uint64_t difference = required_bitrate_bps - available_bitrate_bps;
+
+    return -static_cast<int64_t>(std::min(difference, k_max_signed_value));
+}
+
 std::optional<std::size_t> find_simulcast_rid_preference_index(const std::vector<std::string>& preferred_rids, std::string_view rid)
 {
     for (std::size_t index = 0; index < preferred_rids.size(); ++index)
@@ -8280,6 +8301,8 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
                                                      : 0;
 
             entry.bitrate_bps = state.bitrate_bps;
+            entry.primary_bitrate_bps = state.primary_bitrate_bps;
+            entry.repair_bitrate_bps = state.repair_bitrate_bps;
 
             entry.selected_subscriber_count = 0;
 
@@ -8332,6 +8355,19 @@ lifecycle_debug_snapshot ice_udp_server::debug_state_snapshot() const
             entry.last_switch_reason = state.last_switch_reason;
 
             entry.adaptive_enabled = state.adaptive_enabled;
+            entry.adaptive_decision_source = state.adaptive_decision_source;
+            entry.adaptive_downlink_control_state = state.adaptive_downlink_control_state;
+            entry.adaptive_downlink_control_mode = state.adaptive_downlink_control_mode;
+            entry.adaptive_downlink_reliable = state.adaptive_downlink_reliable;
+            entry.adaptive_downlink_target_bitrate_bps = state.adaptive_downlink_target_bitrate_bps;
+            entry.adaptive_downlink_feedback_age_milliseconds = state.adaptive_downlink_feedback_age_milliseconds;
+            entry.adaptive_current_layer_primary_bitrate_bps = state.adaptive_current_layer_primary_bitrate_bps;
+            entry.adaptive_next_higher_rid = state.adaptive_next_higher_rid;
+            entry.adaptive_next_higher_layer_primary_bitrate_bps = state.adaptive_next_higher_layer_primary_bitrate_bps;
+            entry.adaptive_keep_required_bitrate_bps = state.adaptive_keep_required_bitrate_bps;
+            entry.adaptive_upgrade_required_bitrate_bps = state.adaptive_upgrade_required_bitrate_bps;
+            entry.adaptive_keep_bitrate_margin_bps = state.adaptive_keep_bitrate_margin_bps;
+            entry.adaptive_upgrade_bitrate_margin_bps = state.adaptive_upgrade_bitrate_margin_bps;
             entry.last_adaptive_decision = state.last_adaptive_decision;
             entry.last_adaptive_decision_reason = state.last_adaptive_decision_reason;
             entry.last_adaptive_decision_milliseconds = state.last_adaptive_decision_milliseconds;
@@ -20548,6 +20584,50 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
     std::string_view key, selected_rid_layer_runtime_state& state, const std::vector<std::string>& rid_preference, uint64_t current_time_milliseconds)
 {
     state.adaptive_enabled = simulcast_adaptive_enabled_from_env();
+    state.adaptive_decision_source = state.adaptive_enabled ? "nack_only" : "disabled";
+
+    const subscriber_downlink_control_config& downlink_config =
+        ice_udp_server_runtime_config_instance().subscriber_downlink_control;
+
+    state.adaptive_downlink_control_mode = std::string(subscriber_downlink_control_mode_to_string(downlink_config.mode));
+    state.adaptive_downlink_control_state.clear();
+    state.adaptive_downlink_reliable = false;
+    state.adaptive_downlink_target_bitrate_bps = 0;
+    state.adaptive_downlink_feedback_age_milliseconds = 0;
+    state.adaptive_current_layer_primary_bitrate_bps = 0;
+    state.adaptive_next_higher_rid.clear();
+    state.adaptive_next_higher_layer_primary_bitrate_bps = 0;
+    state.adaptive_keep_required_bitrate_bps = 0;
+    state.adaptive_upgrade_required_bitrate_bps = 0;
+    state.adaptive_keep_bitrate_margin_bps = 0;
+    state.adaptive_upgrade_bitrate_margin_bps = 0;
+
+    const std::string downlink_key = make_subscriber_downlink_bandwidth_state_key(state.stream_id, state.subscriber_session_id);
+    const auto downlink_iterator = subscriber_downlink_bandwidth_by_key_.find(downlink_key);
+
+    if (downlink_iterator != subscriber_downlink_bandwidth_by_key_.end())
+    {
+        const subscriber_downlink_bandwidth_state& downlink_state = downlink_iterator->second;
+
+        state.adaptive_downlink_control_state = std::string(subscriber_downlink_control_state_to_string(downlink_state.control_state));
+        state.adaptive_downlink_target_bitrate_bps = downlink_state.target_bitrate_bps;
+
+        if (downlink_state.last_feedback_at_milliseconds != 0 && current_time_milliseconds > downlink_state.last_feedback_at_milliseconds)
+        {
+            state.adaptive_downlink_feedback_age_milliseconds = current_time_milliseconds - downlink_state.last_feedback_at_milliseconds;
+        }
+
+        const uint64_t max_feedback_age_milliseconds = simulcast_adaptive_downlink_max_feedback_age_milliseconds_from_env();
+        const bool feedback_fresh =
+            downlink_state.last_feedback_at_milliseconds != 0 &&
+            (current_time_milliseconds <= downlink_state.last_feedback_at_milliseconds ||
+             current_time_milliseconds - downlink_state.last_feedback_at_milliseconds <= max_feedback_age_milliseconds);
+
+        state.adaptive_downlink_reliable = downlink_config.mode != subscriber_downlink_control_mode::disabled &&
+                                           downlink_state.control_state != subscriber_downlink_control_state::probing &&
+                                           downlink_state.window_observation_count >= downlink_config.probe_observation_count &&
+                                           downlink_state.lookup_hit_rate_ppm >= downlink_config.min_reliable_lookup_hit_rate_ppm && feedback_fresh;
+    }
 
     if (!state.adaptive_enabled)
     {
@@ -20621,6 +20701,7 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
     {
         std::string rid;
         uint64_t bitrate_bps = 0;
+        uint64_t primary_bitrate_bps = 0;
         uint64_t primary_byte_count = 0;
         std::size_t preference_index = 0;
     };
@@ -20646,6 +20727,7 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
         quality_layer layer;
         layer.rid = rid;
         layer.bitrate_bps = layer_iterator->second.bitrate_bps;
+        layer.primary_bitrate_bps = layer_iterator->second.primary_bitrate_bps;
         layer.primary_byte_count = layer_iterator->second.primary_byte_count;
         layer.preference_index = index;
 
@@ -20697,6 +20779,40 @@ std::optional<ice_udp_server::adaptive_selected_rid_switch_request> ice_udp_serv
         state.last_adaptive_decision_milliseconds = current_time_milliseconds;
 
         return std::nullopt;
+    }
+
+    const auto find_quality_layer =
+        [&](std::string_view rid) -> const quality_layer*
+    {
+        const auto iterator = std::find_if(quality_layers.begin(),
+                                           quality_layers.end(),
+                                           [rid](const quality_layer& layer)
+                                           {
+                                               return layer.rid == rid;
+                                           });
+
+        return iterator == quality_layers.end() ? nullptr : &*iterator;
+    };
+
+    if (const quality_layer* current_layer = find_quality_layer(state.rid); current_layer != nullptr)
+    {
+        state.adaptive_current_layer_primary_bitrate_bps = current_layer->primary_bitrate_bps;
+        state.adaptive_keep_required_bitrate_bps = scale_bitrate(current_layer->primary_bitrate_bps, 110, 100);
+        state.adaptive_keep_bitrate_margin_bps =
+            make_signed_bitrate_margin(state.adaptive_downlink_target_bitrate_bps, state.adaptive_keep_required_bitrate_bps);
+    }
+
+    if (*current_index > 0)
+    {
+        state.adaptive_next_higher_rid = state.adaptive_quality_order[*current_index - 1];
+
+        if (const quality_layer* next_higher_layer = find_quality_layer(state.adaptive_next_higher_rid); next_higher_layer != nullptr)
+        {
+            state.adaptive_next_higher_layer_primary_bitrate_bps = next_higher_layer->primary_bitrate_bps;
+            state.adaptive_upgrade_required_bitrate_bps = scale_bitrate(next_higher_layer->primary_bitrate_bps, 130, 100);
+            state.adaptive_upgrade_bitrate_margin_bps =
+                make_signed_bitrate_margin(state.adaptive_downlink_target_bitrate_bps, state.adaptive_upgrade_required_bitrate_bps);
+        }
     }
 
     const uint64_t delta_primary_packets = state.primary_packet_count >= state.last_adaptive_primary_packet_count
@@ -21179,13 +21295,23 @@ void ice_udp_server::remember_publisher_simulcast_layer_quality_packet_locked(pu
     if (state.bitrate_window_started_milliseconds == 0)
     {
         state.bitrate_window_started_milliseconds = current_time_milliseconds;
-
         state.bitrate_window_byte_count = current_byte_count;
+        state.primary_bitrate_window_byte_count = track_resolution.rtx ? 0 : current_byte_count;
+        state.repair_bitrate_window_byte_count = track_resolution.rtx ? current_byte_count : 0;
 
         return;
     }
 
     state.bitrate_window_byte_count += current_byte_count;
+
+    if (track_resolution.rtx)
+    {
+        state.repair_bitrate_window_byte_count += current_byte_count;
+    }
+    else
+    {
+        state.primary_bitrate_window_byte_count += current_byte_count;
+    }
 
     const uint64_t elapsed_milliseconds = current_time_milliseconds > state.bitrate_window_started_milliseconds
                                               ? current_time_milliseconds - state.bitrate_window_started_milliseconds
@@ -21197,10 +21323,13 @@ void ice_udp_server::remember_publisher_simulcast_layer_quality_packet_locked(pu
     }
 
     state.bitrate_bps = (state.bitrate_window_byte_count * 8000U) / elapsed_milliseconds;
+    state.primary_bitrate_bps = (state.primary_bitrate_window_byte_count * 8000U) / elapsed_milliseconds;
+    state.repair_bitrate_bps = (state.repair_bitrate_window_byte_count * 8000U) / elapsed_milliseconds;
 
     state.bitrate_window_started_milliseconds = current_time_milliseconds;
-
     state.bitrate_window_byte_count = 0;
+    state.primary_bitrate_window_byte_count = 0;
+    state.repair_bitrate_window_byte_count = 0;
 }
 
 void ice_udp_server::forget_publisher_simulcast_layer_states_for_session(std::string_view session_id)

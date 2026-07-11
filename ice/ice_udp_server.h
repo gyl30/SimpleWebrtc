@@ -441,6 +441,19 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string last_switch_reason;
 
         bool adaptive_enabled = false;
+        std::string adaptive_decision_source;
+        std::string adaptive_downlink_control_state;
+        std::string adaptive_downlink_control_mode;
+        bool adaptive_downlink_reliable = false;
+        uint64_t adaptive_downlink_target_bitrate_bps = 0;
+        uint64_t adaptive_downlink_feedback_age_milliseconds = 0;
+        uint64_t adaptive_current_layer_primary_bitrate_bps = 0;
+        std::string adaptive_next_higher_rid;
+        uint64_t adaptive_next_higher_layer_primary_bitrate_bps = 0;
+        uint64_t adaptive_keep_required_bitrate_bps = 0;
+        uint64_t adaptive_upgrade_required_bitrate_bps = 0;
+        int64_t adaptive_keep_bitrate_margin_bps = 0;
+        int64_t adaptive_upgrade_bitrate_margin_bps = 0;
         std::string last_adaptive_decision;
         std::string last_adaptive_decision_reason;
         uint64_t last_adaptive_decision_milliseconds = 0;
@@ -519,7 +532,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
 
         uint64_t bitrate_window_started_milliseconds = 0;
         uint64_t bitrate_window_byte_count = 0;
+        uint64_t primary_bitrate_window_byte_count = 0;
+        uint64_t repair_bitrate_window_byte_count = 0;
         uint64_t bitrate_bps = 0;
+        uint64_t primary_bitrate_bps = 0;
+        uint64_t repair_bitrate_bps = 0;
     };
     struct selected_rid_keyframe_request_pending_state
     {
