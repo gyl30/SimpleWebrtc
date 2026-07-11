@@ -447,9 +447,11 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         uint64_t last_adaptive_check_milliseconds = 0;
         uint64_t last_adaptive_primary_packet_count = 0;
         uint64_t last_adaptive_nack_sequence_count = 0;
+        uint64_t adaptive_healthy_since_milliseconds = 0;
 
         std::string selection_policy;
         std::vector<std::string> rid_preference;
+        std::vector<std::string> adaptive_quality_order;
 
         uint32_t primary_ssrc = 0;
         uint32_t repair_ssrc = 0;
@@ -481,6 +483,13 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
         std::string last_keyframe_request_result;
         std::string last_keyframe_request_reason;
     };
+    struct adaptive_selected_rid_switch_request
+    {
+        std::string state_key;
+        simulcast_rid_target_request request;
+        media_identity_rid_layer_binding target_layer;
+    };
+
     struct publisher_simulcast_layer_runtime_state
     {
         std::string stream_id;
@@ -1184,12 +1193,18 @@ class ice_udp_server : public std::enable_shared_from_this<ice_udp_server>
                                                           std::string_view reason,
                                                           uint64_t current_time_milliseconds);
 
-    void maybe_update_adaptive_selected_rid_target_locked(std::string_view key,
-                                                          selected_rid_layer_runtime_state& state,
-                                                          const std::vector<std::string>& rid_preference,
-                                                          uint64_t current_time_milliseconds);
+    [[nodiscard]]
+    std::optional<adaptive_selected_rid_switch_request> maybe_update_adaptive_selected_rid_target_locked(
+        std::string_view key,
+        selected_rid_layer_runtime_state& state,
+        const std::vector<std::string>& rid_preference,
+        uint64_t current_time_milliseconds);
 
-    void remember_selected_rid_layer_for_subscriber(const media_route_result& route,
+    void request_adaptive_selected_rid_keyframe(const adaptive_selected_rid_switch_request& request);
+
+    [[nodiscard]]
+    std::optional<adaptive_selected_rid_switch_request> remember_selected_rid_layer_for_subscriber(
+                                                    const media_route_result& route,
                                                     const media_peer_info& target_peer,
                                                     const media_track_resolution& track_resolution,
                                                     const media_identity_rid_layer_binding& selected_layer,
