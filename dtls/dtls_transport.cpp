@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -259,25 +258,21 @@ std::expected<ssl_ptr, std::string> make_ssl(const std::shared_ptr<dtls_context>
 
     ssl_ptr ssl_owner(ssl);
 
-    BIO* read_bio = BIO_new(BIO_s_mem());
+    BIO* read_bio = BIO_new(BIO_s_dgram_mem());
 
     if (read_bio == nullptr)
     {
-        return make_error("dtls read bio create failed");
+        return make_error("dtls read datagram bio create failed");
     }
 
-    BIO* write_bio = BIO_new(BIO_s_mem());
+    BIO* write_bio = BIO_new(BIO_s_dgram_mem());
 
     if (write_bio == nullptr)
     {
         BIO_free(read_bio);
 
-        return make_error("dtls write bio create failed");
+        return make_error("dtls write datagram bio create failed");
     }
-
-    BIO_set_mem_eof_return(read_bio, -1);
-
-    BIO_set_mem_eof_return(write_bio, -1);
 
     SSL_set_bio(ssl, read_bio, write_bio);
 
@@ -319,11 +314,6 @@ std::expected<void, std::string> write_packet_to_ssl(SSL* ssl, std::span<const u
         return {};
     }
 
-    if (data.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-    {
-        return make_error("dtls input packet is too large");
-    }
-
     BIO* read_bio = SSL_get_rbio(ssl);
 
     if (read_bio == nullptr)
@@ -331,16 +321,18 @@ std::expected<void, std::string> write_packet_to_ssl(SSL* ssl, std::span<const u
         return make_error("dtls read bio is null");
     }
 
-    const int write_result = BIO_write(read_bio, data.data(), static_cast<int>(data.size()));
+    std::size_t written = 0;
 
-    if (write_result <= 0)
+    const int write_result = BIO_write_ex(read_bio, data.data(), data.size(), &written);
+
+    if (write_result != 1)
     {
-        return make_error("dtls write packet to read bio failed");
+        return make_error("dtls write datagram to read bio failed");
     }
 
-    if (static_cast<std::size_t>(write_result) != data.size())
+    if (written != data.size())
     {
-        return make_error("dtls write packet to read bio incomplete");
+        return make_error("dtls write datagram to read bio incomplete");
     }
 
     return {};
@@ -362,23 +354,28 @@ std::expected<void, std::string> drain_ssl_write_bio(SSL* ssl, dtls_transport_pa
 
     for (;;)
     {
-        const int pending = BIO_pending(write_bio);
+        const std::size_t pending = static_cast<std::size_t>(BIO_pending(write_bio));
 
-        if (pending <= 0)
+        if (pending == 0)
         {
             break;
         }
 
-        std::vector<uint8_t> packet(static_cast<std::size_t>(pending));
+        std::vector<uint8_t> packet(pending);
 
-        const int read_result = BIO_read(write_bio, packet.data(), pending);
+        std::size_t read_size = 0;
 
-        if (read_result <= 0)
+        const int read_result = BIO_read_ex(write_bio, packet.data(), packet.size(), &read_size);
+
+        if (read_result != 1)
         {
-            return make_error("dtls read packet from write bio failed");
+            return make_error("dtls read datagram from write bio failed");
         }
 
-        packet.resize(static_cast<std::size_t>(read_result));
+        if (read_size != packet.size())
+        {
+            return make_error("dtls read datagram from write bio incomplete");
+        }
 
         packets.push_back(std::move(packet));
     }
