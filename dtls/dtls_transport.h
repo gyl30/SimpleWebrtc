@@ -43,9 +43,25 @@ struct dtls_peer_identity
     sdp::fingerprint_info remote_fingerprint;
 };
 
+enum class dtls_network_family
+{
+    unknown,
+    ipv4,
+    ipv6,
+};
+
+inline constexpr std::uint16_t k_min_dtls_ip_mtu = 576;
+inline constexpr std::uint16_t k_max_dtls_ip_mtu = 9000;
+inline constexpr std::uint16_t k_default_dtls_ip_mtu = 1200;
+
+inline constexpr std::uint16_t k_ipv4_udp_overhead = 20 + 8;
+inline constexpr std::uint16_t k_ipv6_udp_overhead = 40 + 8;
+
 struct dtls_transport_config
 {
     std::chrono::milliseconds handshake_timeout{std::chrono::seconds(30)};
+
+    std::uint16_t ip_mtu = k_default_dtls_ip_mtu;
 };
 
 using dtls_transport_packet_list = std::vector<std::vector<uint8_t>>;
@@ -89,7 +105,9 @@ class dtls_transport
     [[nodiscard]]
     bool move_peer(std::string_view old_remote_endpoint, std::string_view new_remote_endpoint, dtls_peer_identity identity);
 
-    [[nodiscard]] dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint);
+    [[nodiscard]] dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data,
+                                                                 std::string_view remote_endpoint,
+                                                                 dtls_network_family network_family);
 
     [[nodiscard]] dtls_timeout_event_list handle_timeouts();
 

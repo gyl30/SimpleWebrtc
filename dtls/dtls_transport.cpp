@@ -59,10 +59,8 @@ std::string make_openssl_error(std::string_view prefix)
     return message;
 }
 
-std::string make_openssl_error(SSL* ssl, int ssl_result, std::string_view prefix)
+std::string make_openssl_error(int ssl_error, std::string_view prefix)
 {
-    const int ssl_error = SSL_get_error(ssl, ssl_result);
-
     if (ssl_error == SSL_ERROR_WANT_READ)
     {
         return "want_read";
@@ -151,6 +149,55 @@ std::string_view dtls_setup_role_to_string(sdp::dtls_connection_role role)
     }
 
     return "unknown";
+}
+
+std::string_view dtls_network_family_to_string(dtls_network_family family)
+{
+    switch (family)
+    {
+        case dtls_network_family::ipv4:
+            return "ipv4";
+
+        case dtls_network_family::ipv6:
+            return "ipv6";
+
+        case dtls_network_family::unknown:
+            return "unknown";
+    }
+
+    return "unknown";
+}
+
+std::expected<std::uint16_t, std::string> make_dtls_udp_payload_mtu(std::uint16_t ip_mtu, dtls_network_family family)
+{
+    std::uint16_t overhead = 0;
+
+    switch (family)
+    {
+        case dtls_network_family::ipv4:
+            overhead = k_ipv4_udp_overhead;
+            break;
+
+        case dtls_network_family::ipv6:
+            overhead = k_ipv6_udp_overhead;
+            break;
+
+        case dtls_network_family::unknown:
+            return make_error("dtls network family is unknown");
+    }
+
+    if (ip_mtu <= overhead)
+    {
+        std::string message("dtls ip mtu is too small for network headers ip_mtu=");
+
+        message.append(std::to_string(ip_mtu));
+        message.append(" overhead=");
+        message.append(std::to_string(overhead));
+
+        return make_error(message);
+    }
+
+    return static_cast<std::uint16_t>(ip_mtu - overhead);
 }
 
 std::string make_expected_dtls_generation(std::string_view session_id, std::string_view local_ice_ufrag, std::string_view remote_ice_ufrag)
@@ -242,11 +289,60 @@ bool identities_equal(const dtls_peer_identity& left, const dtls_peer_identity& 
            fingerprints_equal(left.remote_fingerprint, right.remote_fingerprint);
 }
 
-std::expected<ssl_ptr, std::string> make_ssl(const std::shared_ptr<dtls_context>& context)
+std::expected<void, std::string> configure_datagram_bio_mtu(BIO* bio, std::uint16_t udp_payload_mtu, std::string_view bio_name)
+{
+    if (bio == nullptr)
+    {
+        std::string message("dtls ");
+
+        message.append(bio_name);
+        message.append(" datagram bio is null");
+
+        return make_error(message);
+    }
+
+    ERR_clear_error();
+
+    const int set_mtu_result = BIO_dgram_set_mtu(bio, static_cast<long>(udp_payload_mtu));
+
+    if (set_mtu_result != 1)
+    {
+        std::string prefix("dtls ");
+
+        prefix.append(bio_name);
+        prefix.append(" datagram bio set mtu failed");
+
+        return std::unexpected(make_openssl_error(prefix));
+    }
+
+    const unsigned int configured_mtu = BIO_dgram_get_mtu(bio);
+
+    if (configured_mtu != static_cast<unsigned int>(udp_payload_mtu))
+    {
+        std::string message("dtls ");
+
+        message.append(bio_name);
+        message.append(" datagram bio mtu mismatch requested=");
+        message.append(std::to_string(udp_payload_mtu));
+        message.append(" configured=");
+        message.append(std::to_string(configured_mtu));
+
+        return make_error(message);
+    }
+
+    return {};
+}
+
+std::expected<ssl_ptr, std::string> make_ssl(const std::shared_ptr<dtls_context>& context, std::uint16_t udp_payload_mtu)
 {
     if (context == nullptr || context->native_handle() == nullptr)
     {
         return make_error("dtls context is null");
+    }
+
+    if (udp_payload_mtu == 0)
+    {
+        return make_error("dtls udp payload mtu is zero");
     }
 
     SSL* ssl = SSL_new(context->native_handle());
@@ -273,6 +369,15 @@ std::expected<ssl_ptr, std::string> make_ssl(const std::shared_ptr<dtls_context>
 
         return make_error("dtls write datagram bio create failed");
     }
+    auto write_bio_mtu_result = configure_datagram_bio_mtu(write_bio, udp_payload_mtu, "write");
+
+    if (!write_bio_mtu_result)
+    {
+        BIO_free(read_bio);
+        BIO_free(write_bio);
+
+        return std::unexpected(write_bio_mtu_result.error());
+    }
 
     SSL_set_bio(ssl, read_bio, write_bio);
 
@@ -280,7 +385,32 @@ std::expected<ssl_ptr, std::string> make_ssl(const std::shared_ptr<dtls_context>
 
     SSL_set_options(ssl, SSL_OP_NO_QUERY_MTU);
 
-    SSL_set_mtu(ssl, 1200);
+    ERR_clear_error();
+
+    /*
+     * BIO_s_dgram_mem does not report IP/UDP overhead to OpenSSL. The caller
+     * therefore converts the configured IP MTU to a UDP payload ceiling
+     * before calling SSL_set_mtu().
+     */
+    const long set_mtu_result = SSL_set_mtu(ssl, static_cast<long>(udp_payload_mtu));
+
+    if (set_mtu_result != static_cast<long>(udp_payload_mtu))
+    {
+        return std::unexpected(make_openssl_error("dtls set udp payload mtu failed"));
+    }
+
+    const unsigned int configured_write_bio_mtu = BIO_dgram_get_mtu(SSL_get_wbio(ssl));
+
+    if (configured_write_bio_mtu != static_cast<unsigned int>(udp_payload_mtu))
+    {
+        std::string message("dtls write datagram bio mtu changed after ssl ownership transfer requested=");
+
+        message.append(std::to_string(udp_payload_mtu));
+        message.append(" configured=");
+        message.append(std::to_string(configured_write_bio_mtu));
+
+        return make_error(message);
+    }
 
     return ssl_owner;
 }
@@ -338,7 +468,10 @@ std::expected<void, std::string> write_packet_to_ssl(SSL* ssl, std::span<const u
     return {};
 }
 
-std::expected<void, std::string> drain_ssl_write_bio(SSL* ssl, dtls_transport_packet_list& packets)
+std::expected<void, std::string> drain_ssl_write_bio(SSL* ssl,
+                                                     std::uint16_t ip_mtu,
+                                                     std::uint16_t udp_payload_mtu,
+                                                     dtls_transport_packet_list& packets)
 {
     if (ssl == nullptr)
     {
@@ -361,6 +494,19 @@ std::expected<void, std::string> drain_ssl_write_bio(SSL* ssl, dtls_transport_pa
             break;
         }
 
+        if (pending > static_cast<std::size_t>(udp_payload_mtu))
+        {
+            std::string message("dtls output datagram exceeds configured ip mtu datagram_size=");
+
+            message.append(std::to_string(pending));
+            message.append(" udp_payload_mtu=");
+            message.append(std::to_string(udp_payload_mtu));
+            message.append(" ip_mtu=");
+            message.append(std::to_string(ip_mtu));
+
+            return make_error(message);
+        }
+
         std::vector<uint8_t> packet(pending);
 
         std::size_t read_size = 0;
@@ -377,13 +523,29 @@ std::expected<void, std::string> drain_ssl_write_bio(SSL* ssl, dtls_transport_pa
             return make_error("dtls read datagram from write bio incomplete");
         }
 
+        if (read_size > static_cast<std::size_t>(udp_payload_mtu))
+        {
+            std::string message("dtls output datagram exceeds configured ip mtu after read datagram_size=");
+
+            message.append(std::to_string(read_size));
+            message.append(" udp_payload_mtu=");
+            message.append(std::to_string(udp_payload_mtu));
+            message.append(" ip_mtu=");
+            message.append(std::to_string(ip_mtu));
+
+            return make_error(message);
+        }
+
         packets.push_back(std::move(packet));
     }
 
     return {};
 }
 
-std::expected<void, std::string> run_dtls_handshake(SSL* ssl, dtls_transport_packet_list& packets)
+std::expected<void, std::string> run_dtls_handshake(SSL* ssl,
+                                                    std::uint16_t ip_mtu,
+                                                    std::uint16_t udp_payload_mtu,
+                                                    dtls_transport_packet_list& packets)
 {
     if (ssl == nullptr)
     {
@@ -401,7 +563,16 @@ std::expected<void, std::string> run_dtls_handshake(SSL* ssl, dtls_transport_pac
 
         const int result = SSL_do_handshake(ssl);
 
-        auto drain_result = drain_ssl_write_bio(ssl, packets);
+        const int ssl_error = result == 1 ? SSL_ERROR_NONE : SSL_get_error(ssl, result);
+
+        std::string fatal_error;
+
+        if (result != 1 && ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE)
+        {
+            fatal_error = make_openssl_error(ssl_error, "dtls handshake failed");
+        }
+
+        auto drain_result = drain_ssl_write_bio(ssl, ip_mtu, udp_payload_mtu, packets);
 
         if (!drain_result)
         {
@@ -413,20 +584,19 @@ std::expected<void, std::string> run_dtls_handshake(SSL* ssl, dtls_transport_pac
             return {};
         }
 
-        const int ssl_error = SSL_get_error(ssl, result);
-
         if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
         {
             return {};
         }
 
-        return std::unexpected(make_openssl_error(ssl, result, "dtls handshake failed"));
+        return std::unexpected(std::move(fatal_error));
     }
 
     return {};
 }
 
-std::expected<void, std::string> consume_dtls_application_data_and_alerts(SSL* ssl, dtls_transport_packet_list& packets, bool& received_close_notify)
+std::expected<void, std::string> consume_dtls_application_data_and_alerts(
+    SSL* ssl, std::uint16_t ip_mtu, std::uint16_t udp_payload_mtu, dtls_transport_packet_list& packets, bool& received_close_notify)
 {
     if (ssl == nullptr)
     {
@@ -441,7 +611,16 @@ std::expected<void, std::string> consume_dtls_application_data_and_alerts(SSL* s
 
         const int read_result = SSL_read(ssl, buffer.data(), static_cast<int>(buffer.size()));
 
-        auto drain_result = drain_ssl_write_bio(ssl, packets);
+        const int ssl_error = read_result > 0 ? SSL_ERROR_NONE : SSL_get_error(ssl, read_result);
+
+        std::string fatal_error;
+
+        if (read_result <= 0 && ssl_error != SSL_ERROR_ZERO_RETURN && ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE)
+        {
+            fatal_error = make_openssl_error(ssl_error, "dtls read failed");
+        }
+
+        auto drain_result = drain_ssl_write_bio(ssl, ip_mtu, udp_payload_mtu, packets);
 
         if (!drain_result)
         {
@@ -452,8 +631,6 @@ std::expected<void, std::string> consume_dtls_application_data_and_alerts(SSL* s
         {
             continue;
         }
-
-        const int ssl_error = SSL_get_error(ssl, read_result);
 
         if (ssl_error == SSL_ERROR_ZERO_RETURN)
         {
@@ -474,7 +651,7 @@ std::expected<void, std::string> consume_dtls_application_data_and_alerts(SSL* s
             return {};
         }
 
-        return std::unexpected(make_openssl_error(ssl, read_result, "dtls read failed"));
+        return std::unexpected(std::move(fatal_error));
     }
 
     return {};
@@ -550,6 +727,11 @@ struct dtls_transport::impl
         {
             config_.handshake_timeout = std::chrono::seconds(30);
         }
+
+        if (config_.ip_mtu < k_min_dtls_ip_mtu || config_.ip_mtu > k_max_dtls_ip_mtu)
+        {
+            config_.ip_mtu = k_default_dtls_ip_mtu;
+        }
     }
 
     struct dtls_peer_context
@@ -568,6 +750,11 @@ struct dtls_transport::impl
         bool handshake_done = false;
         bool handshake_failed = false;
         bool received_close_notify = false;
+
+        dtls_network_family network_family = dtls_network_family::unknown;
+
+        std::uint16_t ip_mtu = 0;
+        std::uint16_t udp_payload_mtu = 0;
 
         steady_clock::time_point handshake_started_at;
 
@@ -684,7 +871,16 @@ struct dtls_transport::impl
 
         const int result = SSL_shutdown(peer->ssl.get());
 
-        auto drain_result = drain_ssl_write_bio(peer->ssl.get(), packets);
+        const int ssl_error = result >= 0 ? SSL_ERROR_NONE : SSL_get_error(peer->ssl.get(), result);
+
+        std::string fatal_error;
+
+        if (result < 0 && ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE)
+        {
+            fatal_error = make_openssl_error(ssl_error, "dtls shutdown failed");
+        }
+
+        auto drain_result = drain_ssl_write_bio(peer->ssl.get(), peer->ip_mtu, peer->udp_payload_mtu, packets);
 
         if (!drain_result)
         {
@@ -696,14 +892,12 @@ struct dtls_transport::impl
             return packets;
         }
 
-        const int ssl_error = SSL_get_error(peer->ssl.get(), result);
-
         if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
         {
             return packets;
         }
 
-        return std::unexpected(make_openssl_error(peer->ssl.get(), result, "dtls shutdown failed"));
+        return std::unexpected(std::move(fatal_error));
     }
 
     void forget_peer(std::string_view remote_endpoint)
@@ -801,7 +995,9 @@ struct dtls_transport::impl
         return true;
     }
 
-    dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)
+    dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data,
+                                                   std::string_view remote_endpoint,
+                                                   dtls_network_family network_family)
     {
         dtls_transport_packet_list packets;
 
@@ -845,9 +1041,37 @@ struct dtls_transport::impl
 
         peer->saw_dtls_packet = true;
 
+        if (peer->network_family != dtls_network_family::unknown && peer->network_family != network_family)
+        {
+            std::string error("dtls peer network family changed old=");
+
+            error.append(dtls_network_family_to_string(peer->network_family));
+            error.append(" new=");
+            error.append(dtls_network_family_to_string(network_family));
+
+            mark_handshake_failed_locked(*peer, error, remote_endpoint);
+
+            return std::unexpected(std::move(error));
+        }
+
         if (peer->ssl == nullptr)
         {
-            auto ssl_result = make_ssl(context_);
+            auto udp_payload_mtu_result = make_dtls_udp_payload_mtu(config_.ip_mtu, network_family);
+
+            if (!udp_payload_mtu_result)
+            {
+                const std::string error = udp_payload_mtu_result.error();
+
+                mark_handshake_failed_locked(*peer, error, remote_endpoint);
+
+                return std::unexpected(error);
+            }
+
+            peer->network_family = network_family;
+            peer->ip_mtu = config_.ip_mtu;
+            peer->udp_payload_mtu = *udp_payload_mtu_result;
+
+            auto ssl_result = make_ssl(context_, peer->udp_payload_mtu);
 
             if (!ssl_result)
             {
@@ -864,11 +1088,15 @@ struct dtls_transport::impl
 
             peer->handshake_started_at = steady_clock::now();
 
-            WEBRTC_LOG_INFO("dtls handshake timer started remote={} stream={} session={} timeout_ms={}",
-                            remote_endpoint,
-                            peer->identity.stream_id,
-                            peer->identity.session_id,
-                            config_.handshake_timeout.count());
+            WEBRTC_LOG_INFO(
+                "dtls handshake timer started remote={} stream={} session={} timeout_ms={} network_family={} ip_mtu={} udp_payload_mtu={}",
+                remote_endpoint,
+                peer->identity.stream_id,
+                peer->identity.session_id,
+                config_.handshake_timeout.count(),
+                dtls_network_family_to_string(peer->network_family),
+                peer->ip_mtu,
+                peer->udp_payload_mtu);
         }
 
         auto write_result = write_packet_to_ssl(peer->ssl.get(), data);
@@ -884,7 +1112,7 @@ struct dtls_transport::impl
 
         log_packet_locked(*peer, data, remote_endpoint, *header);
 
-        auto handshake_result = run_dtls_handshake(peer->ssl.get(), packets);
+        auto handshake_result = run_dtls_handshake(peer->ssl.get(), peer->ip_mtu, peer->udp_payload_mtu, packets);
 
         if (!handshake_result)
         {
@@ -906,7 +1134,8 @@ struct dtls_transport::impl
         {
             bool received_close_notify = false;
 
-            auto consume_result = consume_dtls_application_data_and_alerts(peer->ssl.get(), packets, received_close_notify);
+            auto consume_result =
+                consume_dtls_application_data_and_alerts(peer->ssl.get(), peer->ip_mtu, peer->udp_payload_mtu, packets, received_close_notify);
 
             if (!consume_result)
             {
@@ -1012,7 +1241,7 @@ struct dtls_transport::impl
 
             peer.timeout_event_count += 1;
 
-            auto drain_result = drain_ssl_write_bio(peer.ssl.get(), event.packets);
+            auto drain_result = drain_ssl_write_bio(peer.ssl.get(), peer.ip_mtu, peer.udp_payload_mtu, event.packets);
 
             if (!drain_result)
             {
@@ -1427,9 +1656,11 @@ bool dtls_transport::move_peer(std::string_view old_remote_endpoint, std::string
     return impl_->move_peer(old_remote_endpoint, new_remote_endpoint, std::move(identity));
 }
 
-dtls_transport_packet_result dtls_transport::handle_udp_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)
+dtls_transport_packet_result dtls_transport::handle_udp_packet(std::span<const uint8_t> data,
+                                                               std::string_view remote_endpoint,
+                                                               dtls_network_family network_family)
 {
-    return impl_->handle_udp_packet(data, remote_endpoint);
+    return impl_->handle_udp_packet(data, remote_endpoint, network_family);
 }
 
 dtls_timeout_event_list dtls_transport::handle_timeouts() { return impl_->handle_timeouts(); }

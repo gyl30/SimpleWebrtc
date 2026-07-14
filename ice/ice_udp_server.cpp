@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cctype>
 #include <chrono>
+#include <charconv>
 #include <cstddef>
 #include <cstdlib>
 #include <cstdint>
@@ -2713,7 +2714,48 @@ std::shared_ptr<rtcp_report_service> make_rtcp_report_service_from_env()
     return std::make_shared<rtcp_report_service>(make_rtcp_report_service_config_from_env());
 }
 
-dtls_transport_config make_dtls_transport_config_from_env()
+std::expected<std::uint16_t, std::string> parse_dtls_ip_mtu_from_env()
+{
+    const char* value = std::getenv("WEBRTC_DTLS_MTU");
+
+    if (value == nullptr)
+    {
+        return k_default_dtls_ip_mtu;
+    }
+
+    const std::string_view text(value);
+
+    if (text.empty())
+    {
+        return make_error("WEBRTC_DTLS_MTU is empty");
+    }
+
+    std::uint64_t parsed = 0;
+
+    const auto parse_result = std::from_chars(text.data(), text.data() + text.size(), parsed, 10);
+
+    if (parse_result.ec != std::errc{} || parse_result.ptr != text.data() + text.size())
+    {
+        return make_error("WEBRTC_DTLS_MTU must be an unsigned decimal integer");
+    }
+
+    if (parsed < k_min_dtls_ip_mtu || parsed > k_max_dtls_ip_mtu)
+    {
+        std::string error = "WEBRTC_DTLS_MTU is out of range value=";
+
+        error.append(std::to_string(parsed));
+        error.append(" minimum=");
+        error.append(std::to_string(k_min_dtls_ip_mtu));
+        error.append(" maximum=");
+        error.append(std::to_string(k_max_dtls_ip_mtu));
+
+        return std::unexpected(std::move(error));
+    }
+
+    return static_cast<std::uint16_t>(parsed);
+}
+
+std::expected<dtls_transport_config, std::string> make_dtls_transport_config_from_env()
 {
     dtls_transport_config config;
 
@@ -2738,7 +2780,20 @@ dtls_transport_config make_dtls_transport_config_from_env()
 
     config.handshake_timeout = std::chrono::milliseconds(static_cast<int64_t>(clamped_handshake_timeout_milliseconds));
 
-    WEBRTC_LOG_INFO("dtls transport config handshake_timeout_ms={}", config.handshake_timeout.count());
+    auto ip_mtu = parse_dtls_ip_mtu_from_env();
+
+    if (!ip_mtu)
+    {
+        return std::unexpected(ip_mtu.error());
+    }
+
+    config.ip_mtu = *ip_mtu;
+
+    WEBRTC_LOG_INFO("dtls transport config handshake_timeout_ms={} ip_mtu={} ipv4_udp_payload_mtu={} ipv6_udp_payload_mtu={}",
+                    config.handshake_timeout.count(),
+                    config.ip_mtu,
+                    config.ip_mtu - k_ipv4_udp_overhead,
+                    config.ip_mtu - k_ipv6_udp_overhead);
 
     return config;
 }
@@ -3080,13 +3135,24 @@ struct ice_udp_server_runtime_config
     uint64_t pending_session_timeout_milliseconds = k_default_pending_session_timeout_milliseconds;
 
     uint64_t orphan_subscriber_timeout_milliseconds = k_default_orphan_subscriber_timeout_milliseconds;
+
+    std::string validation_error;
 };
 
 ice_udp_server_runtime_config make_ice_udp_server_runtime_config_from_env()
 {
     ice_udp_server_runtime_config config;
 
-    config.dtls_transport = make_dtls_transport_config_from_env();
+    auto dtls_transport_config_result = make_dtls_transport_config_from_env();
+
+    if (!dtls_transport_config_result)
+    {
+        config.validation_error = dtls_transport_config_result.error();
+    }
+    else
+    {
+        config.dtls_transport = std::move(*dtls_transport_config_result);
+    }
 
     config.rtp_packet_cache = make_rtp_packet_cache_config_from_env();
 
@@ -3114,19 +3180,28 @@ ice_udp_server_runtime_config make_ice_udp_server_runtime_config_from_env()
 
     config.orphan_subscriber_timeout_milliseconds = make_orphan_subscriber_timeout_milliseconds_from_env();
 
-    WEBRTC_LOG_INFO(
-        "ice udp runtime config loaded dtls_handshake_timeout_ms={} rtp_cache_max_packets={} ice_consent_interval_ms={} "
-        "ice_consent_timeout_ms={} unselected_pair_retention_ms={} rtcp_timer_interval_ms={} endpoint_idle_timeout_ms={} "
-        "pending_session_timeout_ms={} orphan_subscriber_timeout_ms={}",
-        config.dtls_transport.handshake_timeout.count(),
-        config.rtp_packet_cache.max_packets,
-        config.ice_consent_check_interval.count(),
-        config.ice_consent_timeout_milliseconds,
-        config.unselected_candidate_pair_retention_milliseconds,
-        config.rtcp_report_timer_interval.count(),
-        config.endpoint_idle_timeout_milliseconds,
-        config.pending_session_timeout_milliseconds,
-        config.orphan_subscriber_timeout_milliseconds);
+    if (config.validation_error.empty())
+    {
+        WEBRTC_LOG_INFO(
+            "ice udp runtime config loaded dtls_handshake_timeout_ms={} dtls_ip_mtu={} rtp_cache_max_packets={} "
+            "ice_consent_interval_ms={} ice_consent_timeout_ms={} unselected_pair_retention_ms={} rtcp_timer_interval_ms={} "
+            "endpoint_idle_timeout_ms={} pending_session_timeout_ms={} orphan_subscriber_timeout_ms={}",
+            config.dtls_transport.handshake_timeout.count(),
+            config.dtls_transport.ip_mtu,
+            config.rtp_packet_cache.max_packets,
+            config.ice_consent_check_interval.count(),
+            config.ice_consent_timeout_milliseconds,
+            config.unselected_candidate_pair_retention_milliseconds,
+            config.rtcp_report_timer_interval.count(),
+            config.endpoint_idle_timeout_milliseconds,
+            config.pending_session_timeout_milliseconds,
+            config.orphan_subscriber_timeout_milliseconds);
+    }
+    else
+    {
+        WEBRTC_LOG_ERROR("ice udp runtime config invalid error={}", config.validation_error);
+    }
+
     return config;
 }
 
@@ -4070,11 +4145,6 @@ optional_header_extension_rewrite_result make_transport_wide_cc_header_extension
 
     rtp_header_extension_rewrite rewrite;
 
-    /*
-     * header_extensions are applied before header_extension_id_rewrites.
-     * Therefore payload rewrite must target the current publisher extmap id.
-     * The existing id rewrite then moves the extension to subscriber extmap id.
-     */
     rewrite.id = *publisher_transport_cc_id;
 
     rewrite.payload = make_transport_wide_cc_sequence_payload(outbound_sequence_number);
@@ -5133,10 +5203,6 @@ bool is_vp8_keyframe_payload(std::span<const uint8_t> payload)
         return false;
     }
 
-    /*
-     * RFC 7741 VP8 payload:
-     * the first byte of the VP8 uncompressed data has bit 0 == 0 for key frames.
-     */
     return (payload[offset] & 0x01U) == 0;
 }
 
@@ -5826,6 +5892,13 @@ ice_udp_server_result ice_udp_server::start()
         return {};
     }
 
+    const ice_udp_server_runtime_config& runtime_config = ice_udp_server_runtime_config_instance();
+
+    if (!runtime_config.validation_error.empty())
+    {
+        return make_error(runtime_config.validation_error);
+    }
+
     if (registry_ == nullptr)
     {
         return make_error("ice udp server registry is null");
@@ -5841,7 +5914,6 @@ ice_udp_server_result ice_udp_server::start()
         track_resolver_ = std::make_shared<media_track_resolver>();
     }
 
-    const ice_udp_server_runtime_config& runtime_config = ice_udp_server_runtime_config_instance();
     if (ssrc_mapper_ == nullptr)
     {
         ssrc_mapper_ = std::make_shared<media_ssrc_mapper>();
@@ -10211,7 +10283,9 @@ ice_udp_server_result ice_udp_server::init_dtls_transport()
 
     nack_retransmit_throttle_ = std::make_shared<nack_retransmit_throttle>(runtime_config.nack_retransmit_throttle);
 
-    WEBRTC_LOG_INFO("dtls transport initialized handshake_timeout_ms={}", runtime_config.dtls_transport.handshake_timeout.count());
+    WEBRTC_LOG_INFO("dtls transport initialized handshake_timeout_ms={} ip_mtu={}",
+                    runtime_config.dtls_transport.handshake_timeout.count(),
+                    runtime_config.dtls_transport.ip_mtu);
 
     WEBRTC_LOG_INFO("rtp packet cache initialized max_packets={}", runtime_config.rtp_packet_cache.max_packets);
     WEBRTC_LOG_INFO("srtp transport initialized");
@@ -12727,7 +12801,9 @@ void ice_udp_server::handle_dtls_packet(std::span<const uint8_t> data, const boo
 
     dtls_transport_->remember_peer(remote_address, std::move(*expected_identity));
 
-    auto packets = dtls_transport_->handle_udp_packet(data, remote_address);
+    const dtls_network_family network_family = remote_endpoint.address().is_v6() ? dtls_network_family::ipv6 : dtls_network_family::ipv4;
+
+    auto packets = dtls_transport_->handle_udp_packet(data, remote_address, network_family);
 
     if (!packets)
     {
