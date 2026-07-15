@@ -45,8 +45,6 @@ class srtp_session
     srtp_session& operator=(srtp_session&& other) noexcept;
 
    public:
-    [[nodiscard]] bool valid() const;
-
     [[nodiscard]] srtp_packet_result protect_rtp(std::span<uint8_t> buffer, std::size_t packet_size);
 
     [[nodiscard]] srtp_packet_result unprotect_rtp(std::span<uint8_t> buffer, std::size_t packet_size);

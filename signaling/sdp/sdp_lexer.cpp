@@ -37,48 +37,9 @@ std::string escape_char_for_error(char ch)
 
 sdp_lexer::sdp_lexer(std::string_view text) : text_(text) {}
 
-void sdp_lexer::reset(std::string_view text)
-{
-    text_ = text;
-    position_ = 0;
-}
-
-std::string_view sdp_lexer::text() const
-{
-    return text_;
-}
-
-std::size_t sdp_lexer::position() const
-{
-    return position_;
-}
-
 bool sdp_lexer::eof() const
 {
     return position_ >= text_.size();
-}
-
-std::expected<char, std::string> sdp_lexer::read_byte()
-{
-    if (eof())
-    {
-        return '\0';
-    }
-
-    const char ch = text_[position_];
-    ++position_;
-    return ch;
-}
-
-std::expected<void, std::string> sdp_lexer::unread_byte()
-{
-    if (position_ == 0)
-    {
-        return make_error("already at document start");
-    }
-
-    --position_;
-    return {};
 }
 
 void sdp_lexer::skip_line_breaks()
@@ -107,105 +68,6 @@ void sdp_lexer::skip_line_breaks()
 
         return;
     }
-}
-
-void sdp_lexer::skip_whitespace()
-{
-    while (!eof())
-    {
-        const char ch = text_[position_];
-        if (!is_whitespace(ch))
-        {
-            return;
-        }
-
-        ++position_;
-    }
-}
-
-std::expected<uint64_t, std::string> sdp_lexer::read_uint64_field()
-{
-    if (eof())
-    {
-        return make_error("unexpected end of sdp");
-    }
-
-    uint64_t value = 0;
-    bool has_digit = false;
-
-    while (!eof())
-    {
-        const char ch = text_[position_];
-
-        if (is_line_break(ch))
-        {
-            break;
-        }
-
-        if (is_whitespace(ch))
-        {
-            skip_whitespace();
-            break;
-        }
-
-        if (ch < '0' || ch > '9')
-        {
-            return make_error(make_syntax_error(position_));
-        }
-
-        value = value * 10 + static_cast<uint64_t>(ch - '0');
-        has_digit = true;
-        ++position_;
-    }
-
-    if (!has_digit)
-    {
-        return make_error(make_syntax_error(position_));
-    }
-
-    return value;
-}
-
-std::expected<std::string_view, std::string> sdp_lexer::read_field()
-{
-    const std::size_t start = position_;
-
-    while (!eof())
-    {
-        const char ch = text_[position_];
-
-        if (is_line_break(ch) || is_whitespace(ch))
-        {
-            break;
-        }
-
-        ++position_;
-    }
-
-    const std::size_t end = position_;
-
-    if (!eof() && is_whitespace(text_[position_]))
-    {
-        skip_whitespace();
-    }
-
-    return text_.substr(start, end - start);
-}
-
-std::expected<std::string_view, std::string> sdp_lexer::read_required_field()
-{
-    auto field = read_field();
-    if (!field)
-    {
-        return make_error(field.error());
-    }
-
-    if (field->empty())
-    {
-        return make_error("sdp field missing");
-    }
-
-    return *field;
 }
 
 std::expected<std::string_view, std::string> sdp_lexer::read_line()

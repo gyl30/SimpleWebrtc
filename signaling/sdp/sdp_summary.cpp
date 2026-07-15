@@ -860,9 +860,9 @@ std::string lower_ascii_copy(std::string_view value)
 
     result.reserve(value.size());
 
-    for (unsigned char ch : value)
+    for (char ch : value)
     {
-        result.push_back(static_cast<char>(std::tolower(ch)));
+        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
     }
 
     return result;
@@ -1340,63 +1340,6 @@ webrtc_offer_summary_result extract_webrtc_offer_summary(const session_descripti
 
     return summary;
 }
-std::optional<uint32_t> find_rtx_primary_ssrc(const media_summary& media, uint32_t repair_ssrc)
-{
-    if (repair_ssrc == 0)
-    {
-        return std::nullopt;
-    }
-
-    for (const auto& group : media.ssrc_groups)
-    {
-        if (!equals_ignore_case_ascii(group.semantics, "FID"))
-        {
-            continue;
-        }
-
-        if (group.ssrcs.size() < 2)
-        {
-            continue;
-        }
-
-        if (group.ssrcs[1] == repair_ssrc)
-        {
-            return group.ssrcs[0];
-        }
-    }
-
-    return std::nullopt;
-}
-
-std::optional<uint32_t> find_rtx_repair_ssrc(const media_summary& media, uint32_t primary_ssrc)
-{
-    if (primary_ssrc == 0)
-    {
-        return std::nullopt;
-    }
-
-    for (const auto& group : media.ssrc_groups)
-    {
-        if (!equals_ignore_case_ascii(group.semantics, "FID"))
-        {
-            continue;
-        }
-
-        if (group.ssrcs.size() < 2)
-        {
-            continue;
-        }
-
-        if (group.ssrcs[0] == primary_ssrc)
-        {
-            return group.ssrcs[1];
-        }
-    }
-
-    return std::nullopt;
-}
-
-bool media_ssrc_is_rtx_repair(const media_summary& media, uint32_t ssrc) { return find_rtx_primary_ssrc(media, ssrc).has_value(); }
 
 bool offer_ice_credentials_are_complete(const webrtc_offer_summary& offer) { return !offer.ice_ufrag.empty() && !offer.ice_pwd.empty(); }
 
@@ -1515,21 +1458,6 @@ bool media_has_rtx_codec(const media_summary& media)
 
     return false;
 }
-bool media_payload_type_is_rtx(const media_summary& media, uint16_t payload_type)
-{
-    for (const auto& codec : media.codecs)
-    {
-        if (codec.payload_type != payload_type)
-        {
-            continue;
-        }
-
-        return equals_ignore_case_ascii(codec.name, "rtx");
-    }
-
-    return false;
-}
-
 bool media_has_rid(const media_summary& media, std::string_view rid)
 {
     if (rid.empty())
@@ -1633,80 +1561,4 @@ std::expected<void, std::string> validate_media_summary_identity(const media_sum
     return {};
 }
 
-std::expected<void, std::string> validate_rtp_track_identity(const media_summary& media,
-                                                             const std::optional<std::string>& rid,
-                                                             const std::optional<std::string>& repaired_rid,
-                                                             uint8_t payload_type,
-                                                             uint32_t ssrc)
-{
-    const uint16_t expected_payload_type = static_cast<uint16_t>(payload_type);
-
-    bool payload_type_found = false;
-
-    for (uint16_t media_payload_type : media.payload_types)
-    {
-        if (media_payload_type == expected_payload_type)
-        {
-            payload_type_found = true;
-
-            break;
-        }
-    }
-
-    if (!payload_type_found)
-    {
-        for (const auto& codec : media.codecs)
-        {
-            if (codec.payload_type == expected_payload_type)
-            {
-                payload_type_found = true;
-
-                break;
-            }
-        }
-    }
-
-    if (!payload_type_found)
-    {
-        return make_error("rtp track payload type is not in media summary");
-    }
-
-    if (rid.has_value())
-    {
-        if (!media_has_rtp_header_extension_uri(media, k_rtp_header_extension_sdes_rtp_stream_id_uri))
-        {
-            return make_error("rtp track rid is present but rid extmap is missing");
-        }
-
-        if (!media_has_rid(media, *rid))
-        {
-            return make_error("rtp track rid was not offered");
-        }
-    }
-
-    if (repaired_rid.has_value())
-    {
-        if (!media_has_rtp_header_extension_uri(media, k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri))
-        {
-            return make_error("rtp track repaired-rid is present but repaired-rid extmap is missing");
-        }
-
-        if (!media_has_rtx_codec(media))
-        {
-            return make_error("rtp track repaired-rid is present but rtx codec is missing");
-        }
-
-        if (!media_has_rid(media, *repaired_rid))
-        {
-            return make_error("rtp track repaired-rid was not offered as rid");
-        }
-    }
-
-    if (ssrc != 0 && media_ssrc_is_rtx_repair(media, ssrc) && !media_has_rtx_codec(media))
-    {
-        return make_error("rtp track repair ssrc is present but rtx codec is missing");
-    }
-
-    return {};
-}
 }    // namespace webrtc::sdp

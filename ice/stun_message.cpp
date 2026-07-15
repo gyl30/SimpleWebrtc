@@ -15,7 +15,6 @@
 #include <netinet/in.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
-#include <openssl/rand.h>
 
 namespace webrtc
 {
@@ -37,19 +36,6 @@ constexpr std::array<uint8_t, 4> kStunMagicCookieBytes{
 };
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
-std::expected<std::array<uint8_t, kStunTransactionIdSize>, std::string> generate_stun_transaction_id()
-{
-    std::array<uint8_t, kStunTransactionIdSize> transaction_id{};
-
-    const int result = RAND_bytes(transaction_id.data(), static_cast<int>(transaction_id.size()));
-
-    if (result != 1)
-    {
-        return make_error("generate stun transaction id failed");
-    }
-
-    return transaction_id;
-}
 uint16_t read_u16(std::span<const uint8_t> data, std::size_t offset)
 {
     return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
@@ -83,13 +69,6 @@ void append_u32(std::vector<uint8_t>& data, uint32_t value)
     data.push_back(static_cast<uint8_t>((value >> 8U) & 0xFFU));
     data.push_back(static_cast<uint8_t>(value & 0xFFU));
 }
-void append_u64(std::vector<uint8_t>& data, uint64_t value)
-{
-    append_u32(data, static_cast<uint32_t>((value >> 32U) & 0xFFFFFFFFULL));
-
-    append_u32(data, static_cast<uint32_t>(value & 0xFFFFFFFFULL));
-}
-
 void write_u16(std::vector<uint8_t>& data, std::size_t offset, uint16_t value)
 {
     data[offset] = static_cast<uint8_t>((value >> 8U) & 0xFFU);
@@ -443,10 +422,7 @@ std::expected<stun_address, std::string> parse_address_attribute_value(uint16_t 
     return address;
 }
 
-std::expected<void, std::string> decode_known_attribute(stun_message& message,
-                                                        uint16_t type,
-                                                        std::span<const uint8_t> value,
-                                                        std::size_t attribute_offset)
+std::expected<void, std::string> decode_known_attribute(stun_message& message, uint16_t type, std::span<const uint8_t> value)
 {
     switch (type)
     {
@@ -459,7 +435,6 @@ std::expected<void, std::string> decode_known_attribute(stun_message& message,
                 return std::unexpected(address.error());
             }
 
-            message.mapped_address = std::move(*address);
             return {};
         }
 
@@ -472,7 +447,6 @@ std::expected<void, std::string> decode_known_attribute(stun_message& message,
                 return std::unexpected(address.error());
             }
 
-            message.xor_mapped_address = std::move(*address);
             return {};
         }
 
@@ -501,7 +475,6 @@ std::expected<void, std::string> decode_known_attribute(stun_message& message,
                 return make_error("stun use-candidate attribute must be empty");
             }
 
-            message.use_candidate = true;
             return {};
         }
 
@@ -535,7 +508,6 @@ std::expected<void, std::string> decode_known_attribute(stun_message& message,
             }
 
             message.has_message_integrity = true;
-            message.message_integrity_attribute_offset = attribute_offset;
             return {};
         }
 
@@ -547,8 +519,6 @@ std::expected<void, std::string> decode_known_attribute(stun_message& message,
             }
 
             message.has_fingerprint = true;
-            message.fingerprint_attribute_offset = attribute_offset;
-            message.fingerprint = read_u32(value, 0);
             return {};
         }
 
@@ -915,10 +885,11 @@ stun_message_result parse_stun_message(std::span<const uint8_t> data)
 
     stun_message message;
 
-    message.raw_type = read_u16(data, 0);
-    message.raw_method = decode_method(message.raw_type);
-    message.method = make_stun_method(message.raw_method);
-    message.message_class = decode_message_class(message.raw_type);
+    const uint16_t raw_type = read_u16(data, 0);
+    const uint16_t raw_method = decode_method(raw_type);
+
+    message.method = make_stun_method(raw_method);
+    message.message_class = decode_message_class(raw_type);
 
     for (std::size_t i = 0; i < message.transaction_id.size(); ++i)
     {
@@ -952,12 +923,7 @@ stun_message_result parse_stun_message(std::span<const uint8_t> data)
 
         std::span<const uint8_t> value(data.data() + static_cast<std::ptrdiff_t>(value_offset), static_cast<std::size_t>(length));
 
-        stun_attribute attribute;
-        attribute.type = type;
-        attribute.value.assign(value.begin(), value.end());
-        message.attributes.push_back(std::move(attribute));
-
-        auto decode_result = decode_known_attribute(message, type, value, offset);
+        auto decode_result = decode_known_attribute(message, type, value);
 
         if (!decode_result)
         {
@@ -968,86 +934,6 @@ stun_message_result parse_stun_message(std::span<const uint8_t> data)
     }
 
     return message;
-}
-
-stun_packet_result write_stun_binding_request(const stun_binding_request_options& options, std::array<uint8_t, 12>& transaction_id)
-{
-    if (options.username.empty())
-    {
-        return make_error("stun binding request username is empty");
-    }
-
-    if (options.message_integrity_key.empty())
-    {
-        return make_error("stun binding request message integrity key is empty");
-    }
-
-    if (options.ice_controlled == 0)
-    {
-        return make_error("stun binding request ice-controlled tie breaker is empty");
-    }
-
-    auto generated_transaction_id = generate_stun_transaction_id();
-
-    if (!generated_transaction_id)
-    {
-        return std::unexpected(generated_transaction_id.error());
-    }
-
-    transaction_id = *generated_transaction_id;
-
-    const uint16_t request_type = encode_message_type(kStunBindingMethod, stun_message_class::request);
-
-    std::vector<uint8_t> packet = make_stun_header(request_type, transaction_id);
-
-    const auto* username_data = reinterpret_cast<const uint8_t*>(options.username.data());
-
-    auto username_result = append_attribute(packet, kStunAttributeUsername, std::span<const uint8_t>(username_data, options.username.size()));
-
-    if (!username_result)
-    {
-        return std::unexpected(username_result.error());
-    }
-
-    std::vector<uint8_t> controlled_value;
-
-    controlled_value.reserve(8);
-
-    append_u64(controlled_value, options.ice_controlled);
-
-    auto controlled_result =
-        append_attribute(packet, kStunAttributeIceControlled, std::span<const uint8_t>(controlled_value.data(), controlled_value.size()));
-
-    if (!controlled_result)
-    {
-        return std::unexpected(controlled_result.error());
-    }
-
-    auto length_result = set_stun_message_length(packet, packet.size() - kStunHeaderSize);
-
-    if (!length_result)
-    {
-        return std::unexpected(length_result.error());
-    }
-
-    auto integrity_result = append_message_integrity(packet, options.message_integrity_key);
-
-    if (!integrity_result)
-    {
-        return std::unexpected(integrity_result.error());
-    }
-
-    if (options.include_fingerprint)
-    {
-        auto fingerprint_result = append_fingerprint(packet);
-
-        if (!fingerprint_result)
-        {
-            return std::unexpected(fingerprint_result.error());
-        }
-    }
-
-    return packet;
 }
 
 stun_packet_result write_stun_binding_success_response(const stun_message& request, const stun_binding_success_response_options& options)

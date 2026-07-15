@@ -3,7 +3,6 @@
 
 #include <cctype>
 #include <cstddef>
-#include <cstdint>
 #include <expected>
 #include <string>
 #include <optional>
@@ -13,7 +12,6 @@
 
 #include "log/log.h"
 #include "net/http.h"
-#include "util/timestamp.h"
 #include "ice/ice_candidate.h"
 #include "server/trickle_ice_http.h"
 #include "server/trickle_ice_json.h"
@@ -123,8 +121,6 @@ inline bool content_type_matches(http_request_t& request, std::string_view expec
 inline bool is_application_json(http_request_t& request) { return content_type_matches(request, k_application_json); }
 
 inline bool is_application_trickle_ice_sdpfrag(http_request_t& request) { return content_type_matches(request, k_application_trickle_ice_sdpfrag); }
-
-inline uint64_t now_milliseconds() { return timestamp::now().milliseconds(); }
 
 template <typename session_type>
 bool remote_offer_media_mid_exists(const session_type& session, std::string_view mid)
@@ -283,7 +279,7 @@ inline std::string describe_content_type(http_request_t& request)
     return std::string(content_type.data(), content_type.size());
 }
 
-inline std::expected<trickle_ice_patch_body, std::string> parse_json_patch_body(std::string_view body, uint64_t received_at_milliseconds)
+inline std::expected<trickle_ice_patch_body, std::string> parse_json_patch_body(std::string_view body)
 {
     auto requests = parse_trickle_ice_candidate_requests(body);
 
@@ -292,7 +288,7 @@ inline std::expected<trickle_ice_patch_body, std::string> parse_json_patch_body(
         return std::unexpected(requests.error());
     }
 
-    auto candidates = make_remote_ice_candidates_from_trickle_requests(*requests, received_at_milliseconds);
+    auto candidates = make_remote_ice_candidates_from_trickle_requests(*requests);
 
     if (!candidates)
     {
@@ -306,9 +302,9 @@ inline std::expected<trickle_ice_patch_body, std::string> parse_json_patch_body(
     return parsed_body;
 }
 
-inline std::expected<trickle_ice_patch_body, std::string> parse_sdpfrag_patch_body(std::string_view body, uint64_t received_at_milliseconds)
+inline std::expected<trickle_ice_patch_body, std::string> parse_sdpfrag_patch_body(std::string_view body)
 {
-    auto result = parse_trickle_ice_sdpfrag_with_attributes(body, received_at_milliseconds);
+    auto result = parse_trickle_ice_sdpfrag_with_attributes(body);
 
     if (!result)
     {
@@ -332,16 +328,14 @@ inline std::expected<trickle_ice_patch_body, std::string> parse_sdpfrag_patch_bo
 
 inline std::expected<trickle_ice_patch_body, std::string> parse_patch_body(http_request_t& request)
 {
-    const uint64_t received_at_milliseconds = now_milliseconds();
-
     if (is_application_json(request))
     {
-        return parse_json_patch_body(request.req.body(), received_at_milliseconds);
+        return parse_json_patch_body(request.req.body());
     }
 
     if (is_application_trickle_ice_sdpfrag(request))
     {
-        return parse_sdpfrag_patch_body(request.req.body(), received_at_milliseconds);
+        return parse_sdpfrag_patch_body(request.req.body());
     }
 
     return std::unexpected(std::string("unsupported media type, expected application/json or application/trickle-ice-sdpfrag"));

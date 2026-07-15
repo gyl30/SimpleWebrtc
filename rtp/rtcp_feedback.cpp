@@ -3,11 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
-#include <algorithm>
 #include <vector>
 
 #include "rtp/rtp_packet.h"
@@ -16,8 +14,35 @@ namespace webrtc
 {
 namespace
 {
+inline constexpr uint8_t k_rtcp_packet_type_transport_feedback = 205;
+inline constexpr uint8_t k_rtcp_packet_type_payload_feedback = 206;
+
+inline constexpr uint8_t k_rtcp_transport_feedback_generic_nack = 1;
+inline constexpr uint8_t k_rtcp_transport_feedback_tmmbr = 3;
+inline constexpr uint8_t k_rtcp_transport_feedback_tmmbn = 4;
+inline constexpr uint8_t k_rtcp_transport_feedback_transport_cc = 15;
+
+inline constexpr uint8_t k_rtcp_payload_feedback_pli = 1;
+inline constexpr uint8_t k_rtcp_payload_feedback_sli = 2;
+inline constexpr uint8_t k_rtcp_payload_feedback_rpsi = 3;
+inline constexpr uint8_t k_rtcp_payload_feedback_fir = 4;
+inline constexpr uint8_t k_rtcp_payload_feedback_afb = 15;
+
 inline constexpr std::size_t k_rtcp_common_header_size = 4;
 inline constexpr std::size_t k_rtcp_feedback_header_size = 12;
+inline constexpr std::size_t k_transport_cc_fixed_fci_size = 8;
+inline constexpr std::size_t k_transport_cc_status_chunk_size = 2;
+inline constexpr std::size_t k_transport_cc_small_delta_size = 1;
+inline constexpr std::size_t k_transport_cc_large_delta_size = 2;
+inline constexpr std::size_t k_max_transport_cc_packet_status_count = 8192;
+
+enum class transport_cc_packet_status_symbol : uint8_t
+{
+    not_received = 0,
+    small_delta = 1,
+    large_or_negative_delta = 2,
+    reserved = 3,
+};
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
@@ -91,129 +116,86 @@ uint32_t read_u32(std::span<const uint8_t> data, std::size_t offset)
            (static_cast<uint32_t>(data[offset + 2]) << 8U) | static_cast<uint32_t>(data[offset + 3]);
 }
 
-rtcp_transport_cc_packet_status_symbol make_transport_cc_status_symbol(uint8_t value)
+transport_cc_packet_status_symbol make_transport_cc_status_symbol(uint8_t value)
 {
     switch (value & 0x03U)
     {
         case 0:
-            return rtcp_transport_cc_packet_status_symbol::not_received;
+            return transport_cc_packet_status_symbol::not_received;
 
         case 1:
-            return rtcp_transport_cc_packet_status_symbol::small_delta;
+            return transport_cc_packet_status_symbol::small_delta;
 
         case 2:
-            return rtcp_transport_cc_packet_status_symbol::large_or_negative_delta;
+            return transport_cc_packet_status_symbol::large_or_negative_delta;
 
         default:
-            return rtcp_transport_cc_packet_status_symbol::reserved;
+            return transport_cc_packet_status_symbol::reserved;
     }
 }
 
-bool transport_cc_status_symbol_has_delta(rtcp_transport_cc_packet_status_symbol symbol)
+bool transport_cc_status_symbol_has_delta(transport_cc_packet_status_symbol symbol)
 {
-    return symbol == rtcp_transport_cc_packet_status_symbol::small_delta || symbol == rtcp_transport_cc_packet_status_symbol::large_or_negative_delta;
+    return symbol == transport_cc_packet_status_symbol::small_delta || symbol == transport_cc_packet_status_symbol::large_or_negative_delta;
 }
 
-bool transport_cc_status_symbol_is_received(rtcp_transport_cc_packet_status_symbol symbol) { return transport_cc_status_symbol_has_delta(symbol); }
-
-uint32_t read_u24(std::span<const uint8_t> data, std::size_t offset)
+void append_transport_cc_status(std::vector<transport_cc_packet_status_symbol>& statuses,
+                                transport_cc_packet_status_symbol symbol,
+                                std::size_t packet_status_count)
 {
-    return (static_cast<uint32_t>(data[offset]) << 16U) | (static_cast<uint32_t>(data[offset + 1]) << 8U) | static_cast<uint32_t>(data[offset + 2]);
-}
-
-int16_t read_i16(std::span<const uint8_t> data, std::size_t offset)
-{
-    const uint16_t value = read_u16(data, offset);
-
-    return static_cast<int16_t>(value);
-}
-
-void append_transport_cc_status(rtcp_feedback_packet& packet, rtcp_transport_cc_packet_status_symbol symbol)
-{
-    rtcp_transport_cc_packet_status status;
-
-    status.sequence_number =
-        static_cast<uint16_t>(packet.transport_cc_base_sequence_number + static_cast<uint16_t>(packet.transport_cc_packet_statuses.size()));
-
-    status.symbol = symbol;
-    status.received = transport_cc_status_symbol_is_received(symbol);
-    status.has_delta = transport_cc_status_symbol_has_delta(symbol);
-
-    packet.transport_cc_packet_statuses.push_back(status);
-
-    if (symbol == rtcp_transport_cc_packet_status_symbol::not_received)
+    if (statuses.size() < packet_status_count)
     {
-        packet.transport_cc_not_received_packet_count += 1;
-
-        return;
+        statuses.push_back(symbol);
     }
-
-    if (symbol == rtcp_transport_cc_packet_status_symbol::small_delta)
-    {
-        packet.transport_cc_received_packet_count += 1;
-        packet.transport_cc_small_delta_count += 1;
-
-        return;
-    }
-
-    if (symbol == rtcp_transport_cc_packet_status_symbol::large_or_negative_delta)
-    {
-        packet.transport_cc_received_packet_count += 1;
-        packet.transport_cc_large_delta_count += 1;
-
-        return;
-    }
-
-    packet.transport_cc_not_received_packet_count += 1;
 }
-std::expected<void, std::string> parse_transport_cc_run_length_chunk(uint16_t chunk, rtcp_feedback_packet& packet)
+
+void parse_transport_cc_run_length_chunk(uint16_t chunk,
+                                         std::vector<transport_cc_packet_status_symbol>& statuses,
+                                         std::size_t packet_status_count)
 {
     const uint8_t raw_symbol = static_cast<uint8_t>((chunk >> 13U) & 0x03U);
     const uint16_t run_length = static_cast<uint16_t>(chunk & 0x1fffU);
+    const transport_cc_packet_status_symbol symbol = make_transport_cc_status_symbol(raw_symbol);
 
-    const rtcp_transport_cc_packet_status_symbol symbol = make_transport_cc_status_symbol(raw_symbol);
-
-    for (uint16_t i = 0; i < run_length && packet.transport_cc_packet_statuses.size() < packet.transport_cc_packet_status_count; ++i)
+    for (uint16_t i = 0; i < run_length && statuses.size() < packet_status_count; ++i)
     {
-        append_transport_cc_status(packet, symbol);
+        append_transport_cc_status(statuses, symbol, packet_status_count);
     }
-
-    return {};
 }
 
-std::expected<void, std::string> parse_transport_cc_status_vector_chunk(uint16_t chunk, rtcp_feedback_packet& packet)
+void parse_transport_cc_status_vector_chunk(uint16_t chunk,
+                                            std::vector<transport_cc_packet_status_symbol>& statuses,
+                                            std::size_t packet_status_count)
 {
     const bool two_bit_symbols = ((chunk & 0x4000U) != 0);
 
     if (two_bit_symbols)
     {
-        for (int bit_offset = 12; bit_offset >= 0 && packet.transport_cc_packet_statuses.size() < packet.transport_cc_packet_status_count;
-             bit_offset -= 2)
+        for (int bit_offset = 12; bit_offset >= 0 && statuses.size() < packet_status_count; bit_offset -= 2)
         {
             const uint8_t raw_symbol = static_cast<uint8_t>((chunk >> static_cast<unsigned>(bit_offset)) & 0x03U);
 
-            append_transport_cc_status(packet, make_transport_cc_status_symbol(raw_symbol));
+            append_transport_cc_status(statuses, make_transport_cc_status_symbol(raw_symbol), packet_status_count);
         }
 
-        return {};
+        return;
     }
 
-    for (int bit_offset = 13; bit_offset >= 0 && packet.transport_cc_packet_statuses.size() < packet.transport_cc_packet_status_count; --bit_offset)
+    for (int bit_offset = 13; bit_offset >= 0 && statuses.size() < packet_status_count; --bit_offset)
     {
         const uint8_t raw_symbol = static_cast<uint8_t>((chunk >> static_cast<unsigned>(bit_offset)) & 0x01U);
 
-        append_transport_cc_status(packet, make_transport_cc_status_symbol(raw_symbol));
+        append_transport_cc_status(statuses, make_transport_cc_status_symbol(raw_symbol), packet_status_count);
     }
-
-    return {};
 }
 
 std::expected<std::size_t, std::string> parse_transport_cc_status_chunks(std::span<const uint8_t> data,
                                                                          std::size_t offset,
                                                                          std::size_t end,
-                                                                         rtcp_feedback_packet& packet)
+                                                                         std::size_t packet_status_count,
+                                                                         std::vector<transport_cc_packet_status_symbol>& statuses)
 {
-    while (packet.transport_cc_packet_statuses.size() < packet.transport_cc_packet_status_count)
+    while (statuses.size() < packet_status_count)
     {
         if (offset + k_transport_cc_status_chunk_size > end)
         {
@@ -224,77 +206,53 @@ std::expected<std::size_t, std::string> parse_transport_cc_status_chunks(std::sp
 
         offset += k_transport_cc_status_chunk_size;
 
-        const bool status_vector_chunk = ((chunk & 0x8000U) != 0);
-
-        std::expected<void, std::string> parse_result = {};
-
-        if (status_vector_chunk)
+        if ((chunk & 0x8000U) != 0)
         {
-            parse_result = parse_transport_cc_status_vector_chunk(chunk, packet);
+            parse_transport_cc_status_vector_chunk(chunk, statuses, packet_status_count);
         }
         else
         {
-            parse_result = parse_transport_cc_run_length_chunk(chunk, packet);
-        }
-
-        if (!parse_result)
-        {
-            return std::unexpected(parse_result.error());
+            parse_transport_cc_run_length_chunk(chunk, statuses, packet_status_count);
         }
     }
 
     return offset;
 }
-std::expected<std::size_t, std::string> parse_transport_cc_recv_deltas(std::span<const uint8_t> data,
-                                                                       std::size_t offset,
-                                                                       std::size_t end,
-                                                                       rtcp_feedback_packet& packet)
-{
-    int64_t arrival_offset_microseconds = 0;
 
-    for (auto& status : packet.transport_cc_packet_statuses)
+std::expected<std::size_t, std::string> parse_transport_cc_recv_deltas(std::size_t offset,
+                                                                       std::size_t end,
+                                                                       const std::vector<transport_cc_packet_status_symbol>& statuses)
+{
+    for (const auto symbol : statuses)
     {
-        if (!status.has_delta)
+        if (!transport_cc_status_symbol_has_delta(symbol))
         {
             continue;
         }
 
-        if (status.symbol == rtcp_transport_cc_packet_status_symbol::small_delta)
+        if (symbol == transport_cc_packet_status_symbol::small_delta)
         {
             if (offset + k_transport_cc_small_delta_size > end)
             {
                 return make_error("rtcp transport cc small delta is truncated");
             }
 
-            status.delta_ticks = static_cast<int32_t>(data[offset]);
-
             offset += k_transport_cc_small_delta_size;
         }
-        else if (status.symbol == rtcp_transport_cc_packet_status_symbol::large_or_negative_delta)
+        else if (symbol == transport_cc_packet_status_symbol::large_or_negative_delta)
         {
             if (offset + k_transport_cc_large_delta_size > end)
             {
                 return make_error("rtcp transport cc large delta is truncated");
             }
 
-            status.delta_ticks = static_cast<int32_t>(read_i16(data, offset));
-
             offset += k_transport_cc_large_delta_size;
         }
-        else
-        {
-            continue;
-        }
-
-        status.delta_microseconds = static_cast<int64_t>(status.delta_ticks) * k_transport_cc_delta_tick_microseconds;
-
-        arrival_offset_microseconds += status.delta_microseconds;
-
-        status.arrival_offset_microseconds = arrival_offset_microseconds;
     }
 
     return offset;
 }
+
 bool is_feedback_packet_type(uint8_t packet_type)
 {
     return packet_type == k_rtcp_packet_type_transport_feedback || packet_type == k_rtcp_packet_type_payload_feedback;
@@ -311,10 +269,7 @@ bool is_remb_fci(std::span<const uint8_t> data, std::size_t offset, std::size_t 
            data[offset + 2] == static_cast<uint8_t>('M') && data[offset + 3] == static_cast<uint8_t>('B');
 }
 
-std::expected<void, std::string> parse_generic_nack_items(std::span<const uint8_t> data,
-                                                          std::size_t offset,
-                                                          std::size_t end,
-                                                          rtcp_feedback_packet& packet)
+std::expected<void, std::string> parse_generic_nack(std::size_t offset, std::size_t end, rtcp_feedback_packet& packet)
 {
     const std::size_t fci_size = end - offset;
 
@@ -324,14 +279,7 @@ std::expected<void, std::string> parse_generic_nack_items(std::span<const uint8_
     }
 
     packet.has_generic_nack = true;
-
-    for (std::size_t current = offset; current < end; current += 4)
-    {
-        rtcp_nack_item item;
-        item.packet_id = read_u16(data, current);
-        item.lost_packet_bitmask = read_u16(data, current + 2);
-        packet.nack_items.push_back(item);
-    }
+    packet.nack_count = fci_size / 4;
 
     return {};
 }
@@ -348,7 +296,7 @@ std::expected<void, std::string> parse_pli(std::size_t offset, std::size_t end, 
     return {};
 }
 
-std::expected<void, std::string> parse_fir_items(std::span<const uint8_t> data, std::size_t offset, std::size_t end, rtcp_feedback_packet& packet)
+std::expected<void, std::string> parse_fir(std::size_t offset, std::size_t end, rtcp_feedback_packet& packet)
 {
     const std::size_t fci_size = end - offset;
 
@@ -358,14 +306,7 @@ std::expected<void, std::string> parse_fir_items(std::span<const uint8_t> data, 
     }
 
     packet.has_keyframe_request = true;
-
-    for (std::size_t current = offset; current < end; current += 8)
-    {
-        rtcp_fir_item item;
-        item.ssrc = read_u32(data, current);
-        item.sequence_number = data[current + 4];
-        packet.fir_items.push_back(item);
-    }
+    packet.fir_count = fci_size / 8;
 
     return {};
 }
@@ -382,34 +323,20 @@ std::expected<void, std::string> parse_remb(std::span<const uint8_t> data, std::
         return make_error("rtcp remb fci is truncated");
     }
 
-    rtcp_remb_info remb;
-    remb.ssrc_count = data[offset + 4];
-    remb.bitrate_exponent = static_cast<uint8_t>(data[offset + 5] >> 2U);
-
-    remb.bitrate_mantissa = (static_cast<uint32_t>(data[offset + 5] & 0x03U) << 16U) | (static_cast<uint32_t>(data[offset + 6]) << 8U) |
-                            static_cast<uint32_t>(data[offset + 7]);
-
-    remb.bitrate_bps = static_cast<uint64_t>(remb.bitrate_mantissa) << remb.bitrate_exponent;
+    const uint8_t ssrc_count = data[offset + 4];
+    const uint8_t bitrate_exponent = static_cast<uint8_t>(data[offset + 5] >> 2U);
+    const uint32_t bitrate_mantissa = (static_cast<uint32_t>(data[offset + 5] & 0x03U) << 16U) |
+                                      (static_cast<uint32_t>(data[offset + 6]) << 8U) | static_cast<uint32_t>(data[offset + 7]);
 
     const std::size_t ssrc_offset = offset + 8;
-
-    const std::size_t required_size = ssrc_offset + static_cast<std::size_t>(remb.ssrc_count) * 4;
+    const std::size_t required_size = ssrc_offset + static_cast<std::size_t>(ssrc_count) * 4;
 
     if (required_size > end)
     {
         return make_error("rtcp remb ssrc list is truncated");
     }
 
-    remb.ssrcs.reserve(remb.ssrc_count);
-
-    for (std::size_t i = 0; i < remb.ssrc_count; ++i)
-    {
-        const std::size_t current = ssrc_offset + i * 4;
-
-        remb.ssrcs.push_back(read_u32(data, current));
-    }
-
-    packet.remb = std::move(remb);
+    packet.remb_bitrate_bps = static_cast<uint64_t>(bitrate_mantissa) << bitrate_exponent;
 
     return {};
 }
@@ -422,7 +349,7 @@ std::expected<void, std::string> parse_transport_feedback(std::span<const uint8_
     switch (packet.format)
     {
         case k_rtcp_transport_feedback_generic_nack:
-            return parse_generic_nack_items(data, offset, end, packet);
+            return parse_generic_nack(offset, end, packet);
 
         case k_rtcp_transport_feedback_transport_cc:
         {
@@ -432,29 +359,27 @@ std::expected<void, std::string> parse_transport_feedback(std::span<const uint8_
             }
 
             packet.has_transport_cc = true;
-            packet.transport_cc_base_sequence_number = read_u16(data, offset);
-            packet.transport_cc_packet_status_count = read_u16(data, offset + 2);
-            packet.transport_cc_reference_time_64ms = read_u24(data, offset + 4);
-            packet.transport_cc_feedback_packet_count = data[offset + 7];
 
-            if (packet.transport_cc_packet_status_count > k_max_transport_cc_packet_status_count)
+            const std::size_t packet_status_count = read_u16(data, offset + 2);
+
+            if (packet_status_count > k_max_transport_cc_packet_status_count)
             {
                 return make_error("rtcp transport cc packet status count exceeds limit");
             }
 
-            packet.transport_cc_packet_statuses.clear();
-            packet.transport_cc_packet_statuses.reserve(packet.transport_cc_packet_status_count);
+            std::vector<transport_cc_packet_status_symbol> statuses;
+            statuses.reserve(packet_status_count);
 
             offset += k_transport_cc_fixed_fci_size;
 
-            auto chunk_offset = parse_transport_cc_status_chunks(data, offset, end, packet);
+            auto chunk_offset = parse_transport_cc_status_chunks(data, offset, end, packet_status_count, statuses);
 
             if (!chunk_offset)
             {
                 return std::unexpected(chunk_offset.error());
             }
 
-            auto delta_offset = parse_transport_cc_recv_deltas(data, *chunk_offset, end, packet);
+            auto delta_offset = parse_transport_cc_recv_deltas(*chunk_offset, end, statuses);
 
             if (!delta_offset)
             {
@@ -489,7 +414,7 @@ std::expected<void, std::string> parse_payload_feedback(std::span<const uint8_t>
             return parse_pli(offset, end, packet);
 
         case k_rtcp_payload_feedback_fir:
-            return parse_fir_items(data, offset, end, packet);
+            return parse_fir(offset, end, packet);
 
         case k_rtcp_payload_feedback_afb:
             return parse_remb(data, offset, end, packet);
@@ -503,122 +428,6 @@ std::expected<void, std::string> parse_payload_feedback(std::span<const uint8_t>
     }
 }
 
-void write_u32(std::vector<uint8_t>& data, std::size_t offset, uint32_t value)
-{
-    data[offset] = static_cast<uint8_t>((value >> 24U) & 0xffU);
-    data[offset + 1] = static_cast<uint8_t>((value >> 16U) & 0xffU);
-    data[offset + 2] = static_cast<uint8_t>((value >> 8U) & 0xffU);
-    data[offset + 3] = static_cast<uint8_t>(value & 0xffU);
-}
-
-std::expected<void, std::string> validate_block_rewrite(std::span<const uint8_t> packet, const rtcp_feedback_block_rewrite& rewrite)
-{
-    if (rewrite.block_size < 12)
-    {
-        return make_error("rtcp feedback block rewrite block is too small");
-    }
-
-    if (rewrite.block_offset > packet.size())
-    {
-        return make_error("rtcp feedback block rewrite offset exceeds packet size");
-    }
-
-    if (rewrite.block_size > packet.size() - rewrite.block_offset)
-    {
-        return make_error("rtcp feedback block rewrite size exceeds packet size");
-    }
-
-    std::span<const uint8_t> block = packet.subspan(rewrite.block_offset, rewrite.block_size);
-
-    auto header = parse_rtcp_packet_header(block);
-
-    if (!header)
-    {
-        return std::unexpected(header.error());
-    }
-
-    if (!is_feedback_packet_type(header->packet_type))
-    {
-        return make_error("rtcp feedback block rewrite block is not feedback");
-    }
-
-    if (header->packet_size != rewrite.block_size)
-    {
-        return make_error("rtcp feedback block rewrite size mismatch");
-    }
-
-    return {};
-}
-
-std::expected<void, std::string> apply_media_ssrc_rewrite(std::vector<uint8_t>& packet, const rtcp_feedback_block_rewrite& rewrite)
-{
-    if (!rewrite.rewrite_media_ssrc)
-    {
-        return {};
-    }
-
-    if (rewrite.source_media_ssrc == 0)
-    {
-        return make_error("rtcp feedback block rewrite source media ssrc is zero");
-    }
-
-    if (rewrite.target_media_ssrc == 0)
-    {
-        return make_error("rtcp feedback block rewrite target media ssrc is zero");
-    }
-
-    const std::size_t media_ssrc_offset = rewrite.block_offset + 8;
-
-    const uint32_t current_ssrc = read_u32(packet, media_ssrc_offset);
-
-    if (current_ssrc != rewrite.source_media_ssrc)
-    {
-        return make_error("rtcp feedback block rewrite source media ssrc mismatch");
-    }
-
-    write_u32(packet, media_ssrc_offset, rewrite.target_media_ssrc);
-
-    return {};
-}
-
-std::expected<void, std::string> apply_fci_ssrc_rewrites(std::vector<uint8_t>& packet, const rtcp_feedback_block_rewrite& rewrite)
-{
-    for (const auto& fci_rewrite : rewrite.fci_ssrc_rewrites)
-    {
-        if (fci_rewrite.source_ssrc == 0)
-        {
-            return make_error("rtcp feedback block rewrite fci source ssrc is zero");
-        }
-
-        if (fci_rewrite.target_ssrc == 0)
-        {
-            return make_error("rtcp feedback block rewrite fci target ssrc is zero");
-        }
-
-        if (fci_rewrite.offset > rewrite.block_size)
-        {
-            return make_error("rtcp feedback block rewrite fci offset exceeds block size");
-        }
-
-        if (4 > rewrite.block_size - fci_rewrite.offset)
-        {
-            return make_error("rtcp feedback block rewrite fci ssrc exceeds block size");
-        }
-
-        const std::size_t absolute_offset = rewrite.block_offset + fci_rewrite.offset;
-
-        const uint32_t current_ssrc = read_u32(packet, absolute_offset);
-
-        if (current_ssrc != fci_rewrite.source_ssrc)
-        {
-            return make_error("rtcp feedback block rewrite fci source ssrc mismatch");
-        }
-
-        write_u32(packet, absolute_offset, fci_rewrite.target_ssrc);
-    }
-
-    return {};
-}
 }    // namespace
 
 bool is_rtcp_feedback_packet(std::span<const uint8_t> data)
@@ -660,12 +469,8 @@ rtcp_feedback_packet_result parse_rtcp_feedback_packet(std::span<const uint8_t> 
     }
 
     rtcp_feedback_packet packet;
-    packet.version = header->version;
-    packet.padding = header->padding;
     packet.format = header->count;
     packet.packet_type = header->packet_type;
-    packet.length = header->length;
-    packet.packet_size = header->packet_size;
     packet.sender_ssrc = read_u32(data, 4);
     packet.media_ssrc = read_u32(data, 8);
 
@@ -688,80 +493,6 @@ rtcp_feedback_packet_result parse_rtcp_feedback_packet(std::span<const uint8_t> 
     }
 
     return packet;
-}
-
-struct rtcp_feedback_block_drop_range
-{
-    std::size_t begin = 0;
-    std::size_t end = 0;
-};
-
-std::expected<std::vector<rtcp_feedback_block_drop_range>, std::string> make_feedback_block_drop_ranges(
-    std::span<const rtcp_feedback_block_rewrite> rewrites)
-{
-    std::vector<rtcp_feedback_block_drop_range> ranges;
-
-    ranges.reserve(rewrites.size());
-
-    for (const auto& rewrite : rewrites)
-    {
-        if (!rewrite.drop_block)
-        {
-            continue;
-        }
-
-        rtcp_feedback_block_drop_range range;
-
-        range.begin = rewrite.block_offset;
-        range.end = rewrite.block_offset + rewrite.block_size;
-
-        ranges.push_back(range);
-    }
-
-    std::sort(ranges.begin(),
-              ranges.end(),
-              [](const rtcp_feedback_block_drop_range& left, const rtcp_feedback_block_drop_range& right) { return left.begin < right.begin; });
-
-    std::size_t previous_end = 0;
-
-    for (const auto& range : ranges)
-    {
-        if (range.begin < previous_end)
-        {
-            return make_error("rtcp feedback block drop ranges overlap");
-        }
-
-        previous_end = range.end;
-    }
-
-    return ranges;
-}
-
-std::vector<uint8_t> copy_without_feedback_block_ranges(std::span<const uint8_t> packet, const std::vector<rtcp_feedback_block_drop_range>& ranges)
-{
-    std::vector<uint8_t> filtered;
-
-    filtered.reserve(packet.size());
-
-    std::size_t cursor = 0;
-
-    for (const auto& range : ranges)
-    {
-        if (cursor < range.begin)
-        {
-            filtered.insert(
-                filtered.end(), packet.begin() + static_cast<std::ptrdiff_t>(cursor), packet.begin() + static_cast<std::ptrdiff_t>(range.begin));
-        }
-
-        cursor = range.end;
-    }
-
-    if (cursor < packet.size())
-    {
-        filtered.insert(filtered.end(), packet.begin() + static_cast<std::ptrdiff_t>(cursor), packet.end());
-    }
-
-    return filtered;
 }
 
 std::string rtcp_feedback_format_to_string(uint8_t packet_type, uint8_t format)
@@ -814,67 +545,4 @@ std::string rtcp_feedback_format_to_string(uint8_t packet_type, uint8_t format)
     return "unknown";
 }
 
-rtcp_feedback_rewrite_result rewrite_rtcp_feedback_blocks(std::span<const uint8_t> packet, std::span<const rtcp_feedback_block_rewrite> rewrites)
-{
-    if (packet.empty())
-    {
-        return make_error("rtcp feedback block rewrite packet is empty");
-    }
-
-    if (rewrites.empty())
-    {
-        std::vector<uint8_t> copied;
-
-        copied.assign(packet.begin(), packet.end());
-
-        return copied;
-    }
-
-    std::vector<uint8_t> rewritten;
-
-    rewritten.assign(packet.begin(), packet.end());
-
-    for (const auto& rewrite : rewrites)
-    {
-        auto validation_result = validate_block_rewrite(packet, rewrite);
-
-        if (!validation_result)
-        {
-            return std::unexpected(validation_result.error());
-        }
-
-        if (rewrite.drop_block)
-        {
-            continue;
-        }
-
-        auto media_rewrite_result = apply_media_ssrc_rewrite(rewritten, rewrite);
-
-        if (!media_rewrite_result)
-        {
-            return std::unexpected(media_rewrite_result.error());
-        }
-
-        auto fci_rewrite_result = apply_fci_ssrc_rewrites(rewritten, rewrite);
-
-        if (!fci_rewrite_result)
-        {
-            return std::unexpected(fci_rewrite_result.error());
-        }
-    }
-
-    auto drop_ranges = make_feedback_block_drop_ranges(rewrites);
-
-    if (!drop_ranges)
-    {
-        return std::unexpected(drop_ranges.error());
-    }
-
-    if (!drop_ranges->empty())
-    {
-        return copy_without_feedback_block_ranges(std::span<const uint8_t>(rewritten.data(), rewritten.size()), *drop_ranges);
-    }
-
-    return rewritten;
-}
 }    // namespace webrtc

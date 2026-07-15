@@ -13,14 +13,13 @@
 #include <boost/version.hpp>
 #include <openssl/opensslv.h>
 
-#include "ice/ice_udp_server.h"
+#include "ice/session_transport_environment_config.h"
 #include "log/log.h"
-#include "media/media_router.h"
-#include "media/rtcp_report_service.h"
 #include "net/detect_ssl_session.h"
 #include "net/http.h"
 #include "net/socket.h"
 #include "net/tcp_server.h"
+#include "net/udp_port_allocator.h"
 #include "server/router.h"
 #include "session/stream_registry.h"
 #include "signaling/webrtc_answer_factory.h"
@@ -29,6 +28,7 @@
 #include "util/reflect.h"
 #include "util/scoped_exit.h"
 #include "dtls/dtls_certificate.h"
+#include "dtls/dtls_context.h"
 
 static std::string get_log_dir(const std::string& app_dir) { return app_dir + "/log"; }
 
@@ -190,13 +190,12 @@ static void log_startup_config_summary(const std::string& app_path,
                                        const std::string& http_key_file,
                                        uint16_t http_port,
                                        const std::string& ice_bind_host,
-                                       uint16_t ice_port,
                                        const std::string& ice_public_ip_source,
                                        std::size_t ice_public_ip_count)
 {
     WEBRTC_LOG_INFO(
         "flag_startup_config_summary app_path={} log_file={} http_tls_enabled={} http_cert_file={} http_key_file={} http_port={} "
-        "ice_bind_host={} ice_port={} ice_public_ip_source={} ice_public_ip_count={} admin_token_configured={}",
+        "session_ice_bind_host={} ice_public_ip_source={} ice_public_ip_count={} admin_token_configured={}",
         app_path,
         log_file,
         http_tls_enabled ? 1 : 0,
@@ -204,7 +203,6 @@ static void log_startup_config_summary(const std::string& app_path,
         http_key_file,
         http_port,
         ice_bind_host,
-        ice_port,
         ice_public_ip_source,
         ice_public_ip_count,
         is_env_configured("WEBRTC_ADMIN_TOKEN") ? 1 : 0);
@@ -398,9 +396,21 @@ int main(int argc, char* argv[])
                     answer_factory_config.local_fingerprint.algorithm,
                     answer_factory_config.local_fingerprint.value);
 
+    webrtc::dtls_context_config per_session_dtls_context_config;
+
+    per_session_dtls_context_config.certificate = *dtls_certificate;
+
+    auto per_session_dtls_context = webrtc::make_dtls_context(per_session_dtls_context_config);
+
+    if (!per_session_dtls_context)
+    {
+        WEBRTC_LOG_ERROR("create per-session dtls context failed: {}", per_session_dtls_context.error());
+
+        return 1;
+    }
+
     const uint16_t http_port = get_env_uint16_or_default("WEBRTC_HTTP_PORT", 8811);
     const std::string ice_bind_host = get_env_or_default("WEBRTC_ICE_BIND_HOST", "0.0.0.0");
-    const uint16_t ice_port = get_env_uint16_or_default("WEBRTC_ICE_PORT", 8812);
     const std::string ice_public_ips_config = get_env_or_default("WEBRTC_ICE_PUBLIC_IPS", "");
     const std::string ice_public_ip = get_env_or_default("WEBRTC_ICE_PUBLIC_IP", "127.0.0.1");
     const std::string ice_public_ip_source = ice_public_ips_config.empty() ? ice_public_ip : ice_public_ips_config;
@@ -413,29 +423,31 @@ int main(int argc, char* argv[])
                                http_tls.private_key_file,
                                http_port,
                                ice_bind_host,
-                               ice_port,
                                ice_public_ip_source,
                                ice_public_ips.size());
 
     boost::asio::io_context io_context;
     auto registry = std::make_shared<webrtc::stream_registry>();
-    auto media_router = std::make_shared<webrtc::media_router>();
-    auto ice_server = std::make_shared<webrtc::ice_udp_server>(io_context, ice_bind_host, ice_port, registry, media_router);
-    auto ice_start_result = ice_server->start();
-    if (!ice_start_result)
+    const auto& session_transport_config = webrtc::session_transport_runtime_config_instance();
+
+    if (!session_transport_config.validation_error.empty())
     {
-        WEBRTC_LOG_ERROR("start ice udp server failed: {}", ice_start_result.error());
+        WEBRTC_LOG_ERROR("load session transport runtime config failed: {}", session_transport_config.validation_error);
 
         return 1;
     }
+
+    auto session_udp_port_allocator = std::make_shared<webrtc::udp_port_allocator>(session_transport_config.session_udp_port_range);
+
     answer_factory_config.media_address = ice_public_ips.front();
     answer_factory_config.ice_candidate_address = ice_public_ips.front();
-    answer_factory_config.ice_candidate_port = ice_server->local_port();
+    answer_factory_config.ice_candidate_port = session_transport_config.session_udp_port_range.min_port;
     answer_factory_config.ice_candidates.clear();
 
     for (std::size_t index = 0; index < ice_public_ips.size(); ++index)
     {
-        answer_factory_config.ice_candidates.push_back(make_ice_host_candidate(ice_public_ips[index], ice_server->local_port(), index));
+        answer_factory_config.ice_candidates.push_back(
+            make_ice_host_candidate(ice_public_ips[index], session_transport_config.session_udp_port_range.min_port, index));
     }
 
     answer_factory_config.include_host_candidate = true;
@@ -446,66 +458,22 @@ int main(int argc, char* argv[])
 
     for (const auto& candidate : answer_factory_config.ice_candidates)
     {
-        WEBRTC_LOG_INFO("ice host candidate {}:{}", candidate.address, candidate.port);
+        WEBRTC_LOG_INFO("ice host candidate address={} session_port_range={}-{}",
+                        candidate.address,
+                        session_transport_config.session_udp_port_range.min_port,
+                        session_transport_config.session_udp_port_range.max_port);
     }
 
     auto answer_factory = std::make_shared<webrtc::webrtc_answer_factory>(std::move(answer_factory_config));
-    auto http_router = std::make_shared<webrtc::router>(registry, answer_factory, media_router);
+    auto http_router = std::make_shared<webrtc::router>(registry,
+                                                        answer_factory,
+                                                        session_udp_port_allocator,
+                                                        io_context,
+                                                        ice_bind_host,
+                                                        *per_session_dtls_context,
+                                                        session_transport_config.dtls_transport);
 
     http_router->set_admin_token(get_env_or_default("WEBRTC_ADMIN_TOKEN", ""));
-
-    http_router->set_rtcp_report_runtime_snapshot_provider(
-        [weak_ice_server = std::weak_ptr<webrtc::ice_udp_server>(ice_server)]() -> webrtc::rtcp_report_service_runtime_snapshot
-        {
-            auto server = weak_ice_server.lock();
-
-            if (server == nullptr)
-            {
-                return {};
-            }
-
-            return server->rtcp_report_runtime_snapshot();
-        });
-
-    http_router->set_lifecycle_debug_snapshot_provider(
-        [weak_ice_server = std::weak_ptr<webrtc::ice_udp_server>(ice_server)]() -> webrtc::lifecycle_debug_snapshot
-        {
-            auto server = weak_ice_server.lock();
-
-            if (server == nullptr)
-            {
-                return {};
-            }
-
-            return server->debug_state_snapshot();
-        });
-
-    http_router->set_keyframe_request_handler(
-        [ice_server](std::string_view stream_id) -> webrtc::keyframe_request_expected
-        {
-            if (ice_server == nullptr)
-            {
-                return std::unexpected(std::string("ice udp server unavailable"));
-            }
-
-            return ice_server->request_keyframe(stream_id);
-        });
-
-    http_router->set_simulcast_rid_target_handler(
-        [ice_server](const webrtc::simulcast_rid_target_request& request) -> webrtc::simulcast_rid_target_expected
-        {
-            if (ice_server == nullptr)
-            {
-                return std::unexpected(std::string("ice udp server unavailable"));
-            }
-
-            if (request.clear)
-            {
-                return ice_server->clear_runtime_selected_rid_target(request);
-            }
-
-            return ice_server->set_runtime_selected_rid_target(request);
-        });
 
     version v;
 
@@ -528,7 +496,7 @@ int main(int argc, char* argv[])
     auto shutdown_signals = std::make_shared<boost::asio::signal_set>(io_context, SIGINT, SIGTERM);
 
     shutdown_signals->async_wait(
-        [&io_context, shutdown_signals, http_server, ice_server](const boost::system::error_code& ec, int signal_number)
+        [&io_context, shutdown_signals, http_server](const boost::system::error_code& ec, int signal_number)
         {
             if (ec)
             {
@@ -539,11 +507,6 @@ int main(int argc, char* argv[])
             WEBRTC_LOG_INFO("flag_process_shutdown_begin signal={}", signal_number);
 
             http_server->stop();
-
-            if (ice_server != nullptr)
-            {
-                ice_server->stop();
-            }
 
             shutdown_signals->cancel();
 

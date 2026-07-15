@@ -15,7 +15,6 @@ struct sdp_address
     std::optional<int32_t> ttl;
     std::optional<int32_t> range;
 
-    std::string to_string() const;
 };
 
 struct connection_information
@@ -24,7 +23,6 @@ struct connection_information
     std::string address_type;
     std::optional<sdp_address> address;
 
-    std::string to_string() const;
 };
 
 struct bandwidth_line
@@ -33,7 +31,6 @@ struct bandwidth_line
     std::string type;
     uint64_t value = 0;
 
-    std::string to_string() const;
 };
 
 struct sdp_attribute
@@ -41,9 +38,6 @@ struct sdp_attribute
     std::string key;
     std::string value;
 
-    bool is_property() const;
-    bool is_ice_candidate() const;
-    std::string to_string() const;
 };
 
 sdp_attribute make_property_attribute(std::string key);
@@ -53,7 +47,6 @@ struct sdp_version
 {
     int32_t value = 0;
 
-    std::string to_string() const;
 };
 
 struct origin_line
@@ -65,7 +58,6 @@ struct origin_line
     std::string address_type;
     std::string unicast_address;
 
-    std::string to_string() const;
 };
 
 struct ranged_port
@@ -73,7 +65,6 @@ struct ranged_port
     int32_t value = 0;
     std::optional<int32_t> range;
 
-    std::string to_string() const;
 };
 
 struct media_name_line
@@ -83,7 +74,6 @@ struct media_name_line
     std::vector<std::string> protocols;
     std::vector<std::string> formats;
 
-    std::string to_string() const;
 };
 
 struct media_description
@@ -104,7 +94,6 @@ struct timing_line
     uint64_t start_time = 0;
     uint64_t stop_time = 0;
 
-    std::string to_string() const;
 };
 
 struct repeat_time
@@ -113,7 +102,6 @@ struct repeat_time
     int64_t duration = 0;
     std::vector<int64_t> offsets;
 
-    std::string to_string() const;
 };
 
 struct time_description
@@ -127,7 +115,6 @@ struct time_zone
     uint64_t adjustment_time = 0;
     int64_t offset = 0;
 
-    std::string to_string() const;
 };
 
 struct codec_description
@@ -139,7 +126,6 @@ struct codec_description
     std::string fmtp;
     std::vector<std::string> rtcp_feedback;
 
-    std::string to_string() const;
 };
 
 enum class media_direction
@@ -173,7 +159,6 @@ struct rtp_header_extension
     std::string uri;
     std::optional<std::string> extension_attributes;
 
-    std::string to_attribute_value() const;
     bool parse_attribute_value(std::string_view value);
 };
 

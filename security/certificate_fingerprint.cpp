@@ -3,9 +3,7 @@
 #include <array>
 #include <cctype>
 #include <cstddef>
-#include <cstdio>
 #include <expected>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -14,7 +12,6 @@
 #include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
-#include <openssl/pem.h>
 #include <openssl/x509.h>
 
 namespace webrtc
@@ -22,19 +19,6 @@ namespace webrtc
 namespace
 {
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
-
-bool contains_null_char(std::string_view value)
-{
-    for (const char character : value)
-    {
-        if (character == '\0')
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
 
 std::string make_openssl_error(std::string_view prefix)
 {
@@ -69,21 +53,6 @@ std::string to_lower_ascii(std::string_view value)
     }
 
     return result;
-}
-
-std::expected<std::string, std::string> make_certificate_path(std::string_view certificate_file)
-{
-    if (certificate_file.empty())
-    {
-        return make_error("certificate file is empty");
-    }
-
-    if (contains_null_char(certificate_file))
-    {
-        return make_error("certificate file contains null character");
-    }
-
-    return std::string(certificate_file);
 }
 
 std::expected<const EVP_MD*, std::string> find_digest_algorithm(std::string_view algorithm)
@@ -240,40 +209,6 @@ std::expected<std::vector<unsigned char>, std::string> parse_fingerprint_value(s
     return digest;
 }
 }    // namespace
-
-certificate_fingerprint_result load_certificate_fingerprint(std::string_view certificate_file)
-{
-    auto path = make_certificate_path(certificate_file);
-
-    if (!path)
-    {
-        return std::unexpected(path.error());
-    }
-
-    using file_ptr = std::unique_ptr<FILE, decltype(&std::fclose)>;
-
-    using x509_ptr = std::unique_ptr<X509, decltype(&X509_free)>;
-
-    file_ptr file(std::fopen(path->c_str(), "rb"), &std::fclose);
-
-    if (file == nullptr)
-    {
-        std::string message = "open certificate file failed: ";
-
-        message.append(*path);
-
-        return std::unexpected(std::move(message));
-    }
-
-    x509_ptr certificate(PEM_read_X509(file.get(), nullptr, nullptr, nullptr), &X509_free);
-
-    if (certificate == nullptr)
-    {
-        return make_error(make_openssl_error("read x509 certificate failed"));
-    }
-
-    return calculate_certificate_fingerprint(certificate.get(), "sha-256");
-}
 
 certificate_fingerprint_result calculate_certificate_fingerprint(X509* certificate, std::string_view algorithm)
 {

@@ -18,6 +18,8 @@
 #include "server/http_error_response.h"
 #include "server/runtime_offer_filter.h"
 #include "server/trickle_ice_patch_handler.h"
+#include "session/peer_transport.h"
+#include "session/whip_session_transport.h"
 #include "signaling/sdp/sdp_offer_validator.h"
 #include "signaling/sdp/sdp_parser.h"
 #include "signaling/sdp/sdp_summary.h"
@@ -158,8 +160,22 @@ std::optional<std::string> read_whip_replace_session_id(http_request_t& request)
 
 }    // namespace
 
-whip_handler::whip_handler(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory)
-    : registry_(std::move(registry)), answer_factory_(std::move(answer_factory))
+whip_handler::whip_handler(std::shared_ptr<stream_registry> registry,
+                           std::shared_ptr<webrtc_answer_factory> answer_factory,
+                           std::shared_ptr<udp_port_allocator> udp_port_allocator,
+                           boost::asio::io_context& io_context,
+                           std::string udp_bind_host,
+                           std::shared_ptr<dtls_context> dtls_context,
+                           dtls_transport_config dtls_config,
+                           std::shared_ptr<media_fanout_router> media_fanout_router)
+    : registry_(std::move(registry)),
+      answer_factory_(std::move(answer_factory)),
+      udp_port_allocator_(std::move(udp_port_allocator)),
+      media_fanout_router_(std::move(media_fanout_router)),
+      io_context_(&io_context),
+      udp_bind_host_(std::move(udp_bind_host)),
+      dtls_context_(std::move(dtls_context)),
+      dtls_config_(dtls_config)
 {
 }
 
@@ -201,8 +217,6 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
     std::shared_ptr<publisher_session> replace_previous_session;
 
-    stream_republished_session republished_session;
-
     if (replace_session_id.has_value())
     {
         replace_previous_session = registry_->find_publisher_by_session_id(*replace_session_id);
@@ -243,14 +257,6 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
             return json_error_response(request, 412, k_whip_precondition_failed_error, precondition.error());
         }
-
-        republished_session.stream_id = replace_previous_session->stream_id();
-
-        republished_session.old_session_id = replace_previous_session->session_id();
-
-        republished_session.old_local_ice_ufrag = replace_previous_session->local_ice().ufrag;
-
-        republished_session.old_remote_ice_ufrag = replace_previous_session->remote_offer_summary().ice_ufrag;
     }
 
     if (answer_factory_ == nullptr)
@@ -260,7 +266,42 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         return json_error_response(request, 500, k_whip_answer_factory_unavailable_error, "answer factory is not configured");
     }
 
-    auto answer = answer_factory_->build_whip_answer(stream_id, *offer_summary);
+    std::optional<udp_port_reservation_ptr> local_udp_port;
+    std::shared_ptr<whip_session_transport> transport;
+
+    if (udp_port_allocator_ != nullptr)
+    {
+        if (io_context_ == nullptr)
+        {
+            WEBRTC_LOG_ERROR("WHIP session transport io context unavailable stream={}", stream_id);
+
+            return json_error_response(request, 500, "whip_transport_unavailable", "session transport unavailable");
+        }
+
+        local_udp_port = reserve_udp_port(udp_port_allocator_);
+
+        if (!local_udp_port)
+        {
+            WEBRTC_LOG_ERROR("WHIP allocate session udp port failed stream={}", stream_id);
+
+            return json_error_response(request, 503, "whip_udp_port_unavailable", "session udp port unavailable");
+        }
+
+        transport = std::make_shared<whip_session_transport>(*io_context_, udp_bind_host_, dtls_context_, dtls_config_);
+
+        auto transport_start = transport->start((*local_udp_port)->port());
+
+        if (!transport_start)
+        {
+            WEBRTC_LOG_ERROR(
+                "WHIP start session transport failed stream={} port={} error={}", stream_id, (*local_udp_port)->port(), transport_start.error());
+
+            return json_error_response(request, 503, "whip_udp_bind_failed", "session udp bind failed");
+        }
+    }
+
+    auto answer = local_udp_port.has_value() ? answer_factory_->build_whip_answer(stream_id, *offer_summary, (*local_udp_port)->port())
+                                             : answer_factory_->build_whip_answer(stream_id, *offer_summary);
 
     if (!answer)
     {
@@ -286,10 +327,10 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         if (replace_session_id.has_value())
         {
             return registry_->replace_publisher_session(
-                *replace_session_id, std::string(stream_id), offer, std::move(runtime_offer_filter->offer_summary));
+                *replace_session_id, std::string(stream_id), std::move(runtime_offer_filter->offer_summary));
         }
 
-        return registry_->create_publisher_session(std::string(stream_id), offer, std::move(runtime_offer_filter->offer_summary));
+        return registry_->create_publisher_session(std::string(stream_id), std::move(runtime_offer_filter->offer_summary));
     }();
     if (!session_result)
     {
@@ -335,30 +376,27 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
     const auto& session = *session_result;
 
+    if (local_udp_port.has_value())
+    {
+        session->set_local_udp_port_reservation(std::move(*local_udp_port));
+    }
+
     session->set_accepted_remote_media_mline_indexes(std::move(runtime_offer_filter->accepted_mline_indexes));
 
     generated_sdp_answer generated_answer = std::move(*answer);
 
-    const std::string new_local_ice_ufrag = generated_answer.local_ice.ufrag;
-
     session->set_local_answer(std::move(generated_answer.sdp),
                               std::move(generated_answer.local_ice),
-                              std::move(generated_answer.local_fingerprint),
                               generated_answer.sdp_session_id,
                               generated_answer.sdp_session_version);
 
-    if (replace_session_id.has_value())
+    if (transport != nullptr)
     {
-        republished_session.new_session_id = session->session_id();
+        transport->set_ice_context(session->stream_id(), session->session_id(), session->local_ice(), session->remote_offer_summary().ice_ufrag);
+        transport->set_dtls_peer_identity(make_dtls_peer_identity(*session));
+        transport->set_media_fanout_router(media_fanout_router_);
 
-        republished_session.new_local_ice_ufrag = new_local_ice_ufrag;
-
-        republished_session.new_remote_ice_ufrag = session->remote_offer_summary().ice_ufrag;
-
-        if (registry_ != nullptr)
-        {
-            registry_->notify_publisher_republish(std::move(republished_session));
-        }
+        session->set_transport(std::move(transport));
     }
 
     WEBRTC_LOG_INFO(
@@ -463,8 +501,8 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
 
     const uint64_t next_sdp_session_version = session->sdp_session_version() + 1U;
 
-    auto answer =
-        answer_factory_->build_whip_restart_answer(session->stream_id(), *offer_summary, session->sdp_session_id(), next_sdp_session_version);
+    auto answer = answer_factory_->build_whip_restart_answer(
+        session->stream_id(), *offer_summary, session->sdp_session_id(), next_sdp_session_version, session->local_udp_port());
     if (!answer)
     {
         WEBRTC_LOG_WARN("WHIP build SDP restart answer failed session={} error={}", session_id, answer.error());
@@ -492,35 +530,15 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
                                    make_prefixed_error("invalid ice restart offer: ", restart_compatibility.error()));
     }
     generated_sdp_answer generated_answer = std::move(*answer);
-    stream_restarted_session restarted_session;
-
-    restarted_session.kind = stream_session_kind::publisher;
-
-    restarted_session.stream_id = session->stream_id();
-
-    restarted_session.session_id = session->session_id();
-
-    restarted_session.old_local_ice_ufrag = session->local_ice().ufrag;
-
-    restarted_session.old_remote_ice_ufrag = session->remote_offer_summary().ice_ufrag;
-
-    restarted_session.new_local_ice_ufrag = generated_answer.local_ice.ufrag;
-
-    restarted_session.new_remote_ice_ufrag = runtime_offer_filter->offer_summary.ice_ufrag;
-    session->apply_remote_ice_restart_offer(offer, std::move(runtime_offer_filter->offer_summary));
+    session->apply_remote_ice_restart_offer(std::move(runtime_offer_filter->offer_summary));
 
     session->set_accepted_remote_media_mline_indexes(std::move(runtime_offer_filter->accepted_mline_indexes));
 
     session->set_local_answer(std::move(generated_answer.sdp),
                               std::move(generated_answer.local_ice),
-                              std::move(generated_answer.local_fingerprint),
                               generated_answer.sdp_session_id,
                               generated_answer.sdp_session_version);
 
-    if (registry_ != nullptr)
-    {
-        registry_->notify_session_ice_restart(std::move(restarted_session));
-    }
     WEBRTC_LOG_INFO("WHIP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={}",
                     session->stream_id(),
                     session->session_id(),

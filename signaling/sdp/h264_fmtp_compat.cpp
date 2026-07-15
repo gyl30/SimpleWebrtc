@@ -8,7 +8,6 @@
 #include <expected>
 #include <limits>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -439,16 +438,6 @@ std::string make_answer_fmtp(const h264_profile_level_id& profile_level_id, uint
     return fmtp;
 }
 
-std::string optional_profile_to_string(const std::optional<h264_profile_level_id>& profile_level_id)
-{
-    if (!profile_level_id.has_value())
-    {
-        return "";
-    }
-
-    return profile_level_id->normalized_value;
-}
-
 bool h264_assume_level_asymmetry_allowed_when_missing_from_env()
 {
     const char* value = std::getenv("WEBRTC_H264_ASSUME_LEVEL_ASYMMETRY_ALLOWED_WHEN_MISSING");
@@ -473,13 +462,6 @@ bool h264_level_asymmetry_allowed_effective_value(const h264_fmtp_parameters& pa
     return h264_assume_level_asymmetry_allowed_when_missing_from_env();
 }
 }    // namespace
-
-bool is_h264_codec_name(std::string_view codec_name)
-{
-    const std::string normalized = lower_copy(trim_copy(codec_name));
-
-    return normalized == "h264";
-}
 
 std::expected<h264_fmtp_parameters, std::string> parse_h264_fmtp(std::string_view fmtp)
 {
@@ -698,65 +680,4 @@ std::expected<h264_fmtp_relay_compatibility, std::string> check_h264_fmtp_relay_
     return compatibility;
 }
 
-std::string h264_profile_kind_to_string(h264_profile_kind profile)
-{
-    switch (profile)
-    {
-        case h264_profile_kind::unknown:
-            return "unknown";
-
-        case h264_profile_kind::constrained_baseline:
-            return "constrained_baseline";
-
-        case h264_profile_kind::baseline:
-            return "baseline";
-
-        case h264_profile_kind::main:
-            return "main";
-
-        case h264_profile_kind::constrained_high:
-            return "constrained_high";
-
-        case h264_profile_kind::high:
-            return "high";
-    }
-
-    return "unknown";
-}
-
-std::string h264_fmtp_parameters_to_string(const h264_fmtp_parameters& parameters)
-{
-    std::ostringstream stream;
-
-    stream << "packetization_mode=";
-
-    if (parameters.has_packetization_mode)
-    {
-        stream << static_cast<unsigned int>(parameters.packetization_mode);
-    }
-    else
-    {
-        stream << "missing";
-    }
-
-    stream << " level_asymmetry_allowed=";
-
-    if (parameters.has_level_asymmetry_allowed)
-    {
-        stream << (parameters.level_asymmetry_allowed ? "1" : "0");
-    }
-    else
-    {
-        stream << "missing";
-    }
-
-    stream << " profile_level_id=" << optional_profile_to_string(parameters.profile_level_id);
-
-    if (parameters.profile_level_id.has_value())
-    {
-        stream << " profile=" << h264_profile_kind_to_string(parameters.profile_level_id->profile);
-    }
-
-    return stream.str();
-}
 }    // namespace webrtc::sdp

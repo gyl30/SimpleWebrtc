@@ -6,23 +6,9 @@
 
 #include "util/reflect.h"
 #include "session/stream_registry.h"
-#include "media/keyframe_request.h"
 
 namespace webrtc
 {
-struct error_response
-{
-    std::string error;
-};
-
-struct session_created_response
-{
-    std::string type;
-    std::string stream_id;
-    std::string session_id;
-    std::string state;
-    std::string message;
-};
 struct session_lifecycle_entry_response
 {
     std::string type;
@@ -68,19 +54,6 @@ struct stream_list_response
     std::vector<stream_summary_response> streams;
 };
 
-struct keyframe_request_response
-{
-    std::string stream_id;
-    std::string publisher_session_id;
-    std::string publisher_remote_address;
-
-    uint64_t media_ssrc_count = 0;
-    uint64_t sent_count = 0;
-    uint64_t failed_count = 0;
-};
-
-REFLECT_STRUCT(webrtc::error_response, (error));                                                    // NOLINT
-REFLECT_STRUCT(webrtc::session_created_response, (type)(stream_id)(session_id)(state)(message));    // NOLINT
 REFLECT_STRUCT(webrtc::session_lifecycle_entry_response,
                (type)(stream_id)(session_id)(state)(created_at_milliseconds)(updated_at_milliseconds));                     // NOLINT
 REFLECT_STRUCT(webrtc::session_lifecycle_response, (publisher_count)(subscriber_count)(session_count)(sessions));           // NOLINT
@@ -88,27 +61,6 @@ REFLECT_STRUCT(webrtc::stream_detail_response, (stream_id)(publisher_count)(subs
 REFLECT_STRUCT(webrtc::stream_summary_response,
                (stream_id)(publisher_count)(subscriber_count)(session_count)(publisher_session_id)(publisher_state));       // NOLINT
 REFLECT_STRUCT(webrtc::stream_list_response, (stream_count)(publisher_count)(subscriber_count)(session_count)(streams));    // NOLINT
-REFLECT_STRUCT(webrtc::keyframe_request_response,
-               (stream_id)(publisher_session_id)(publisher_remote_address)(media_ssrc_count)(sent_count)(failed_count));    // NOLINT
-
-inline std::string make_error_response_body(std::string_view message)
-{
-    error_response response;
-    response.error = std::string(message);
-    return serialize_struct(response);
-}
-
-inline std::string make_session_created_response_body(
-    std::string_view type, std::string_view stream_id, std::string_view session_id, std::string_view state, std::string_view message)
-{
-    session_created_response response;
-    response.type = std::string(type);
-    response.stream_id = std::string(stream_id);
-    response.session_id = std::string(session_id);
-    response.state = std::string(state);
-    response.message = std::string(message);
-    return serialize_struct(response);
-}
 inline uint64_t to_json_count(std::size_t value) { return static_cast<uint64_t>(value); }
 
 inline session_lifecycle_entry_response make_session_lifecycle_entry_response(const stream_session_lifecycle_snapshot& snapshot)
@@ -248,19 +200,6 @@ inline std::string make_stream_list_response_body(const std::vector<stream_sessi
     }
 
     response.stream_count = to_json_count(response.streams.size());
-
-    return serialize_struct(response);
-}
-inline std::string make_keyframe_request_response_body(const keyframe_request_result& result)
-{
-    keyframe_request_response response;
-
-    response.stream_id = result.stream_id;
-    response.publisher_session_id = result.publisher_session_id;
-    response.publisher_remote_address = result.publisher_remote_address;
-    response.media_ssrc_count = result.media_ssrc_count;
-    response.sent_count = result.sent_count;
-    response.failed_count = result.failed_count;
 
     return serialize_struct(response);
 }

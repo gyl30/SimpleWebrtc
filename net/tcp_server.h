@@ -11,7 +11,6 @@
 
 #include "log/log.h"
 #include "util/error.h"
-#include "util/timestamp.h"
 
 namespace webrtc
 {
@@ -43,7 +42,6 @@ class tcp_server : public std::enable_shared_from_this<tcp_server>
         open();
         do_accept();
     }
-    void set_timeout(int32_t timeout) { timeout_ = timeout; }
 
     void stop()
     {
@@ -52,13 +50,10 @@ class tcp_server : public std::enable_shared_from_this<tcp_server>
     }
 
    private:
-    void shutdown() { stop(); }
-
     void safe_shutdown()
     {
         boost::system::error_code ec;
 
-        timer_.cancel();
         accept_retry_timer_.cancel();
 
         if (socket_ != nullptr)
@@ -134,13 +129,7 @@ class tcp_server : public std::enable_shared_from_this<tcp_server>
             WEBRTC_LOG_ERROR("{} server :{} accept error", name_, port_);
             return;
         }
-        last_accept_time_ = webrtc::timestamp::now().seconds();
         auto self = shared_from_this();
-        if (timeout_ > 0)
-        {
-            timer_.expires_after(std::chrono::seconds(timeout_));
-            timer_.async_wait([this, self](const boost::system::error_code& ec) { timeout_cb(ec); });
-        }
         WEBRTC_LOG_INFO("{} server :{} accept count {}", name_, port_, count_++);
         socket_ = std::make_shared<boost::asio::ip::tcp::socket>(handler_.create_socket());
         acceptor_.async_accept(*socket_, [this, self](const boost::system::error_code& ec) { on_accept(ec); });
@@ -166,8 +155,6 @@ class tcp_server : public std::enable_shared_from_this<tcp_server>
         }
 
         accept_retry_delay_seconds_ = 1;
-
-        last_accept_time_ = webrtc::timestamp::now().seconds();
 
         handler_.accept_socket(std::move(*socket_));
 
@@ -213,38 +200,13 @@ class tcp_server : public std::enable_shared_from_this<tcp_server>
 
         do_accept();
     }
-    void timeout_cb(const boost::system::error_code& ec)
-    {
-        if (ec == boost::asio::error::operation_aborted)
-        {
-            return;
-        }
-
-        if (ec)
-        {
-            WEBRTC_LOG_ERROR("{} server :{} accept timeout error {}", name_, port_, ec.message());
-            return;
-        }
-        auto now = webrtc::timestamp::now().seconds();
-        auto diff = static_cast<int32_t>(now - last_accept_time_);
-        if (diff < timeout_)
-        {
-            return;
-        }
-        WEBRTC_LOG_ERROR("from local {}:{} timeout {}", host_, port_, last_accept_time_);
-        shutdown();
-    }
-
    private:
     std::string host_ = "0.0.0.0";
     uint16_t port_ = 0;
     uint32_t count_ = 0;
-    int32_t timeout_ = 0;
     std::string name_;
     tcp_handler handler_;
-    uint64_t last_accept_time_ = 0;
     boost::asio::io_context& io_;
-    boost::asio::steady_timer timer_{io_};
     boost::asio::ip::tcp::acceptor acceptor_{io_};
     std::shared_ptr<boost::asio::ip::tcp::socket> socket_;
     // retry

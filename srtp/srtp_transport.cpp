@@ -43,17 +43,16 @@ srtp_packet_kind classify_packet(std::span<const uint8_t> data)
     return srtp_packet_kind::rtp;
 }
 
-srtp_packet_process_result make_ignored_result(srtp_packet_kind kind, std::size_t packet_size, std::string_view reason)
+srtp_packet_process_result make_ignored_result(srtp_packet_kind kind, std::string_view reason)
 {
     srtp_packet_process_result result;
     result.state = srtp_packet_process_state::ignored;
     result.kind = kind;
-    result.packet_size = packet_size;
     result.reason = std::string(reason);
     return result;
 }
 
-srtp_transport_result make_unprotected_rtp_result(std::size_t packet_size, std::vector<uint8_t> packet)
+srtp_transport_result make_unprotected_rtp_result(std::vector<uint8_t> packet)
 {
     auto header = parse_rtp_packet_header(packet);
 
@@ -69,14 +68,11 @@ srtp_transport_result make_unprotected_rtp_result(std::size_t packet_size, std::
     srtp_packet_process_result result;
     result.state = srtp_packet_process_state::unprotected;
     result.kind = srtp_packet_kind::rtp;
-    result.packet_size = packet_size;
-    result.unprotected_size = packet.size();
     result.ssrc = header->ssrc;
     result.payload_type = header->payload_type;
     result.marker = header->marker;
     result.sequence_number = header->sequence_number;
     result.timestamp = header->timestamp;
-    result.packet_type_name = "rtp";
     result.plain_packet = std::move(packet);
 
     return result;
@@ -86,20 +82,11 @@ void fill_rtcp_report_fields_from_compound(const rtcp_compound_packet& compound,
 {
     result.rtcp_report_packet_count = compound.report_packet_count;
     result.rtcp_report_block_count = compound.report_block_count;
-    result.rtcp_has_sender_report = compound.has_sender_report;
-    result.rtcp_has_receiver_report = compound.has_receiver_report;
-    result.rtcp_has_sender_info = compound.has_sender_info;
-    result.rtcp_report_sender_ssrc = compound.report_sender_ssrc;
-    result.rtcp_sender_info_data = compound.sender_info;
-    result.rtcp_report_blocks = compound.report_blocks;
-
-    if (!compound.report_blocks.empty())
+    if (compound.last_report_block.has_value())
     {
-        const rtcp_report_block& last_block = compound.report_blocks.back();
-
-        result.rtcp_last_fraction_lost = last_block.fraction_lost;
-        result.rtcp_last_cumulative_lost = last_block.cumulative_lost;
-        result.rtcp_last_jitter = last_block.jitter;
+        result.rtcp_last_fraction_lost = compound.last_report_block->fraction_lost;
+        result.rtcp_last_cumulative_lost = compound.last_report_block->cumulative_lost;
+        result.rtcp_last_jitter = compound.last_report_block->jitter;
     }
 }
 
@@ -128,35 +115,9 @@ void fill_rtcp_fields_from_compound(const rtcp_compound_packet& compound, srtp_p
     result.rtcp_feedback_name = rtcp_compound_feedback_summary_to_string(compound);
     result.rtcp_nack_count = compound.nack_count;
     result.rtcp_fir_count = compound.fir_count;
-    result.rtcp_nack_items = compound.nack_items;
-    result.rtcp_fir_items = compound.fir_items;
-
-    result.rtcp_feedback_blocks.clear();
-    result.rtcp_feedback_blocks.reserve(compound.feedback_block_count);
-
-    for (const auto& block : compound.blocks)
-    {
-        if (!block.is_feedback)
-        {
-            continue;
-        }
-
-        result.rtcp_feedback_blocks.push_back(block);
-    }
-
     result.rtcp_has_generic_nack = compound.has_generic_nack;
     result.rtcp_has_keyframe_request = compound.has_keyframe_request;
     result.rtcp_has_transport_cc = compound.has_transport_cc;
-
-    result.rtcp_transport_cc_base_sequence_number = compound.transport_cc_base_sequence_number;
-    result.rtcp_transport_cc_packet_status_count = compound.transport_cc_packet_status_count;
-    result.rtcp_transport_cc_reference_time_64ms = compound.transport_cc_reference_time_64ms;
-    result.rtcp_transport_cc_feedback_packet_count = compound.transport_cc_feedback_packet_count;
-    result.rtcp_transport_cc_received_packet_count = compound.transport_cc_received_packet_count;
-    result.rtcp_transport_cc_not_received_packet_count = compound.transport_cc_not_received_packet_count;
-    result.rtcp_transport_cc_small_delta_count = compound.transport_cc_small_delta_count;
-    result.rtcp_transport_cc_large_delta_count = compound.transport_cc_large_delta_count;
-    result.rtcp_transport_cc_packet_statuses = compound.transport_cc_packet_statuses;
 
     result.rtcp_has_remb = compound.has_remb;
     result.rtcp_remb_bitrate_bps = compound.remb_bitrate_bps;
@@ -168,7 +129,6 @@ void fill_rtcp_fields_from_compound(const rtcp_compound_packet& compound, srtp_p
             continue;
         }
 
-        result.rtcp_feedback_format = block.feedback_format;
         result.rtcp_sender_ssrc = block.feedback_sender_ssrc;
         result.rtcp_media_ssrc = block.feedback_media_ssrc;
 
@@ -179,14 +139,10 @@ void fill_rtcp_fields_from_compound(const rtcp_compound_packet& compound, srtp_p
 
         break;
     }
-    result.rtcp_bye_packet_count = compound.bye_packet_count;
-    result.rtcp_has_bye = compound.has_bye;
-    result.rtcp_bye_ssrcs = compound.bye_ssrcs;
-    result.rtcp_bye_reason = compound.bye_reason;
     fill_rtcp_report_fields_from_compound(compound, result);
 }
 
-srtp_transport_result make_unprotected_rtcp_result(std::size_t packet_size, std::vector<uint8_t> packet)
+srtp_transport_result make_unprotected_rtcp_result(std::vector<uint8_t> packet)
 {
     auto compound = parse_rtcp_compound_packet(packet);
 
@@ -202,8 +158,6 @@ srtp_transport_result make_unprotected_rtcp_result(std::size_t packet_size, std:
     srtp_packet_process_result result;
     result.state = srtp_packet_process_state::unprotected;
     result.kind = srtp_packet_kind::rtcp;
-    result.packet_size = packet_size;
-    result.unprotected_size = packet.size();
 
     fill_rtcp_fields_from_compound(*compound, result);
 
@@ -212,67 +166,66 @@ srtp_transport_result make_unprotected_rtcp_result(std::size_t packet_size, std:
     return result;
 }
 
-srtp_transport_result make_unprotected_result(srtp_packet_kind kind, std::size_t packet_size, std::vector<uint8_t> packet)
+srtp_transport_result make_unprotected_result(srtp_packet_kind kind, std::vector<uint8_t> packet)
 {
     if (kind == srtp_packet_kind::rtp)
     {
-        return make_unprotected_rtp_result(packet_size, std::move(packet));
+        return make_unprotected_rtp_result(std::move(packet));
     }
 
     if (kind == srtp_packet_kind::rtcp)
     {
-        return make_unprotected_rtcp_result(packet_size, std::move(packet));
+        return make_unprotected_rtcp_result(std::move(packet));
     }
 
     return make_error("srtp packet kind is unknown");
 }
 
-srtp_transport_result make_protected_result(srtp_packet_kind kind, std::size_t plain_size, std::vector<uint8_t> packet)
+srtp_transport_result make_protected_result(srtp_packet_kind kind, std::vector<uint8_t> packet)
 {
     srtp_packet_process_result result;
     result.state = srtp_packet_process_state::protected_packet;
     result.kind = kind;
-    result.packet_size = plain_size;
-    result.protected_size = packet.size();
     result.protected_packet = std::move(packet);
     return result;
 }
+
+struct srtp_peer_state
+{
+    bool sessions_ready = false;
+
+    std::string session_id;
+    std::string stream_id;
+    std::string local_ice_ufrag;
+    std::string remote_ice_ufrag;
+    std::string generation;
+
+    std::optional<srtp_session> inbound_session;
+    std::optional<srtp_session> outbound_session;
+
+    uint64_t inbound_packet_count = 0;
+    uint64_t inbound_byte_count = 0;
+    uint64_t inbound_rtp_count = 0;
+    uint64_t inbound_rtcp_count = 0;
+
+    uint64_t outbound_packet_count = 0;
+    uint64_t outbound_byte_count = 0;
+    uint64_t outbound_rtp_count = 0;
+    uint64_t outbound_rtcp_count = 0;
+};
 }    // namespace
 
 struct srtp_transport::impl
 {
     explicit impl(std::shared_ptr<dtls_transport> dtls_transport) : dtls_transport_(std::move(dtls_transport)) {}
 
-    struct srtp_peer_context
-    {
-        bool sessions_ready = false;
-
-        std::string session_id;
-        std::string stream_id;
-        std::string local_ice_ufrag;
-        std::string remote_ice_ufrag;
-        std::string generation;
-
-        std::optional<srtp_session> inbound_session;
-        std::optional<srtp_session> outbound_session;
-
-        uint64_t inbound_packet_count = 0;
-        uint64_t inbound_byte_count = 0;
-        uint64_t inbound_rtp_count = 0;
-        uint64_t inbound_rtcp_count = 0;
-
-        uint64_t outbound_packet_count = 0;
-        uint64_t outbound_byte_count = 0;
-        uint64_t outbound_rtp_count = 0;
-        uint64_t outbound_rtcp_count = 0;
-    };
-    static bool peer_identity_matches(const srtp_peer_context& peer, const dtls_peer_identity& identity)
+    static bool peer_identity_matches(const srtp_peer_state& peer, const dtls_peer_identity& identity)
     {
         return peer.session_id == identity.session_id && peer.stream_id == identity.stream_id && peer.local_ice_ufrag == identity.local_ice_ufrag &&
                peer.remote_ice_ufrag == identity.remote_ice_ufrag && peer.generation == identity.generation;
     }
 
-    static void bind_peer_identity(srtp_peer_context& peer, const dtls_peer_identity& identity)
+    static void bind_peer_identity(srtp_peer_state& peer, const dtls_peer_identity& identity)
     {
         peer.session_id = identity.session_id;
 
@@ -285,14 +238,14 @@ struct srtp_transport::impl
         peer.generation = identity.generation;
     }
 
-    static void reset_peer_for_identity(srtp_peer_context& peer, const dtls_peer_identity& identity)
+    static void reset_peer_for_identity(srtp_peer_state& peer, const dtls_peer_identity& identity)
     {
-        peer = srtp_peer_context{};
+        peer = srtp_peer_state{};
 
         bind_peer_identity(peer, identity);
     }
 
-    std::expected<srtp_peer_context*, std::string> find_or_create_peer_for_identity_locked(std::string_view remote_endpoint)
+    std::expected<srtp_peer_state*, std::string> find_or_create_peer_for_identity_locked(std::string_view remote_endpoint)
     {
         if (dtls_transport_ == nullptr)
         {
@@ -312,7 +265,7 @@ struct srtp_transport::impl
 
         if (!identity.has_value())
         {
-            return static_cast<srtp_peer_context*>(nullptr);
+            return static_cast<srtp_peer_state*>(nullptr);
         }
 
         auto [created_iterator, inserted] = peers_by_endpoint_.try_emplace(endpoint_key);
@@ -330,7 +283,7 @@ struct srtp_transport::impl
 
         if (kind == srtp_packet_kind::unknown)
         {
-            return make_ignored_result(kind, data.size(), "packet is not rtp or rtcp");
+            return make_ignored_result(kind, "packet is not rtp or rtcp");
         }
 
         std::lock_guard lock(mutex_);
@@ -344,7 +297,7 @@ struct srtp_transport::impl
 
         if (*peer_result == nullptr)
         {
-            return make_ignored_result(kind, data.size(), "dtls identity is missing");
+            return make_ignored_result(kind, "dtls identity is missing");
         }
 
         auto& peer = **peer_result;
@@ -357,7 +310,7 @@ struct srtp_transport::impl
         }
         if (!*ready_result)
         {
-            return make_ignored_result(kind, data.size(), "dtls handshake is not complete");
+            return make_ignored_result(kind, "dtls handshake is not complete");
         }
 
         if (!peer.inbound_session.has_value())
@@ -387,13 +340,13 @@ struct srtp_transport::impl
             reason.append(" error=");
             reason.append(unprotect_result.error());
 
-            return make_ignored_result(kind, data.size(), reason);
+            return make_ignored_result(kind, reason);
         }
 
         const std::size_t unprotected_size = *unprotect_result;
         packet.resize(unprotected_size);
 
-        auto result = make_unprotected_result(kind, data.size(), std::move(packet));
+        auto result = make_unprotected_result(kind, std::move(packet));
 
         if (!result)
         {
@@ -480,12 +433,12 @@ struct srtp_transport::impl
     {
         if (kind == srtp_packet_kind::unknown)
         {
-            return make_ignored_result(kind, plain_packet.size(), "packet kind is unknown");
+            return make_ignored_result(kind, "packet kind is unknown");
         }
 
         if (plain_packet.empty())
         {
-            return make_ignored_result(kind, 0, "plain packet is empty");
+            return make_ignored_result(kind, "plain packet is empty");
         }
 
         std::lock_guard lock(mutex_);
@@ -499,7 +452,7 @@ struct srtp_transport::impl
 
         if (*peer_result == nullptr)
         {
-            return make_ignored_result(kind, plain_packet.size(), "dtls identity is missing");
+            return make_ignored_result(kind, "dtls identity is missing");
         }
 
         auto& peer = **peer_result;
@@ -513,7 +466,7 @@ struct srtp_transport::impl
 
         if (!*ready_result)
         {
-            return make_ignored_result(kind, plain_packet.size(), "dtls handshake is not complete");
+            return make_ignored_result(kind, "dtls handshake is not complete");
         }
         if (!peer.outbound_session.has_value())
         {
@@ -561,97 +514,10 @@ struct srtp_transport::impl
                          packet.size(),
                          peer.outbound_packet_count);
 
-        return make_protected_result(kind, plain_packet.size(), std::move(packet));
+        return make_protected_result(kind, std::move(packet));
     }
 
-    void forget_peer(std::string_view remote_endpoint)
-    {
-        if (remote_endpoint.empty())
-        {
-            return;
-        }
-
-        std::lock_guard lock(mutex_);
-
-        peers_by_endpoint_.erase(std::string(remote_endpoint));
-    }
-
-    bool move_peer(std::string_view old_remote_endpoint, std::string_view new_remote_endpoint, const dtls_peer_identity& identity)
-    {
-        if (old_remote_endpoint.empty() || new_remote_endpoint.empty())
-        {
-            return false;
-        }
-
-        std::lock_guard lock(mutex_);
-
-        auto old_iterator = peers_by_endpoint_.find(std::string(old_remote_endpoint));
-
-        if (old_iterator == peers_by_endpoint_.end())
-        {
-            return false;
-        }
-
-        const bool same_endpoint = old_remote_endpoint == new_remote_endpoint;
-
-        if (same_endpoint)
-        {
-            bind_peer_identity(old_iterator->second, identity);
-
-            WEBRTC_LOG_INFO(
-                "srtp peer identity migrated in place remote={} session={} stream={} generation={} sessions_ready={} inbound_packets={} "
-                "outbound_packets={}",
-                new_remote_endpoint,
-                old_iterator->second.session_id,
-                old_iterator->second.stream_id,
-                old_iterator->second.generation,
-                old_iterator->second.sessions_ready ? 1 : 0,
-                old_iterator->second.inbound_packet_count,
-                old_iterator->second.outbound_packet_count);
-
-            return true;
-        }
-
-        srtp_peer_context peer = std::move(old_iterator->second);
-
-        peers_by_endpoint_.erase(old_iterator);
-
-        peers_by_endpoint_.erase(std::string(new_remote_endpoint));
-
-        bind_peer_identity(peer, identity);
-
-        const bool sessions_ready = peer.sessions_ready;
-        const uint64_t inbound_packet_count = peer.inbound_packet_count;
-        const uint64_t outbound_packet_count = peer.outbound_packet_count;
-
-        const std::string session_id = peer.session_id;
-        const std::string stream_id = peer.stream_id;
-        const std::string generation = peer.generation;
-
-        peers_by_endpoint_[std::string(new_remote_endpoint)] = std::move(peer);
-
-        WEBRTC_LOG_INFO(
-            "srtp peer migrated old_remote={} new_remote={} session={} stream={} generation={} sessions_ready={} inbound_packets={} "
-            "outbound_packets={}",
-            old_remote_endpoint,
-            new_remote_endpoint,
-            session_id,
-            stream_id,
-            generation,
-            sessions_ready ? 1 : 0,
-            inbound_packet_count,
-            outbound_packet_count);
-
-        return true;
-    }
-    std::size_t peer_count() const
-    {
-        std::lock_guard lock(mutex_);
-
-        return peers_by_endpoint_.size();
-    }
-
-    std::expected<bool, std::string> ensure_sessions_ready_locked(srtp_peer_context& peer, std::string_view remote_endpoint)
+    std::expected<bool, std::string> ensure_sessions_ready_locked(srtp_peer_state& peer, std::string_view remote_endpoint)
     {
         if (dtls_transport_ == nullptr)
         {
@@ -669,7 +535,7 @@ struct srtp_transport::impl
                                 peer.session_id,
                                 peer.generation);
 
-                peer = srtp_peer_context{};
+                peer = srtp_peer_state{};
             }
 
             return false;
@@ -766,7 +632,7 @@ struct srtp_transport::impl
     }
     std::shared_ptr<dtls_transport> dtls_transport_;
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, srtp_peer_context> peers_by_endpoint_;
+    std::unordered_map<std::string, srtp_peer_state> peers_by_endpoint_;
 };
 
 srtp_transport::srtp_transport(std::shared_ptr<dtls_transport> dtls_transport) : impl_(std::make_unique<impl>(std::move(dtls_transport))) {}
@@ -784,15 +650,6 @@ srtp_transport_result srtp_transport::protect_outbound_packet(std::span<const ui
 {
     return impl_->protect_outbound_packet(plain_packet, remote_endpoint, kind);
 }
-
-void srtp_transport::forget_peer(std::string_view remote_endpoint) { impl_->forget_peer(remote_endpoint); }
-
-bool srtp_transport::move_peer(std::string_view old_remote_endpoint, std::string_view new_remote_endpoint, const dtls_peer_identity& identity)
-{
-    return impl_->move_peer(old_remote_endpoint, new_remote_endpoint, identity);
-}
-
-std::size_t srtp_transport::peer_count() const { return impl_->peer_count(); }
 
 std::string srtp_packet_kind_to_string(srtp_packet_kind kind)
 {

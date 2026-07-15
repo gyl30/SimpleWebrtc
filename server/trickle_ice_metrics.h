@@ -28,8 +28,6 @@ struct trickle_ice_metrics_snapshot
 
     uint64_t session_not_found = 0;
     uint64_t parse_failed = 0;
-    uint64_t body_too_large = 0;
-    uint64_t too_many_candidates = 0;
 
     uint64_t candidates_received = 0;
     uint64_t candidates_accepted = 0;
@@ -94,10 +92,6 @@ class trickle_ice_metrics
 
     void record_parse_failed() { parse_failed_.fetch_add(1, std::memory_order_relaxed); }
 
-    void record_body_too_large() { body_too_large_.fetch_add(1, std::memory_order_relaxed); }
-
-    void record_too_many_candidates() { too_many_candidates_.fetch_add(1, std::memory_order_relaxed); }
-
     void record_candidate_batch(std::size_t candidate_count, std::size_t end_of_candidates_count, std::size_t candidate_bytes)
     {
         candidates_received_.fetch_add(static_cast<uint64_t>(candidate_count), std::memory_order_relaxed);
@@ -140,10 +134,6 @@ class trickle_ice_metrics
 
         result.parse_failed = parse_failed_.load(std::memory_order_relaxed);
 
-        result.body_too_large = body_too_large_.load(std::memory_order_relaxed);
-
-        result.too_many_candidates = too_many_candidates_.load(std::memory_order_relaxed);
-
         result.candidates_received = candidates_received_.load(std::memory_order_relaxed);
 
         result.candidates_accepted = candidates_accepted_.load(std::memory_order_relaxed);
@@ -175,10 +165,6 @@ class trickle_ice_metrics
     std::atomic<uint64_t> session_not_found_{0};
 
     std::atomic<uint64_t> parse_failed_{0};
-
-    std::atomic<uint64_t> body_too_large_{0};
-
-    std::atomic<uint64_t> too_many_candidates_{0};
 
     std::atomic<uint64_t> candidates_received_{0};
 
@@ -268,10 +254,6 @@ inline std::string trickle_ice_metrics_snapshot_to_json(const trickle_ice_metric
 
     trickle_ice_metrics_detail::append_json_uint64(output, "parse_failed", snapshot.parse_failed, first);
 
-    trickle_ice_metrics_detail::append_json_uint64(output, "body_too_large", snapshot.body_too_large, first);
-
-    trickle_ice_metrics_detail::append_json_uint64(output, "too_many_candidates", snapshot.too_many_candidates, first);
-
     trickle_ice_metrics_detail::append_json_uint64(output, "candidates_received", snapshot.candidates_received, first);
 
     trickle_ice_metrics_detail::append_json_uint64(output, "candidates_accepted", snapshot.candidates_accepted, first);
@@ -336,18 +318,6 @@ inline std::string trickle_ice_metrics_snapshot_to_prometheus(const trickle_ice_
         output, "simplewebrtc_trickle_ice_parse_failed_total", "total trickle ice patch parse failures", "counter");
 
     trickle_ice_metrics_detail::append_metric_value(output, "simplewebrtc_trickle_ice_parse_failed_total", snapshot.parse_failed);
-
-    trickle_ice_metrics_detail::append_metric_header(
-        output, "simplewebrtc_trickle_ice_body_too_large_total", "total trickle ice patch requests rejected because body is too large", "counter");
-
-    trickle_ice_metrics_detail::append_metric_value(output, "simplewebrtc_trickle_ice_body_too_large_total", snapshot.body_too_large);
-
-    trickle_ice_metrics_detail::append_metric_header(output,
-                                                     "simplewebrtc_trickle_ice_too_many_candidates_total",
-                                                     "total trickle ice patch requests rejected because candidate batch is too large",
-                                                     "counter");
-
-    trickle_ice_metrics_detail::append_metric_value(output, "simplewebrtc_trickle_ice_too_many_candidates_total", snapshot.too_many_candidates);
 
     trickle_ice_metrics_detail::append_metric_header(
         output, "simplewebrtc_trickle_ice_candidates_received_total", "total trickle ice candidates received", "counter");

@@ -1,49 +1,38 @@
 #ifndef SIMPLE_WEBRTC_SERVER_ROUTER_H
 #define SIMPLE_WEBRTC_SERVER_ROUTER_H
 
-#include <functional>
 #include <memory>
+#include <string>
 #include <string_view>
 
+#include <boost/asio.hpp>
+
+#include "dtls/dtls_context.h"
+#include "dtls/dtls_transport.h"
+#include "media/media_fanout_router.h"
 #include "net/http.h"
-#include "media/media_router.h"
-#include "media/simulcast_rid_target.h"
-#include "server/whip_handler.h"
+#include "net/udp_port_allocator.h"
 #include "server/whep_handler.h"
-#include "media/keyframe_request.h"
+#include "server/whip_handler.h"
 #include "session/stream_registry.h"
-#include "media/rtcp_report_service.h"
-#include "server/lifecycle_debug_json.h"
 #include "signaling/webrtc_answer_factory.h"
 
 namespace webrtc
 {
-using rtcp_report_runtime_snapshot_provider = std::function<rtcp_report_service_runtime_snapshot()>;
-using lifecycle_debug_snapshot_provider = std::function<lifecycle_debug_snapshot()>;
-using keyframe_request_handler = std::function<keyframe_request_expected(std::string_view stream_id)>;
-
 class router
 {
    public:
-    router(std::shared_ptr<stream_registry> registry, std::shared_ptr<webrtc_answer_factory> answer_factory);
-
     router(std::shared_ptr<stream_registry> registry,
            std::shared_ptr<webrtc_answer_factory> answer_factory,
-           std::shared_ptr<media_router> media_router);
+           std::shared_ptr<udp_port_allocator> udp_port_allocator,
+           boost::asio::io_context& io_context,
+           std::string udp_bind_host,
+           std::shared_ptr<dtls_context> dtls_context,
+           dtls_transport_config dtls_config);
 
    public:
     [[nodiscard]]
     http_response_ptr handle(http_request_t& request);
-
-    void set_media_router(std::shared_ptr<media_router> media_router);
-
-    void set_rtcp_report_runtime_snapshot_provider(rtcp_report_runtime_snapshot_provider provider);
-
-    void set_keyframe_request_handler(keyframe_request_handler handler);
-
-    void set_simulcast_rid_target_handler(simulcast_rid_target_handler handler);
-
-    void set_lifecycle_debug_snapshot_provider(lifecycle_debug_snapshot_provider provider);
 
     void set_admin_token(std::string token);
 
@@ -70,13 +59,7 @@ class router
     http_response_ptr handle_streams(http_request_t& request);
 
     [[nodiscard]]
-    http_response_ptr handle_stream_keyframe(http_request_t& request, std::string_view stream_id);
-
-    [[nodiscard]]
     http_response_ptr handle_media_stats(http_request_t& request);
-
-    [[nodiscard]]
-    http_response_ptr handle_simulcast_rid_target(http_request_t& request);
 
     [[nodiscard]]
     http_response_ptr handle_prometheus_metrics(http_request_t& request);
@@ -105,9 +88,6 @@ class router
 
     [[nodiscard]]
     http_response_ptr unsupported_media_type(http_request_t& request);
-
-    [[nodiscard]]
-    http_response_ptr not_implemented(http_request_t& request, std::string_view message);
 
    private:
     [[nodiscard]]
@@ -141,21 +121,12 @@ class router
     [[nodiscard]]
     http_response_ptr admin_unauthorized(http_request_t& request);
 
-    [[nodiscard]]
-    http_response_ptr handle_debug_state(http_request_t& request);
-
    private:
     std::shared_ptr<stream_registry> registry_;
 
-    std::shared_ptr<webrtc_answer_factory> answer_factory_;
-
-    std::shared_ptr<media_router> media_router_;
+    std::shared_ptr<media_fanout_router> media_fanout_router_;
 
     std::string admin_token_;
-    keyframe_request_handler keyframe_request_handler_;
-    rtcp_report_runtime_snapshot_provider rtcp_report_runtime_snapshot_provider_;
-    simulcast_rid_target_handler simulcast_rid_target_handler_;
-    lifecycle_debug_snapshot_provider lifecycle_debug_snapshot_provider_;
 
     whip_handler whip_;
 

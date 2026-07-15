@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <string_view>
 #include <optional>
 #include <vector>
 
@@ -82,35 +83,16 @@ struct webrtc_offer_summary
 using webrtc_offer_summary_result = std::expected<webrtc_offer_summary, std::string>;
 
 [[nodiscard]]
-std::optional<uint32_t> find_rtx_primary_ssrc(const media_summary& media, uint32_t repair_ssrc);
-
-[[nodiscard]]
-std::optional<uint32_t> find_rtx_repair_ssrc(const media_summary& media, uint32_t primary_ssrc);
-
-[[nodiscard]]
-bool media_ssrc_is_rtx_repair(const media_summary& media, uint32_t ssrc);
-
-[[nodiscard]]
 bool media_has_rtp_header_extension_uri(const media_summary& media, std::string_view uri);
 
 [[nodiscard]]
 bool media_has_rtx_codec(const media_summary& media);
 
 [[nodiscard]]
-bool media_payload_type_is_rtx(const media_summary& media, uint16_t payload_type);
-
-[[nodiscard]]
 bool media_has_rid(const media_summary& media, std::string_view rid);
 
 [[nodiscard]]
 std::expected<void, std::string> validate_media_summary_identity(const media_summary& media);
-
-[[nodiscard]]
-std::expected<void, std::string> validate_rtp_track_identity(const media_summary& media,
-                                                             const std::optional<std::string>& rid,
-                                                             const std::optional<std::string>& repaired_rid,
-                                                             uint8_t payload_type,
-                                                             uint32_t ssrc);
 
 [[nodiscard]]
 bool offer_ice_credentials_are_complete(const webrtc_offer_summary& offer);

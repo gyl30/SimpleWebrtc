@@ -32,70 +32,6 @@ std::string_view trim_right(std::string_view value)
 std::string_view trim(std::string_view value) { return trim_right(trim_left(value)); }
 }    // namespace
 
-std::string sdp_address::to_string() const
-{
-    std::string result = address;
-
-    if (ttl.has_value())
-    {
-        result += "/";
-        result += std::to_string(ttl.value());
-    }
-
-    if (range.has_value())
-    {
-        result += "/";
-        result += std::to_string(range.value());
-    }
-
-    return result;
-}
-
-std::string connection_information::to_string() const
-{
-    std::string result = network_type;
-    result += " ";
-    result += address_type;
-
-    if (address.has_value())
-    {
-        result += " ";
-        result += address->to_string();
-    }
-
-    return result;
-}
-
-std::string bandwidth_line::to_string() const
-{
-    std::string result;
-
-    if (experimental)
-    {
-        result += "X-";
-    }
-
-    result += type;
-    result += ":";
-    result += std::to_string(value);
-
-    return result;
-}
-
-bool sdp_attribute::is_property() const { return value.empty(); }
-
-bool sdp_attribute::is_ice_candidate() const { return key == k_attribute_candidate; }
-
-std::string sdp_attribute::to_string() const
-{
-    if (value.empty())
-    {
-        return key;
-    }
-
-    return key + ":" + value;
-}
-
 sdp_attribute make_property_attribute(std::string key)
 {
     return sdp_attribute{
@@ -110,75 +46,6 @@ sdp_attribute make_attribute(std::string key, std::string value)
         .key = std::move(key),
         .value = std::move(value),
     };
-}
-
-std::string sdp_version::to_string() const { return std::to_string(value); }
-
-std::string origin_line::to_string() const
-{
-    std::string result;
-    result.reserve(username.size() + network_type.size() + address_type.size() + unicast_address.size() + 64);
-
-    result += username;
-    result += " ";
-    result += std::to_string(session_id);
-    result += " ";
-    result += std::to_string(session_version);
-    result += " ";
-    result += network_type;
-    result += " ";
-    result += address_type;
-    result += " ";
-    result += unicast_address;
-
-    return result;
-}
-
-std::string ranged_port::to_string() const
-{
-    std::string result = std::to_string(value);
-
-    if (range.has_value())
-    {
-        result += "/";
-        result += std::to_string(range.value());
-    }
-
-    return result;
-}
-
-std::string media_name_line::to_string() const
-{
-    std::string result;
-
-    result += media;
-    result += " ";
-    result += port.to_string();
-    result += " ";
-
-    for (std::size_t i = 0; i < protocols.size(); ++i)
-    {
-        if (i > 0)
-        {
-            result += "/";
-        }
-
-        result += protocols[i];
-    }
-
-    result += " ";
-
-    for (std::size_t i = 0; i < formats.size(); ++i)
-    {
-        if (i > 0)
-        {
-            result += " ";
-        }
-
-        result += formats[i];
-    }
-
-    return result;
 }
 
 std::optional<std::string> media_description::find_attribute_value(std::string_view key) const
@@ -204,78 +71,6 @@ std::vector<const sdp_attribute*> media_description::find_attributes(std::string
         {
             result.push_back(&attribute);
         }
-    }
-
-    return result;
-}
-
-std::string timing_line::to_string() const { return std::to_string(start_time) + " " + std::to_string(stop_time); }
-
-std::string repeat_time::to_string() const
-{
-    std::string result;
-
-    result += std::to_string(interval);
-    result += " ";
-    result += std::to_string(duration);
-
-    for (const auto offset : offsets)
-    {
-        result += " ";
-        result += std::to_string(offset);
-    }
-
-    return result;
-}
-
-std::string time_zone::to_string() const { return std::to_string(adjustment_time) + " " + std::to_string(offset); }
-
-std::string codec_description::to_string() const
-{
-    std::string result;
-
-    result += std::to_string(payload_type);
-
-    if (!name.empty())
-    {
-        result += " ";
-        result += name;
-
-        if (clock_rate != 0)
-        {
-            result += "/";
-            result += std::to_string(clock_rate);
-        }
-
-        if (!encoding_parameters.empty())
-        {
-            result += "/";
-            result += encoding_parameters;
-        }
-    }
-
-    if (!fmtp.empty())
-    {
-        result += " fmtp=[";
-        result += fmtp;
-        result += "]";
-    }
-
-    if (!rtcp_feedback.empty())
-    {
-        result += " rtcp_feedback=[";
-
-        for (std::size_t i = 0; i < rtcp_feedback.size(); ++i)
-        {
-            if (i > 0)
-            {
-                result += ", ";
-            }
-
-            result += rtcp_feedback[i];
-        }
-
-        result += "]";
     }
 
     return result;
@@ -367,32 +162,6 @@ std::optional<dtls_connection_role> parse_dtls_connection_role(std::string_view 
     }
 
     return std::nullopt;
-}
-
-std::string rtp_header_extension::to_attribute_value() const
-{
-    std::string result = std::to_string(id);
-
-    const auto direction_text = to_string(direction);
-    if (!direction_text.empty())
-    {
-        result += "/";
-        result += direction_text;
-    }
-
-    if (!uri.empty())
-    {
-        result += " ";
-        result += uri;
-    }
-
-    if (extension_attributes.has_value() && !extension_attributes->empty())
-    {
-        result += " ";
-        result += extension_attributes.value();
-    }
-
-    return result;
 }
 
 bool rtp_header_extension::parse_attribute_value(std::string_view value)

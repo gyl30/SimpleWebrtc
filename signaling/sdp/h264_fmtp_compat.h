@@ -64,9 +64,6 @@ struct h264_fmtp_relay_compatibility
 };
 
 [[nodiscard]]
-bool is_h264_codec_name(std::string_view codec_name);
-
-[[nodiscard]]
 std::expected<h264_fmtp_parameters, std::string> parse_h264_fmtp(std::string_view fmtp);
 
 [[nodiscard]]
@@ -76,11 +73,6 @@ std::expected<h264_fmtp_answer_negotiation, std::string> negotiate_h264_fmtp_for
 std::expected<h264_fmtp_relay_compatibility, std::string> check_h264_fmtp_relay_compatibility(std::string_view publisher_fmtp,
                                                                                               std::string_view subscriber_fmtp);
 
-[[nodiscard]]
-std::string h264_profile_kind_to_string(h264_profile_kind profile);
-
-[[nodiscard]]
-std::string h264_fmtp_parameters_to_string(const h264_fmtp_parameters& parameters);
 }    // namespace webrtc::sdp
 
 #endif

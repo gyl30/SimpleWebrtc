@@ -9,7 +9,9 @@
 
 #include "ice/ice_candidate.h"
 #include "ice/ice_credentials.h"
+#include "net/udp_port_allocator.h"
 #include "session/session_state.h"
+#include "session/whep_session_transport.h"
 #include "signaling/sdp/sdp_summary.h"
 #include "signaling/sdp/sdp_answer_builder.h"
 
@@ -20,7 +22,6 @@ class subscriber_session
    public:
     subscriber_session(std::string session_id,
                        std::string stream_id,
-                       std::string remote_sdp_offer,
                        sdp::webrtc_offer_summary remote_offer_summary,
                        uint64_t created_at_milliseconds);
 
@@ -39,15 +40,15 @@ class subscriber_session
 
     [[nodiscard]] const std::string& stream_id() const;
 
-    [[nodiscard]] const std::string& remote_sdp_offer() const;
-
     [[nodiscard]] const sdp::webrtc_offer_summary& remote_offer_summary() const;
 
     [[nodiscard]] const std::string& local_sdp_answer() const;
 
     [[nodiscard]] const ice_credentials& local_ice() const;
 
-    [[nodiscard]] const sdp::fingerprint_info& local_fingerprint() const;
+    [[nodiscard]] uint16_t local_udp_port() const;
+
+    [[nodiscard]] const std::shared_ptr<whep_session_transport>& transport() const;
 
     [[nodiscard]] uint64_t sdp_session_id() const;
 
@@ -72,17 +73,18 @@ class subscriber_session
    public:
     void set_state(session_state state);
 
-    void set_local_sdp_answer(std::string local_sdp_answer);
+    void set_local_udp_port_reservation(udp_port_reservation_ptr local_udp_port);
+
+    void set_transport(std::shared_ptr<whep_session_transport> transport);
 
     void set_local_answer(std::string local_sdp_answer,
                           ice_credentials local_ice,
-                          sdp::fingerprint_info local_fingerprint,
                           uint64_t sdp_session_id,
                           uint64_t sdp_session_version);
 
-    void set_accepted_remote_media_mline_indexes(std::vector<int> accepted_remote_media_mline_indexes);
-    void set_outbound_media_sources(std::vector<sdp::sdp_answer_media_source> outbound_media_sources);
-    void apply_remote_ice_restart_offer(std::string remote_sdp_offer, sdp::webrtc_offer_summary remote_offer_summary);
+    void set_outbound_media_sources(std::vector<int> accepted_remote_media_mline_indexes,
+                                    std::vector<sdp::sdp_answer_media_source> outbound_media_sources);
+    void apply_remote_ice_restart_offer(sdp::webrtc_offer_summary remote_offer_summary);
 
     [[nodiscard]] std::expected<void, std::string> add_remote_ice_candidate(remote_ice_candidate candidate);
 
@@ -90,12 +92,12 @@ class subscriber_session
     std::string session_id_;
     std::string stream_id_;
 
-    std::string remote_sdp_offer_;
     sdp::webrtc_offer_summary remote_offer_summary_;
 
     std::string local_sdp_answer_;
     ice_credentials local_ice_;
-    sdp::fingerprint_info local_fingerprint_;
+    udp_port_reservation_ptr local_udp_port_;
+    std::shared_ptr<whep_session_transport> transport_;
 
     uint64_t sdp_session_id_ = 0;
     uint64_t sdp_session_version_ = 0;

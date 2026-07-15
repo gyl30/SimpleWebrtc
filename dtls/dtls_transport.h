@@ -1,8 +1,6 @@
 #ifndef SIMPLE_WEBRTC_DTLS_DTLS_TRANSPORT_H
 #define SIMPLE_WEBRTC_DTLS_DTLS_TRANSPORT_H
 
-#include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -59,8 +57,6 @@ inline constexpr std::uint16_t k_ipv6_udp_overhead = 40 + 8;
 
 struct dtls_transport_config
 {
-    std::chrono::milliseconds handshake_timeout{std::chrono::seconds(30)};
-
     std::uint16_t ip_mtu = k_default_dtls_ip_mtu;
 };
 
@@ -68,23 +64,10 @@ using dtls_transport_packet_list = std::vector<std::vector<uint8_t>>;
 
 using dtls_transport_packet_result = std::expected<dtls_transport_packet_list, std::string>;
 
-struct dtls_timeout_event
-{
-    std::string remote_endpoint;
-
-    dtls_transport_packet_list packets;
-
-    bool peer_failed = false;
-
-    std::string error;
-};
-
-using dtls_timeout_event_list = std::vector<dtls_timeout_event>;
-
 class dtls_transport
 {
    public:
-    explicit dtls_transport(std::shared_ptr<dtls_context> context, dtls_transport_config config = {});
+    explicit dtls_transport(std::shared_ptr<dtls_context> context, dtls_transport_config config);
 
     ~dtls_transport();
 
@@ -97,22 +80,9 @@ class dtls_transport
    public:
     void remember_peer(std::string_view remote_endpoint, dtls_peer_identity identity);
 
-    [[nodiscard]]
-    dtls_transport_packet_result close_peer(std::string_view remote_endpoint);
-
-    void forget_peer(std::string_view remote_endpoint);
-
-    [[nodiscard]]
-    bool move_peer(std::string_view old_remote_endpoint, std::string_view new_remote_endpoint, dtls_peer_identity identity);
-
     [[nodiscard]] dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data,
                                                                  std::string_view remote_endpoint,
                                                                  dtls_network_family network_family);
-
-    [[nodiscard]] dtls_timeout_event_list handle_timeouts();
-
-    [[nodiscard]]
-    std::optional<std::chrono::milliseconds> next_timeout() const;
 
     [[nodiscard]]
     std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint) const;
@@ -121,10 +91,6 @@ class dtls_transport
     std::optional<dtls_peer_identity> get_peer_identity(std::string_view remote_endpoint) const;
 
     [[nodiscard]] bool is_handshake_done(std::string_view remote_endpoint) const;
-
-    [[nodiscard]] bool has_received_close_notify(std::string_view remote_endpoint) const;
-
-    [[nodiscard]] std::size_t peer_count() const;
 
    private:
     struct impl;

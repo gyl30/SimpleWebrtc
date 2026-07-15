@@ -34,6 +34,13 @@ constexpr uint32_t k_max_component_id = 256;
 
 constexpr std::string_view k_candidate_prefix = "candidate:";
 
+enum class ice_candidate_transport
+{
+    unknown,
+    udp,
+    tcp,
+};
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 std::unexpected<std::string> make_field_error(std::string_view field, std::string_view message)
@@ -304,7 +311,7 @@ bool is_valid_foundation_character(char ch)
     return std::isalnum(value) != 0 || ch == '+' || ch == '/';
 }
 
-std::expected<std::string, std::string> parse_foundation(std::string_view first_token)
+std::expected<void, std::string> validate_foundation(std::string_view first_token)
 {
     if (!first_token.starts_with(k_candidate_prefix))
     {
@@ -331,7 +338,7 @@ std::expected<std::string, std::string> parse_foundation(std::string_view first_
         }
     }
 
-    return std::string(foundation);
+    return {};
 }
 
 std::expected<ice_candidate_transport, std::string> parse_transport(std::string_view value)
@@ -349,46 +356,22 @@ std::expected<ice_candidate_transport, std::string> parse_transport(std::string_
     return make_error("ice candidate transport is unsupported");
 }
 
-std::expected<ice_candidate_type, std::string> parse_candidate_type(std::string_view value)
+std::expected<void, std::string> validate_candidate_type(std::string_view value)
 {
-    if (equals_ignore_case(value, "host"))
+    if (equals_ignore_case(value, "host") || equals_ignore_case(value, "srflx") || equals_ignore_case(value, "prflx") ||
+        equals_ignore_case(value, "relay"))
     {
-        return ice_candidate_type::host;
-    }
-
-    if (equals_ignore_case(value, "srflx"))
-    {
-        return ice_candidate_type::server_reflexive;
-    }
-
-    if (equals_ignore_case(value, "prflx"))
-    {
-        return ice_candidate_type::peer_reflexive;
-    }
-
-    if (equals_ignore_case(value, "relay"))
-    {
-        return ice_candidate_type::relay;
+        return {};
     }
 
     return make_error("ice candidate type is unsupported");
 }
 
-std::expected<ice_tcp_candidate_type, std::string> parse_tcp_candidate_type(std::string_view value)
+std::expected<void, std::string> validate_tcp_candidate_type(std::string_view value)
 {
-    if (equals_ignore_case(value, "active"))
+    if (equals_ignore_case(value, "active") || equals_ignore_case(value, "passive") || equals_ignore_case(value, "so"))
     {
-        return ice_tcp_candidate_type::active;
-    }
-
-    if (equals_ignore_case(value, "passive"))
-    {
-        return ice_tcp_candidate_type::passive;
-    }
-
-    if (equals_ignore_case(value, "so"))
-    {
-        return ice_tcp_candidate_type::simultaneous_open;
+        return {};
     }
 
     return make_error("ice candidate tcp type is unsupported");
@@ -583,7 +566,7 @@ std::expected<void, std::string> validate_extension_token(std::string_view value
     return {};
 }
 
-std::expected<void, std::string> parse_candidate_extensions(const std::vector<std::string_view>& tokens, remote_ice_candidate& candidate)
+std::expected<void, std::string> parse_candidate_extensions(const std::vector<std::string_view>& tokens, ice_candidate_transport transport)
 {
     if ((tokens.size() - 8) % 2 != 0)
     {
@@ -593,6 +576,9 @@ std::expected<void, std::string> parse_candidate_extensions(const std::vector<st
     bool has_related_address = false;
     bool has_related_port = false;
     bool has_tcp_type = false;
+    bool has_generation = false;
+    bool has_network_id = false;
+    bool has_network_cost = false;
 
     for (std::size_t index = 8; index < tokens.size(); index += 2)
     {
@@ -630,8 +616,6 @@ std::expected<void, std::string> parse_candidate_extensions(const std::vector<st
                 return std::unexpected(related_address.error());
             }
 
-            candidate.related_address = std::move(*related_address);
-
             has_related_address = true;
 
             continue;
@@ -651,8 +635,6 @@ std::expected<void, std::string> parse_candidate_extensions(const std::vector<st
                 return std::unexpected(related_port.error());
             }
 
-            candidate.related_port = *related_port;
-
             has_related_port = true;
 
             continue;
@@ -665,14 +647,12 @@ std::expected<void, std::string> parse_candidate_extensions(const std::vector<st
                 return make_error("ice candidate tcp type is duplicated");
             }
 
-            auto tcp_type = parse_tcp_candidate_type(raw_value);
+            auto tcp_type = validate_tcp_candidate_type(raw_value);
 
             if (!tcp_type)
             {
                 return std::unexpected(tcp_type.error());
             }
-
-            candidate.tcp_type = *tcp_type;
 
             has_tcp_type = true;
 
@@ -681,7 +661,7 @@ std::expected<void, std::string> parse_candidate_extensions(const std::vector<st
 
         if (name == "generation")
         {
-            if (candidate.has_generation)
+            if (has_generation)
             {
                 return make_error("ice candidate generation is duplicated");
             }
@@ -693,16 +673,14 @@ std::expected<void, std::string> parse_candidate_extensions(const std::vector<st
                 return std::unexpected(generation.error());
             }
 
-            candidate.generation = *generation;
-
-            candidate.has_generation = true;
+            has_generation = true;
 
             continue;
         }
 
         if (name == "network-id")
         {
-            if (candidate.has_network_id)
+            if (has_network_id)
             {
                 return make_error("ice candidate network id is duplicated");
             }
@@ -714,16 +692,14 @@ std::expected<void, std::string> parse_candidate_extensions(const std::vector<st
                 return std::unexpected(network_id.error());
             }
 
-            candidate.network_id = *network_id;
-
-            candidate.has_network_id = true;
+            has_network_id = true;
 
             continue;
         }
 
         if (name == "network-cost")
         {
-            if (candidate.has_network_cost)
+            if (has_network_cost)
             {
                 return make_error("ice candidate network cost is duplicated");
             }
@@ -735,18 +711,10 @@ std::expected<void, std::string> parse_candidate_extensions(const std::vector<st
                 return std::unexpected(network_cost.error());
             }
 
-            candidate.network_cost = *network_cost;
-
-            candidate.has_network_cost = true;
+            has_network_cost = true;
 
             continue;
         }
-
-        ice_candidate_extension extension;
-        extension.name = name;
-        extension.value = std::string(raw_value);
-
-        candidate.extensions.push_back(std::move(extension));
     }
 
     if (has_related_address != has_related_port)
@@ -754,12 +722,12 @@ std::expected<void, std::string> parse_candidate_extensions(const std::vector<st
         return make_error("ice candidate related address and port must be provided together");
     }
 
-    if (candidate.transport == ice_candidate_transport::tcp && !has_tcp_type)
+    if (transport == ice_candidate_transport::tcp && !has_tcp_type)
     {
         return make_error("tcp ice candidate requires tcptype");
     }
 
-    if (candidate.transport == ice_candidate_transport::udp && has_tcp_type)
+    if (transport == ice_candidate_transport::udp && has_tcp_type)
     {
         return make_error("udp ice candidate must not contain tcptype");
     }
@@ -781,7 +749,7 @@ std::expected<void, std::string> parse_candidate_fields(std::string_view candida
         return make_error("ice candidate is missing mandatory fields");
     }
 
-    auto foundation = parse_foundation((*tokens)[0]);
+    auto foundation = validate_foundation((*tokens)[0]);
 
     if (!foundation)
     {
@@ -828,20 +796,12 @@ std::expected<void, std::string> parse_candidate_fields(std::string_view candida
         return make_error("ice candidate typ field is missing");
     }
 
-    auto type = parse_candidate_type((*tokens)[7]);
+    auto type = validate_candidate_type((*tokens)[7]);
 
     if (!type)
     {
         return std::unexpected(type.error());
     }
-
-    candidate.foundation = std::move(*foundation);
-
-    candidate.component = *component;
-
-    candidate.transport = *transport;
-
-    candidate.priority = *priority;
 
     candidate.address = std::move(*address);
 
@@ -851,16 +811,13 @@ std::expected<void, std::string> parse_candidate_fields(std::string_view candida
 
     candidate.address_is_mdns_hostname = is_mdns_hostname(candidate.address);
 
-    candidate.type = *type;
-
-    return parse_candidate_extensions(*tokens, candidate);
+    return parse_candidate_extensions(*tokens, *transport);
 }
 }    // namespace
 
 remote_ice_candidate_result make_remote_ice_candidate(std::string_view candidate,
                                                       std::string_view sdp_mid,
-                                                      int sdp_mline_index,
-                                                      uint64_t received_at_milliseconds)
+                                                      int sdp_mline_index)
 {
     auto normalized_candidate = normalize_candidate_text(candidate);
 
@@ -896,8 +853,6 @@ remote_ice_candidate_result make_remote_ice_candidate(std::string_view candidate
 
     value.sdp_mline_index = sdp_mline_index;
 
-    value.received_at_milliseconds = received_at_milliseconds;
-
     value.end_of_candidates = value.candidate.empty();
 
     if (value.end_of_candidates)
@@ -915,63 +870,4 @@ remote_ice_candidate_result make_remote_ice_candidate(std::string_view candidate
     return value;
 }
 
-std::string_view ice_candidate_transport_to_string(ice_candidate_transport transport)
-{
-    switch (transport)
-    {
-        case ice_candidate_transport::udp:
-            return "udp";
-
-        case ice_candidate_transport::tcp:
-            return "tcp";
-
-        case ice_candidate_transport::unknown:
-            return "unknown";
-    }
-
-    return "unknown";
-}
-
-std::string_view ice_candidate_type_to_string(ice_candidate_type type)
-{
-    switch (type)
-    {
-        case ice_candidate_type::host:
-            return "host";
-
-        case ice_candidate_type::server_reflexive:
-            return "srflx";
-
-        case ice_candidate_type::peer_reflexive:
-            return "prflx";
-
-        case ice_candidate_type::relay:
-            return "relay";
-
-        case ice_candidate_type::unknown:
-            return "unknown";
-    }
-
-    return "unknown";
-}
-
-std::string_view ice_tcp_candidate_type_to_string(ice_tcp_candidate_type type)
-{
-    switch (type)
-    {
-        case ice_tcp_candidate_type::active:
-            return "active";
-
-        case ice_tcp_candidate_type::passive:
-            return "passive";
-
-        case ice_tcp_candidate_type::simultaneous_open:
-            return "so";
-
-        case ice_tcp_candidate_type::none:
-            return "none";
-    }
-
-    return "none";
-}
 }    // namespace webrtc

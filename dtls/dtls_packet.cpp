@@ -152,7 +152,6 @@ dtls_record_header_result parse_dtls_record_header(std::span<const uint8_t> data
     }
 
     dtls_record_header header;
-    header.raw_content_type = data[0];
     header.content_type = make_content_type(data[0]);
     header.version = version;
     header.epoch = read_u16(data, 3);
@@ -167,8 +166,6 @@ dtls_record_header_result parse_dtls_record_header(std::span<const uint8_t> data
 
     return header;
 }
-
-bool is_dtls_client_hello(std::span<const uint8_t> data) { return get_dtls_handshake_type(data) == dtls_handshake_type::client_hello; }
 
 dtls_handshake_type get_dtls_handshake_type(std::span<const uint8_t> data)
 {

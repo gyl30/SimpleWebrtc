@@ -20,70 +20,6 @@ inline constexpr std::string_view k_http_cors_private_network_header = "Access-C
 
 namespace http_error_response_detail
 {
-inline void append_json_escaped_string(std::string& output, std::string_view value)
-{
-    for (const char ch : value)
-    {
-        switch (ch)
-        {
-            case '"':
-                output.append("\\\"");
-
-                break;
-
-            case '\\':
-                output.append("\\\\");
-
-                break;
-
-            case '\b':
-                output.append("\\b");
-
-                break;
-
-            case '\f':
-                output.append("\\f");
-
-                break;
-
-            case '\n':
-                output.append("\\n");
-
-                break;
-
-            case '\r':
-                output.append("\\r");
-
-                break;
-
-            case '\t':
-                output.append("\\t");
-
-                break;
-
-            default:
-                if (static_cast<unsigned char>(ch) < 0x20U)
-                {
-                    output.append("\\u00");
-
-                    constexpr char k_hex_digits[] = "0123456789abcdef";
-
-                    const auto value_byte = static_cast<unsigned char>(ch);
-
-                    output.push_back(k_hex_digits[(value_byte >> 4U) & 0x0FU]);
-
-                    output.push_back(k_hex_digits[value_byte & 0x0FU]);
-
-                    break;
-                }
-
-                output.push_back(ch);
-
-                break;
-        }
-    }
-}
-
 inline std::string normalize_error_code(std::string_view error_code)
 {
     if (!error_code.empty())
@@ -124,60 +60,6 @@ inline std::string make_http_error_response_body(std::string_view error_code, st
 
 inline std::string make_http_error_response_body(std::string_view message) { return make_http_error_response_body("error", message); }
 
-inline bool contains_header_unsafe_character(std::string_view value)
-{
-    for (const char ch : value)
-    {
-        if (ch == '\r' || ch == '\n')
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-inline std::string make_absolute_resource_url(http_request_t& request, std::string_view path)
-{
-    const auto host_field = request.req[boost::beast::http::field::host];
-
-    const std::string_view host(host_field.data(), host_field.size());
-
-    if (host.empty() || contains_header_unsafe_character(host))
-    {
-        return std::string(path);
-    }
-
-    std::string scheme = "http";
-
-    const auto forwarded_proto_field = request.req["X-Forwarded-Proto"];
-
-    const std::string_view forwarded_proto(forwarded_proto_field.data(), forwarded_proto_field.size());
-
-    if (forwarded_proto == "https")
-    {
-        scheme = "https";
-    }
-
-    std::string url;
-
-    url.reserve(scheme.size() + 3 + host.size() + path.size());
-
-    url.append(scheme);
-
-    url.append("://");
-
-    url.append(host);
-
-    if (!path.empty() && path.front() != '/')
-    {
-        url.push_back('/');
-    }
-
-    url.append(path);
-
-    return url;
-}
 inline void add_http_common_headers(const http_response_ptr& response)
 {
     if (response == nullptr)
@@ -250,10 +132,6 @@ inline http_response_ptr make_sdp_http_response(http_request_t& request, int sta
     add_http_common_headers(response);
 
     return response;
-}
-inline http_response_ptr make_json_http_gone_response(http_request_t& request, std::string_view error_code, std::string_view message)
-{
-    return make_json_http_error_response(request, 410, error_code, message);
 }
 }    // namespace webrtc
 

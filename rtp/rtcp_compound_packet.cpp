@@ -26,10 +26,9 @@ std::unexpected<std::string> make_error(std::string_view message) { return std::
 void fill_feedback_block(const rtcp_feedback_packet& feedback, rtcp_compound_block& block)
 {
     block.is_feedback = true;
-    block.feedback_format = feedback.format;
     block.feedback_name = rtcp_feedback_format_to_string(feedback.packet_type, feedback.format);
 
-    if (feedback.remb.has_value())
+    if (feedback.remb_bitrate_bps.has_value())
     {
         block.feedback_name = "remb";
     }
@@ -37,33 +36,15 @@ void fill_feedback_block(const rtcp_feedback_packet& feedback, rtcp_compound_blo
     block.feedback_sender_ssrc = feedback.sender_ssrc;
     block.feedback_media_ssrc = feedback.media_ssrc;
 
-    block.nack_count = feedback.nack_items.size();
-    block.fir_count = feedback.fir_items.size();
-
-    block.nack_items = feedback.nack_items;
-    block.fir_items = feedback.fir_items;
+    block.nack_count = feedback.nack_count;
+    block.fir_count = feedback.fir_count;
 
     block.has_generic_nack = feedback.has_generic_nack;
     block.has_keyframe_request = feedback.has_keyframe_request;
     block.has_transport_cc = feedback.has_transport_cc;
 
-    block.transport_cc_base_sequence_number = feedback.transport_cc_base_sequence_number;
-    block.transport_cc_packet_status_count = feedback.transport_cc_packet_status_count;
-    block.transport_cc_reference_time_64ms = feedback.transport_cc_reference_time_64ms;
-    block.transport_cc_feedback_packet_count = feedback.transport_cc_feedback_packet_count;
-
-    block.transport_cc_received_packet_count = feedback.transport_cc_received_packet_count;
-    block.transport_cc_not_received_packet_count = feedback.transport_cc_not_received_packet_count;
-    block.transport_cc_small_delta_count = feedback.transport_cc_small_delta_count;
-    block.transport_cc_large_delta_count = feedback.transport_cc_large_delta_count;
-    block.transport_cc_packet_statuses = feedback.transport_cc_packet_statuses;
-
-    block.has_remb = feedback.remb.has_value();
-    if (feedback.remb.has_value())
-    {
-        block.remb_bitrate_bps = feedback.remb->bitrate_bps;
-        block.remb_ssrcs = feedback.remb->ssrcs;
-    }
+    block.has_remb = feedback.remb_bitrate_bps.has_value();
+    block.remb_bitrate_bps = feedback.remb_bitrate_bps.value_or(0);
 }
 
 void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_packet& packet)
@@ -79,78 +60,27 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
     packet.nack_count += block.nack_count;
     packet.fir_count += block.fir_count;
 
-    packet.nack_items.insert(packet.nack_items.end(), block.nack_items.begin(), block.nack_items.end());
-
-    packet.fir_items.insert(packet.fir_items.end(), block.fir_items.begin(), block.fir_items.end());
-
     packet.has_generic_nack = packet.has_generic_nack || block.has_generic_nack;
-
     packet.has_keyframe_request = packet.has_keyframe_request || block.has_keyframe_request;
-
-    if (block.has_transport_cc)
-    {
-        packet.has_transport_cc = true;
-        packet.transport_cc_base_sequence_number = block.transport_cc_base_sequence_number;
-        packet.transport_cc_packet_status_count = block.transport_cc_packet_status_count;
-        packet.transport_cc_reference_time_64ms = block.transport_cc_reference_time_64ms;
-        packet.transport_cc_feedback_packet_count = block.transport_cc_feedback_packet_count;
-
-        packet.transport_cc_received_packet_count += block.transport_cc_received_packet_count;
-        packet.transport_cc_not_received_packet_count += block.transport_cc_not_received_packet_count;
-        packet.transport_cc_small_delta_count += block.transport_cc_small_delta_count;
-        packet.transport_cc_large_delta_count += block.transport_cc_large_delta_count;
-
-        packet.transport_cc_packet_statuses.insert(
-            packet.transport_cc_packet_statuses.end(), block.transport_cc_packet_statuses.begin(), block.transport_cc_packet_statuses.end());
-    }
+    packet.has_transport_cc = packet.has_transport_cc || block.has_transport_cc;
     packet.has_remb = packet.has_remb || block.has_remb;
-
     packet.remb_bitrate_bps = std::max(packet.remb_bitrate_bps, block.remb_bitrate_bps);
 }
 
-void fill_report_block(const rtcp_report_packet& report, rtcp_compound_block& block)
+void aggregate_report_packet(const rtcp_report_packet& report, rtcp_compound_packet& packet)
 {
-    block.is_report = true;
-    block.is_sender_report = report.is_sender_report;
-    block.is_receiver_report = report.is_receiver_report;
-    block.has_sender_info = report.has_sender_info;
-    block.report_sender_ssrc = report.sender_ssrc;
-    block.sender_info = report.sender_info;
-    block.report_blocks = report.report_blocks;
-}
-
-void aggregate_report_block(const rtcp_compound_block& block, rtcp_compound_packet& packet)
-{
-    if (!block.is_report)
-    {
-        return;
-    }
-
     packet.report_packet_count += 1;
-    packet.report_block_count += block.report_blocks.size();
+    packet.report_block_count += report.report_blocks.size();
 
-    packet.has_sender_report = packet.has_sender_report || block.is_sender_report;
-
-    packet.has_receiver_report = packet.has_receiver_report || block.is_receiver_report;
-
-    packet.report_sender_ssrc = block.report_sender_ssrc;
-
-    if (block.has_sender_info)
+    if (!report.report_blocks.empty())
     {
-        packet.has_sender_info = true;
-        packet.sender_info = block.sender_info;
+        packet.last_report_block = report.report_blocks.back();
     }
-
-    packet.report_blocks.insert(packet.report_blocks.end(), block.report_blocks.begin(), block.report_blocks.end());
 }
 
-rtcp_compound_block make_block_from_header(const rtcp_packet_header& header, std::size_t offset)
+rtcp_compound_block make_block_from_header(const rtcp_packet_header& header)
 {
     rtcp_compound_block block;
-    block.offset = offset;
-    block.packet_size = header.packet_size;
-    block.version = header.version;
-    block.padding = header.padding;
     block.count = header.count;
     block.packet_type = header.packet_type;
     block.length = header.length;
@@ -160,22 +90,8 @@ rtcp_compound_block make_block_from_header(const rtcp_packet_header& header, std
 
     return block;
 }
-struct rtcp_bye_packet
-{
-    std::vector<uint32_t> ssrcs;
 
-    std::string reason;
-};
-
-using rtcp_bye_packet_result = std::expected<rtcp_bye_packet, std::string>;
-
-uint32_t read_network_u32(std::span<const uint8_t> data, std::size_t offset)
-{
-    return (static_cast<uint32_t>(data[offset]) << 24U) | (static_cast<uint32_t>(data[offset + 1]) << 16U) |
-           (static_cast<uint32_t>(data[offset + 2]) << 8U) | static_cast<uint32_t>(data[offset + 3]);
-}
-
-rtcp_bye_packet_result parse_rtcp_bye_packet(std::span<const uint8_t> data)
+std::expected<void, std::string> validate_rtcp_bye_packet(std::span<const uint8_t> data)
 {
     auto header = parse_rtcp_packet_header(data);
 
@@ -219,26 +135,14 @@ rtcp_bye_packet_result parse_rtcp_bye_packet(std::span<const uint8_t> data)
     }
 
     std::size_t offset = k_rtcp_common_header_size;
-
-    const std::size_t ssrc_count = header->count;
-
-    const std::size_t ssrc_bytes = ssrc_count * k_rtcp_ssrc_size;
+    const std::size_t ssrc_bytes = static_cast<std::size_t>(header->count) * k_rtcp_ssrc_size;
 
     if (offset + ssrc_bytes > payload_end)
     {
         return make_error("rtcp bye ssrc list is truncated");
     }
 
-    rtcp_bye_packet packet;
-
-    packet.ssrcs.reserve(ssrc_count);
-
-    for (std::size_t index = 0; index < ssrc_count; ++index)
-    {
-        packet.ssrcs.push_back(read_network_u32(data, offset));
-
-        offset += k_rtcp_ssrc_size;
-    }
+    offset += ssrc_bytes;
 
     if (offset < payload_end)
     {
@@ -250,40 +154,9 @@ rtcp_bye_packet_result parse_rtcp_bye_packet(std::span<const uint8_t> data)
         {
             return make_error("rtcp bye reason is truncated");
         }
-
-        if (reason_size != 0)
-        {
-            packet.reason.assign(reinterpret_cast<const char*>(data.data() + offset), reason_size);
-        }
     }
 
-    return packet;
-}
-
-void fill_bye_block(const rtcp_bye_packet& bye, rtcp_compound_block& block)
-{
-    block.is_bye = true;
-    block.bye_ssrcs = bye.ssrcs;
-    block.bye_reason = bye.reason;
-}
-
-void aggregate_bye_block(const rtcp_compound_block& block, rtcp_compound_packet& packet)
-{
-    if (!block.is_bye)
-    {
-        return;
-    }
-
-    packet.has_bye = true;
-
-    packet.bye_packet_count += 1;
-
-    packet.bye_ssrcs.insert(packet.bye_ssrcs.end(), block.bye_ssrcs.begin(), block.bye_ssrcs.end());
-
-    if (packet.bye_reason.empty() && !block.bye_reason.empty())
-    {
-        packet.bye_reason = block.bye_reason;
-    }
+    return {};
 }
 }    // namespace
 
@@ -295,8 +168,6 @@ rtcp_compound_packet_result parse_rtcp_compound_packet(std::span<const uint8_t> 
     }
 
     rtcp_compound_packet packet;
-    packet.packet_size = data.size();
-
     std::size_t offset = 0;
 
     while (offset < data.size())
@@ -329,8 +200,7 @@ rtcp_compound_packet_result parse_rtcp_compound_packet(std::span<const uint8_t> 
             return make_error("rtcp compound block exceeds remaining size");
         }
 
-        rtcp_compound_block block = make_block_from_header(*header, offset);
-
+        rtcp_compound_block block = make_block_from_header(*header);
         std::span<const uint8_t> block_data = data.subspan(offset, header->packet_size);
 
         if (is_rtcp_feedback_packet(block_data))
@@ -347,7 +217,6 @@ rtcp_compound_packet_result parse_rtcp_compound_packet(std::span<const uint8_t> 
             }
 
             fill_feedback_block(*feedback, block);
-
             aggregate_feedback_block(block, packet);
         }
         else if (is_rtcp_report_packet(block_data))
@@ -363,13 +232,11 @@ rtcp_compound_packet_result parse_rtcp_compound_packet(std::span<const uint8_t> 
                 return std::unexpected(std::move(message));
             }
 
-            fill_report_block(*report, block);
-
-            aggregate_report_block(block, packet);
+            aggregate_report_packet(*report, packet);
         }
         else if (header->packet_type == k_rtcp_packet_type_bye)
         {
-            auto bye = parse_rtcp_bye_packet(block_data);
+            auto bye = validate_rtcp_bye_packet(block_data);
 
             if (!bye)
             {
@@ -380,13 +247,10 @@ rtcp_compound_packet_result parse_rtcp_compound_packet(std::span<const uint8_t> 
                 return std::unexpected(std::move(message));
             }
 
-            fill_bye_block(*bye, block);
-
-            aggregate_bye_block(block, packet);
+            packet.has_bye = true;
         }
 
         packet.blocks.push_back(std::move(block));
-
         offset += header->packet_size;
     }
 

@@ -14,7 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_VERBOSE_MAKEFILE ON)
+#media_payload_type_mapper set(CMAKE_VERBOSE_MAKEFILE ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -75,7 +75,6 @@ endif()
 option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(ENABLE_LSAN "Enable LeakSanitizer" OFF)
-option(ENABLE_FUZZ "Enable libFuzzer targets" OFF)
 option(ENABLE_STATIC_LINK
        "Link executable and third-party dependencies statically" OFF)
 
@@ -149,14 +148,6 @@ if(DEFINED OPENSSL_ROOT_DIR AND NOT "${OPENSSL_ROOT_DIR}" STREQUAL "")
   endif()
 endif()
 
-if(NOT DEFINED BROTLI_ROOT_DIR
-   AND DEFINED ENV{BROTLI_ROOT_DIR}
-   AND NOT "$ENV{BROTLI_ROOT_DIR}" STREQUAL "")
-  set(BROTLI_ROOT_DIR
-      "$ENV{BROTLI_ROOT_DIR}"
-      CACHE PATH "Custom Brotli root directory")
-endif()
-
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
 find_package(Threads REQUIRED)
 find_package(OpenSSL 3.2 REQUIRED)
@@ -174,6 +165,7 @@ set(WEBRTC_SOURCES
     log/log.cpp
     net/http.cpp
     net/socket.cpp
+    net/udp_port_allocator.cpp
     util/file.cpp
     util/random.cpp
     util/error.cpp
@@ -182,8 +174,12 @@ set(WEBRTC_SOURCES
     server/whip_handler.cpp
     server/whep_handler.cpp
     server/runtime_offer_filter.cpp
+    session/peer_transport.cpp
     session/publisher_session.cpp
+    session/session_stun_binding.cpp
     session/subscriber_session.cpp
+    session/whip_session_transport.cpp
+    session/whep_session_transport.cpp
     session/stream_registry.cpp
     signaling/sdp/sdp_types.cpp
     signaling/sdp/sdp_lexer.cpp
@@ -198,54 +194,36 @@ set(WEBRTC_SOURCES
     ice/ice_credentials.cpp
     ice/ice_candidate.cpp
     ice/stun_message.cpp
+    ice/session_ice_udp_server.cpp
+    ice/ice_username.cpp
+    ice/session_transport_environment_config.cpp
     dtls/dtls_packet.cpp
     dtls/dtls_context.cpp
     dtls/dtls_certificate.cpp
     dtls/dtls_srtp_keying_material.cpp
     dtls/dtls_transport.cpp
     rtp/rtp_packet.cpp
-    rtp/rtp_packet_rewriter.cpp
-    rtp/rtp_rtx_packet.cpp
     rtp/rtcp_feedback.cpp
     rtp/rtcp_report.cpp
     rtp/rtcp_compound_packet.cpp
-    rtp/rtcp_packet_writer.cpp
-    rtp/rtcp_session_stats.cpp
-    rtp/rtcp_report_generator.cpp
     srtp/srtp_session.cpp
     srtp/srtp_transport.cpp
-    media/media_router.cpp
-    media/media_track_resolver.cpp
-    media/media_payload_type_mapper.cpp
-    media/media_ssrc_mapper.cpp
-    media/rtcp_report_service.cpp
-    media/rtcp_feedback_router.cpp
-    media/rtcp_transport_cc_feedback_service.cpp
-    media/rtp_packet_cache.cpp
-    media/rtx_sequence_number_allocator.cpp
-    media/rtx_retransmission_index.cpp
-    media/nack_retransmit_throttle.cpp
-    media/media_router_stats_json.cpp
-    media/media_router_stats_prometheus.cpp
-    media/media_identity_authority.cpp
-    ice/ice_udp_server.cpp
+    media/media_fanout_router.cpp
     signaling/webrtc_answer_factory.cpp)
 
-add_executable(SimpleWebrtc ${WEBRTC_SOURCES} main.cpp)
+add_library(simplewebrtc_core STATIC ${WEBRTC_SOURCES})
 
 target_include_directories(
-  SimpleWebrtc
-  PRIVATE ${CMAKE_SOURCE_DIR} ${Boost_INCLUDE_DIRS}
-          ${CMAKE_SOURCE_DIR}/third/spdlog/include
-          ${CMAKE_SOURCE_DIR}/third/rapidjson/include)
-
-if(UNIX
-   AND NOT APPLE
-   AND NOT ENABLE_STATIC_LINK)
-  target_link_options(SimpleWebrtc PRIVATE "-Wl,--no-as-needed"
-                      "${BROTLICOMMON_LIBRARY}" "-Wl,--as-needed")
-endif()
+  simplewebrtc_core
+  PUBLIC ${CMAKE_SOURCE_DIR} ${Boost_INCLUDE_DIRS}
+         ${CMAKE_SOURCE_DIR}/third/spdlog/include
+         ${CMAKE_SOURCE_DIR}/third/rapidjson/include)
 
 target_link_libraries(
-  SimpleWebrtc PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads
-                       ${Boost_LIBRARIES} srtp2)
+  simplewebrtc_core
+  PUBLIC OpenSSL::SSL OpenSSL::Crypto Threads::Threads ${Boost_LIBRARIES}
+         srtp2)
+
+add_executable(SimpleWebrtc main.cpp)
+
+target_link_libraries(SimpleWebrtc PRIVATE simplewebrtc_core)

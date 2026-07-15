@@ -230,6 +230,23 @@ sdp::sdp_ice_candidate_options make_legacy_ice_candidate_options(const webrtc_an
     return candidate;
 }
 
+std::vector<sdp::sdp_ice_candidate_options> make_local_ice_candidates(const webrtc_answer_factory_config& config, uint16_t local_candidate_port)
+{
+    std::vector<sdp::sdp_ice_candidate_options> candidates = config.ice_candidates;
+
+    if (local_candidate_port == 0)
+    {
+        return candidates;
+    }
+
+    for (auto& candidate : candidates)
+    {
+        candidate.port = local_candidate_port;
+    }
+
+    return candidates;
+}
+
 validation_result validate_ice_candidate_config(const sdp::sdp_ice_candidate_options& candidate, std::string_view prefix)
 {
     auto address_result = validate_token(candidate.address, make_candidate_field_name(prefix, "address"));
@@ -314,19 +331,14 @@ webrtc_answer_factory::webrtc_answer_factory(webrtc_answer_factory_config config
 }
 generated_sdp_answer_result webrtc_answer_factory::build_whip_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer)
 {
-    return build_answer(true, stream_id, offer, nullptr, {});
+    return build_answer(true, stream_id, offer, nullptr, {}, 0);
 }
 
-generated_sdp_answer_result webrtc_answer_factory::build_whep_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer)
+generated_sdp_answer_result webrtc_answer_factory::build_whip_answer(std::string_view stream_id,
+                                                                     const sdp::webrtc_offer_summary& offer,
+                                                                     uint16_t local_candidate_port)
 {
-    return build_answer(false, stream_id, offer, nullptr, {});
-}
-
-generated_sdp_answer_result webrtc_answer_factory::build_whep_answer(std::string_view stream_id,
-                                                                     const sdp::webrtc_offer_summary& subscriber_offer,
-                                                                     const sdp::webrtc_offer_summary& publisher_offer)
-{
-    return build_answer(false, stream_id, subscriber_offer, &publisher_offer, {});
+    return build_answer(true, stream_id, offer, nullptr, {}, local_candidate_port);
 }
 
 generated_sdp_answer_result webrtc_answer_factory::build_whep_answer(std::string_view stream_id,
@@ -334,24 +346,25 @@ generated_sdp_answer_result webrtc_answer_factory::build_whep_answer(std::string
                                                                      const sdp::webrtc_offer_summary& publisher_offer,
                                                                      std::vector<sdp::sdp_answer_media_source> media_sources)
 {
-    return build_answer(false, stream_id, subscriber_offer, &publisher_offer, std::move(media_sources));
+    return build_answer(false, stream_id, subscriber_offer, &publisher_offer, std::move(media_sources), 0);
+}
+
+generated_sdp_answer_result webrtc_answer_factory::build_whep_answer(std::string_view stream_id,
+                                                                     const sdp::webrtc_offer_summary& subscriber_offer,
+                                                                     const sdp::webrtc_offer_summary& publisher_offer,
+                                                                     std::vector<sdp::sdp_answer_media_source> media_sources,
+                                                                     uint16_t local_candidate_port)
+{
+    return build_answer(false, stream_id, subscriber_offer, &publisher_offer, std::move(media_sources), local_candidate_port);
 }
 
 generated_sdp_answer_result webrtc_answer_factory::build_whip_restart_answer(std::string_view stream_id,
                                                                              const sdp::webrtc_offer_summary& offer,
                                                                              uint64_t sdp_session_id,
-                                                                             uint64_t sdp_session_version)
+                                                                             uint64_t sdp_session_version,
+                                                                             uint16_t local_candidate_port)
 {
-    return build_answer_with_origin(true, stream_id, offer, nullptr, sdp_session_id, sdp_session_version, {});
-}
-
-generated_sdp_answer_result webrtc_answer_factory::build_whep_restart_answer(std::string_view stream_id,
-                                                                             const sdp::webrtc_offer_summary& subscriber_offer,
-                                                                             const sdp::webrtc_offer_summary& publisher_offer,
-                                                                             uint64_t sdp_session_id,
-                                                                             uint64_t sdp_session_version)
-{
-    return build_whep_restart_answer(stream_id, subscriber_offer, publisher_offer, sdp_session_id, sdp_session_version, {});
+    return build_answer_with_origin(true, stream_id, offer, nullptr, sdp_session_id, sdp_session_version, {}, local_candidate_port);
 }
 
 generated_sdp_answer_result webrtc_answer_factory::build_whep_restart_answer(std::string_view stream_id,
@@ -359,10 +372,17 @@ generated_sdp_answer_result webrtc_answer_factory::build_whep_restart_answer(std
                                                                              const sdp::webrtc_offer_summary& publisher_offer,
                                                                              uint64_t sdp_session_id,
                                                                              uint64_t sdp_session_version,
-                                                                             std::vector<sdp::sdp_answer_media_source> media_sources)
+                                                                             std::vector<sdp::sdp_answer_media_source> media_sources,
+                                                                             uint16_t local_candidate_port)
 {
-    return build_answer_with_origin(
-        false, stream_id, subscriber_offer, &publisher_offer, sdp_session_id, sdp_session_version, std::move(media_sources));
+    return build_answer_with_origin(false,
+                                    stream_id,
+                                    subscriber_offer,
+                                    &publisher_offer,
+                                    sdp_session_id,
+                                    sdp_session_version,
+                                    std::move(media_sources),
+                                    local_candidate_port);
 }
 
 validation_result webrtc_answer_factory::validate_config() const
@@ -442,7 +462,8 @@ validation_result webrtc_answer_factory::validate_config() const
 sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_view stream_id,
                                                                    const ice_credentials& local_ice,
                                                                    uint64_t session_id,
-                                                                   uint64_t session_version) const
+                                                                   uint64_t session_version,
+                                                                   uint16_t local_candidate_port) const
 {
     sdp::sdp_answer_options options;
 
@@ -470,9 +491,9 @@ sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_v
     options.local_candidate_transport = config_.ice_candidate_transport;
     options.local_candidate_priority = config_.ice_candidate_priority;
     options.local_candidate_address = config_.ice_candidate_address;
-    options.local_candidate_port = config_.ice_candidate_port;
+    options.local_candidate_port = local_candidate_port == 0 ? config_.ice_candidate_port : local_candidate_port;
     options.local_candidate_type = config_.ice_candidate_type;
-    options.local_candidates = config_.ice_candidates;
+    options.local_candidates = make_local_ice_candidates(config_, local_candidate_port);
     options.end_of_candidates = config_.end_of_candidates;
 
     options.local_stream_id = make_local_stream_id(config_.local_stream_id_prefix, stream_id);
@@ -484,13 +505,15 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer(bool is_whip,
                                                                 std::string_view stream_id,
                                                                 const sdp::webrtc_offer_summary& offer,
                                                                 const sdp::webrtc_offer_summary* whep_publisher_offer,
-                                                                std::vector<sdp::sdp_answer_media_source> media_sources)
+                                                                std::vector<sdp::sdp_answer_media_source> media_sources,
+                                                                uint16_t local_candidate_port)
 {
     const uint64_t session_id = next_session_id_.fetch_add(1, std::memory_order_relaxed);
 
     const uint64_t session_version = 1;
 
-    return build_answer_with_origin(is_whip, stream_id, offer, whep_publisher_offer, session_id, session_version, std::move(media_sources));
+    return build_answer_with_origin(
+        is_whip, stream_id, offer, whep_publisher_offer, session_id, session_version, std::move(media_sources), local_candidate_port);
 }
 
 generated_sdp_answer_result webrtc_answer_factory::build_answer_with_origin(bool is_whip,
@@ -499,7 +522,8 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer_with_origin(bool
                                                                             const sdp::webrtc_offer_summary* whep_publisher_offer,
                                                                             uint64_t sdp_session_id,
                                                                             uint64_t sdp_session_version,
-                                                                            std::vector<sdp::sdp_answer_media_source> media_sources)
+                                                                            std::vector<sdp::sdp_answer_media_source> media_sources,
+                                                                            uint16_t local_candidate_port)
 {
     if (sdp_session_id == 0)
     {
@@ -525,7 +549,7 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer_with_origin(bool
         return std::unexpected(local_ice.error());
     }
 
-    auto options = make_answer_options(stream_id, *local_ice, sdp_session_id, sdp_session_version);
+    auto options = make_answer_options(stream_id, *local_ice, sdp_session_id, sdp_session_version, local_candidate_port);
 
     options.media_sources = std::move(media_sources);
 
@@ -548,7 +572,6 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer_with_origin(bool
     generated_sdp_answer answer;
     answer.sdp = std::move(*answer_sdp);
     answer.local_ice = std::move(*local_ice);
-    answer.local_fingerprint = config_.local_fingerprint;
     answer.sdp_session_id = sdp_session_id;
     answer.sdp_session_version = sdp_session_version;
     answer.media_sources = std::move(options.media_sources);

@@ -2,7 +2,6 @@
 #define SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_SDPFRAG_H
 
 #include <cctype>
-#include <cstdint>
 #include <expected>
 #include <string>
 #include <string_view>
@@ -23,8 +22,6 @@ struct trickle_ice_sdpfrag_parse_result
     bool has_ice_ufrag = false;
     bool has_ice_pwd = false;
 };
-
-using trickle_ice_sdpfrag_result = std::expected<std::vector<remote_ice_candidate>, std::string>;
 
 using trickle_ice_sdpfrag_parse_result_type = std::expected<trickle_ice_sdpfrag_parse_result, std::string>;
 
@@ -121,7 +118,7 @@ inline std::expected<void, std::string> set_sdpfrag_attribute_once(
 }
 
 inline std::expected<remote_ice_candidate, std::string> make_candidate_from_sdpfrag_line(
-    std::string_view candidate_line, std::string_view sdp_mid, int sdp_mline_index, uint64_t received_at_milliseconds, std::size_t line_number)
+    std::string_view candidate_line, std::string_view sdp_mid, int sdp_mline_index, std::size_t line_number)
 {
     if (sdp_mid.empty())
     {
@@ -139,7 +136,7 @@ inline std::expected<remote_ice_candidate, std::string> make_candidate_from_sdpf
         candidate = std::string(candidate_line);
     }
 
-    auto result = make_remote_ice_candidate(candidate, sdp_mid, sdp_mline_index, received_at_milliseconds);
+    auto result = make_remote_ice_candidate(candidate, sdp_mid, sdp_mline_index);
 
     if (!result)
     {
@@ -153,17 +150,15 @@ inline std::expected<remote_ice_candidate, std::string> make_candidate_from_sdpf
     return result;
 }
 
-inline std::expected<remote_ice_candidate, std::string> make_end_of_candidates_from_sdpfrag_line(std::string_view sdp_mid,
-                                                                                                 int sdp_mline_index,
-                                                                                                 uint64_t received_at_milliseconds,
-                                                                                                 std::size_t line_number)
+inline std::expected<remote_ice_candidate, std::string> make_end_of_candidates_from_sdpfrag_line(
+    std::string_view sdp_mid, int sdp_mline_index, std::size_t line_number)
 {
     if (sdp_mid.empty())
     {
         return std::unexpected(make_sdpfrag_error(line_number, "end-of-candidates mid is missing"));
     }
 
-    auto result = make_remote_ice_candidate("", sdp_mid, sdp_mline_index, received_at_milliseconds);
+    auto result = make_remote_ice_candidate("", sdp_mid, sdp_mline_index);
 
     if (!result)
     {
@@ -178,7 +173,7 @@ inline std::expected<remote_ice_candidate, std::string> make_end_of_candidates_f
 }
 }    // namespace detail
 
-inline trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag_with_attributes(std::string_view body, uint64_t received_at_milliseconds)
+inline trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag_with_attributes(std::string_view body)
 {
     if (body.empty())
     {
@@ -278,7 +273,7 @@ inline trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag_with_attr
 
         if (detail::starts_with(line, "a=candidate:") || detail::starts_with(line, "candidate:"))
         {
-            auto candidate = detail::make_candidate_from_sdpfrag_line(line, current_mid, current_mline_index, received_at_milliseconds, line_number);
+            auto candidate = detail::make_candidate_from_sdpfrag_line(line, current_mid, current_mline_index, line_number);
 
             if (!candidate)
             {
@@ -293,7 +288,7 @@ inline trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag_with_attr
         if (line == "a=end-of-candidates" || line == "end-of-candidates")
         {
             auto candidate =
-                detail::make_end_of_candidates_from_sdpfrag_line(current_mid, current_mline_index, received_at_milliseconds, line_number);
+                detail::make_end_of_candidates_from_sdpfrag_line(current_mid, current_mline_index, line_number);
 
             if (!candidate)
             {
@@ -319,17 +314,6 @@ inline trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag_with_attr
     return result;
 }
 
-inline trickle_ice_sdpfrag_result parse_trickle_ice_sdpfrag(std::string_view body, uint64_t received_at_milliseconds)
-{
-    auto result = parse_trickle_ice_sdpfrag_with_attributes(body, received_at_milliseconds);
-
-    if (!result)
-    {
-        return std::unexpected(result.error());
-    }
-
-    return std::move(result->candidates);
-}
 }    // namespace webrtc
 
 #endif

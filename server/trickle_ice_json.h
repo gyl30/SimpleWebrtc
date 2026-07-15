@@ -1,7 +1,6 @@
 #ifndef SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_JSON_H
 #define SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_JSON_H
 
-#include <cstdint>
 #include <expected>
 #include <string>
 #include <vector>
@@ -72,13 +71,12 @@ inline std::expected<std::vector<trickle_ice_candidate_request>, std::string> pa
     return requests;
 }
 
-inline remote_ice_candidate_result make_remote_ice_candidate_from_trickle_request(const trickle_ice_candidate_request& request,
-                                                                                  uint64_t received_at_milliseconds)
+inline remote_ice_candidate_result make_remote_ice_candidate_from_trickle_request(const trickle_ice_candidate_request& request)
 {
-    return make_remote_ice_candidate(request.candidate, request.sdpMid, request.sdpMLineIndex, received_at_milliseconds);
+    return make_remote_ice_candidate(request.candidate, request.sdpMid, request.sdpMLineIndex);
 }
 inline std::expected<std::vector<remote_ice_candidate>, std::string> make_remote_ice_candidates_from_trickle_requests(
-    const std::vector<trickle_ice_candidate_request>& requests, uint64_t received_at_milliseconds)
+    const std::vector<trickle_ice_candidate_request>& requests)
 {
     std::vector<remote_ice_candidate> candidates;
 
@@ -86,7 +84,7 @@ inline std::expected<std::vector<remote_ice_candidate>, std::string> make_remote
 
     for (std::size_t index = 0; index < requests.size(); ++index)
     {
-        auto candidate = make_remote_ice_candidate_from_trickle_request(requests[index], received_at_milliseconds);
+        auto candidate = make_remote_ice_candidate_from_trickle_request(requests[index]);
 
         if (!candidate)
         {
