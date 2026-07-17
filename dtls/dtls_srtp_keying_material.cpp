@@ -114,9 +114,6 @@ srtp_keying_material_result export_srtp_keying_material(SSL* ssl)
 
     srtp_keying_material material;
     material.profile = profile;
-    material.profile_name = profile_name;
-    material.master_key_size = k_srtp_aes128_master_key_size;
-    material.master_salt_size = k_srtp_aes128_master_salt_size;
 
     std::size_t offset = 0;
 

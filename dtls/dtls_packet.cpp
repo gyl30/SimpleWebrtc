@@ -156,11 +156,6 @@ dtls_record_header_result parse_dtls_record_header(std::span<const uint8_t> data
     header.version = version;
     header.epoch = read_u16(data, 3);
 
-    for (std::size_t i = 0; i < header.sequence_number.size(); ++i)
-    {
-        header.sequence_number[i] = data[5 + i];
-    }
-
     header.length = length;
     header.record_size = record_size;
 

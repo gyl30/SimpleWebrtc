@@ -25,8 +25,6 @@ enum class srtp_profile_id
 struct srtp_keying_material
 {
     srtp_profile_id profile = srtp_profile_id::unknown;
-    std::string profile_name;
-
     std::array<uint8_t, k_srtp_aes128_master_key_size> client_write_master_key{};
 
     std::array<uint8_t, k_srtp_aes128_master_key_size> server_write_master_key{};
@@ -34,9 +32,6 @@ struct srtp_keying_material
     std::array<uint8_t, k_srtp_aes128_master_salt_size> client_write_master_salt{};
 
     std::array<uint8_t, k_srtp_aes128_master_salt_size> server_write_master_salt{};
-
-    std::size_t master_key_size = k_srtp_aes128_master_key_size;
-    std::size_t master_salt_size = k_srtp_aes128_master_salt_size;
 };
 
 using srtp_keying_material_result = std::expected<srtp_keying_material, std::string>;

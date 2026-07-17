@@ -659,8 +659,6 @@ struct dtls_peer_state
 
     uint64_t packet_count = 0;
     uint64_t byte_count = 0;
-    bool saw_client_hello = false;
-    bool saw_dtls_packet = false;
     bool handshake_started = false;
     bool fingerprint_verified = false;
     bool handshake_done = false;
@@ -676,8 +674,6 @@ struct dtls_peer_state
     std::string handshake_error;
 
     ssl_ptr ssl;
-
-    std::optional<sdp::fingerprint_info> verified_remote_fingerprint;
 
     std::optional<srtp_keying_material> keying_material;
 };
@@ -813,8 +809,6 @@ struct dtls_transport::impl
         peer->packet_count += 1;
 
         peer->byte_count += static_cast<uint64_t>(data.size());
-
-        peer->saw_dtls_packet = true;
 
         if (peer->network_family != dtls_network_family::unknown && peer->network_family != network_family)
         {
@@ -1021,7 +1015,6 @@ struct dtls_transport::impl
         peer.handshake_error = std::move(error);
 
         peer.keying_material.reset();
-        peer.verified_remote_fingerprint.reset();
 
         WEBRTC_LOG_ERROR("dtls peer handshake failed remote={} role={} stream={} session={} error={}",
                          remote_endpoint,
@@ -1071,8 +1064,6 @@ struct dtls_transport::impl
             return std::unexpected(fingerprint.error());
         }
 
-        peer.verified_remote_fingerprint = std::move(*fingerprint);
-
         peer.fingerprint_verified = true;
 
         WEBRTC_LOG_INFO("dtls remote certificate fingerprint verified remote={} role={} stream={} session={} algorithm={} fingerprint={}",
@@ -1080,8 +1071,8 @@ struct dtls_transport::impl
                         dtls_peer_role_to_string(peer.identity.role),
                         peer.identity.stream_id,
                         peer.identity.session_id,
-                        peer.verified_remote_fingerprint->algorithm,
-                        peer.verified_remote_fingerprint->value);
+                        fingerprint->algorithm,
+                        fingerprint->value);
 
         return {};
     }
@@ -1140,8 +1131,8 @@ struct dtls_transport::impl
             peer.identity.stream_id,
             peer.identity.session_id,
             srtp_profile_id_to_string(peer.keying_material->profile),
-            peer.keying_material->master_key_size,
-            peer.keying_material->master_salt_size,
+            peer.keying_material->client_write_master_key.size(),
+            peer.keying_material->client_write_master_salt.size(),
             peer.packet_count,
             peer.byte_count,
             elapsed.count(),
@@ -1158,8 +1149,6 @@ struct dtls_transport::impl
 
             if (handshake_type == dtls_handshake_type::client_hello)
             {
-                peer.saw_client_hello = true;
-
                 WEBRTC_LOG_INFO(
                     "dtls client hello received remote={} role={} stream={} session={} version={} epoch={} record_size={} packet_count={}",
                     remote_endpoint,

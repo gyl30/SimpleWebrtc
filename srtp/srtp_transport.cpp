@@ -204,14 +204,7 @@ struct srtp_peer_state
     std::optional<srtp_session> outbound_session;
 
     uint64_t inbound_packet_count = 0;
-    uint64_t inbound_byte_count = 0;
-    uint64_t inbound_rtp_count = 0;
-    uint64_t inbound_rtcp_count = 0;
-
     uint64_t outbound_packet_count = 0;
-    uint64_t outbound_byte_count = 0;
-    uint64_t outbound_rtp_count = 0;
-    uint64_t outbound_rtcp_count = 0;
 };
 }    // namespace
 
@@ -354,12 +347,8 @@ struct srtp_transport::impl
         }
 
         peer.inbound_packet_count += 1;
-        peer.inbound_byte_count += static_cast<uint64_t>(unprotected_size);
-
         if (kind == srtp_packet_kind::rtp)
         {
-            peer.inbound_rtp_count += 1;
-
             WEBRTC_LOG_DEBUG(
                 "srtp inbound rtp unprotected remote={} size={} plain_size={} ssrc={} payload_type={} marker={} sequence={} timestamp={} packets={}",
                 remote_endpoint,
@@ -374,8 +363,6 @@ struct srtp_transport::impl
         }
         else
         {
-            peer.inbound_rtcp_count += 1;
-
             if (result->rtcp_is_feedback)
             {
                 WEBRTC_LOG_DEBUG(
@@ -496,17 +483,6 @@ struct srtp_transport::impl
         packet.resize(*protect_result);
 
         peer.outbound_packet_count += 1;
-        peer.outbound_byte_count += static_cast<uint64_t>(packet.size());
-
-        if (kind == srtp_packet_kind::rtp)
-        {
-            peer.outbound_rtp_count += 1;
-        }
-        else
-        {
-            peer.outbound_rtcp_count += 1;
-        }
-
         WEBRTC_LOG_DEBUG("srtp outbound packet protected remote={} kind={} plain_size={} protected_size={} packets={}",
                          remote_endpoint,
                          srtp_packet_kind_to_string(kind),

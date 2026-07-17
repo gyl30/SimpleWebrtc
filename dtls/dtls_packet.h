@@ -1,7 +1,6 @@
 #ifndef SIMPLE_WEBRTC_DTLS_DTLS_PACKET_H
 #define SIMPLE_WEBRTC_DTLS_DTLS_PACKET_H
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -43,7 +42,6 @@ struct dtls_record_header
 
     uint16_t version = 0;
     uint16_t epoch = 0;
-    std::array<uint8_t, 6> sequence_number{};
     uint16_t length = 0;
     std::size_t record_size = 0;
 };
