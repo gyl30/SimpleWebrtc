@@ -44,25 +44,16 @@ bool has_rtp_version(std::span<const uint8_t> data)
     return (data[0] >> 6U) == 2U;
 }
 
-rtp_header_extension_format make_extension_format(uint16_t profile)
+bool is_one_byte_extension_profile(uint16_t profile) { return profile == k_one_byte_extension_profile; }
+
+bool is_two_byte_extension_profile(uint16_t profile)
 {
-    if (is_one_byte_rtp_header_extension_profile(profile))
-    {
-        return rtp_header_extension_format::one_byte;
-    }
-
-    if (is_two_byte_rtp_header_extension_profile(profile))
-    {
-        return rtp_header_extension_format::two_byte;
-    }
-
-    return rtp_header_extension_format::unknown;
+    return (profile & k_two_byte_extension_profile_mask) == k_two_byte_extension_profile_value;
 }
 
-std::expected<void, std::string> parse_one_byte_header_extensions(std::span<const uint8_t> packet,
-                                                                  std::size_t extension_payload_offset,
-                                                                  std::size_t extension_payload_size,
-                                                                  rtp_packet_header& header)
+std::expected<void, std::string> validate_one_byte_header_extensions(std::span<const uint8_t> packet,
+                                                                     std::size_t extension_payload_offset,
+                                                                     std::size_t extension_payload_size)
 {
     const std::size_t extension_end = extension_payload_offset + extension_payload_size;
 
@@ -100,24 +91,15 @@ std::expected<void, std::string> parse_one_byte_header_extensions(std::span<cons
             return make_error("rtp one-byte extension element is truncated");
         }
 
-        rtp_header_extension_entry entry;
-
-        entry.id = id;
-        entry.offset = offset;
-        entry.size = size;
-
-        header.header_extensions.push_back(entry);
-
         offset += size;
     }
 
     return {};
 }
 
-std::expected<void, std::string> parse_two_byte_header_extensions(std::span<const uint8_t> packet,
-                                                                  std::size_t extension_payload_offset,
-                                                                  std::size_t extension_payload_size,
-                                                                  rtp_packet_header& header)
+std::expected<void, std::string> validate_two_byte_header_extensions(std::span<const uint8_t> packet,
+                                                                     std::size_t extension_payload_offset,
+                                                                     std::size_t extension_payload_size)
 {
     const std::size_t extension_end = extension_payload_offset + extension_payload_size;
 
@@ -153,71 +135,58 @@ std::expected<void, std::string> parse_two_byte_header_extensions(std::span<cons
             return make_error("rtp two-byte extension element is truncated");
         }
 
-        rtp_header_extension_entry entry;
-
-        entry.id = id;
-        entry.offset = offset;
-        entry.size = size;
-
-        header.header_extensions.push_back(entry);
-
         offset += size;
     }
 
     return {};
 }
 
-std::expected<void, std::string> parse_header_extensions(std::span<const uint8_t> packet,
-                                                         rtp_packet_header& header,
-                                                         std::size_t extension_header_offset)
+std::expected<std::size_t, std::string> validate_header_extensions(std::span<const uint8_t> packet,
+                                                                   std::size_t extension_header_offset)
 {
     if (extension_header_offset + k_rtp_extension_header_size > packet.size())
     {
         return make_error("rtp extension header is truncated");
     }
 
-    header.extension_header_offset = extension_header_offset;
-
-    header.extension_profile = read_u16(packet, extension_header_offset);
-
+    const uint16_t extension_profile = read_u16(packet, extension_header_offset);
     const uint16_t extension_length_words = read_u16(packet, extension_header_offset + 2);
-
-    header.extension_payload_offset = extension_header_offset + k_rtp_extension_header_size;
-
-    header.extension_payload_size = static_cast<std::size_t>(extension_length_words) * 4;
-
-    const std::size_t extension_total_size = k_rtp_extension_header_size + header.extension_payload_size;
+    const std::size_t extension_payload_offset = extension_header_offset + k_rtp_extension_header_size;
+    const std::size_t extension_payload_size = static_cast<std::size_t>(extension_length_words) * 4;
+    const std::size_t extension_total_size = k_rtp_extension_header_size + extension_payload_size;
 
     if (extension_header_offset + extension_total_size > packet.size())
     {
         return make_error("rtp extension payload is truncated");
     }
 
-    header.extension_format = make_extension_format(header.extension_profile);
+    std::expected<void, std::string> validation_result;
 
-    switch (header.extension_format)
+    if (is_one_byte_extension_profile(extension_profile))
     {
-        case rtp_header_extension_format::one_byte:
-            return parse_one_byte_header_extensions(packet, header.extension_payload_offset, header.extension_payload_size, header);
-
-        case rtp_header_extension_format::two_byte:
-            return parse_two_byte_header_extensions(packet, header.extension_payload_offset, header.extension_payload_size, header);
-
-        case rtp_header_extension_format::unknown:
-            return {};
+        validation_result = validate_one_byte_header_extensions(packet, extension_payload_offset, extension_payload_size);
+    }
+    else if (is_two_byte_extension_profile(extension_profile))
+    {
+        validation_result = validate_two_byte_header_extensions(packet, extension_payload_offset, extension_payload_size);
     }
 
-    return {};
+    if (!validation_result)
+    {
+        return std::unexpected(validation_result.error());
+    }
+
+    return extension_total_size;
 }
 
-std::expected<void, std::string> parse_rtp_padding(std::span<const uint8_t> packet, rtp_packet_header& header)
+std::expected<void, std::string> validate_rtp_padding(std::span<const uint8_t> packet, bool padding, std::size_t payload_size)
 {
-    if (!header.padding)
+    if (!padding)
     {
         return {};
     }
 
-    if (header.payload_size == 0)
+    if (payload_size == 0)
     {
         return make_error("rtp padding flag set but payload is empty");
     }
@@ -229,14 +198,10 @@ std::expected<void, std::string> parse_rtp_padding(std::span<const uint8_t> pack
         return make_error("rtp padding size is zero");
     }
 
-    if (padding_size > header.payload_size)
+    if (padding_size > payload_size)
     {
         return make_error("rtp padding exceeds payload size");
     }
-
-    header.padding_size = padding_size;
-
-    header.payload_size -= padding_size;
 
     return {};
 }
@@ -285,64 +250,48 @@ rtp_packet_header_result parse_rtp_packet_header(std::span<const uint8_t> data)
         return make_error("packet is rtcp not rtp");
     }
 
-    rtp_packet_header header;
+    const bool padding = (data[0] & 0x20U) != 0;
+    const bool extension = (data[0] & 0x10U) != 0;
+    const uint8_t csrc_count = static_cast<uint8_t>(data[0] & 0x0FU);
 
-    header.version = static_cast<uint8_t>(data[0] >> 6U);
-
-    header.padding = (data[0] & 0x20U) != 0;
-
-    header.extension = (data[0] & 0x10U) != 0;
-
-    header.csrc_count = static_cast<uint8_t>(data[0] & 0x0FU);
-
-    header.marker = (data[1] & 0x80U) != 0;
-
-    header.payload_type = static_cast<uint8_t>(data[1] & 0x7FU);
-
-    header.sequence_number = read_u16(data, 2);
-
-    header.timestamp = read_u32(data, 4);
-
-    header.ssrc = read_u32(data, 8);
-
-    std::size_t header_size = k_rtp_fixed_header_size + static_cast<std::size_t>(header.csrc_count) * k_rtp_csrc_size;
+    std::size_t header_size = k_rtp_fixed_header_size + static_cast<std::size_t>(csrc_count) * k_rtp_csrc_size;
 
     if (header_size > data.size())
     {
         return make_error("rtp csrc list is truncated");
     }
 
-    if (header.extension)
+    if (extension)
     {
-        auto extension_result = parse_header_extensions(data, header, header_size);
+        auto extension_result = validate_header_extensions(data, header_size);
 
         if (!extension_result)
         {
             return std::unexpected(extension_result.error());
         }
 
-        header_size += k_rtp_extension_header_size + header.extension_payload_size;
+        header_size += *extension_result;
     }
-
-    header.header_size = header_size;
-
-    header.payload_offset = header_size;
 
     if (header_size > data.size())
     {
         return make_error("rtp header exceeds packet size");
     }
 
-    header.payload_size = data.size() - header_size;
-
-    auto padding_result = parse_rtp_padding(data, header);
+    auto padding_result = validate_rtp_padding(data, padding, data.size() - header_size);
 
     if (!padding_result)
     {
         return std::unexpected(padding_result.error());
     }
 
-    return header;
+    return rtp_packet_header{
+        .marker = (data[1] & 0x80U) != 0,
+        .payload_type = static_cast<uint8_t>(data[1] & 0x7FU),
+        .sequence_number = read_u16(data, 2),
+        .timestamp = read_u32(data, 4),
+        .ssrc = read_u32(data, 8),
+    };
 }
 
 rtcp_packet_header_result parse_rtcp_packet_header(std::span<const uint8_t> data)
@@ -403,13 +352,6 @@ rtcp_packet_header_result parse_rtcp_packet_header(std::span<const uint8_t> data
     }
 
     return header;
-}
-
-bool is_one_byte_rtp_header_extension_profile(uint16_t profile) { return profile == k_one_byte_extension_profile; }
-
-bool is_two_byte_rtp_header_extension_profile(uint16_t profile)
-{
-    return (profile & k_two_byte_extension_profile_mask) == k_two_byte_extension_profile_value;
 }
 
 std::string rtcp_packet_type_to_string(uint8_t packet_type)
