@@ -183,20 +183,12 @@ struct session_description
     std::vector<const sdp_attribute*> find_attributes(std::string_view key) const;
 };
 
-inline constexpr std::string_view k_attribute_candidate = "candidate";
-inline constexpr std::string_view k_attribute_end_of_candidates = "end-of-candidates";
-inline constexpr std::string_view k_attribute_identity = "identity";
 inline constexpr std::string_view k_attribute_group = "group";
-inline constexpr std::string_view k_attribute_ssrc = "ssrc";
 inline constexpr std::string_view k_attribute_ssrc_group = "ssrc-group";
-inline constexpr std::string_view k_attribute_msid = "msid";
-inline constexpr std::string_view k_attribute_msid_semantic = "msid-semantic";
 inline constexpr std::string_view k_attribute_setup = "setup";
 inline constexpr std::string_view k_attribute_mid = "mid";
-inline constexpr std::string_view k_attribute_ice_lite = "ice-lite";
 inline constexpr std::string_view k_attribute_ice_ufrag = "ice-ufrag";
 inline constexpr std::string_view k_attribute_ice_pwd = "ice-pwd";
-inline constexpr std::string_view k_attribute_ice_options = "ice-options";
 inline constexpr std::string_view k_attribute_fingerprint = "fingerprint";
 inline constexpr std::string_view k_attribute_rtcp_mux = "rtcp-mux";
 inline constexpr std::string_view k_attribute_rtcp_rsize = "rtcp-rsize";
@@ -210,13 +202,8 @@ inline constexpr std::string_view k_attribute_rtcp_feedback = "rtcp-fb";
 inline constexpr std::string_view k_attribute_ext_map = "extmap";
 inline constexpr std::string_view k_attribute_ext_map_allow_mixed = "extmap-allow-mixed";
 
-inline constexpr std::string_view k_rtp_header_extension_abs_send_time_uri = "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
-inline constexpr std::string_view k_rtp_header_extension_transport_cc_uri =
-    "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
-inline constexpr std::string_view k_rtp_header_extension_sdes_mid_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
 inline constexpr std::string_view k_rtp_header_extension_sdes_rtp_stream_id_uri = "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id";
 inline constexpr std::string_view k_rtp_header_extension_sdes_repaired_rtp_stream_id_uri = "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id";
-inline constexpr std::string_view k_rtp_header_extension_audio_level_uri = "urn:ietf:params:rtp-hdrext:ssrc-audio-level";
 }    // namespace webrtc::sdp
 
 #endif

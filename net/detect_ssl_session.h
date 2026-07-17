@@ -18,8 +18,6 @@ class detect_ssl_session : public std::enable_shared_from_this<detect_ssl_sessio
    public:
     detect_ssl_session(std::string id, http_handler&& h, boost::asio::ip::tcp::socket socket, boost::asio::ssl::context& ssl_ex)
         : id_(std::move(id)), ssl_ex_(ssl_ex), stream_(std::move(socket)), h_(std::move(h)) {};
-    detect_ssl_session();
-
    public:
     void run()
     {

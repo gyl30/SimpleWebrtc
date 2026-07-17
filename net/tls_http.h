@@ -113,7 +113,6 @@ class tls_http_session : public std::enable_shared_from_this<tls_http_session>
 
     void on_write(const http_request_ptr& req, boost::beast::error_code ec, std::size_t bytes_transferred)
     {
-        writing_ = false;
         boost::ignore_unused(bytes_transferred);
         if (ec)
         {
@@ -147,7 +146,6 @@ class tls_http_session : public std::enable_shared_from_this<tls_http_session>
    private:
     std::string id_;
     http_handler handler_;
-    bool writing_ = false;
     boost::beast::flat_buffer buffer_;
     boost::asio::ssl::stream<boost::beast::tcp_stream> stream_;
     boost::optional<boost::beast::http::request_parser<boost::beast::http::string_body>> parser_;

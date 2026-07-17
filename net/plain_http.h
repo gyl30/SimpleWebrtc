@@ -71,7 +71,6 @@ class plain_http_session : public std::enable_shared_from_this<plain_http_sessio
     }
     void write_response(http_request_t& req, const http_response_ptr& res)
     {
-        writing_ = true;
         auto self = shared_from_this();
         auto req_ptr = std::make_shared<boost::beast::http::request<boost::beast::http::string_body>>(std::move(req.req));
         boost::beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(30));
@@ -80,7 +79,6 @@ class plain_http_session : public std::enable_shared_from_this<plain_http_sessio
     }
     void on_write(const http_request_ptr& req, boost::beast::error_code ec, std::size_t bytes_transferred)
     {
-        writing_ = false;
         boost::ignore_unused(bytes_transferred);
         if (ec)
         {
@@ -108,7 +106,6 @@ class plain_http_session : public std::enable_shared_from_this<plain_http_sessio
    private:
     std::string id_;
     http_handler handler_;
-    bool writing_ = false;
     boost::beast::tcp_stream stream_;
     boost::beast::flat_buffer buffer_;
     boost::optional<boost::beast::http::request_parser<boost::beast::http::string_body>> parser_;
