@@ -27,7 +27,8 @@ class whip_session_transport : public session_ice_udp_packet_handler
     whip_session_transport(boost::asio::io_context& io_context,
                            std::string bind_host,
                            std::shared_ptr<dtls_context> dtls_context,
-                           dtls_transport_config dtls_config);
+                           dtls_transport_config dtls_config,
+                           std::shared_ptr<media_fanout_router> media_fanout_router);
 
     ~whip_session_transport();
 
@@ -45,8 +46,6 @@ class whip_session_transport : public session_ice_udp_packet_handler
     void set_ice_context(std::string stream_id, std::string session_id, ice_credentials local_ice, std::string remote_ice_ufrag);
 
     void set_dtls_peer_identity(dtls_peer_identity identity);
-
-    void set_media_fanout_router(std::shared_ptr<media_fanout_router> media_fanout_router);
 
     void stop();
 

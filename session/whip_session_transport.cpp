@@ -24,14 +24,13 @@ namespace webrtc
 whip_session_transport::whip_session_transport(boost::asio::io_context& io_context,
                                                std::string bind_host,
                                                std::shared_ptr<dtls_context> dtls_context,
-                                               dtls_transport_config dtls_config)
-    : udp_server_(io_context, std::move(bind_host))
+                                               dtls_transport_config dtls_config,
+                                               std::shared_ptr<media_fanout_router> media_fanout_router)
+    : udp_server_(io_context, std::move(bind_host)),
+      dtls_transport_(std::make_shared<dtls_transport>(std::move(dtls_context), dtls_config)),
+      srtp_transport_(std::make_shared<srtp_transport>(dtls_transport_)),
+      media_fanout_router_(std::move(media_fanout_router))
 {
-    if (dtls_context != nullptr)
-    {
-        dtls_transport_ = std::make_shared<dtls_transport>(std::move(dtls_context), dtls_config);
-        srtp_transport_ = std::make_shared<srtp_transport>(dtls_transport_);
-    }
 }
 
 whip_session_transport::~whip_session_transport() { stop(); }
@@ -50,11 +49,6 @@ void whip_session_transport::set_dtls_peer_identity(dtls_peer_identity identity)
 {
     dtls_identity_ = std::move(identity);
     dtls_identity_ready_ = true;
-}
-
-void whip_session_transport::set_media_fanout_router(std::shared_ptr<media_fanout_router> media_fanout_router)
-{
-    media_fanout_router_ = std::move(media_fanout_router);
 }
 
 void whip_session_transport::stop() { udp_server_.stop(); }
@@ -106,9 +100,9 @@ session_udp_dispatch_result whip_session_transport::handle_udp_packet(const sess
     {
         session_udp_dispatch_result result;
 
-        if (dtls_transport_ == nullptr || !dtls_identity_ready_)
+        if (!dtls_identity_ready_)
         {
-            WEBRTC_LOG_WARN("WHIP session transport dtls unavailable stream={} session={}", stream_id_, session_id_);
+            WEBRTC_LOG_WARN("WHIP session transport dtls identity unavailable stream={} session={}", stream_id_, session_id_);
 
             return result;
         }
@@ -139,44 +133,39 @@ session_udp_dispatch_result whip_session_transport::handle_udp_packet(const sess
         return result;
     }
 
-    if (srtp_transport_ != nullptr)
+    const std::string remote_address = format_udp_endpoint(packet.remote_endpoint);
+
+    auto srtp_packet = srtp_transport_->handle_inbound_packet(packet.data, remote_address);
+
+    if (!srtp_packet)
     {
-        const std::string remote_address = format_udp_endpoint(packet.remote_endpoint);
+        WEBRTC_LOG_WARN("WHIP session transport srtp unprotect failed stream={} session={} remote={} error={}",
+                        stream_id_,
+                        session_id_,
+                        remote_address,
+                        srtp_packet.error());
 
-        auto srtp_packet = srtp_transport_->handle_inbound_packet(packet.data, remote_address);
+        return {};
+    }
 
-        if (!srtp_packet)
-        {
-            WEBRTC_LOG_WARN("WHIP session transport srtp unprotect failed stream={} session={} remote={} error={}",
-                            stream_id_,
-                            session_id_,
-                            remote_address,
-                            srtp_packet.error());
+    if (srtp_packet->state == srtp_packet_process_state::unprotected && srtp_packet->kind == srtp_packet_kind::rtp)
+    {
+        const std::span<const uint8_t> plain_packet(srtp_packet->plain_packet.data(), srtp_packet->plain_packet.size());
 
-            return {};
-        }
+        const std::size_t target_count = media_fanout_router_->publish_rtp(stream_id_, session_id_, plain_packet);
 
-        if (srtp_packet->state == srtp_packet_process_state::unprotected && srtp_packet->kind == srtp_packet_kind::rtp)
-        {
-            const std::span<const uint8_t> plain_packet(srtp_packet->plain_packet.data(), srtp_packet->plain_packet.size());
+        WEBRTC_LOG_DEBUG("WHIP RTP published stream={} session={} remote={} ssrc={} pt={} seq={} timestamp={} size={} targets={}",
+                         stream_id_,
+                         session_id_,
+                         remote_address,
+                         srtp_packet->ssrc,
+                         srtp_packet->payload_type,
+                         srtp_packet->sequence_number,
+                         srtp_packet->timestamp,
+                         srtp_packet->plain_packet.size(),
+                         target_count);
 
-            const std::size_t target_count = media_fanout_router_ != nullptr
-                                                 ? media_fanout_router_->publish_rtp(stream_id_, session_id_, plain_packet)
-                                                 : 0;
-
-            WEBRTC_LOG_DEBUG("WHIP RTP published stream={} session={} remote={} ssrc={} pt={} seq={} timestamp={} size={} targets={}",
-                             stream_id_,
-                             session_id_,
-                             remote_address,
-                             srtp_packet->ssrc,
-                             srtp_packet->payload_type,
-                             srtp_packet->sequence_number,
-                             srtp_packet->timestamp,
-                             srtp_packet->plain_packet.size(),
-                             target_count);
-
-            return {};
-        }
+        return {};
     }
 
     WEBRTC_LOG_DEBUG("WHIP session transport received udp packet remote={} size={} count={}",

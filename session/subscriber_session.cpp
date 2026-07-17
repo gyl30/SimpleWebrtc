@@ -89,8 +89,6 @@ uint16_t subscriber_session::local_udp_port() const
     return local_udp_port_->port();
 }
 
-const std::shared_ptr<whep_session_transport>& subscriber_session::transport() const { return transport_; }
-
 uint64_t subscriber_session::sdp_session_id() const { return sdp_session_id_; }
 
 uint64_t subscriber_session::sdp_session_version() const { return sdp_session_version_; }

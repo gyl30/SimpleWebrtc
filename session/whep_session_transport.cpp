@@ -26,14 +26,13 @@ namespace webrtc
 whep_session_transport::whep_session_transport(boost::asio::io_context& io_context,
                                                std::string bind_host,
                                                std::shared_ptr<dtls_context> dtls_context,
-                                               dtls_transport_config dtls_config)
-    : udp_server_(io_context, std::move(bind_host))
+                                               dtls_transport_config dtls_config,
+                                               std::shared_ptr<media_fanout_router> media_fanout_router)
+    : udp_server_(io_context, std::move(bind_host)),
+      dtls_transport_(std::make_shared<dtls_transport>(std::move(dtls_context), dtls_config)),
+      srtp_transport_(std::make_shared<srtp_transport>(dtls_transport_)),
+      media_fanout_router_(std::move(media_fanout_router))
 {
-    if (dtls_context != nullptr)
-    {
-        dtls_transport_ = std::make_shared<dtls_transport>(std::move(dtls_context), dtls_config);
-        srtp_transport_ = std::make_shared<srtp_transport>(dtls_transport_);
-    }
 }
 
 whep_session_transport::~whep_session_transport() { stop(); }
@@ -58,25 +57,9 @@ void whep_session_transport::set_dtls_peer_identity(dtls_peer_identity identity)
     dtls_identity_ready_ = true;
 }
 
-void whep_session_transport::set_media_fanout_router(std::shared_ptr<media_fanout_router> media_fanout_router)
-{
-    if (media_fanout_router_ == media_fanout_router)
-    {
-        subscribe_media();
-
-        return;
-    }
-
-    unsubscribe_media();
-
-    media_fanout_router_ = std::move(media_fanout_router);
-
-    subscribe_media();
-}
-
 void whep_session_transport::send_rtp(std::span<const uint8_t> plain_rtp)
 {
-    if (plain_rtp.empty() || srtp_transport_ == nullptr || !selected_remote_endpoint_.has_value())
+    if (plain_rtp.empty() || !selected_remote_endpoint_.has_value())
     {
         return;
     }
@@ -118,7 +101,7 @@ void whep_session_transport::stop()
 
 void whep_session_transport::subscribe_media()
 {
-    if (media_subscribed_ || media_fanout_router_ == nullptr || stream_id_.empty() || session_id_.empty())
+    if (media_subscribed_ || stream_id_.empty() || session_id_.empty())
     {
         return;
     }
@@ -153,7 +136,7 @@ void whep_session_transport::unsubscribe_media()
         return;
     }
 
-    if (media_fanout_router_ != nullptr && !session_id_.empty())
+    if (!session_id_.empty())
     {
         media_fanout_router_->unsubscribe(session_id_);
     }
@@ -208,9 +191,9 @@ session_udp_dispatch_result whep_session_transport::handle_udp_packet(const sess
     {
         session_udp_dispatch_result result;
 
-        if (dtls_transport_ == nullptr || !dtls_identity_ready_)
+        if (!dtls_identity_ready_)
         {
-            WEBRTC_LOG_WARN("WHEP session transport dtls unavailable stream={} session={}", stream_id_, session_id_);
+            WEBRTC_LOG_WARN("WHEP session transport dtls identity unavailable stream={} session={}", stream_id_, session_id_);
 
             return result;
         }

@@ -48,8 +48,6 @@ class subscriber_session
 
     [[nodiscard]] uint16_t local_udp_port() const;
 
-    [[nodiscard]] const std::shared_ptr<whep_session_transport>& transport() const;
-
     [[nodiscard]] uint64_t sdp_session_id() const;
 
     [[nodiscard]] uint64_t sdp_session_version() const;

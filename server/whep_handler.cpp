@@ -607,7 +607,8 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         return json_error_response(request, 503, "whep_udp_port_unavailable", "session udp port unavailable");
     }
 
-    auto transport = std::make_shared<whep_session_transport>(io_context_, udp_bind_host_, dtls_context_, dtls_config_);
+    auto transport =
+        std::make_shared<whep_session_transport>(io_context_, udp_bind_host_, dtls_context_, dtls_config_, media_fanout_router_);
 
     auto transport_start = transport->start((*local_udp_port)->port());
 
@@ -708,8 +709,6 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     transport->set_ice_context(session->stream_id(), session->session_id(), session->local_ice(), session->remote_offer_summary().ice_ufrag);
     transport->set_dtls_peer_identity(make_dtls_peer_identity(*session));
-    transport->set_media_fanout_router(media_fanout_router_);
-
     session->set_transport(std::move(transport));
 
     WEBRTC_LOG_INFO(

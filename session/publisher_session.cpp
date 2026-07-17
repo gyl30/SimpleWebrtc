@@ -88,8 +88,6 @@ uint16_t publisher_session::local_udp_port() const
     return local_udp_port_->port();
 }
 
-const std::shared_ptr<whip_session_transport>& publisher_session::transport() const { return transport_; }
-
 uint64_t publisher_session::sdp_session_id() const { return sdp_session_id_; }
 
 uint64_t publisher_session::sdp_session_version() const { return sdp_session_version_; }
