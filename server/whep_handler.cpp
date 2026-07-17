@@ -35,7 +35,6 @@ namespace http = boost::beast::http;
 constexpr std::string_view k_whep_invalid_sdp_offer_error = "whep_invalid_sdp_offer";
 constexpr std::string_view k_whep_invalid_webrtc_offer_error = "whep_invalid_webrtc_offer";
 constexpr std::string_view k_whep_invalid_offer_error = "whep_invalid_offer";
-constexpr std::string_view k_whep_answer_factory_unavailable_error = "whep_answer_factory_unavailable";
 constexpr std::string_view k_whep_publisher_not_found_error = "whep_publisher_not_found";
 constexpr std::string_view k_whep_previous_subscriber_not_found_error = "whep_previous_subscriber_not_found";
 constexpr std::string_view k_whep_reconnect_stream_mismatch_error = "whep_reconnect_stream_mismatch";
@@ -487,7 +486,7 @@ whep_handler::whep_handler(std::shared_ptr<stream_registry> registry,
       answer_factory_(std::move(answer_factory)),
       udp_port_allocator_(std::move(udp_port_allocator)),
       media_fanout_router_(std::move(media_fanout_router)),
-      io_context_(&io_context),
+      io_context_(io_context),
       udp_bind_host_(std::move(udp_bind_host)),
       dtls_context_(std::move(dtls_context)),
       dtls_config_(dtls_config)
@@ -530,12 +529,6 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                     offer_summary->bundle_mids.size(),
                     offer_summary->media.size(),
                     offer_summary->ice_ufrag.size());
-
-    if (answer_factory_ == nullptr)
-    {
-        WEBRTC_LOG_ERROR("WHEP answer factory is not configured stream={}", stream_id);
-        return json_error_response(request, 500, k_whep_answer_factory_unavailable_error, "answer factory is not configured");
-    }
 
     auto publisher = registry_->find_publisher_by_stream_id(stream_id);
 
@@ -605,45 +598,29 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
         return json_error_response(request, 400, k_whep_sdp_answer_failed_error, "failed to build sdp answer: outbound media source empty");
     }
-    std::optional<udp_port_reservation_ptr> local_udp_port;
-    std::shared_ptr<whep_session_transport> transport;
+    auto local_udp_port = reserve_udp_port(udp_port_allocator_);
 
-    if (udp_port_allocator_ != nullptr)
+    if (!local_udp_port)
     {
-        if (io_context_ == nullptr)
-        {
-            WEBRTC_LOG_ERROR("WHEP session transport io context unavailable stream={}", stream_id);
+        WEBRTC_LOG_ERROR("WHEP allocate session udp port failed stream={}", stream_id);
 
-            return json_error_response(request, 500, "whep_transport_unavailable", "session transport unavailable");
-        }
-
-        local_udp_port = reserve_udp_port(udp_port_allocator_);
-
-        if (!local_udp_port)
-        {
-            WEBRTC_LOG_ERROR("WHEP allocate session udp port failed stream={}", stream_id);
-
-            return json_error_response(request, 503, "whep_udp_port_unavailable", "session udp port unavailable");
-        }
-
-        transport = std::make_shared<whep_session_transport>(*io_context_, udp_bind_host_, dtls_context_, dtls_config_);
-
-        auto transport_start = transport->start((*local_udp_port)->port());
-
-        if (!transport_start)
-        {
-            WEBRTC_LOG_ERROR(
-                "WHEP start session transport failed stream={} port={} error={}", stream_id, (*local_udp_port)->port(), transport_start.error());
-
-            return json_error_response(request, 503, "whep_udp_bind_failed", "session udp bind failed");
-        }
+        return json_error_response(request, 503, "whep_udp_port_unavailable", "session udp port unavailable");
     }
 
-    auto generated_answer =
-        local_udp_port.has_value()
-            ? answer_factory_->build_whep_answer(
-                  stream_id, *offer_summary, publisher->remote_offer_summary(), std::move(outbound_media_sources), (*local_udp_port)->port())
-            : answer_factory_->build_whep_answer(stream_id, *offer_summary, publisher->remote_offer_summary(), std::move(outbound_media_sources));
+    auto transport = std::make_shared<whep_session_transport>(io_context_, udp_bind_host_, dtls_context_, dtls_config_);
+
+    auto transport_start = transport->start((*local_udp_port)->port());
+
+    if (!transport_start)
+    {
+        WEBRTC_LOG_ERROR(
+            "WHEP start session transport failed stream={} port={} error={}", stream_id, (*local_udp_port)->port(), transport_start.error());
+
+        return json_error_response(request, 503, "whep_udp_bind_failed", "session udp bind failed");
+    }
+
+    auto generated_answer = answer_factory_->build_whep_answer(
+        stream_id, *offer_summary, publisher->remote_offer_summary(), std::move(outbound_media_sources), (*local_udp_port)->port());
     if (!generated_answer)
     {
         WEBRTC_LOG_WARN("WHEP build SDP answer failed stream={} error={}", stream_id, generated_answer.error());
@@ -715,10 +692,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     const auto& session = *session_result;
 
-    if (local_udp_port.has_value())
-    {
-        session->set_local_udp_port_reservation(std::move(*local_udp_port));
-    }
+    session->set_local_udp_port_reservation(std::move(*local_udp_port));
 
     generated_sdp_answer generated = std::move(*generated_answer);
 
@@ -732,14 +706,11 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                               generated.sdp_session_id,
                               generated.sdp_session_version);
 
-    if (transport != nullptr)
-    {
-        transport->set_ice_context(session->stream_id(), session->session_id(), session->local_ice(), session->remote_offer_summary().ice_ufrag);
-        transport->set_dtls_peer_identity(make_dtls_peer_identity(*session));
-        transport->set_media_fanout_router(media_fanout_router_);
+    transport->set_ice_context(session->stream_id(), session->session_id(), session->local_ice(), session->remote_offer_summary().ice_ufrag);
+    transport->set_dtls_peer_identity(make_dtls_peer_identity(*session));
+    transport->set_media_fanout_router(media_fanout_router_);
 
-        session->set_transport(std::move(transport));
-    }
+    session->set_transport(std::move(transport));
 
     WEBRTC_LOG_INFO(
         "WHEP create subscriber stream={} session={} reconnect={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={} "
@@ -790,13 +761,6 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
     if (body_validation_error != nullptr)
     {
         return body_validation_error;
-    }
-
-    if (answer_factory_ == nullptr)
-    {
-        WEBRTC_LOG_ERROR("WHEP answer factory is not configured session={}", session_id);
-
-        return json_error_response(request, 500, k_whep_answer_factory_unavailable_error, "answer factory is not configured");
     }
 
     auto publisher = registry_->find_publisher_by_stream_id(session->stream_id());

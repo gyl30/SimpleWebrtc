@@ -54,7 +54,7 @@ class whep_handler
     std::shared_ptr<webrtc_answer_factory> answer_factory_;
     std::shared_ptr<udp_port_allocator> udp_port_allocator_;
     std::shared_ptr<media_fanout_router> media_fanout_router_;
-    boost::asio::io_context* io_context_ = nullptr;
+    boost::asio::io_context& io_context_;
     std::string udp_bind_host_;
     std::shared_ptr<dtls_context> dtls_context_;
     dtls_transport_config dtls_config_;

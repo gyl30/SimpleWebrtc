@@ -33,7 +33,6 @@ namespace http = boost::beast::http;
 constexpr std::string_view k_whip_invalid_sdp_offer_error = "whip_invalid_sdp_offer";
 constexpr std::string_view k_whip_invalid_webrtc_offer_error = "whip_invalid_webrtc_offer";
 constexpr std::string_view k_whip_invalid_offer_error = "whip_invalid_offer";
-constexpr std::string_view k_whip_answer_factory_unavailable_error = "whip_answer_factory_unavailable";
 constexpr std::string_view k_whip_sdp_answer_failed_error = "whip_sdp_answer_failed";
 constexpr std::string_view k_whip_runtime_offer_filter_failed_error = "whip_runtime_offer_filter_failed";
 constexpr std::string_view k_whip_previous_publisher_not_found_error = "whip_previous_publisher_not_found";
@@ -172,7 +171,7 @@ whip_handler::whip_handler(std::shared_ptr<stream_registry> registry,
       answer_factory_(std::move(answer_factory)),
       udp_port_allocator_(std::move(udp_port_allocator)),
       media_fanout_router_(std::move(media_fanout_router)),
-      io_context_(&io_context),
+      io_context_(io_context),
       udp_bind_host_(std::move(udp_bind_host)),
       dtls_context_(std::move(dtls_context)),
       dtls_config_(dtls_config)
@@ -259,49 +258,28 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         }
     }
 
-    if (answer_factory_ == nullptr)
-    {
-        WEBRTC_LOG_ERROR("WHIP answer factory is not configured stream={}", stream_id);
+    auto local_udp_port = reserve_udp_port(udp_port_allocator_);
 
-        return json_error_response(request, 500, k_whip_answer_factory_unavailable_error, "answer factory is not configured");
+    if (!local_udp_port)
+    {
+        WEBRTC_LOG_ERROR("WHIP allocate session udp port failed stream={}", stream_id);
+
+        return json_error_response(request, 503, "whip_udp_port_unavailable", "session udp port unavailable");
     }
 
-    std::optional<udp_port_reservation_ptr> local_udp_port;
-    std::shared_ptr<whip_session_transport> transport;
+    auto transport = std::make_shared<whip_session_transport>(io_context_, udp_bind_host_, dtls_context_, dtls_config_);
 
-    if (udp_port_allocator_ != nullptr)
+    auto transport_start = transport->start((*local_udp_port)->port());
+
+    if (!transport_start)
     {
-        if (io_context_ == nullptr)
-        {
-            WEBRTC_LOG_ERROR("WHIP session transport io context unavailable stream={}", stream_id);
+        WEBRTC_LOG_ERROR(
+            "WHIP start session transport failed stream={} port={} error={}", stream_id, (*local_udp_port)->port(), transport_start.error());
 
-            return json_error_response(request, 500, "whip_transport_unavailable", "session transport unavailable");
-        }
-
-        local_udp_port = reserve_udp_port(udp_port_allocator_);
-
-        if (!local_udp_port)
-        {
-            WEBRTC_LOG_ERROR("WHIP allocate session udp port failed stream={}", stream_id);
-
-            return json_error_response(request, 503, "whip_udp_port_unavailable", "session udp port unavailable");
-        }
-
-        transport = std::make_shared<whip_session_transport>(*io_context_, udp_bind_host_, dtls_context_, dtls_config_);
-
-        auto transport_start = transport->start((*local_udp_port)->port());
-
-        if (!transport_start)
-        {
-            WEBRTC_LOG_ERROR(
-                "WHIP start session transport failed stream={} port={} error={}", stream_id, (*local_udp_port)->port(), transport_start.error());
-
-            return json_error_response(request, 503, "whip_udp_bind_failed", "session udp bind failed");
-        }
+        return json_error_response(request, 503, "whip_udp_bind_failed", "session udp bind failed");
     }
 
-    auto answer = local_udp_port.has_value() ? answer_factory_->build_whip_answer(stream_id, *offer_summary, (*local_udp_port)->port())
-                                             : answer_factory_->build_whip_answer(stream_id, *offer_summary);
+    auto answer = answer_factory_->build_whip_answer(stream_id, *offer_summary, (*local_udp_port)->port());
 
     if (!answer)
     {
@@ -376,10 +354,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
     const auto& session = *session_result;
 
-    if (local_udp_port.has_value())
-    {
-        session->set_local_udp_port_reservation(std::move(*local_udp_port));
-    }
+    session->set_local_udp_port_reservation(std::move(*local_udp_port));
 
     session->set_accepted_remote_media_mline_indexes(std::move(runtime_offer_filter->accepted_mline_indexes));
 
@@ -390,14 +365,11 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
                               generated_answer.sdp_session_id,
                               generated_answer.sdp_session_version);
 
-    if (transport != nullptr)
-    {
-        transport->set_ice_context(session->stream_id(), session->session_id(), session->local_ice(), session->remote_offer_summary().ice_ufrag);
-        transport->set_dtls_peer_identity(make_dtls_peer_identity(*session));
-        transport->set_media_fanout_router(media_fanout_router_);
+    transport->set_ice_context(session->stream_id(), session->session_id(), session->local_ice(), session->remote_offer_summary().ice_ufrag);
+    transport->set_dtls_peer_identity(make_dtls_peer_identity(*session));
+    transport->set_media_fanout_router(media_fanout_router_);
 
-        session->set_transport(std::move(transport));
-    }
+    session->set_transport(std::move(transport));
 
     WEBRTC_LOG_INFO(
         "WHIP create publisher stream={} session={} republish={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={} "
@@ -452,13 +424,6 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
     if (body_validation_error != nullptr)
     {
         return body_validation_error;
-    }
-
-    if (answer_factory_ == nullptr)
-    {
-        WEBRTC_LOG_ERROR("WHIP answer factory is not configured session={}", session_id);
-
-        return json_error_response(request, 500, k_whip_answer_factory_unavailable_error, "answer factory is not configured");
     }
 
     const std::string& offer = request.req.body();

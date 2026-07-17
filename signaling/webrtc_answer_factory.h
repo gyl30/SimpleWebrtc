@@ -77,18 +77,10 @@ class webrtc_answer_factory
 
    public:
     [[nodiscard]]
-    generated_sdp_answer_result build_whip_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer);
-
-    [[nodiscard]]
     generated_sdp_answer_result build_whip_answer(std::string_view stream_id,
                                                   const sdp::webrtc_offer_summary& offer,
                                                   uint16_t local_candidate_port);
 
-    [[nodiscard]]
-    generated_sdp_answer_result build_whep_answer(std::string_view stream_id,
-                                                  const sdp::webrtc_offer_summary& subscriber_offer,
-                                                  const sdp::webrtc_offer_summary& publisher_offer,
-                                                  std::vector<sdp::sdp_answer_media_source> media_sources);
     [[nodiscard]]
     generated_sdp_answer_result build_whep_answer(std::string_view stream_id,
                                                   const sdp::webrtc_offer_summary& subscriber_offer,

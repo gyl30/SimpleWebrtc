@@ -329,24 +329,11 @@ webrtc_answer_factory::webrtc_answer_factory(webrtc_answer_factory_config config
     : config_(std::move(config)), next_session_id_(make_initial_session_id())
 {
 }
-generated_sdp_answer_result webrtc_answer_factory::build_whip_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer)
-{
-    return build_answer(true, stream_id, offer, nullptr, {}, 0);
-}
-
 generated_sdp_answer_result webrtc_answer_factory::build_whip_answer(std::string_view stream_id,
                                                                      const sdp::webrtc_offer_summary& offer,
                                                                      uint16_t local_candidate_port)
 {
     return build_answer(true, stream_id, offer, nullptr, {}, local_candidate_port);
-}
-
-generated_sdp_answer_result webrtc_answer_factory::build_whep_answer(std::string_view stream_id,
-                                                                     const sdp::webrtc_offer_summary& subscriber_offer,
-                                                                     const sdp::webrtc_offer_summary& publisher_offer,
-                                                                     std::vector<sdp::sdp_answer_media_source> media_sources)
-{
-    return build_answer(false, stream_id, subscriber_offer, &publisher_offer, std::move(media_sources), 0);
 }
 
 generated_sdp_answer_result webrtc_answer_factory::build_whep_answer(std::string_view stream_id,
