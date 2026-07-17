@@ -29,6 +29,7 @@ enum class answer_endpoint_role
 using validation_result = std::expected<void, std::string>;
 using media_direction_result = std::expected<media_direction, std::string>;
 using setup_text_result = std::expected<std::string, std::string>;
+using sdp_answer_result = std::expected<session_description, std::string>;
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
@@ -3154,31 +3155,9 @@ sdp_answer_text_result build_answer_sdp(answer_endpoint_role role,
 }
 }    // namespace
 
-sdp_answer_result build_whip_answer(const webrtc_offer_summary& offer, const sdp_answer_options& options)
-{
-    return build_answer(answer_endpoint_role::whip, offer, options, nullptr);
-}
-
-sdp_answer_result build_whep_answer(const webrtc_offer_summary& offer, const sdp_answer_options& options)
-{
-    return build_answer(answer_endpoint_role::whep, offer, options, nullptr);
-}
-
-sdp_answer_result build_whep_answer(const webrtc_offer_summary& subscriber_offer,
-                                    const webrtc_offer_summary& publisher_offer,
-                                    const sdp_answer_options& options)
-{
-    return build_answer(answer_endpoint_role::whep, subscriber_offer, options, &publisher_offer);
-}
-
 sdp_answer_text_result build_whip_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options)
 {
     return build_answer_sdp(answer_endpoint_role::whip, offer, options, nullptr);
-}
-
-sdp_answer_text_result build_whep_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options)
-{
-    return build_answer_sdp(answer_endpoint_role::whep, offer, options, nullptr);
 }
 
 sdp_answer_text_result build_whep_answer_sdp(const webrtc_offer_summary& subscriber_offer,

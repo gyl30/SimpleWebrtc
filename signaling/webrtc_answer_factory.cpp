@@ -542,9 +542,13 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer_with_origin(bool
 
     normalize_answer_media_sources(options.media_sources, options.local_stream_id);
 
-    sdp::sdp_answer_text_result answer_sdp = is_whip                           ? sdp::build_whip_answer_sdp(offer, options)
-                                             : whep_publisher_offer != nullptr ? sdp::build_whep_answer_sdp(offer, *whep_publisher_offer, options)
-                                                                               : sdp::build_whep_answer_sdp(offer, options);
+    if (!is_whip && whep_publisher_offer == nullptr)
+    {
+        return make_error("whep publisher offer is missing");
+    }
+
+    sdp::sdp_answer_text_result answer_sdp = is_whip ? sdp::build_whip_answer_sdp(offer, options)
+                                                     : sdp::build_whep_answer_sdp(offer, *whep_publisher_offer, options);
 
     if (!answer_sdp)
     {
