@@ -29,7 +29,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     whep_session_transport(boost::asio::io_context& io_context,
                            std::string bind_host,
                            std::shared_ptr<dtls_context> dtls_context,
-                           dtls_transport_config dtls_config,
+                           std::uint16_t dtls_ip_mtu,
                            std::shared_ptr<media_fanout_router> media_fanout_router);
 
     ~whep_session_transport();

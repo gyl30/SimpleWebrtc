@@ -9,6 +9,7 @@
 #include <string_view>
 #include <utility>
 
+#include "dtls/dtls_transport.h"
 #include "log/log.h"
 
 namespace webrtc
@@ -124,72 +125,35 @@ std::expected<std::uint16_t, std::string> parse_dtls_ip_mtu_from_env()
     return static_cast<std::uint16_t>(parsed);
 }
 
-std::expected<dtls_transport_config, std::string> make_dtls_transport_config_from_env()
+}    // namespace
+
+session_transport_runtime_config_result load_session_transport_runtime_config()
 {
-    dtls_transport_config config;
-
-    auto ip_mtu = parse_dtls_ip_mtu_from_env();
-
-    if (!ip_mtu)
-    {
-        return std::unexpected(ip_mtu.error());
-    }
-
-    config.ip_mtu = *ip_mtu;
-
-    WEBRTC_LOG_INFO("dtls transport config ip_mtu={} ipv4_udp_payload_mtu={} ipv6_udp_payload_mtu={}",
-                    config.ip_mtu,
-                    config.ip_mtu - k_ipv4_udp_overhead,
-                    config.ip_mtu - k_ipv6_udp_overhead);
-
-    return config;
-}
-
-session_transport_runtime_config make_session_transport_runtime_config_from_env()
-{
-    session_transport_runtime_config config;
-
-    auto dtls_transport_config_result = make_dtls_transport_config_from_env();
-
-    if (!dtls_transport_config_result)
-    {
-        config.validation_error = dtls_transport_config_result.error();
-    }
-    else
-    {
-        config.dtls_transport = std::move(*dtls_transport_config_result);
-    }
+    auto dtls_ip_mtu = parse_dtls_ip_mtu_from_env();
 
     auto session_udp_port_range = make_session_udp_port_range_from_env();
 
     if (!session_udp_port_range)
     {
-        config.validation_error = session_udp_port_range.error();
-
-        return config;
+        return std::unexpected(session_udp_port_range.error());
     }
 
+    if (!dtls_ip_mtu)
+    {
+        return std::unexpected(dtls_ip_mtu.error());
+    }
+
+    session_transport_runtime_config config;
+    config.dtls_ip_mtu = *dtls_ip_mtu;
     config.session_udp_port_range = *session_udp_port_range;
 
-    if (config.validation_error.empty())
-    {
-        WEBRTC_LOG_INFO("session transport runtime config loaded dtls_ip_mtu={} session_udp_port_min={} session_udp_port_max={}",
-                        config.dtls_transport.ip_mtu,
-                        config.session_udp_port_range.min_port,
-                        config.session_udp_port_range.max_port);
-    }
-    else
-    {
-        WEBRTC_LOG_ERROR("session transport runtime config invalid error={}", config.validation_error);
-    }
-
-    return config;
-}
-}    // namespace
-
-const session_transport_runtime_config& session_transport_runtime_config_instance()
-{
-    static const session_transport_runtime_config config = make_session_transport_runtime_config_from_env();
+    WEBRTC_LOG_INFO("session transport runtime config loaded dtls_ip_mtu={} ipv4_udp_payload_mtu={} ipv6_udp_payload_mtu={} "
+                    "session_udp_port_min={} session_udp_port_max={}",
+                    config.dtls_ip_mtu,
+                    config.dtls_ip_mtu - k_ipv4_udp_overhead,
+                    config.dtls_ip_mtu - k_ipv6_udp_overhead,
+                    config.session_udp_port_range.min_port,
+                    config.session_udp_port_range.max_port);
 
     return config;
 }

@@ -1,6 +1,7 @@
 #ifndef SIMPLE_WEBRTC_SERVER_ROUTER_H
 #define SIMPLE_WEBRTC_SERVER_ROUTER_H
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -8,7 +9,6 @@
 #include <boost/asio.hpp>
 
 #include "dtls/dtls_context.h"
-#include "dtls/dtls_transport.h"
 #include "media/media_fanout_router.h"
 #include "net/http.h"
 #include "net/udp_port_allocator.h"
@@ -28,7 +28,7 @@ class router
            boost::asio::io_context& io_context,
            std::string udp_bind_host,
            std::shared_ptr<dtls_context> dtls_context,
-           dtls_transport_config dtls_config);
+           std::uint16_t dtls_ip_mtu);
 
    public:
     [[nodiscard]]

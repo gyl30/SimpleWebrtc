@@ -1,10 +1,13 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
+#include <expected>
 #include <limits>
 #include <memory>
 #include <print>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -43,13 +46,6 @@ static std::string get_env_or_default(const char* name, const std::string& defau
     }
 
     return value;
-}
-
-static bool is_env_configured(const char* name)
-{
-    const char* value = std::getenv(name);
-
-    return value != nullptr && value[0] != '\0';
 }
 
 static uint16_t get_env_uint16_or_default(const char* name, uint16_t default_value)
@@ -148,21 +144,14 @@ static std::vector<std::string> split_csv_unique(std::string_view value)
     return result;
 }
 
-static std::vector<std::string> make_ice_public_ip_list(const std::string& fallback_public_ip)
+static std::vector<std::string> make_ice_public_ip_list(std::string_view configured_public_ips, std::string_view fallback_public_ip)
 {
-    const char* value = std::getenv("WEBRTC_ICE_PUBLIC_IPS");
+    std::vector<std::string> addresses = split_csv_unique(configured_public_ips);
 
-    if (value != nullptr && value[0] != '\0')
+    if (!addresses.empty())
     {
-        std::vector<std::string> addresses = split_csv_unique(value);
-
-        if (!addresses.empty())
-        {
-            return addresses;
-        }
+        return addresses;
     }
-
-    std::vector<std::string> addresses;
 
     append_unique_string(addresses, fallback_public_ip);
 
@@ -182,7 +171,8 @@ static void log_startup_config_summary(const std::string& app_path,
                                        uint16_t http_port,
                                        const std::string& ice_bind_host,
                                        const std::string& ice_public_ip_source,
-                                       std::size_t ice_public_ip_count)
+                                       std::size_t ice_public_ip_count,
+                                       bool admin_token_configured)
 {
     WEBRTC_LOG_INFO(
         "flag_startup_config_summary app_path={} log_file={} http_tls_enabled={} http_cert_file={} http_key_file={} http_port={} "
@@ -196,7 +186,7 @@ static void log_startup_config_summary(const std::string& app_path,
         ice_bind_host,
         ice_public_ip_source,
         ice_public_ip_count,
-        is_env_configured("WEBRTC_ADMIN_TOKEN") ? 1 : 0);
+        admin_token_configured ? 1 : 0);
 }
 
 static webrtc::sdp::sdp_ice_candidate_options make_ice_host_candidate(std::string address, uint16_t port, std::size_t index)
@@ -222,7 +212,6 @@ static webrtc::sdp::sdp_ice_candidate_options make_ice_host_candidate(std::strin
 
 struct http_tls_config
 {
-    bool enabled = false;
     std::string certificate_file;
     std::string private_key_file;
 };
@@ -241,8 +230,6 @@ static std::expected<http_tls_config, std::string> load_http_tls_config()
     {
         return std::unexpected(std::string("WEBRTC_HTTP_CERT_FILE and WEBRTC_HTTP_KEY_FILE must be configured together"));
     }
-
-    config.enabled = certificate_configured && private_key_configured;
 
     return config;
 }
@@ -357,8 +344,9 @@ int main(int argc, char* argv[])
     }
 
     const http_tls_config http_tls = std::move(*http_tls_config_result);
+    const bool http_tls_enabled = !http_tls.certificate_file.empty();
 
-    if (http_tls.enabled && !load_server_certificate(ssl_ctx_, http_tls.certificate_file, http_tls.private_key_file))
+    if (http_tls_enabled && !load_server_certificate(ssl_ctx_, http_tls.certificate_file, http_tls.private_key_file))
     {
         WEBRTC_LOG_ERROR("load http tls certificate failed");
 
@@ -366,9 +354,9 @@ int main(int argc, char* argv[])
     }
 
     WEBRTC_LOG_INFO("flag_http_tls_config enabled={} cert_file={} key_file={}",
-                    http_tls.enabled ? 1 : 0,
-                    http_tls.enabled ? http_tls.certificate_file : "",
-                    http_tls.enabled ? http_tls.private_key_file : "");
+                    http_tls_enabled ? 1 : 0,
+                    http_tls.certificate_file,
+                    http_tls.private_key_file);
 
     auto dtls_certificate = webrtc::get_process_dtls_certificate();
 
@@ -400,29 +388,33 @@ int main(int argc, char* argv[])
     const std::string ice_bind_host = get_env_or_default("WEBRTC_ICE_BIND_HOST", "0.0.0.0");
     const std::string ice_public_ips_config = get_env_or_default("WEBRTC_ICE_PUBLIC_IPS", "");
     const std::string ice_public_ip = get_env_or_default("WEBRTC_ICE_PUBLIC_IP", "127.0.0.1");
+    const std::string admin_token = get_env_or_default("WEBRTC_ADMIN_TOKEN", "");
     const std::string ice_public_ip_source = ice_public_ips_config.empty() ? ice_public_ip : ice_public_ips_config;
-    const std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ip_source);
+    const std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ips_config, ice_public_ip);
 
     log_startup_config_summary(app_path,
                                abs_log_filename,
-                               http_tls.enabled,
+                               http_tls_enabled,
                                http_tls.certificate_file,
                                http_tls.private_key_file,
                                http_port,
                                ice_bind_host,
                                ice_public_ip_source,
-                               ice_public_ips.size());
+                               ice_public_ips.size(),
+                               !admin_token.empty());
 
     boost::asio::io_context io_context;
     auto registry = std::make_shared<webrtc::stream_registry>();
-    const auto& session_transport_config = webrtc::session_transport_runtime_config_instance();
+    auto session_transport_config_result = webrtc::load_session_transport_runtime_config();
 
-    if (!session_transport_config.validation_error.empty())
+    if (!session_transport_config_result)
     {
-        WEBRTC_LOG_ERROR("load session transport runtime config failed: {}", session_transport_config.validation_error);
+        WEBRTC_LOG_ERROR("load session transport runtime config failed: {}", session_transport_config_result.error());
 
         return 1;
     }
+
+    const webrtc::session_transport_runtime_config session_transport_config = std::move(*session_transport_config_result);
 
     auto session_udp_port_allocator = std::make_shared<webrtc::udp_port_allocator>(session_transport_config.session_udp_port_range);
 
@@ -450,9 +442,9 @@ int main(int argc, char* argv[])
                                                         io_context,
                                                         ice_bind_host,
                                                         *per_session_dtls_context,
-                                                        session_transport_config.dtls_transport);
+                                                        session_transport_config.dtls_ip_mtu);
 
-    http_router->set_admin_token(get_env_or_default("WEBRTC_ADMIN_TOKEN", ""));
+    http_router->set_admin_token(admin_token);
 
     WEBRTC_LOG_INFO("Webrtc     version {} {}", "SimpleWebrtc", "0.1");
 

@@ -55,11 +55,6 @@ inline constexpr std::uint16_t k_default_dtls_ip_mtu = 1200;
 inline constexpr std::uint16_t k_ipv4_udp_overhead = 20 + 8;
 inline constexpr std::uint16_t k_ipv6_udp_overhead = 40 + 8;
 
-struct dtls_transport_config
-{
-    std::uint16_t ip_mtu = k_default_dtls_ip_mtu;
-};
-
 using dtls_transport_packet_list = std::vector<std::vector<uint8_t>>;
 
 using dtls_transport_packet_result = std::expected<dtls_transport_packet_list, std::string>;
@@ -67,7 +62,7 @@ using dtls_transport_packet_result = std::expected<dtls_transport_packet_list, s
 class dtls_transport
 {
    public:
-    explicit dtls_transport(std::shared_ptr<dtls_context> context, dtls_transport_config config);
+    explicit dtls_transport(std::shared_ptr<dtls_context> context, std::uint16_t ip_mtu);
 
     ~dtls_transport();
 

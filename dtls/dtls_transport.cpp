@@ -683,11 +683,11 @@ struct dtls_peer_state
 
 struct dtls_transport::impl
 {
-    explicit impl(std::shared_ptr<dtls_context> context, dtls_transport_config config) : context_(std::move(context)), config_(std::move(config))
+    explicit impl(std::shared_ptr<dtls_context> context, std::uint16_t ip_mtu) : context_(std::move(context)), ip_mtu_(ip_mtu)
     {
-        if (config_.ip_mtu < k_min_dtls_ip_mtu || config_.ip_mtu > k_max_dtls_ip_mtu)
+        if (ip_mtu_ < k_min_dtls_ip_mtu || ip_mtu_ > k_max_dtls_ip_mtu)
         {
-            config_.ip_mtu = k_default_dtls_ip_mtu;
+            ip_mtu_ = k_default_dtls_ip_mtu;
         }
     }
 
@@ -822,7 +822,7 @@ struct dtls_transport::impl
 
         if (peer->ssl == nullptr)
         {
-            auto udp_payload_mtu_result = make_dtls_udp_payload_mtu(config_.ip_mtu, network_family);
+            auto udp_payload_mtu_result = make_dtls_udp_payload_mtu(ip_mtu_, network_family);
 
             if (!udp_payload_mtu_result)
             {
@@ -856,7 +856,7 @@ struct dtls_transport::impl
                             peer->identity.stream_id,
                             peer->identity.session_id,
                             dtls_network_family_to_string(peer->network_family),
-                            config_.ip_mtu,
+                            ip_mtu_,
                             peer->udp_payload_mtu);
         }
 
@@ -873,7 +873,7 @@ struct dtls_transport::impl
 
         log_packet_locked(*peer, data, remote_endpoint, *header);
 
-        auto handshake_result = run_dtls_handshake(peer->ssl.get(), config_.ip_mtu, peer->udp_payload_mtu, packets);
+        auto handshake_result = run_dtls_handshake(peer->ssl.get(), ip_mtu_, peer->udp_payload_mtu, packets);
 
         if (!handshake_result)
         {
@@ -896,7 +896,7 @@ struct dtls_transport::impl
             bool received_close_notify = false;
 
             auto consume_result =
-                consume_dtls_application_data_and_alerts(peer->ssl.get(), config_.ip_mtu, peer->udp_payload_mtu, packets, received_close_notify);
+                consume_dtls_application_data_and_alerts(peer->ssl.get(), ip_mtu_, peer->udp_payload_mtu, packets, received_close_notify);
 
             if (!consume_result)
             {
@@ -1143,15 +1143,15 @@ struct dtls_transport::impl
 
     std::shared_ptr<dtls_context> context_;
 
-    dtls_transport_config config_;
+    std::uint16_t ip_mtu_ = k_default_dtls_ip_mtu;
 
     mutable std::mutex mutex_;
 
     std::unordered_map<std::string, dtls_peer_state> peers_by_endpoint_;
 };
 
-dtls_transport::dtls_transport(std::shared_ptr<dtls_context> context, dtls_transport_config config)
-    : impl_(std::make_unique<impl>(std::move(context), std::move(config)))
+dtls_transport::dtls_transport(std::shared_ptr<dtls_context> context, std::uint16_t ip_mtu)
+    : impl_(std::make_unique<impl>(std::move(context), ip_mtu))
 {
 }
 

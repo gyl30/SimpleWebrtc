@@ -220,17 +220,17 @@ router::router(std::shared_ptr<stream_registry> registry,
                boost::asio::io_context& io_context,
                std::string udp_bind_host,
                std::shared_ptr<dtls_context> dtls_context,
-               dtls_transport_config dtls_config)
+               std::uint16_t dtls_ip_mtu)
     : registry_(registry),
       media_fanout_router_(std::make_shared<media_fanout_router>()),
-      whip_(registry, answer_factory, udp_port_allocator, io_context, udp_bind_host, dtls_context, dtls_config, media_fanout_router_),
+      whip_(registry, answer_factory, udp_port_allocator, io_context, udp_bind_host, dtls_context, dtls_ip_mtu, media_fanout_router_),
       whep_(std::move(registry),
             std::move(answer_factory),
             std::move(udp_port_allocator),
             io_context,
             std::move(udp_bind_host),
             std::move(dtls_context),
-            dtls_config,
+            dtls_ip_mtu,
             media_fanout_router_)
 {
 }

@@ -165,7 +165,7 @@ whip_handler::whip_handler(std::shared_ptr<stream_registry> registry,
                            boost::asio::io_context& io_context,
                            std::string udp_bind_host,
                            std::shared_ptr<dtls_context> dtls_context,
-                           dtls_transport_config dtls_config,
+                           std::uint16_t dtls_ip_mtu,
                            std::shared_ptr<media_fanout_router> media_fanout_router)
     : registry_(std::move(registry)),
       answer_factory_(std::move(answer_factory)),
@@ -174,7 +174,7 @@ whip_handler::whip_handler(std::shared_ptr<stream_registry> registry,
       io_context_(io_context),
       udp_bind_host_(std::move(udp_bind_host)),
       dtls_context_(std::move(dtls_context)),
-      dtls_config_(dtls_config)
+      dtls_ip_mtu_(dtls_ip_mtu)
 {
 }
 
@@ -268,7 +268,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
     }
 
     auto transport =
-        std::make_shared<whip_session_transport>(io_context_, udp_bind_host_, dtls_context_, dtls_config_, media_fanout_router_);
+        std::make_shared<whip_session_transport>(io_context_, udp_bind_host_, dtls_context_, dtls_ip_mtu_, media_fanout_router_);
 
     auto transport_start = transport->start((*local_udp_port)->port());
 

@@ -24,10 +24,10 @@ namespace webrtc
 whip_session_transport::whip_session_transport(boost::asio::io_context& io_context,
                                                std::string bind_host,
                                                std::shared_ptr<dtls_context> dtls_context,
-                                               dtls_transport_config dtls_config,
+                                               std::uint16_t dtls_ip_mtu,
                                                std::shared_ptr<media_fanout_router> media_fanout_router)
     : udp_server_(io_context, std::move(bind_host)),
-      dtls_transport_(std::make_shared<dtls_transport>(std::move(dtls_context), dtls_config)),
+      dtls_transport_(std::make_shared<dtls_transport>(std::move(dtls_context), dtls_ip_mtu)),
       srtp_transport_(std::make_shared<srtp_transport>(dtls_transport_)),
       media_fanout_router_(std::move(media_fanout_router))
 {
