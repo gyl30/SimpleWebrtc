@@ -294,11 +294,6 @@ inline bool etag_list_contains(std::string_view if_match, std::string_view curre
 
 inline void set_trickle_ice_patch_headers(const http_response_ptr& response)
 {
-    if (response == nullptr)
-    {
-        return;
-    }
-
     response->set("Accept-Patch", std::string(k_trickle_ice_patch_accept_patch_value));
 }
 
@@ -368,11 +363,6 @@ std::string make_session_resource_etag(const session_type& session)
 template <typename session_type>
 void set_session_resource_headers(const http_response_ptr& response, const session_type& session)
 {
-    if (response == nullptr)
-    {
-        return;
-    }
-
     set_trickle_ice_patch_headers(response);
 
     response->set(boost::beast::http::field::etag, make_session_resource_etag(session));

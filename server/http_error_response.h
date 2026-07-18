@@ -62,11 +62,6 @@ inline std::string make_http_error_response_body(std::string_view message) { ret
 
 inline void add_http_common_headers(const http_response_ptr& response)
 {
-    if (response == nullptr)
-    {
-        return;
-    }
-
     response->set(boost::beast::http::field::access_control_allow_origin, "*");
 
     response->set(boost::beast::http::field::access_control_expose_headers, std::string(k_trickle_ice_expose_headers_value));

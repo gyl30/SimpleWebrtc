@@ -372,7 +372,7 @@ bool router::is_admin_authorized(const http_request_t& request) const
 
 http_response_ptr router::admin_unauthorized(http_request_t& request)
 {
-    auto response = json_response(request, 401, json_error_body("unauthorized"));
+    auto response = make_json_http_response(request, 401, json_error_body("unauthorized"));
 
     response->set(http::field::www_authenticate, "Bearer realm=\"simplewebrtc\"");
 
@@ -381,7 +381,7 @@ http_response_ptr router::admin_unauthorized(http_request_t& request)
 
 http_response_ptr router::handle_options(http_request_t& request)
 {
-    auto response = text_response(request, 204, "");
+    auto response = make_text_http_response(request, 204, "");
 
     response->set(http::field::access_control_allow_methods, std::string(k_cors_allow_methods));
 
@@ -398,11 +398,11 @@ http_response_ptr router::handle_options(http_request_t& request)
     return response;
 }
 
-http_response_ptr router::handle_health(http_request_t& request) { return json_response(request, 200, R"({"status":"ok"})"); }
+http_response_ptr router::handle_health(http_request_t& request) { return make_json_http_response(request, 200, R"({"status":"ok"})"); }
 
 http_response_ptr router::handle_version(http_request_t& request)
 {
-    return json_response(request, 200, R"({"name":"SimpleWebrtc","version":"0.1"})");
+    return make_json_http_response(request, 200, R"({"name":"SimpleWebrtc","version":"0.1"})");
 }
 
 http_response_ptr router::handle_sessions(http_request_t& request)
@@ -414,14 +414,14 @@ http_response_ptr router::handle_sessions(http_request_t& request)
 
     if (registry_ == nullptr)
     {
-        return json_response(request, 503, json_error_body("session registry unavailable"));
+        return make_json_http_response(request, 503, json_error_body("session registry unavailable"));
     }
 
     const std::vector<stream_session_lifecycle_snapshot> snapshots = registry_->session_lifecycle_snapshots();
 
     const std::string body = make_session_lifecycle_response_body(snapshots);
 
-    return json_response(request, 200, body);
+    return make_json_http_response(request, 200, body);
 }
 http_response_ptr router::handle_session(http_request_t& request, std::string_view session_id)
 {
@@ -432,7 +432,7 @@ http_response_ptr router::handle_session(http_request_t& request, std::string_vi
 
     if (registry_ == nullptr)
     {
-        return json_response(request, 503, json_error_body("session registry unavailable"));
+        return make_json_http_response(request, 503, json_error_body("session registry unavailable"));
     }
 
     const auto method = request.req.method();
@@ -448,12 +448,12 @@ http_response_ptr router::handle_session(http_request_t& request, std::string_vi
 
     if (!snapshot.has_value())
     {
-        return json_response(request, 404, json_error_body("session not found"));
+        return make_json_http_response(request, 404, json_error_body("session not found"));
     }
 
     if (method == http::verb::get)
     {
-        return json_response(request, 200, make_session_lifecycle_entry_response_body(*snapshot));
+        return make_json_http_response(request, 200, make_session_lifecycle_entry_response_body(*snapshot));
     }
 
     if (snapshot->kind == stream_session_kind::publisher)
@@ -464,13 +464,13 @@ http_response_ptr router::handle_session(http_request_t& request, std::string_vi
         {
             if (result.error() == stream_registry_error::publisher_session_not_found)
             {
-                return json_response(request, 404, json_error_body("session not found"));
+                return make_json_http_response(request, 404, json_error_body("session not found"));
             }
 
-            return json_response(request, 500, json_error_body("delete publisher session failed"));
+            return make_json_http_response(request, 500, json_error_body("delete publisher session failed"));
         }
 
-        return text_response(request, 204, "");
+        return make_text_http_response(request, 204, "");
     }
 
     if (snapshot->kind == stream_session_kind::subscriber)
@@ -481,16 +481,16 @@ http_response_ptr router::handle_session(http_request_t& request, std::string_vi
         {
             if (result.error() == stream_registry_error::subscriber_session_not_found)
             {
-                return json_response(request, 404, json_error_body("session not found"));
+                return make_json_http_response(request, 404, json_error_body("session not found"));
             }
 
-            return json_response(request, 500, json_error_body("delete subscriber session failed"));
+            return make_json_http_response(request, 500, json_error_body("delete subscriber session failed"));
         }
 
-        return text_response(request, 204, "");
+        return make_text_http_response(request, 204, "");
     }
 
-    return json_response(request, 500, json_error_body("unsupported session kind"));
+    return make_json_http_response(request, 500, json_error_body("unsupported session kind"));
 }
 
 http_response_ptr router::handle_streams(http_request_t& request)
@@ -502,14 +502,14 @@ http_response_ptr router::handle_streams(http_request_t& request)
 
     if (registry_ == nullptr)
     {
-        return json_response(request, 503, json_error_body("session registry unavailable"));
+        return make_json_http_response(request, 503, json_error_body("session registry unavailable"));
     }
 
     const std::vector<stream_session_lifecycle_snapshot> snapshots = registry_->session_lifecycle_snapshots();
 
     const std::string body = make_stream_list_response_body(snapshots);
 
-    return json_response(request, 200, body);
+    return make_json_http_response(request, 200, body);
 }
 
 http_response_ptr router::handle_stream(http_request_t& request, std::string_view stream_id)
@@ -521,7 +521,7 @@ http_response_ptr router::handle_stream(http_request_t& request, std::string_vie
 
     if (registry_ == nullptr)
     {
-        return json_response(request, 503, json_error_body("session registry unavailable"));
+        return make_json_http_response(request, 503, json_error_body("session registry unavailable"));
     }
 
     const auto method = request.req.method();
@@ -532,12 +532,12 @@ http_response_ptr router::handle_stream(http_request_t& request, std::string_vie
 
         if (!stream_has_publisher_snapshot(stream_id, snapshots))
         {
-            return json_response(request, 404, json_error_body("stream publisher not found"));
+            return make_json_http_response(request, 404, json_error_body("stream publisher not found"));
         }
 
         const std::string body = make_stream_detail_response_body(stream_id, snapshots);
 
-        return json_response(request, 200, body);
+        return make_json_http_response(request, 200, body);
     }
 
     if (method == http::verb::delete_)
@@ -546,7 +546,7 @@ http_response_ptr router::handle_stream(http_request_t& request, std::string_vie
 
         if (publisher == nullptr)
         {
-            return json_response(request, 404, json_error_body("stream publisher not found"));
+            return make_json_http_response(request, 404, json_error_body("stream publisher not found"));
         }
 
         const std::string publisher_session_id = publisher->session_id();
@@ -557,13 +557,13 @@ http_response_ptr router::handle_stream(http_request_t& request, std::string_vie
         {
             if (result.error() == stream_registry_error::publisher_session_not_found)
             {
-                return json_response(request, 404, json_error_body("stream publisher not found"));
+                return make_json_http_response(request, 404, json_error_body("stream publisher not found"));
             }
 
-            return json_response(request, 500, json_error_body("delete stream failed"));
+            return make_json_http_response(request, 500, json_error_body("delete stream failed"));
         }
 
-        return text_response(request, 204, "");
+        return make_text_http_response(request, 204, "");
     }
 
     return method_not_allowed(request);
@@ -576,7 +576,7 @@ http_response_ptr router::handle_media_stats(http_request_t& request)
         return method_not_allowed(request);
     }
 
-    return json_response(request, 200, make_trickle_ice_metrics_json(global_trickle_ice_metrics().snapshot()));
+    return make_json_http_response(request, 200, make_trickle_ice_metrics_json(global_trickle_ice_metrics().snapshot()));
 }
 
 http_response_ptr router::handle_prometheus_metrics(http_request_t& request)
@@ -708,16 +708,6 @@ http_response_ptr router::unsupported_media_type(http_request_t& request)
     return make_json_http_error_response(request, 415, "unsupported_media_type", "unsupported media type, expected application/sdp");
 }
 
-http_response_ptr router::json_response(http_request_t& request, int code, std::string_view body)
-{
-    return make_json_http_response(request, code, body);
-}
-
-http_response_ptr router::text_response(http_request_t& request, int code, std::string_view body)
-{
-    return make_text_http_response(request, code, body);
-}
-
 http_response_ptr router::prometheus_response(http_request_t& request, int code, std::string_view body)
 {
     std::string content(body);
@@ -731,12 +721,11 @@ http_response_ptr router::prometheus_response(http_request_t& request, int code,
 
     response->set(http::field::content_type, "text/plain; version=0.0.4; charset=utf-8");
 
-    add_common_headers(response);
+    add_http_common_headers(response);
 
     return response;
 }
 
-void router::add_common_headers(const http_response_ptr& response) { add_http_common_headers(response); }
 
 std::string_view router::request_path(http_request_t& request)
 {

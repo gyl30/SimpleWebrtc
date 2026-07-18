@@ -170,7 +170,7 @@ subscriber_session_result stream_registry::replace_subscriber_session(std::strin
 
     const auto previous_iterator = subscribers_by_session_id_.find(previous_session_id);
 
-    if (previous_iterator == subscribers_by_session_id_.end() || previous_iterator->second == nullptr)
+    if (previous_iterator == subscribers_by_session_id_.end())
     {
         return std::unexpected(stream_registry_error::subscriber_session_not_found);
     }

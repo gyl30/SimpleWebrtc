@@ -90,15 +90,8 @@ class router
 
    private:
     [[nodiscard]]
-    http_response_ptr json_response(http_request_t& request, int code, std::string_view body);
-
-    [[nodiscard]]
-    http_response_ptr text_response(http_request_t& request, int code, std::string_view body);
-
-    [[nodiscard]]
     http_response_ptr prometheus_response(http_request_t& request, int code, std::string_view body);
 
-    void add_common_headers(const http_response_ptr& response);
 
    private:
     [[nodiscard]]

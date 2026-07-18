@@ -379,7 +379,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         session->remote_offer_summary().media.size(),
         session->accepted_remote_media_mline_indexes().size());
 
-    auto response = sdp_response(request, 201, session->local_sdp_answer());
+    auto response = make_sdp_http_response(request, 201, session->local_sdp_answer());
 
     const std::string session_location_path = "/whip/session/" + session->session_id();
 
@@ -507,7 +507,7 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
                     session->remote_offer_summary().media.size(),
                     session->accepted_remote_media_mline_indexes().size());
 
-    auto response = sdp_response(request, 200, session->local_sdp_answer());
+    auto response = make_sdp_http_response(request, 200, session->local_sdp_answer());
 
     set_session_resource_headers(response, *session);
 
@@ -556,7 +556,7 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
         [this, &request](const auto& updated_session) -> http_response_ptr
         {
             auto response = create_response(request, 204, "");
-            add_common_headers(response);
+            add_http_common_headers(response);
 
             set_session_resource_headers(response, updated_session);
 
@@ -611,14 +611,9 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
 
     auto response = create_response(request, 204, "");
 
-    add_common_headers(response);
+    add_http_common_headers(response);
 
     return response;
-}
-
-http_response_ptr whip_handler::json_response(http_request_t& request, int code, std::string_view body)
-{
-    return make_json_http_response(request, code, body);
 }
 
 http_response_ptr whip_handler::json_error_response(http_request_t& request, int code, std::string_view message)
@@ -631,10 +626,4 @@ http_response_ptr whip_handler::json_error_response(http_request_t& request, int
     return make_json_http_error_response(request, code, error_code, message);
 }
 
-http_response_ptr whip_handler::sdp_response(http_request_t& request, int code, std::string_view body)
-{
-    return make_sdp_http_response(request, code, body);
-}
-
-void whip_handler::add_common_headers(const http_response_ptr& response) { add_http_common_headers(response); }
 }    // namespace webrtc
