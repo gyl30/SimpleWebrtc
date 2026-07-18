@@ -28,13 +28,12 @@ class router
            boost::asio::io_context& io_context,
            std::string udp_bind_host,
            std::shared_ptr<dtls_context> dtls_context,
-           std::uint16_t dtls_ip_mtu);
+           std::uint16_t dtls_ip_mtu,
+           std::string admin_token);
 
    public:
     [[nodiscard]]
     http_response_ptr handle(http_request_t& request);
-
-    void set_admin_token(std::string token);
 
    private:
     [[nodiscard]]

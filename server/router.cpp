@@ -220,9 +220,11 @@ router::router(std::shared_ptr<stream_registry> registry,
                boost::asio::io_context& io_context,
                std::string udp_bind_host,
                std::shared_ptr<dtls_context> dtls_context,
-               std::uint16_t dtls_ip_mtu)
+               std::uint16_t dtls_ip_mtu,
+               std::string admin_token)
     : registry_(registry),
       media_fanout_router_(std::make_shared<media_fanout_router>()),
+      admin_token_(std::move(admin_token)),
       whip_(registry, answer_factory, udp_port_allocator, io_context, udp_bind_host, dtls_context, dtls_ip_mtu, media_fanout_router_),
       whep_(std::move(registry),
             std::move(answer_factory),
@@ -321,8 +323,6 @@ http_response_ptr router::handle(http_request_t& request)
 
     return not_found(request);
 }
-
-void router::set_admin_token(std::string token) { admin_token_ = std::move(token); }
 
 bool router::admin_auth_required(std::string_view path) const
 {

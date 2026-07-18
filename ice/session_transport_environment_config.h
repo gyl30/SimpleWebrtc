@@ -16,9 +16,7 @@ struct session_transport_runtime_config
     udp_port_range session_udp_port_range;
 };
 
-using session_transport_runtime_config_result = std::expected<session_transport_runtime_config, std::string>;
-
-[[nodiscard]] session_transport_runtime_config_result load_session_transport_runtime_config();
+[[nodiscard]] std::expected<session_transport_runtime_config, std::string> load_session_transport_runtime_config();
 }    // namespace webrtc
 
 #endif

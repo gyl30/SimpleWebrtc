@@ -27,10 +27,6 @@ inline constexpr std::string_view k_trickle_ice_expose_headers_value =
     "Location, ETag, Link, Accept-Patch, X-Session-Resource-State, X-Session-Resource-Updated-At, X-Session-Resource-Ice-Completed, "
     "X-Session-Resource-Candidate-Count";
 
-inline constexpr std::string_view k_ice_server_urls_env_name = "WEBRTC_ICE_SERVER_URLS";
-inline constexpr std::string_view k_ice_server_username_env_name = "WEBRTC_ICE_SERVER_USERNAME";
-inline constexpr std::string_view k_ice_server_credential_env_name = "WEBRTC_ICE_SERVER_CREDENTIAL";
-
 inline constexpr std::size_t k_trickle_ice_max_patch_body_bytes = 64L * 1024;
 inline constexpr std::size_t k_trickle_ice_max_candidates_per_patch = 32;
 
@@ -99,11 +95,9 @@ inline std::string_view trim_ascii(std::string_view value)
     return value;
 }
 
-inline std::string get_env_string(std::string_view name)
+inline std::string get_env_string(const char* name)
 {
-    std::string env_name(name);
-
-    const char* value = std::getenv(env_name.c_str());
+    const char* value = std::getenv(name);
 
     if (value == nullptr || value[0] == '\0')
     {
@@ -212,7 +206,7 @@ inline void append_link_quoted_parameter(std::string& output, std::string_view n
 
 inline std::string make_configured_ice_server_link_header()
 {
-    const std::string urls_value = get_env_string(k_ice_server_urls_env_name);
+    const std::string urls_value = get_env_string("WEBRTC_ICE_SERVER_URLS");
 
     if (urls_value.empty())
     {
@@ -226,9 +220,9 @@ inline std::string make_configured_ice_server_link_header()
         return {};
     }
 
-    const std::string username = get_env_string(k_ice_server_username_env_name);
+    const std::string username = get_env_string("WEBRTC_ICE_SERVER_USERNAME");
 
-    const std::string credential = get_env_string(k_ice_server_credential_env_name);
+    const std::string credential = get_env_string("WEBRTC_ICE_SERVER_CREDENTIAL");
 
     std::string header;
 
@@ -255,6 +249,8 @@ inline std::string make_configured_ice_server_link_header()
 
     return header;
 }
+
+inline const std::string k_configured_ice_server_link_header = make_configured_ice_server_link_header();
 
 inline bool etag_list_contains(std::string_view if_match, std::string_view current_etag)
 {
@@ -381,11 +377,9 @@ void set_session_resource_headers(const http_response_ptr& response, const sessi
 
     response->set(boost::beast::http::field::etag, make_session_resource_etag(session));
 
-    const std::string ice_server_link_header = trickle_ice_http_detail::make_configured_ice_server_link_header();
-
-    if (!ice_server_link_header.empty())
+    if (!trickle_ice_http_detail::k_configured_ice_server_link_header.empty())
     {
-        response->set("Link", ice_server_link_header);
+        response->set("Link", trickle_ice_http_detail::k_configured_ice_server_link_header);
     }
 
     response->set(std::string(k_session_resource_state_header), std::string(session_state_to_string(session.state())));

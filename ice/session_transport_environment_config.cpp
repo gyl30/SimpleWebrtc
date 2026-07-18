@@ -21,7 +21,7 @@ constexpr uint16_t k_default_session_udp_port_max = 59999;
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
-uint64_t get_env_uint64_or_default(const char* name, uint64_t default_value)
+uint16_t get_env_u16_or_default(const char* name, uint16_t default_value)
 {
     const char* value = std::getenv(name);
 
@@ -43,14 +43,7 @@ uint64_t get_env_uint64_or_default(const char* name, uint64_t default_value)
         return default_value;
     }
 
-    return static_cast<uint64_t>(parsed);
-}
-
-uint16_t get_env_u16_or_default(const char* name, uint16_t default_value)
-{
-    const uint64_t parsed = get_env_uint64_or_default(name, default_value);
-
-    if (parsed > static_cast<uint64_t>(std::numeric_limits<uint16_t>::max()))
+    if (parsed > static_cast<unsigned long long>(std::numeric_limits<uint16_t>::max()))
     {
         WEBRTC_LOG_WARN("session udp port env value too large name={} value={} default={}", name, parsed, default_value);
 
@@ -127,7 +120,7 @@ std::expected<std::uint16_t, std::string> parse_dtls_ip_mtu_from_env()
 
 }    // namespace
 
-session_transport_runtime_config_result load_session_transport_runtime_config()
+std::expected<session_transport_runtime_config, std::string> load_session_transport_runtime_config()
 {
     auto dtls_ip_mtu = parse_dtls_ip_mtu_from_env();
 

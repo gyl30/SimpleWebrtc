@@ -31,10 +31,6 @@
 #include "dtls/dtls_certificate.h"
 #include "dtls/dtls_context.h"
 
-static std::string get_log_dir(const std::string& app_dir) { return app_dir + "/log"; }
-
-static std::string get_log_fileaname(const std::string& app) { return app + ".log"; }
-
 static std::string get_env_or_default(const char* name, const std::string& default_value)
 {
     const char* value = std::getenv(name);
@@ -155,32 +151,6 @@ static std::vector<std::string> make_ice_public_ip_list(std::string_view configu
     return addresses;
 }
 
-static void log_startup_config_summary(const std::string& app_path,
-                                       const std::string& log_file,
-                                       bool http_tls_enabled,
-                                       const std::string& http_cert_file,
-                                       const std::string& http_key_file,
-                                       uint16_t http_port,
-                                       const std::string& ice_bind_host,
-                                       const std::string& ice_public_ip_source,
-                                       std::size_t ice_public_ip_count,
-                                       bool admin_token_configured)
-{
-    WEBRTC_LOG_INFO(
-        "flag_startup_config_summary app_path={} log_file={} http_tls_enabled={} http_cert_file={} http_key_file={} http_port={} "
-        "session_ice_bind_host={} ice_public_ip_source={} ice_public_ip_count={} admin_token_configured={}",
-        app_path,
-        log_file,
-        http_tls_enabled ? 1 : 0,
-        http_cert_file,
-        http_key_file,
-        http_port,
-        ice_bind_host,
-        ice_public_ip_source,
-        ice_public_ip_count,
-        admin_token_configured ? 1 : 0);
-}
-
 static webrtc::sdp::sdp_ice_candidate_options make_ice_host_candidate(std::string address, uint16_t port, std::size_t index)
 {
     webrtc::sdp::sdp_ice_candidate_options candidate;
@@ -279,11 +249,9 @@ int main(int argc, char* argv[])
 
     std::string app_name = webrtc::file_name(app_path);
 
-    std::string log_dir = get_log_dir(app_dir);
+    std::string log_dir = app_dir + "/log";
 
-    std::string log_name = get_log_fileaname(app_name);
-
-    std::string abs_log_filename = log_dir + "/" + log_name;
+    std::string abs_log_filename = log_dir + "/" + app_name + ".log";
 
     auto log_init_result = webrtc::init_log(abs_log_filename);
 
@@ -320,11 +288,6 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    WEBRTC_LOG_INFO("flag_http_tls_config enabled={} cert_file={} key_file={}",
-                    http_tls_enabled ? 1 : 0,
-                    http_certificate_file,
-                    http_private_key_file);
-
     auto dtls_certificate = webrtc::get_process_dtls_certificate();
 
     if (!dtls_certificate)
@@ -352,19 +315,22 @@ int main(int argc, char* argv[])
     const uint16_t http_port = get_env_uint16_or_default("WEBRTC_HTTP_PORT", 8811);
     const std::string ice_bind_host = get_env_or_default("WEBRTC_ICE_BIND_HOST", "0.0.0.0");
     const std::string ice_public_ips_config = get_env_or_default("WEBRTC_ICE_PUBLIC_IPS", "127.0.0.1");
-    const std::string admin_token = get_env_or_default("WEBRTC_ADMIN_TOKEN", "");
+    std::string admin_token = get_env_or_default("WEBRTC_ADMIN_TOKEN", "");
     const std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ips_config);
 
-    log_startup_config_summary(app_path,
-                               abs_log_filename,
-                               http_tls_enabled,
-                               http_certificate_file,
-                               http_private_key_file,
-                               http_port,
-                               ice_bind_host,
-                               ice_public_ips_config,
-                               ice_public_ips.size(),
-                               !admin_token.empty());
+    WEBRTC_LOG_INFO(
+        "flag_startup_config_summary app_path={} log_file={} http_tls_enabled={} http_cert_file={} http_key_file={} http_port={} "
+        "session_ice_bind_host={} ice_public_ip_source={} ice_public_ip_count={} admin_token_configured={}",
+        app_path,
+        abs_log_filename,
+        http_tls_enabled ? 1 : 0,
+        http_certificate_file,
+        http_private_key_file,
+        http_port,
+        ice_bind_host,
+        ice_public_ips_config,
+        ice_public_ips.size(),
+        admin_token.empty() ? 0 : 1);
 
     boost::asio::io_context io_context;
     auto registry = std::make_shared<webrtc::stream_registry>();
@@ -390,8 +356,6 @@ int main(int argc, char* argv[])
         ice_candidates.push_back(make_ice_host_candidate(ice_public_ips[index], session_transport_config.session_udp_port_range.min_port, index));
     }
 
-    WEBRTC_LOG_INFO("certificate fingerprint {} {}", local_fingerprint.algorithm, local_fingerprint.value);
-
     for (const auto& candidate : ice_candidates)
     {
         WEBRTC_LOG_INFO("ice host candidate address={} session_port_range={}-{}",
@@ -406,11 +370,10 @@ int main(int argc, char* argv[])
                                                         answer_factory,
                                                         session_udp_port_allocator,
                                                         io_context,
-                                                        ice_bind_host,
+                                                        std::move(ice_bind_host),
                                                         *per_session_dtls_context,
-                                                        session_transport_config.dtls_ip_mtu);
-
-    http_router->set_admin_token(admin_token);
+                                                        session_transport_config.dtls_ip_mtu,
+                                                        std::move(admin_token));
 
     WEBRTC_LOG_INFO("Webrtc     version {} {}", "SimpleWebrtc", "0.1");
 
