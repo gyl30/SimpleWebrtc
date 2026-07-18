@@ -182,11 +182,13 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer_with_origin(std:
     }
 
     generated_sdp_answer answer;
-    answer.sdp = std::move(*answer_sdp);
+    answer.sdp = std::move(answer_sdp->sdp);
     answer.local_ice = std::move(*local_ice);
     answer.sdp_session_id = sdp_session_id;
     answer.sdp_session_version = sdp_session_version;
     answer.media_sources = std::move(options.media_sources);
+    answer.accepted_mids = std::move(answer_sdp->accepted_mids);
+    answer.accepted_mline_indexes = std::move(answer_sdp->accepted_mline_indexes);
 
     return answer;
 }

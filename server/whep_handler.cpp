@@ -553,7 +553,8 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
             request, 400, k_whep_sdp_answer_failed_error, make_prefixed_error("failed to build sdp answer: ", generated_answer.error()));
     }
 
-    auto runtime_offer_filter = make_runtime_offer_filter_result(*offer_summary, generated_answer->sdp);
+    auto runtime_offer_filter = make_runtime_offer_filter_result(
+        *offer_summary, std::move(generated_answer->accepted_mids), std::move(generated_answer->accepted_mline_indexes));
 
     if (!runtime_offer_filter)
     {
@@ -752,7 +753,8 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
             request, 400, k_whep_ice_restart_sdp_answer_failed_error, make_prefixed_error("cannot build sdp answer: ", answer.error()));
     }
 
-    auto runtime_offer_filter = make_runtime_offer_filter_result(*offer_summary, answer->sdp);
+    auto runtime_offer_filter = make_runtime_offer_filter_result(
+        *offer_summary, std::move(answer->accepted_mids), std::move(answer->accepted_mline_indexes));
     if (!runtime_offer_filter)
     {
         WEBRTC_LOG_WARN("WHEP runtime restart offer summary failed session={} error={}", session_id, runtime_offer_filter.error());

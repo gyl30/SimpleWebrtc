@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cctype>
 #include <expected>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string>
@@ -18,7 +19,19 @@ namespace webrtc::sdp
 namespace
 {
 using validation_result = std::expected<void, std::string>;
-using sdp_answer_result = std::expected<session_description, std::string>;
+struct accepted_answer_media
+{
+    std::vector<std::string> mids;
+    std::vector<int> mline_indexes;
+};
+
+struct built_sdp_answer
+{
+    session_description description;
+    accepted_answer_media accepted_media;
+};
+
+using sdp_answer_result = std::expected<built_sdp_answer, std::string>;
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
@@ -136,48 +149,14 @@ validation_result validate_options(const sdp_answer_options& options)
     return validate_candidate_options(options);
 }
 
-std::optional<std::string> find_answer_media_mid(const media_description& media)
-{
-    const std::optional<std::string> mid = media.find_attribute_value(k_attribute_mid);
-
-    if (!mid.has_value() || mid->empty())
-    {
-        return std::nullopt;
-    }
-
-    return mid;
-}
-
-std::expected<std::string, std::string> make_bundle_group_value(const session_description& answer)
+std::string make_bundle_group_value(const std::vector<std::string>& accepted_mids)
 {
     std::string value = "BUNDLE";
 
-    std::size_t count = 0;
-
-    for (const auto& media : answer.media_descriptions)
+    for (const auto& mid : accepted_mids)
     {
-        if (media.media_name.port == 0)
-        {
-            continue;
-        }
-
-        const std::optional<std::string> mid = find_answer_media_mid(media);
-
-        if (!mid.has_value())
-        {
-            return make_error("accepted answer media is missing mid");
-        }
-
         value.push_back(' ');
-
-        value.append(*mid);
-
-        count += 1;
-    }
-
-    if (count == 0)
-    {
-        return make_error("bundle group has no accepted media mids");
+        value.append(mid);
     }
 
     return value;
@@ -1420,15 +1399,21 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
     return answer_media;
 }
 
-validation_result append_answer_media_descriptions(session_description& answer,
-                                                   const sdp_answer_options& options,
-                                                   const webrtc_offer_summary& offer,
-                                                   const webrtc_offer_summary* whep_publisher_offer)
+std::expected<accepted_answer_media, std::string> append_answer_media_descriptions(
+    session_description& answer,
+    const sdp_answer_options& options,
+    const webrtc_offer_summary& offer,
+    const webrtc_offer_summary* whep_publisher_offer)
 {
-    bool has_accepted_media = false;
+    accepted_answer_media accepted_media;
 
-    for (const auto& media : offer.media)
+    accepted_media.mids.reserve(offer.media.size());
+    accepted_media.mline_indexes.reserve(offer.media.size());
+
+    for (std::size_t index = 0; index < offer.media.size(); ++index)
     {
+        const auto& media = offer.media[index];
+
         auto answer_media = make_answer_media(options, media, offer, whep_publisher_offer);
         if (!answer_media)
         {
@@ -1437,22 +1422,25 @@ validation_result append_answer_media_descriptions(session_description& answer,
 
         if (!is_answer_media_rejected(*answer_media))
         {
-            has_accepted_media = true;
+            if (index > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            {
+                return make_error("accepted offer media mline index is too large");
+            }
+
+            accepted_media.mids.push_back(media.mid);
+            accepted_media.mline_indexes.push_back(static_cast<int>(index));
         }
+
         answer.media_descriptions.push_back(std::move(*answer_media));
     }
 
-    if (whep_publisher_offer == nullptr && !has_accepted_media)
+    if (accepted_media.mids.empty())
     {
-        return make_error("whip answer has no supported publisher media");
+        return whep_publisher_offer == nullptr ? make_error("whip answer has no supported publisher media")
+                                               : make_error("whep answer has no compatible publisher media");
     }
 
-    if (whep_publisher_offer != nullptr && !has_accepted_media)
-    {
-        return make_error("whep answer has no compatible publisher media");
-    }
-
-    return {};
+    return accepted_media;
 }
 
 sdp_answer_result build_answer(const webrtc_offer_summary& offer,
@@ -1465,38 +1453,30 @@ sdp_answer_result build_answer(const webrtc_offer_summary& offer,
         return std::unexpected(options_result.error());
     }
 
-    session_description answer;
+    built_sdp_answer answer;
 
-    answer.session_id = options.session_id;
-    answer.session_version = options.session_version;
+    answer.description.session_id = options.session_id;
+    answer.description.session_version = options.session_version;
 
-    push_property_attribute(answer.attributes, "ice-lite");
-    push_attribute(answer.attributes, "ice-options", "trickle");
+    push_property_attribute(answer.description.attributes, "ice-lite");
+    push_attribute(answer.description.attributes, "ice-options", "trickle");
+    push_attribute(answer.description.attributes, k_attribute_ice_ufrag, options.local_ice_ufrag);
+    push_attribute(answer.description.attributes, k_attribute_ice_pwd, options.local_ice_pwd);
+    push_attribute(answer.description.attributes, k_attribute_fingerprint, make_fingerprint_value(options.local_fingerprint));
+    push_attribute(answer.description.attributes, k_attribute_setup, "passive");
+    push_attribute(answer.description.attributes, "msid-semantic", "WMS *");
 
-    push_attribute(answer.attributes, k_attribute_ice_ufrag, options.local_ice_ufrag);
-
-    push_attribute(answer.attributes, k_attribute_ice_pwd, options.local_ice_pwd);
-
-    push_attribute(answer.attributes, k_attribute_fingerprint, make_fingerprint_value(options.local_fingerprint));
-
-    push_attribute(answer.attributes, k_attribute_setup, "passive");
-
-    push_attribute(answer.attributes, "msid-semantic", "WMS *");
-
-    auto media_result = append_answer_media_descriptions(answer, options, offer, whep_publisher_offer);
-    if (!media_result)
+    auto accepted_media = append_answer_media_descriptions(answer.description, options, offer, whep_publisher_offer);
+    if (!accepted_media)
     {
-        return std::unexpected(media_result.error());
+        return std::unexpected(accepted_media.error());
     }
 
-    auto bundle_group_value = make_bundle_group_value(answer);
+    answer.accepted_media = std::move(*accepted_media);
 
-    if (!bundle_group_value)
-    {
-        return std::unexpected(bundle_group_value.error());
-    }
-
-    answer.attributes.insert(answer.attributes.begin(), make_attribute(std::string(k_attribute_group), *bundle_group_value));
+    answer.description.attributes.insert(
+        answer.description.attributes.begin(),
+        make_attribute(std::string(k_attribute_group), make_bundle_group_value(answer.accepted_media.mids)));
 
     return answer;
 }
@@ -1511,13 +1491,12 @@ sdp_answer_text_result build_answer_sdp(const webrtc_offer_summary& offer,
         return std::unexpected(answer.error());
     }
 
-    auto text = format_session_description(*answer);
-    if (!text)
-    {
-        return std::unexpected(text.error());
-    }
+    generated_sdp_answer_text result;
+    result.sdp = format_session_description(answer->description);
+    result.accepted_mids = std::move(answer->accepted_media.mids);
+    result.accepted_mline_indexes = std::move(answer->accepted_media.mline_indexes);
 
-    return *text;
+    return result;
 }
 }    // namespace
 

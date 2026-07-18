@@ -3,7 +3,6 @@
 
 #include <expected>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "signaling/sdp/sdp_summary.h"
@@ -21,7 +20,9 @@ struct runtime_offer_filter_result
 using runtime_offer_filter_result_type = std::expected<runtime_offer_filter_result, std::string>;
 
 [[nodiscard]]
-runtime_offer_filter_result_type make_runtime_offer_filter_result(const sdp::webrtc_offer_summary& original_offer, std::string_view answer_sdp);
+runtime_offer_filter_result_type make_runtime_offer_filter_result(const sdp::webrtc_offer_summary& original_offer,
+                                                                  std::vector<std::string> accepted_mids,
+                                                                  std::vector<int> accepted_mline_indexes);
 }    // namespace webrtc
 
 #endif

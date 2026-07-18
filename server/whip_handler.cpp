@@ -289,7 +289,8 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         return json_error_response(request, 400, k_whip_sdp_answer_failed_error, make_prefixed_error("cannot build sdp answer: ", answer.error()));
     }
 
-    auto runtime_offer_filter = make_runtime_offer_filter_result(*offer_summary, answer->sdp);
+    auto runtime_offer_filter = make_runtime_offer_filter_result(
+        *offer_summary, std::move(answer->accepted_mids), std::move(answer->accepted_mline_indexes));
 
     if (!runtime_offer_filter)
     {
@@ -474,7 +475,8 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
         return json_error_response(request, 400, make_prefixed_error("cannot build sdp answer: ", answer.error()));
     }
 
-    auto runtime_offer_filter = make_runtime_offer_filter_result(*offer_summary, answer->sdp);
+    auto runtime_offer_filter = make_runtime_offer_filter_result(
+        *offer_summary, std::move(answer->accepted_mids), std::move(answer->accepted_mline_indexes));
 
     if (!runtime_offer_filter)
     {

@@ -41,7 +41,14 @@ struct sdp_answer_options
     std::vector<sdp_answer_media_source> media_sources;
 };
 
-using sdp_answer_text_result = std::expected<std::string, std::string>;
+struct generated_sdp_answer_text
+{
+    std::string sdp;
+    std::vector<std::string> accepted_mids;
+    std::vector<int> accepted_mline_indexes;
+};
+
+using sdp_answer_text_result = std::expected<generated_sdp_answer_text, std::string>;
 
 [[nodiscard]] sdp_answer_text_result build_whip_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options);
 

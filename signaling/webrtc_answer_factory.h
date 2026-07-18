@@ -24,6 +24,8 @@ struct generated_sdp_answer
     uint64_t sdp_session_version = 0;
 
     std::vector<sdp::sdp_answer_media_source> media_sources;
+    std::vector<std::string> accepted_mids;
+    std::vector<int> accepted_mline_indexes;
 };
 
 using generated_sdp_answer_result = std::expected<generated_sdp_answer, std::string>;
