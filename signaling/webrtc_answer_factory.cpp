@@ -197,9 +197,10 @@ std::string make_candidate_field_name(std::string_view prefix, std::string_view 
     return value;
 }
 
-std::vector<sdp::sdp_ice_candidate_options> make_local_ice_candidates(const webrtc_answer_factory_config& config, uint16_t local_candidate_port)
+std::vector<sdp::sdp_ice_candidate_options> make_local_ice_candidates(const std::vector<sdp::sdp_ice_candidate_options>& configured_candidates,
+                                                                        uint16_t local_candidate_port)
 {
-    std::vector<sdp::sdp_ice_candidate_options> candidates = config.ice_candidates;
+    std::vector<sdp::sdp_ice_candidate_options> candidates = configured_candidates;
 
     if (local_candidate_port == 0)
     {
@@ -262,20 +263,20 @@ validation_result validate_ice_candidate_config(const sdp::sdp_ice_candidate_opt
     return {};
 }
 
-validation_result validate_ice_candidates_config(const webrtc_answer_factory_config& config)
+validation_result validate_ice_candidates_config(const std::vector<sdp::sdp_ice_candidate_options>& candidates)
 {
-    if (config.ice_candidates.empty())
+    if (candidates.empty())
     {
         return make_error("ice candidate list is empty");
     }
 
-    for (std::size_t index = 0; index < config.ice_candidates.size(); ++index)
+    for (std::size_t index = 0; index < candidates.size(); ++index)
     {
         std::string prefix("ice candidate ");
 
         prefix.append(std::to_string(index));
 
-        auto result = validate_ice_candidate_config(config.ice_candidates[index], prefix);
+        auto result = validate_ice_candidate_config(candidates[index], prefix);
 
         if (!result)
         {
@@ -287,8 +288,11 @@ validation_result validate_ice_candidates_config(const webrtc_answer_factory_con
 }
 }    // namespace
 
-webrtc_answer_factory::webrtc_answer_factory(webrtc_answer_factory_config config)
-    : config_(std::move(config)), next_session_id_(make_initial_session_id())
+webrtc_answer_factory::webrtc_answer_factory(sdp::fingerprint_info local_fingerprint,
+                                               std::vector<sdp::sdp_ice_candidate_options> ice_candidates)
+    : local_fingerprint_(std::move(local_fingerprint)),
+      ice_candidates_(std::move(ice_candidates)),
+      next_session_id_(make_initial_session_id())
 {
 }
 generated_sdp_answer_result webrtc_answer_factory::build_whip_answer(std::string_view stream_id,
@@ -336,21 +340,21 @@ generated_sdp_answer_result webrtc_answer_factory::build_whep_restart_answer(std
 
 validation_result webrtc_answer_factory::validate_config() const
 {
-    auto fingerprint_algorithm_result = validate_token(config_.local_fingerprint.algorithm, "local fingerprint algorithm");
+    auto fingerprint_algorithm_result = validate_token(local_fingerprint_.algorithm, "local fingerprint algorithm");
 
     if (!fingerprint_algorithm_result)
     {
         return std::unexpected(fingerprint_algorithm_result.error());
     }
 
-    auto fingerprint_value_result = validate_token(config_.local_fingerprint.value, "local fingerprint value");
+    auto fingerprint_value_result = validate_token(local_fingerprint_.value, "local fingerprint value");
 
     if (!fingerprint_value_result)
     {
         return std::unexpected(fingerprint_value_result.error());
     }
 
-    return validate_ice_candidates_config(config_);
+    return validate_ice_candidates_config(ice_candidates_);
 }
 
 sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_view stream_id,
@@ -364,13 +368,13 @@ sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_v
     options.session_id = session_id;
     options.session_version = session_version;
 
-    options.media_address = config_.ice_candidates.front().address;
+    options.media_address = ice_candidates_.front().address;
 
     options.local_ice_ufrag = local_ice.ufrag;
     options.local_ice_pwd = local_ice.pwd;
-    options.local_fingerprint = config_.local_fingerprint;
+    options.local_fingerprint = local_fingerprint_;
 
-    options.local_candidates = make_local_ice_candidates(config_, local_candidate_port);
+    options.local_candidates = make_local_ice_candidates(ice_candidates_, local_candidate_port);
     options.local_stream_id = make_local_stream_id(k_local_stream_id_prefix, stream_id);
 
     return options;

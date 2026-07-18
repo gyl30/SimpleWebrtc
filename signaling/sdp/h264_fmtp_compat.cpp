@@ -4,7 +4,6 @@
 #include <charconv>
 #include <cctype>
 #include <cstdint>
-#include <cstdlib>
 #include <expected>
 #include <limits>
 #include <optional>
@@ -470,28 +469,9 @@ std::string make_answer_fmtp(const h264_profile_level_id& profile_level_id, uint
     return fmtp;
 }
 
-bool h264_assume_level_asymmetry_allowed_when_missing_from_env()
-{
-    const char* value = std::getenv("WEBRTC_H264_ASSUME_LEVEL_ASYMMETRY_ALLOWED_WHEN_MISSING");
-
-    if (value == nullptr)
-    {
-        return false;
-    }
-
-    const std::string normalized = lower_copy(trim_copy(value));
-
-    return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
-}
-
 bool h264_level_asymmetry_allowed_effective_value(const h264_fmtp_parameters& parameters)
 {
-    if (parameters.has_level_asymmetry_allowed)
-    {
-        return parameters.level_asymmetry_allowed;
-    }
-
-    return h264_assume_level_asymmetry_allowed_when_missing_from_env();
+    return parameters.has_level_asymmetry_allowed && parameters.level_asymmetry_allowed;
 }
 
 std::expected<h264_fmtp_parameters, std::string> parse_h264_fmtp(std::string_view fmtp)

@@ -195,7 +195,7 @@ bool msid_list_equal(const std::vector<msid_summary>& left, const std::vector<ms
 
 std::expected<void, std::string> validate_media_restart_compatibility(const media_summary& previous_media,
                                                                       const media_summary& next_media,
-                                                                      const ice_restart_offer_compatibility_options& options)
+                                                                      bool allow_header_extension_changes)
 {
     if (previous_media.mid != next_media.mid)
     {
@@ -237,7 +237,7 @@ std::expected<void, std::string> validate_media_restart_compatibility(const medi
         return make_media_restart_error(previous_media, "codecs changed");
     }
 
-    if (!options.allow_header_extension_changes && !header_extension_list_equal(previous_media.header_extensions, next_media.header_extensions))
+    if (!allow_header_extension_changes && !header_extension_list_equal(previous_media.header_extensions, next_media.header_extensions))
     {
         return make_media_restart_error(previous_media, "rtp header extensions changed");
     }
@@ -1370,15 +1370,11 @@ bool offer_has_ice_restart(const webrtc_offer_summary& previous_offer, const web
     return !offer_ice_credentials_equal(previous_offer, next_offer);
 }
 
-std::expected<void, std::string> validate_ice_restart_offer_compatibility(const webrtc_offer_summary& previous_offer,
-                                                                          const webrtc_offer_summary& next_offer)
+namespace
 {
-    return validate_ice_restart_offer_compatibility(previous_offer, next_offer, {});
-}
-
-std::expected<void, std::string> validate_ice_restart_offer_compatibility(const webrtc_offer_summary& previous_offer,
-                                                                          const webrtc_offer_summary& next_offer,
-                                                                          const ice_restart_offer_compatibility_options& options)
+std::expected<void, std::string> validate_ice_restart_offer_compatibility_impl(const webrtc_offer_summary& previous_offer,
+                                                                               const webrtc_offer_summary& next_offer,
+                                                                               bool allow_header_extension_changes)
 {
     if (!offer_has_ice_restart(previous_offer, next_offer))
     {
@@ -1407,7 +1403,8 @@ std::expected<void, std::string> validate_ice_restart_offer_compatibility(const 
 
     for (std::size_t index = 0; index < previous_offer.media.size(); ++index)
     {
-        auto media_result = validate_media_restart_compatibility(previous_offer.media[index], next_offer.media[index], options);
+        auto media_result = validate_media_restart_compatibility(
+            previous_offer.media[index], next_offer.media[index], allow_header_extension_changes);
 
         if (!media_result)
         {
@@ -1416,6 +1413,19 @@ std::expected<void, std::string> validate_ice_restart_offer_compatibility(const 
     }
 
     return {};
+}
+}    // namespace
+
+std::expected<void, std::string> validate_ice_restart_offer_compatibility(const webrtc_offer_summary& previous_offer,
+                                                                          const webrtc_offer_summary& next_offer)
+{
+    return validate_ice_restart_offer_compatibility_impl(previous_offer, next_offer, false);
+}
+
+std::expected<void, std::string> validate_ice_restart_offer_compatibility_ignoring_header_extensions(
+    const webrtc_offer_summary& previous_offer, const webrtc_offer_summary& next_offer)
+{
+    return validate_ice_restart_offer_compatibility_impl(previous_offer, next_offer, true);
 }
 
 std::string offer_ice_credentials_to_string(const webrtc_offer_summary& offer)

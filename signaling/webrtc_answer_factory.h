@@ -14,13 +14,6 @@
 
 namespace webrtc
 {
-struct webrtc_answer_factory_config
-{
-    sdp::fingerprint_info local_fingerprint;
-
-    std::vector<sdp::sdp_ice_candidate_options> ice_candidates;
-};
-
 struct generated_sdp_answer
 {
     std::string sdp;
@@ -38,7 +31,8 @@ using generated_sdp_answer_result = std::expected<generated_sdp_answer, std::str
 class webrtc_answer_factory
 {
    public:
-    explicit webrtc_answer_factory(webrtc_answer_factory_config config);
+    explicit webrtc_answer_factory(sdp::fingerprint_info local_fingerprint,
+                                   std::vector<sdp::sdp_ice_candidate_options> ice_candidates);
 
     webrtc_answer_factory(const webrtc_answer_factory&) = delete;
 
@@ -111,7 +105,9 @@ class webrtc_answer_factory
     static uint64_t make_initial_session_id();
 
    private:
-    webrtc_answer_factory_config config_;
+    sdp::fingerprint_info local_fingerprint_;
+
+    std::vector<sdp::sdp_ice_candidate_options> ice_candidates_;
 
     std::atomic<uint64_t> next_session_id_;
 };

@@ -843,12 +843,8 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
                                    k_whep_ice_restart_runtime_offer_filter_failed_error,
                                    make_prefixed_error("failed to build runtime subscriber offer summary: ", runtime_offer_filter.error()));
     }
-    sdp::ice_restart_offer_compatibility_options restart_options;
-
-    restart_options.allow_header_extension_changes = true;
-
-    auto restart_compatibility =
-        sdp::validate_ice_restart_offer_compatibility(session->remote_offer_summary(), runtime_offer_filter->offer_summary, restart_options);
+    auto restart_compatibility = sdp::validate_ice_restart_offer_compatibility_ignoring_header_extensions(
+        session->remote_offer_summary(), runtime_offer_filter->offer_summary);
 
     if (!restart_compatibility)
     {
