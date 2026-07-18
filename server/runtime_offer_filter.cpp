@@ -248,7 +248,7 @@ std::expected<std::optional<sdp::media_direction>, std::string> find_answer_medi
 
 std::expected<bool, std::string> answer_media_is_accepted(const sdp::media_description& media)
 {
-    if (media.media_name.port.value == 0)
+    if (media.media_name.port == 0)
     {
         return false;
     }

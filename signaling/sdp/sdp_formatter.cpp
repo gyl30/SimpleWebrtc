@@ -2,10 +2,8 @@
 
 #include <cstdint>
 #include <expected>
-#include <optional>
 #include <string>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -83,44 +81,6 @@ format_result validate_token(std::string_view value, std::string_view field_name
     return {};
 }
 
-template <typename value_type>
-bool is_negative(value_type value)
-{
-    if constexpr (std::is_signed_v<value_type>)
-    {
-        return value < 0;
-    }
-
-    return false;
-}
-
-template <typename value_type>
-const value_type* get_optional_pointer(const value_type& value)
-{
-    return &value;
-}
-
-template <typename value_type>
-const value_type* get_optional_pointer(const std::optional<value_type>& value)
-{
-    if (!value.has_value())
-    {
-        return nullptr;
-    }
-
-    return &value.value();
-}
-
-const connection_information* get_present_connection_pointer(const std::optional<connection_information>& connection)
-{
-    if (!connection.has_value())
-    {
-        return nullptr;
-    }
-
-    return &connection.value();
-}
-
 void append_raw_line(std::string& output, char type, std::string_view value)
 {
     output.push_back(type);
@@ -129,132 +89,34 @@ void append_raw_line(std::string& output, char type, std::string_view value)
     output.append("\r\n");
 }
 
-format_result append_text_line(std::string& output, char type, std::string_view value, std::string_view field_name, bool allow_empty)
+void append_origin(std::string& output, uint64_t session_id, uint64_t session_version)
 {
-    auto validation_result = validate_line_value(value, field_name, allow_empty);
-
-    if (!validation_result)
-    {
-        return std::unexpected(validation_result.error());
-    }
-
-    append_raw_line(output, type, value);
-    return {};
-}
-
-format_result append_version(std::string& output, const sdp_version& version)
-{
-    if (version.value != 0)
-    {
-        return make_error("unsupported sdp version");
-    }
-
-    append_raw_line(output, 'v', "0");
-    return {};
-}
-
-format_result append_origin(std::string& output, const origin_line& origin)
-{
-    auto username_result = validate_token(origin.username, "origin username");
-
-    if (!username_result)
-    {
-        return std::unexpected(username_result.error());
-    }
-
-    auto network_type_result = validate_token(origin.network_type, "origin network type");
-
-    if (!network_type_result)
-    {
-        return std::unexpected(network_type_result.error());
-    }
-
-    auto address_type_result = validate_token(origin.address_type, "origin address type");
-
-    if (!address_type_result)
-    {
-        return std::unexpected(address_type_result.error());
-    }
-
-    auto address_result = validate_token(origin.unicast_address, "origin unicast address");
-
-    if (!address_result)
-    {
-        return std::unexpected(address_result.error());
-    }
-
     std::string value;
-    value.reserve(origin.username.size() + origin.network_type.size() + origin.address_type.size() + origin.unicast_address.size() + 48);
-
-    value.append(origin.username);
+    value.reserve(64);
+    value.append("- ");
+    value.append(std::to_string(session_id));
     value.push_back(' ');
-    value.append(std::to_string(origin.session_id));
-    value.push_back(' ');
-    value.append(std::to_string(origin.session_version));
-    value.push_back(' ');
-    value.append(origin.network_type);
-    value.push_back(' ');
-    value.append(origin.address_type);
-    value.push_back(' ');
-    value.append(origin.unicast_address);
+    value.append(std::to_string(session_version));
+    value.append(" IN IP4 0.0.0.0");
 
     append_raw_line(output, 'o', value);
-    return {};
 }
 
-format_result append_connection(std::string& output, const connection_information& connection)
+format_result append_connection(std::string& output, std::string_view address)
 {
-    auto network_type_result = validate_token(connection.network_type, "connection network type");
-
-    if (!network_type_result)
+    auto validation = validate_token(address, "connection address");
+    if (!validation)
     {
-        return std::unexpected(network_type_result.error());
-    }
-
-    auto address_type_result = validate_token(connection.address_type, "connection address type");
-
-    if (!address_type_result)
-    {
-        return std::unexpected(address_type_result.error());
+        return std::unexpected(validation.error());
     }
 
     std::string value;
-    value.reserve(connection.network_type.size() + connection.address_type.size() + 64);
-
-    value.append(connection.network_type);
-    value.push_back(' ');
-    value.append(connection.address_type);
-
-    const auto* address = get_optional_pointer(connection.address);
-
-    if (address != nullptr)
-    {
-        auto address_result = validate_token(address->address, "connection address");
-
-        if (!address_result)
-        {
-            return std::unexpected(address_result.error());
-        }
-
-        value.push_back(' ');
-        value.append(address->address);
-    }
+    value.reserve(address.size() + 7);
+    value.append("IN IP4 ");
+    value.append(address);
 
     append_raw_line(output, 'c', value);
     return {};
-}
-
-template <typename connection_type>
-format_result append_optional_connection(std::string& output, const connection_type& connection)
-{
-    const auto* connection_value = get_present_connection_pointer(connection);
-
-    if (connection_value == nullptr)
-    {
-        return {};
-    }
-
-    return append_connection(output, *connection_value);
 }
 
 format_result append_attribute(std::string& output, const sdp_attribute& attribute)
@@ -316,16 +178,9 @@ format_result append_media_name(std::string& output, const media_name_line& medi
         return std::unexpected(media_result.error());
     }
 
-    using port_type = std::remove_cvref_t<decltype(media_name.port.value)>;
-
-    if (is_negative<port_type>(media_name.port.value) || static_cast<uint64_t>(media_name.port.value) > 65535)
+    if (media_name.port < 0 || media_name.port > 65535)
     {
         return make_error("media port is out of range");
-    }
-
-    if (media_name.protocols.empty())
-    {
-        return make_error("media protocol list is empty");
     }
 
     if (media_name.formats.empty())
@@ -338,33 +193,8 @@ format_result append_media_name(std::string& output, const media_name_line& medi
 
     value.append(media_name.media);
     value.push_back(' ');
-    value.append(std::to_string(media_name.port.value));
-
-    value.push_back(' ');
-
-    for (std::size_t index = 0; index < media_name.protocols.size(); ++index)
-    {
-        const auto& protocol = media_name.protocols[index];
-
-        auto protocol_result = validate_token(protocol, "media protocol");
-
-        if (!protocol_result)
-        {
-            return std::unexpected(protocol_result.error());
-        }
-
-        if (protocol.find('/') != std::string::npos)
-        {
-            return make_error("media protocol must not contain slash");
-        }
-
-        if (index != 0)
-        {
-            value.push_back('/');
-        }
-
-        value.append(protocol);
-    }
+    value.append(std::to_string(media_name.port));
+    value.append(" UDP/TLS/RTP/SAVPF");
 
     for (const auto& format : media_name.formats)
     {
@@ -392,7 +222,7 @@ format_result append_media_description(std::string& output, const media_descript
         return std::unexpected(media_name_result.error());
     }
 
-    auto connection_result = append_optional_connection(output, media.connection);
+    auto connection_result = append_connection(output, media.connection_address);
 
     if (!connection_result)
     {
@@ -430,34 +260,9 @@ sdp_format_result format_session_description(const session_description& descript
     std::string output;
     output.reserve(2048);
 
-    auto version_result = append_version(output, description.version);
-
-    if (!version_result)
-    {
-        return std::unexpected(version_result.error());
-    }
-
-    auto origin_result = append_origin(output, description.origin);
-
-    if (!origin_result)
-    {
-        return std::unexpected(origin_result.error());
-    }
-
-    auto session_name_result = append_text_line(output, 's', description.session_name, "session name", true);
-
-    if (!session_name_result)
-    {
-        return std::unexpected(session_name_result.error());
-    }
-
-    auto connection_result = append_optional_connection(output, description.connection);
-
-    if (!connection_result)
-    {
-        return std::unexpected(connection_result.error());
-    }
-
+    append_raw_line(output, 'v', "0");
+    append_origin(output, description.session_id, description.session_version);
+    append_raw_line(output, 's', "-");
     append_raw_line(output, 't', "0 0");
 
     auto attributes_result = append_attributes(output, description.attributes);

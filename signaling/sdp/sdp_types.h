@@ -9,19 +9,6 @@
 
 namespace webrtc::sdp
 {
-struct sdp_address
-{
-    std::string address;
-};
-
-struct connection_information
-{
-    std::string network_type;
-    std::string address_type;
-    std::optional<sdp_address> address;
-
-};
-
 struct sdp_attribute
 {
     std::string key;
@@ -32,33 +19,10 @@ struct sdp_attribute
 sdp_attribute make_property_attribute(std::string key);
 sdp_attribute make_attribute(std::string key, std::string value);
 
-struct sdp_version
-{
-    int32_t value = 0;
-
-};
-
-struct origin_line
-{
-    std::string username;
-    uint64_t session_id = 0;
-    uint64_t session_version = 0;
-    std::string network_type;
-    std::string address_type;
-    std::string unicast_address;
-
-};
-
-struct ranged_port
-{
-    int32_t value = 0;
-};
-
 struct media_name_line
 {
     std::string media;
-    ranged_port port;
-    std::vector<std::string> protocols;
+    int32_t port = 0;
     std::vector<std::string> formats;
 
 };
@@ -66,7 +30,7 @@ struct media_name_line
 struct media_description
 {
     media_name_line media_name;
-    std::optional<connection_information> connection;
+    std::string connection_address;
     std::vector<sdp_attribute> attributes;
 
     std::optional<std::string> find_attribute_value(std::string_view key) const;
@@ -109,10 +73,8 @@ struct rtp_header_extension
 
 struct session_description
 {
-    sdp_version version;
-    origin_line origin;
-    std::string session_name;
-    std::optional<connection_information> connection;
+    uint64_t session_id = 0;
+    uint64_t session_version = 0;
     std::vector<sdp_attribute> attributes;
     std::vector<media_description> media_descriptions;
 

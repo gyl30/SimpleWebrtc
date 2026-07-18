@@ -293,7 +293,7 @@ std::expected<std::string, std::string> make_bundle_group_value(const session_de
 
     for (const auto& media : answer.media_descriptions)
     {
-        if (media.media_name.port.value == 0)
+        if (media.media_name.port == 0)
         {
             continue;
         }
@@ -364,7 +364,7 @@ bool string_vector_contains(const std::vector<std::string>& values, std::string_
     return false;
 }
 
-bool is_answer_media_rejected(const media_description& media) { return media.media_name.port.value == 0; }
+bool is_answer_media_rejected(const media_description& media) { return media.media_name.port == 0; }
 
 std::expected<std::vector<std::string>, std::string> collect_answer_bundle_mids(const session_description& answer)
 {
@@ -1797,18 +1797,6 @@ std::expected<void, std::string> validate_whep_answer_media_forwarding_identity(
     return {};
 }
 
-connection_information make_rejected_connection()
-{
-    connection_information connection;
-    connection.network_type = "IN";
-    connection.address_type = "IP4";
-
-    sdp_address address;
-    address.address = "0.0.0.0";
-    connection.address = address;
-
-    return connection;
-}
 std::expected<void, std::string> validate_answer_media_rejection_state(const media_description& media)
 {
     const bool rejected = is_answer_media_rejected(media);
@@ -1845,31 +1833,6 @@ void push_attribute(std::vector<sdp_attribute>& attributes, std::string_view key
 void push_property_attribute(std::vector<sdp_attribute>& attributes, std::string_view key)
 {
     attributes.push_back(make_property_attribute(std::string(key)));
-}
-
-origin_line make_origin(const sdp_answer_options& options)
-{
-    origin_line origin;
-    origin.username = "-";
-    origin.session_id = options.session_id;
-    origin.session_version = options.session_version;
-    origin.network_type = "IN";
-    origin.address_type = "IP4";
-    origin.unicast_address = "0.0.0.0";
-    return origin;
-}
-
-connection_information make_connection(const sdp_answer_options& options)
-{
-    connection_information connection;
-    connection.network_type = "IN";
-    connection.address_type = "IP4";
-
-    sdp_address address;
-    address.address = options.media_address;
-    connection.address = address;
-
-    return connection;
 }
 
 std::string make_fingerprint_value(const fingerprint_info& fingerprint)
@@ -2698,15 +2661,7 @@ std::expected<media_description, std::string> make_rejected_answer_media(const m
 
     answer_media.media_name.media = media.kind;
 
-    answer_media.media_name.port.value = 0;
-
-    answer_media.media_name.protocols.push_back("UDP");
-
-    answer_media.media_name.protocols.push_back("TLS");
-
-    answer_media.media_name.protocols.push_back("RTP");
-
-    answer_media.media_name.protocols.push_back("SAVPF");
+    answer_media.media_name.port = 0;
 
     for (uint16_t payload_type : media.payload_types)
     {
@@ -2718,7 +2673,7 @@ std::expected<media_description, std::string> make_rejected_answer_media(const m
         answer_media.media_name.formats.push_back("0");
     }
 
-    answer_media.connection = make_rejected_connection();
+    answer_media.connection_address = "0.0.0.0";
 
     push_attribute(answer_media.attributes, k_attribute_mid, media.mid);
 
@@ -2807,18 +2762,13 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
     media_description answer_media;
 
     answer_media.media_name.media = media.kind;
-    answer_media.media_name.port.value = 9;
-    answer_media.media_name.protocols.push_back("UDP");
-    answer_media.media_name.protocols.push_back("TLS");
-    answer_media.media_name.protocols.push_back("RTP");
-    answer_media.media_name.protocols.push_back("SAVPF");
-
+    answer_media.media_name.port = 9;
     for (const auto& codec : codecs)
     {
         answer_media.media_name.formats.push_back(std::to_string(codec.payload_type));
     }
 
-    answer_media.connection = make_connection(options);
+    answer_media.connection_address = options.media_address;
 
     push_attribute(answer_media.attributes, k_attribute_mid, media.mid);
 
@@ -2946,9 +2896,8 @@ sdp_answer_result build_answer(answer_endpoint_role role,
 
     session_description answer;
 
-    answer.version.value = 0;
-    answer.origin = make_origin(options);
-    answer.session_name = "-";
+    answer.session_id = options.session_id;
+    answer.session_version = options.session_version;
 
     push_property_attribute(answer.attributes, "ice-lite");
     push_attribute(answer.attributes, "ice-options", "trickle");

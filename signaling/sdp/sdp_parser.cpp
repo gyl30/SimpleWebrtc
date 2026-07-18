@@ -153,7 +153,7 @@ std::expected<sdp_attribute, std::string> parse_attribute_line(std::string_view 
     return make_attribute(std::string(value.substr(0, colon_position)), std::string(value.substr(colon_position + 1)));
 }
 
-std::expected<connection_information, std::string> parse_connection_information_line(std::string_view value)
+std::expected<void, std::string> validate_connection_information_line(std::string_view value)
 {
     const auto fields = split_whitespace(value);
 
@@ -162,28 +162,17 @@ std::expected<connection_information, std::string> parse_connection_information_
         return make_error("invalid connection information");
     }
 
-    connection_information connection;
-    connection.network_type = std::string(fields[0]);
-    connection.address_type = std::string(fields[1]);
-
-    if (!is_any_of(connection.network_type, {"IN"}))
+    if (!is_any_of(fields[0], {"IN"}))
     {
         return make_error("invalid connection network type");
     }
 
-    if (!is_any_of(connection.address_type, {"IP4", "IP6"}))
+    if (!is_any_of(fields[1], {"IP4", "IP6"}))
     {
         return make_error("invalid connection address type");
     }
 
-    if (fields.size() >= 3)
-    {
-        sdp_address address;
-        address.address = std::string(fields[2]);
-        connection.address = address;
-    }
-
-    return connection;
+    return {};
 }
 
 std::expected<void, std::string> validate_bandwidth_line(std::string_view value)
@@ -298,20 +287,16 @@ std::expected<void, std::string> validate_time_zone_line(std::string_view value)
     return {};
 }
 
-std::expected<ranged_port, std::string> parse_ranged_port(std::string_view value)
+std::expected<int32_t, std::string> parse_ranged_port(std::string_view value)
 {
-    ranged_port port;
-
     const auto slash_position = value.find('/');
     const auto port_text = slash_position == std::string_view::npos ? value : value.substr(0, slash_position);
 
-    auto parsed_port = parse_port(port_text);
-    if (!parsed_port)
+    auto port = parse_port(port_text);
+    if (!port)
     {
         return make_error("invalid media port");
     }
-
-    port.value = *parsed_port;
 
     if (slash_position != std::string_view::npos)
     {
@@ -328,7 +313,7 @@ std::expected<ranged_port, std::string> parse_ranged_port(std::string_view value
         }
     }
 
-    return port;
+    return *port;
 }
 
 std::expected<media_name_line, std::string> parse_media_name_line(std::string_view value)
@@ -374,7 +359,6 @@ std::expected<media_name_line, std::string> parse_media_name_line(std::string_vi
             return make_error("unsupported media protocol");
         }
 
-        media_name.protocols.push_back(std::string(protocol));
     }
 
     for (std::size_t i = 3; i < fields.size(); ++i)
@@ -385,7 +369,7 @@ std::expected<media_name_line, std::string> parse_media_name_line(std::string_vi
     return media_name;
 }
 
-std::expected<origin_line, std::string> parse_origin_line(std::string_view value)
+std::expected<void, std::string> validate_origin_line(std::string_view value)
 {
     const auto fields = split_whitespace(value);
 
@@ -406,25 +390,17 @@ std::expected<origin_line, std::string> parse_origin_line(std::string_view value
         return make_error(session_version.error());
     }
 
-    origin_line origin;
-    origin.username = std::string(fields[0]);
-    origin.session_id = *session_id;
-    origin.session_version = *session_version;
-    origin.network_type = std::string(fields[3]);
-    origin.address_type = std::string(fields[4]);
-    origin.unicast_address = std::string(fields[5]);
-
-    if (!is_any_of(origin.network_type, {"IN"}))
+    if (!is_any_of(fields[3], {"IN"}))
     {
         return make_error("invalid origin network type");
     }
 
-    if (!is_any_of(origin.address_type, {"IP4", "IP6"}))
+    if (!is_any_of(fields[4], {"IP4", "IP6"}))
     {
         return make_error("invalid origin address type");
     }
 
-    return origin;
+    return {};
 }
 
 std::expected<void, std::string> parse_session_level_line(session_description& description,
@@ -450,26 +426,23 @@ std::expected<void, std::string> parse_session_level_line(session_description& d
                 return make_error("unsupported sdp version");
             }
 
-            description.version.value = 0;
             has_version = true;
             return {};
         }
 
         case 'o':
         {
-            auto origin = parse_origin_line(value);
-            if (!origin)
+            auto validation = validate_origin_line(value);
+            if (!validation)
             {
-                return make_error(origin.error());
+                return make_error(validation.error());
             }
 
-            description.origin = *origin;
             has_origin = true;
             return {};
         }
 
         case 's':
-            description.session_name = std::string(value);
             has_session_name = true;
             return {};
 
@@ -490,13 +463,11 @@ std::expected<void, std::string> parse_session_level_line(session_description& d
 
         case 'c':
         {
-            auto connection = parse_connection_information_line(value);
-            if (!connection)
+            auto validation = validate_connection_information_line(value);
+            if (!validation)
             {
-                return make_error(connection.error());
+                return make_error(validation.error());
             }
-
-            description.connection = *connection;
             return {};
         }
 
@@ -579,13 +550,11 @@ std::expected<void, std::string> parse_media_level_line(media_description& media
 
         case 'c':
         {
-            auto connection = parse_connection_information_line(value);
-            if (!connection)
+            auto validation = validate_connection_information_line(value);
+            if (!validation)
             {
-                return make_error(connection.error());
+                return make_error(validation.error());
             }
-
-            media.connection = *connection;
             return {};
         }
 
