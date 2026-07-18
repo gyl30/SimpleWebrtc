@@ -116,7 +116,7 @@ publisher_session_result stream_registry::replace_publisher_session(std::string 
         return std::unexpected(stream_registry_error::publisher_republish_stream_mismatch);
     }
 
-    remember_removed_session_locked(stream_session_kind::publisher, previous_session->stream_id(), previous_session->session_id());
+    remember_removed_session_locked(stream_session_kind::publisher, previous_session->session_id());
 
     publishers_by_session_id_.erase(previous_iterator);
 
@@ -185,7 +185,7 @@ subscriber_session_result stream_registry::replace_subscriber_session(std::strin
         return std::unexpected(stream_registry_error::subscriber_reconnect_stream_mismatch);
     }
 
-    remember_removed_session_locked(stream_session_kind::subscriber, previous_session->stream_id(), previous_session->session_id());
+    remember_removed_session_locked(stream_session_kind::subscriber, previous_session->session_id());
 
     subscribers_by_session_id_.erase(previous_iterator);
 
@@ -255,7 +255,7 @@ std::shared_ptr<subscriber_session> stream_registry::find_subscriber_by_session_
     return iterator->second;
 }
 
-std::optional<stream_removed_session_tombstone> stream_registry::find_removed_session_tombstone(std::string_view session_id) const
+std::optional<stream_session_kind> stream_registry::find_removed_session_kind(std::string_view session_id) const
 {
     if (session_id.empty())
     {
@@ -278,10 +278,10 @@ std::optional<stream_removed_session_tombstone> stream_registry::find_removed_se
         return std::nullopt;
     }
 
-    return iterator->second;
+    return iterator->second.kind;
 }
 
-bool stream_registry::is_removed_session_tombstone_expired_locked(const stream_removed_session_tombstone& tombstone,
+bool stream_registry::is_removed_session_tombstone_expired_locked(const removed_session_tombstone& tombstone,
                                                                   uint64_t current_time_milliseconds) const
 {
     if (tombstone.removed_at_milliseconds == 0)
@@ -296,9 +296,7 @@ bool stream_registry::is_removed_session_tombstone_expired_locked(const stream_r
 
     return current_time_milliseconds - tombstone.removed_at_milliseconds >= k_removed_session_tombstone_ttl_milliseconds;
 }
-void stream_registry::remember_removed_session_locked(stream_session_kind kind,
-                                                     std::string_view stream_id,
-                                                     std::string_view session_id)
+void stream_registry::remember_removed_session_locked(stream_session_kind kind, std::string_view session_id)
 {
     if (session_id.empty())
     {
@@ -307,14 +305,10 @@ void stream_registry::remember_removed_session_locked(stream_session_kind kind,
 
     const uint64_t current_time_milliseconds = now_milliseconds();
 
-    stream_removed_session_tombstone tombstone;
-
-    tombstone.kind = kind;
-    tombstone.stream_id = stream_id;
-    tombstone.session_id = session_id;
-    tombstone.removed_at_milliseconds = current_time_milliseconds;
-
-    removed_session_tombstones_by_session_id_[tombstone.session_id] = std::move(tombstone);
+    removed_session_tombstones_by_session_id_[std::string(session_id)] = removed_session_tombstone{
+        .kind = kind,
+        .removed_at_milliseconds = current_time_milliseconds,
+    };
 
     prune_removed_session_tombstones_locked(current_time_milliseconds);
 }
@@ -376,7 +370,7 @@ remove_session_result stream_registry::remove_publisher_session(std::string_view
 
     const std::string stream_id = publisher->stream_id();
 
-    remember_removed_session_locked(stream_session_kind::publisher, stream_id, publisher->session_id());
+    remember_removed_session_locked(stream_session_kind::publisher, publisher->session_id());
 
     /*
      * WHEP 订阅者归属于 stream，而不是某个具体的 publisher session。
@@ -409,7 +403,7 @@ remove_session_result stream_registry::remove_subscriber_session(std::string_vie
     const std::string stream_id = subscriber->stream_id();
     const std::string subscriber_session_id = subscriber->session_id();
 
-    remember_removed_session_locked(stream_session_kind::subscriber, stream_id, subscriber_session_id);
+    remember_removed_session_locked(stream_session_kind::subscriber, subscriber_session_id);
 
     subscribers_by_session_id_.erase(subscriber_iterator);
 

@@ -35,15 +35,6 @@ enum class stream_session_kind : uint8_t
     subscriber,
 };
 
-struct stream_removed_session_tombstone
-{
-    stream_session_kind kind = stream_session_kind::publisher;
-    std::string stream_id;
-    std::string session_id;
-
-    uint64_t removed_at_milliseconds = 0;
-};
-
 struct stream_session_lifecycle_snapshot
 {
     stream_session_kind kind = stream_session_kind::publisher;
@@ -97,7 +88,7 @@ class stream_registry
 
     [[nodiscard]] std::shared_ptr<subscriber_session> find_subscriber_by_session_id(std::string_view session_id) const;
 
-    [[nodiscard]] std::optional<stream_removed_session_tombstone> find_removed_session_tombstone(std::string_view session_id) const;
+    [[nodiscard]] std::optional<stream_session_kind> find_removed_session_kind(std::string_view session_id) const;
 
     [[nodiscard]] remove_session_result remove_publisher_session(std::string_view session_id);
 
@@ -107,10 +98,16 @@ class stream_registry
     std::vector<stream_session_lifecycle_snapshot> session_lifecycle_snapshots() const;
 
    private:
-    [[nodiscard]]
-    bool is_removed_session_tombstone_expired_locked(const stream_removed_session_tombstone& tombstone, uint64_t current_time_milliseconds) const;
+    struct removed_session_tombstone
+    {
+        stream_session_kind kind = stream_session_kind::publisher;
+        uint64_t removed_at_milliseconds = 0;
+    };
 
-    void remember_removed_session_locked(stream_session_kind kind, std::string_view stream_id, std::string_view session_id);
+    [[nodiscard]]
+    bool is_removed_session_tombstone_expired_locked(const removed_session_tombstone& tombstone, uint64_t current_time_milliseconds) const;
+
+    void remember_removed_session_locked(stream_session_kind kind, std::string_view session_id);
 
     void prune_removed_session_tombstones_locked(uint64_t current_time_milliseconds);
 
@@ -124,7 +121,7 @@ class stream_registry
     std::unordered_map<std::string, std::shared_ptr<publisher_session>> publishers_by_session_id_;
     std::unordered_map<std::string, std::shared_ptr<subscriber_session>> subscribers_by_session_id_;
     std::unordered_map<std::string, std::unordered_set<std::string>> subscriber_session_ids_by_stream_id_;
-    std::unordered_map<std::string, stream_removed_session_tombstone> removed_session_tombstones_by_session_id_;
+    std::unordered_map<std::string, removed_session_tombstone> removed_session_tombstones_by_session_id_;
 };
 }    // namespace webrtc
 

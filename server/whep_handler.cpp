@@ -548,9 +548,9 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
         if (reconnect_previous_session == nullptr)
         {
-            const auto removed_session = registry_->find_removed_session_tombstone(*reconnect_session_id);
+            const auto removed_session_kind = registry_->find_removed_session_kind(*reconnect_session_id);
 
-            if (removed_session.has_value() && removed_session->kind == stream_session_kind::subscriber)
+            if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::subscriber)
             {
                 WEBRTC_LOG_WARN("WHEP reconnect failed previous subscriber gone stream={} previous_session={}", stream_id, *reconnect_session_id);
 
@@ -664,9 +664,9 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         {
             if (reconnect_session_id.has_value())
             {
-                const auto removed_session = registry_->find_removed_session_tombstone(*reconnect_session_id);
+                const auto removed_session_kind = registry_->find_removed_session_kind(*reconnect_session_id);
 
-                if (removed_session.has_value() && removed_session->kind == stream_session_kind::subscriber)
+                if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::subscriber)
                 {
                     WEBRTC_LOG_WARN("WHEP reconnect failed previous subscriber gone stream={} previous_session={}", stream_id, *reconnect_session_id);
 
@@ -736,9 +736,9 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
 {
     if (session == nullptr)
     {
-        const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+        const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
 
-        if (removed_session.has_value() && removed_session->kind == stream_session_kind::subscriber)
+        if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::subscriber)
         {
             return json_error_response(request, 410, "whep_session_gone", "subscriber session already deleted");
         }
@@ -895,9 +895,9 @@ http_response_ptr whep_handler::patch_session(http_request_t& request, std::stri
 
     if (session == nullptr)
     {
-        const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+        const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
 
-        if (removed_session.has_value() && removed_session->kind == stream_session_kind::subscriber)
+        if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::subscriber)
         {
             return json_error_response(request, 410, "whep_session_gone", "subscriber session already deleted");
         }
@@ -947,9 +947,9 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
 
     if (session == nullptr)
     {
-        const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+        const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
 
-        if (removed_session.has_value() && removed_session->kind == stream_session_kind::subscriber)
+        if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::subscriber)
         {
             return json_error_response(request, 410, "whep_session_gone", "subscriber session already deleted");
         }
@@ -969,9 +969,9 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
     {
         if (result.error() == stream_registry_error::subscriber_session_not_found)
         {
-            const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+            const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
 
-            if (removed_session.has_value() && removed_session->kind == stream_session_kind::subscriber)
+            if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::subscriber)
             {
                 return json_error_response(request, 410, "whep_session_gone", "subscriber session already deleted");
             }

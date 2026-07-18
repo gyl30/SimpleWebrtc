@@ -222,9 +222,9 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
         if (replace_previous_session == nullptr)
         {
-            const auto removed_session = registry_->find_removed_session_tombstone(*replace_session_id);
+            const auto removed_session_kind = registry_->find_removed_session_kind(*replace_session_id);
 
-            if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+            if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::publisher)
             {
                 WEBRTC_LOG_WARN("WHIP republish failed previous publisher gone stream={} previous_session={}", stream_id, *replace_session_id);
 
@@ -326,9 +326,9 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         {
             if (replace_session_id.has_value())
             {
-                const auto removed_session = registry_->find_removed_session_tombstone(*replace_session_id);
+                const auto removed_session_kind = registry_->find_removed_session_kind(*replace_session_id);
 
-                if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+                if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::publisher)
                 {
                     WEBRTC_LOG_WARN("WHIP republish failed previous publisher gone stream={} previous_session={}", stream_id, *replace_session_id);
 
@@ -399,9 +399,9 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
 {
     if (session == nullptr)
     {
-        const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+        const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
 
-        if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+        if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::publisher)
         {
             return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
         }
@@ -524,9 +524,9 @@ http_response_ptr whip_handler::patch_session(http_request_t& request, std::stri
 
     if (session == nullptr)
     {
-        const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+        const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
 
-        if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+        if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::publisher)
         {
             return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
         }
@@ -576,9 +576,9 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
 
     if (session == nullptr)
     {
-        const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+        const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
 
-        if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+        if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::publisher)
         {
             return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
         }
@@ -599,9 +599,9 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
     {
         if (result.error() == stream_registry_error::publisher_session_not_found)
         {
-            const auto removed_session = registry_->find_removed_session_tombstone(session_id);
+            const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
 
-            if (removed_session.has_value() && removed_session->kind == stream_session_kind::publisher)
+            if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::publisher)
             {
                 return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
             }
