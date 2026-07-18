@@ -21,7 +21,6 @@ struct rtp_packet_header
 
 struct rtcp_packet_header
 {
-    uint8_t version = 0;
     bool padding = false;
 
     uint8_t count = 0;

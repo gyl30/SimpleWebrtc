@@ -43,24 +43,12 @@ struct h264_fmtp_parameters
 
 struct h264_fmtp_answer_negotiation
 {
-    h264_fmtp_parameters offer_parameters;
-    h264_fmtp_parameters local_parameters;
-
-    h264_profile_level_id selected_profile_level_id;
-
-    uint8_t selected_packetization_mode = 1;
-    bool selected_level_asymmetry_allowed = false;
-
     std::string answer_fmtp;
 };
 
 struct h264_fmtp_relay_compatibility
 {
-    h264_fmtp_parameters publisher_parameters;
-    h264_fmtp_parameters subscriber_parameters;
-
     bool compatible = false;
-    std::string reason;
 };
 
 [[nodiscard]]

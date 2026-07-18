@@ -313,7 +313,6 @@ rtcp_packet_header_result parse_rtcp_packet_header(std::span<const uint8_t> data
 
     rtcp_packet_header header;
 
-    header.version = static_cast<uint8_t>(data[0] >> 6U);
     header.padding = (data[0] & 0x20U) != 0;
     header.count = static_cast<uint8_t>(data[0] & 0x1FU);
     header.packet_type = data[1];

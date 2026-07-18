@@ -368,7 +368,6 @@ std::expected<stun_address, std::string> parse_address_attribute_value(uint16_t 
 
     stun_address address;
     address.port = port;
-    address.is_ipv6 = family == 0x02U;
 
     if (family == 0x01U)
     {
@@ -532,7 +531,6 @@ std::expected<void, std::string> decode_known_attribute(stun_message& message, u
 
 struct parsed_ip_address
 {
-    int family = AF_INET;
     bool is_ipv6 = false;
     std::vector<uint8_t> bytes;
 };
@@ -550,7 +548,6 @@ std::expected<parsed_ip_address, std::string> parse_ip_address(std::string_view 
     if (inet_pton(AF_INET, text.c_str(), ipv4.data()) == 1)
     {
         parsed_ip_address result;
-        result.family = AF_INET;
         result.is_ipv6 = false;
         result.bytes.assign(ipv4.begin(), ipv4.end());
         return result;
@@ -560,7 +557,6 @@ std::expected<parsed_ip_address, std::string> parse_ip_address(std::string_view 
     if (inet_pton(AF_INET6, text.c_str(), ipv6.data()) == 1)
     {
         parsed_ip_address result;
-        result.family = AF_INET6;
         result.is_ipv6 = true;
         result.bytes.assign(ipv6.begin(), ipv6.end());
         return result;

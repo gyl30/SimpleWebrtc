@@ -586,20 +586,11 @@ std::expected<h264_fmtp_answer_negotiation, std::string> negotiate_h264_fmtp_for
     const bool level_asymmetry_allowed =
         h264_level_asymmetry_allowed_effective_value(*offer_parameters) && h264_level_asymmetry_allowed_effective_value(*local_parameters);
 
+    const h264_profile_level_id selected_profile_level_id =
+        select_answer_profile_level_id(offer_profile_level_id, local_profile_level_id, level_asymmetry_allowed);
+
     h264_fmtp_answer_negotiation negotiation;
-
-    negotiation.offer_parameters = *offer_parameters;
-
-    negotiation.local_parameters = *local_parameters;
-
-    negotiation.selected_packetization_mode = *offer_packetization_mode;
-
-    negotiation.selected_level_asymmetry_allowed = level_asymmetry_allowed;
-
-    negotiation.selected_profile_level_id = select_answer_profile_level_id(offer_profile_level_id, local_profile_level_id, level_asymmetry_allowed);
-
-    negotiation.answer_fmtp = make_answer_fmtp(
-        negotiation.selected_profile_level_id, negotiation.selected_packetization_mode, negotiation.selected_level_asymmetry_allowed);
+    negotiation.answer_fmtp = make_answer_fmtp(selected_profile_level_id, *offer_packetization_mode, level_asymmetry_allowed);
 
     return negotiation;
 }
@@ -623,59 +614,43 @@ std::expected<h264_fmtp_relay_compatibility, std::string> check_h264_fmtp_relay_
         return std::unexpected(subscriber_parameters.error());
     }
 
-    compatibility.publisher_parameters = *publisher_parameters;
-
-    compatibility.subscriber_parameters = *subscriber_parameters;
-
-    auto publisher_packetization_mode = effective_packetization_mode_for_relay(compatibility.publisher_parameters);
+    auto publisher_packetization_mode = effective_packetization_mode_for_relay(*publisher_parameters);
 
     if (!publisher_packetization_mode)
     {
-        compatibility.reason = publisher_packetization_mode.error();
-
         return compatibility;
     }
 
-    auto subscriber_packetization_mode = effective_packetization_mode_for_relay(compatibility.subscriber_parameters);
+    auto subscriber_packetization_mode = effective_packetization_mode_for_relay(*subscriber_parameters);
 
     if (!subscriber_packetization_mode)
     {
-        compatibility.reason = subscriber_packetization_mode.error();
-
         return compatibility;
     }
 
     if (*publisher_packetization_mode != *subscriber_packetization_mode)
     {
-        compatibility.reason = "h264 relay packetization-mode mismatch";
-
         return compatibility;
     }
 
-    if (compatibility.publisher_parameters.profile_level_id.has_value() && compatibility.subscriber_parameters.profile_level_id.has_value())
+    if (publisher_parameters->profile_level_id.has_value() && subscriber_parameters->profile_level_id.has_value())
     {
-        const h264_profile_level_id& publisher_profile_level_id = *compatibility.publisher_parameters.profile_level_id;
+        const h264_profile_level_id& publisher_profile_level_id = *publisher_parameters->profile_level_id;
 
-        const h264_profile_level_id& subscriber_profile_level_id = *compatibility.subscriber_parameters.profile_level_id;
+        const h264_profile_level_id& subscriber_profile_level_id = *subscriber_parameters->profile_level_id;
 
         if (!publisher_profile_is_decodable_by_subscriber(publisher_profile_level_id.profile, subscriber_profile_level_id.profile))
         {
-            compatibility.reason = "h264 relay profile is not decodable by subscriber";
-
             return compatibility;
         }
 
         if (level_rank(subscriber_profile_level_id) < level_rank(publisher_profile_level_id))
         {
-            compatibility.reason = "h264 relay subscriber level is lower than publisher level";
-
             return compatibility;
         }
     }
 
     compatibility.compatible = true;
-
-    compatibility.reason = "compatible";
 
     return compatibility;
 }

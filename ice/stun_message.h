@@ -31,7 +31,6 @@ struct stun_address
 {
     std::string ip;
     uint16_t port = 0;
-    bool is_ipv6 = false;
 };
 
 struct stun_message
