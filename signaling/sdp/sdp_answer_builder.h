@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -11,17 +12,6 @@
 
 namespace webrtc::sdp
 {
-struct sdp_ice_candidate_options
-{
-    std::string foundation = "1";
-    uint32_t component = 1;
-    std::string transport = "udp";
-    uint32_t priority = 2130706431;
-    std::string address;
-    uint16_t port = 0;
-    std::string type = "host";
-};
-
 struct sdp_answer_media_source
 {
     std::string mid;
@@ -41,14 +31,13 @@ struct sdp_answer_options
     uint64_t session_id = 1;
     uint64_t session_version = 1;
 
-    std::string media_address = "0.0.0.0";
-
     std::string local_ice_ufrag;
     std::string local_ice_pwd;
 
     fingerprint_info local_fingerprint;
 
-    std::vector<sdp_ice_candidate_options> local_candidates;
+    std::span<const std::string> local_candidate_addresses;
+    uint16_t local_candidate_port = 0;
 
     std::string local_stream_id = "-";
     std::vector<sdp_answer_media_source> media_sources;

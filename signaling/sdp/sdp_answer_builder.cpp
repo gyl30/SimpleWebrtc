@@ -89,63 +89,25 @@ std::string make_candidate_field_name(std::string_view prefix, std::string_view 
     return value;
 }
 
-validation_result validate_candidate_options(const sdp_ice_candidate_options& candidate, std::string_view prefix)
-{
-    auto foundation_result = validate_token(candidate.foundation, make_candidate_field_name(prefix, "foundation"));
-
-    if (!foundation_result)
-    {
-        return std::unexpected(foundation_result.error());
-    }
-
-    if (candidate.component == 0)
-    {
-        return make_error(make_candidate_field_name(prefix, "component is zero"));
-    }
-
-    auto transport_result = validate_token(candidate.transport, make_candidate_field_name(prefix, "transport"));
-
-    if (!transport_result)
-    {
-        return std::unexpected(transport_result.error());
-    }
-
-    if (candidate.priority == 0)
-    {
-        return make_error(make_candidate_field_name(prefix, "priority is zero"));
-    }
-
-    auto address_result = validate_token(candidate.address, make_candidate_field_name(prefix, "address"));
-
-    if (!address_result)
-    {
-        return std::unexpected(address_result.error());
-    }
-
-    if (candidate.port == 0)
-    {
-        return make_error(make_candidate_field_name(prefix, "port is zero"));
-    }
-
-    auto type_result = validate_token(candidate.type, make_candidate_field_name(prefix, "type"));
-
-    if (!type_result)
-    {
-        return std::unexpected(type_result.error());
-    }
-
-    return {};
-}
-
 validation_result validate_candidate_options(const sdp_answer_options& options)
 {
-    for (std::size_t index = 0; index < options.local_candidates.size(); ++index)
+    if (options.local_candidate_addresses.empty())
+    {
+        return make_error("local candidate address list is empty");
+    }
+
+    if (options.local_candidate_port == 0)
+    {
+        return make_error("local candidate port is zero");
+    }
+
+    for (std::size_t index = 0; index < options.local_candidate_addresses.size(); ++index)
     {
         std::string prefix("local candidate ");
 
         prefix.append(std::to_string(index));
 
-        auto result = validate_candidate_options(options.local_candidates[index], prefix);
+        auto result = validate_token(options.local_candidate_addresses[index], make_candidate_field_name(prefix, "address"));
 
         if (!result)
         {
@@ -158,13 +120,6 @@ validation_result validate_candidate_options(const sdp_answer_options& options)
 
 validation_result validate_options(const sdp_answer_options& options)
 {
-    auto media_address_result = validate_token(options.media_address, "media address");
-
-    if (!media_address_result)
-    {
-        return std::unexpected(media_address_result.error());
-    }
-
     auto ice_ufrag_result = validate_token(options.local_ice_ufrag, "local ice-ufrag");
 
     if (!ice_ufrag_result)
@@ -2564,25 +2519,20 @@ bool answer_codecs_include_usable_rtx(const std::vector<codec_info>& codecs)
     return false;
 }
 
-std::string make_candidate_value(const sdp_ice_candidate_options& candidate)
+std::string make_candidate_value(std::string_view address, uint16_t port, std::size_t index)
 {
     std::string value;
 
-    value.reserve(candidate.foundation.size() + candidate.transport.size() + candidate.address.size() + candidate.type.size() + 64);
+    value.reserve(address.size() + 64);
 
-    value.append(candidate.foundation);
+    value.append(std::to_string(index + 1));
+    value.append(" 1 udp ");
+    value.append(std::to_string(2130706431U - static_cast<uint32_t>(index)));
     value.push_back(' ');
-    value.append(std::to_string(candidate.component));
+    value.append(address);
     value.push_back(' ');
-    value.append(candidate.transport);
-    value.push_back(' ');
-    value.append(std::to_string(candidate.priority));
-    value.push_back(' ');
-    value.append(candidate.address);
-    value.push_back(' ');
-    value.append(std::to_string(candidate.port));
-    value.append(" typ ");
-    value.append(candidate.type);
+    value.append(std::to_string(port));
+    value.append(" typ host");
 
     return value;
 }
@@ -2641,9 +2591,11 @@ void append_media_timing_attributes(media_description& answer_media, const media
 
 void append_ice_candidate_attributes(media_description& answer_media, const sdp_answer_options& options)
 {
-    for (const auto& candidate : options.local_candidates)
+    for (std::size_t index = 0; index < options.local_candidate_addresses.size(); ++index)
     {
-        push_attribute(answer_media.attributes, "candidate", make_candidate_value(candidate));
+        push_attribute(answer_media.attributes,
+                       "candidate",
+                       make_candidate_value(options.local_candidate_addresses[index], options.local_candidate_port, index));
     }
 
     push_property_attribute(answer_media.attributes, "end-of-candidates");
@@ -2768,7 +2720,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
         answer_media.media_name.formats.push_back(std::to_string(codec.payload_type));
     }
 
-    answer_media.connection_address = options.media_address;
+    answer_media.connection_address = options.local_candidate_addresses.front();
 
     push_attribute(answer_media.attributes, k_attribute_mid, media.mid);
 

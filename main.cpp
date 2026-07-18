@@ -151,27 +151,6 @@ static std::vector<std::string> make_ice_public_ip_list(std::string_view configu
     return addresses;
 }
 
-static webrtc::sdp::sdp_ice_candidate_options make_ice_host_candidate(std::string address, uint16_t port, std::size_t index)
-{
-    webrtc::sdp::sdp_ice_candidate_options candidate;
-
-    candidate.foundation = std::to_string(index + 1);
-
-    candidate.component = 1;
-
-    candidate.transport = "udp";
-
-    candidate.priority = static_cast<uint32_t>(2130706431U - static_cast<uint32_t>(index));
-
-    candidate.address = std::move(address);
-
-    candidate.port = port;
-
-    candidate.type = "host";
-
-    return candidate;
-}
-
 static bool load_server_certificate(boost::asio::ssl::context& ctx, const std::string& cert_file, const std::string& key_file)
 {
     boost::system::error_code ec;
@@ -316,7 +295,7 @@ int main(int argc, char* argv[])
     const std::string ice_bind_host = get_env_or_default("WEBRTC_ICE_BIND_HOST", "0.0.0.0");
     const std::string ice_public_ips_config = get_env_or_default("WEBRTC_ICE_PUBLIC_IPS", "127.0.0.1");
     std::string admin_token = get_env_or_default("WEBRTC_ADMIN_TOKEN", "");
-    const std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ips_config);
+    std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ips_config);
 
     WEBRTC_LOG_INFO(
         "flag_startup_config_summary app_path={} log_file={} http_tls_enabled={} http_cert_file={} http_key_file={} http_port={} "
@@ -347,25 +326,16 @@ int main(int argc, char* argv[])
 
     auto session_udp_port_allocator = std::make_shared<webrtc::udp_port_allocator>(session_transport_config.session_udp_port_range);
 
-    std::vector<webrtc::sdp::sdp_ice_candidate_options> ice_candidates;
-
-    ice_candidates.reserve(ice_public_ips.size());
-
-    for (std::size_t index = 0; index < ice_public_ips.size(); ++index)
-    {
-        ice_candidates.push_back(make_ice_host_candidate(ice_public_ips[index], session_transport_config.session_udp_port_range.min_port, index));
-    }
-
-    for (const auto& candidate : ice_candidates)
+    for (const auto& address : ice_public_ips)
     {
         WEBRTC_LOG_INFO("ice host candidate address={} session_port_range={}-{}",
-                        candidate.address,
+                        address,
                         session_transport_config.session_udp_port_range.min_port,
                         session_transport_config.session_udp_port_range.max_port);
     }
 
     auto answer_factory =
-        std::make_shared<webrtc::webrtc_answer_factory>(std::move(local_fingerprint), std::move(ice_candidates));
+        std::make_shared<webrtc::webrtc_answer_factory>(std::move(local_fingerprint), std::move(ice_public_ips));
     auto http_router = std::make_shared<webrtc::router>(registry,
                                                         answer_factory,
                                                         session_udp_port_allocator,

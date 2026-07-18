@@ -32,7 +32,7 @@ class webrtc_answer_factory
 {
    public:
     explicit webrtc_answer_factory(sdp::fingerprint_info local_fingerprint,
-                                   std::vector<sdp::sdp_ice_candidate_options> ice_candidates);
+                                   std::vector<std::string> ice_candidate_addresses);
 
     webrtc_answer_factory(const webrtc_answer_factory&) = delete;
 
@@ -75,9 +75,6 @@ class webrtc_answer_factory
 
    private:
     [[nodiscard]]
-    std::expected<void, std::string> validate_config() const;
-
-    [[nodiscard]]
     sdp::sdp_answer_options make_answer_options(std::string_view stream_id,
                                                 const ice_credentials& local_ice,
                                                 uint64_t session_id,
@@ -107,7 +104,7 @@ class webrtc_answer_factory
    private:
     sdp::fingerprint_info local_fingerprint_;
 
-    std::vector<sdp::sdp_ice_candidate_options> ice_candidates_;
+    std::vector<std::string> ice_candidate_addresses_;
 
     std::atomic<uint64_t> next_session_id_;
 };

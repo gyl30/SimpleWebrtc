@@ -16,43 +16,7 @@ namespace webrtc
 {
 namespace
 {
-using validation_result = std::expected<void, std::string>;
-
-inline constexpr std::string_view k_local_stream_id_prefix = "webrtc";
-
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
-
-bool contains_whitespace(std::string_view value)
-{
-    for (const auto ch : value)
-    {
-        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n')
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-validation_result validate_token(std::string_view value, std::string_view name)
-{
-    if (value.empty())
-    {
-        std::string message(name);
-        message.append(" is empty");
-        return std::unexpected(std::move(message));
-    }
-
-    if (contains_whitespace(value))
-    {
-        std::string message(name);
-        message.append(" contains whitespace");
-        return std::unexpected(std::move(message));
-    }
-
-    return {};
-}
 
 bool is_safe_stream_id_char(char ch)
 {
@@ -96,14 +60,12 @@ std::string make_safe_stream_id(std::string_view stream_id)
     return result;
 }
 
-std::string make_local_stream_id(std::string_view prefix, std::string_view stream_id)
+std::string make_local_stream_id(std::string_view stream_id)
 {
     const std::string safe_stream_id = make_safe_stream_id(stream_id);
 
-    std::string value;
-    value.reserve(prefix.size() + safe_stream_id.size() + 1);
-
-    value.append(prefix);
+    std::string value = "webrtc";
+    value.reserve(value.size() + safe_stream_id.size() + 1);
 
     if (!safe_stream_id.empty())
     {
@@ -184,114 +146,12 @@ bool answer_sdp_contains_all_media_source_attributes(std::string_view answer_sdp
     return true;
 }
 
-std::string make_candidate_field_name(std::string_view prefix, std::string_view field)
-{
-    std::string value;
-
-    value.reserve(prefix.size() + field.size() + 1);
-
-    value.append(prefix);
-    value.push_back(' ');
-    value.append(field);
-
-    return value;
-}
-
-std::vector<sdp::sdp_ice_candidate_options> make_local_ice_candidates(const std::vector<sdp::sdp_ice_candidate_options>& configured_candidates,
-                                                                        uint16_t local_candidate_port)
-{
-    std::vector<sdp::sdp_ice_candidate_options> candidates = configured_candidates;
-
-    if (local_candidate_port == 0)
-    {
-        return candidates;
-    }
-
-    for (auto& candidate : candidates)
-    {
-        candidate.port = local_candidate_port;
-    }
-
-    return candidates;
-}
-
-validation_result validate_ice_candidate_config(const sdp::sdp_ice_candidate_options& candidate, std::string_view prefix)
-{
-    auto address_result = validate_token(candidate.address, make_candidate_field_name(prefix, "address"));
-
-    if (!address_result)
-    {
-        return std::unexpected(address_result.error());
-    }
-
-    if (candidate.port == 0)
-    {
-        return make_error(make_candidate_field_name(prefix, "port is zero"));
-    }
-
-    auto foundation_result = validate_token(candidate.foundation, make_candidate_field_name(prefix, "foundation"));
-
-    if (!foundation_result)
-    {
-        return std::unexpected(foundation_result.error());
-    }
-
-    if (candidate.component == 0)
-    {
-        return make_error(make_candidate_field_name(prefix, "component is zero"));
-    }
-
-    auto transport_result = validate_token(candidate.transport, make_candidate_field_name(prefix, "transport"));
-
-    if (!transport_result)
-    {
-        return std::unexpected(transport_result.error());
-    }
-
-    if (candidate.priority == 0)
-    {
-        return make_error(make_candidate_field_name(prefix, "priority is zero"));
-    }
-
-    auto type_result = validate_token(candidate.type, make_candidate_field_name(prefix, "type"));
-
-    if (!type_result)
-    {
-        return std::unexpected(type_result.error());
-    }
-
-    return {};
-}
-
-validation_result validate_ice_candidates_config(const std::vector<sdp::sdp_ice_candidate_options>& candidates)
-{
-    if (candidates.empty())
-    {
-        return make_error("ice candidate list is empty");
-    }
-
-    for (std::size_t index = 0; index < candidates.size(); ++index)
-    {
-        std::string prefix("ice candidate ");
-
-        prefix.append(std::to_string(index));
-
-        auto result = validate_ice_candidate_config(candidates[index], prefix);
-
-        if (!result)
-        {
-            return std::unexpected(result.error());
-        }
-    }
-
-    return {};
-}
 }    // namespace
 
 webrtc_answer_factory::webrtc_answer_factory(sdp::fingerprint_info local_fingerprint,
-                                               std::vector<sdp::sdp_ice_candidate_options> ice_candidates)
+                                               std::vector<std::string> ice_candidate_addresses)
     : local_fingerprint_(std::move(local_fingerprint)),
-      ice_candidates_(std::move(ice_candidates)),
+      ice_candidate_addresses_(std::move(ice_candidate_addresses)),
       next_session_id_(make_initial_session_id())
 {
 }
@@ -338,25 +198,6 @@ generated_sdp_answer_result webrtc_answer_factory::build_whep_restart_answer(std
                                     local_candidate_port);
 }
 
-validation_result webrtc_answer_factory::validate_config() const
-{
-    auto fingerprint_algorithm_result = validate_token(local_fingerprint_.algorithm, "local fingerprint algorithm");
-
-    if (!fingerprint_algorithm_result)
-    {
-        return std::unexpected(fingerprint_algorithm_result.error());
-    }
-
-    auto fingerprint_value_result = validate_token(local_fingerprint_.value, "local fingerprint value");
-
-    if (!fingerprint_value_result)
-    {
-        return std::unexpected(fingerprint_value_result.error());
-    }
-
-    return validate_ice_candidates_config(ice_candidates_);
-}
-
 sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_view stream_id,
                                                                    const ice_credentials& local_ice,
                                                                    uint64_t session_id,
@@ -368,14 +209,13 @@ sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_v
     options.session_id = session_id;
     options.session_version = session_version;
 
-    options.media_address = ice_candidates_.front().address;
-
     options.local_ice_ufrag = local_ice.ufrag;
     options.local_ice_pwd = local_ice.pwd;
     options.local_fingerprint = local_fingerprint_;
 
-    options.local_candidates = make_local_ice_candidates(ice_candidates_, local_candidate_port);
-    options.local_stream_id = make_local_stream_id(k_local_stream_id_prefix, stream_id);
+    options.local_candidate_addresses = ice_candidate_addresses_;
+    options.local_candidate_port = local_candidate_port;
+    options.local_stream_id = make_local_stream_id(stream_id);
 
     return options;
 }
@@ -412,13 +252,6 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer_with_origin(bool
     if (sdp_session_version == 0)
     {
         return make_error("sdp session version is zero");
-    }
-
-    auto config_result = validate_config();
-
-    if (!config_result)
-    {
-        return std::unexpected(config_result.error());
     }
 
     auto local_ice = generate_ice_credentials();
