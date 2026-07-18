@@ -608,10 +608,9 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     session->set_outbound_media_sources(std::move(generated_answer->accepted_mline_indexes),
                                         std::move(accepted_outbound_media_sources));
 
-    session->set_local_answer(std::move(generated_answer->sdp),
-                              std::move(generated_answer->local_ice),
-                              generated_answer->sdp_session_id,
-                              generated_answer->sdp_session_version);
+    session->set_local_answer_metadata(std::move(generated_answer->local_ice),
+                                       generated_answer->sdp_session_id,
+                                       generated_answer->sdp_session_version);
 
     transport->set_peer_context(session->local_ice().pwd, make_dtls_peer_identity(*session));
     session->set_transport(std::move(transport));
@@ -623,13 +622,13 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         session->session_id(),
         reconnect_session_id.has_value() ? 1 : 0,
         reconnect_session_id.value_or(""),
-        session->local_sdp_answer().size(),
+        generated_answer->sdp.size(),
         session->remote_offer_summary().media.size(),
         session->remote_offer_summary().media.size(),
         reconnect_previous_session != nullptr ? reconnect_previous_session->outbound_media_sources().size() : 0,
         session->outbound_media_sources().size());
 
-    auto response = make_sdp_http_response(request, 201, session->local_sdp_answer());
+    auto response = make_sdp_http_response(request, 201, generated_answer->sdp);
     const std::string session_location_path = "/whep/session/" + session->session_id();
     response->set(http::field::location, session_location_path);
     set_session_resource_headers(response, *session);
@@ -759,10 +758,9 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
     session->set_outbound_media_sources(std::move(answer->accepted_mline_indexes),
                                         std::move(restart_outbound_media_sources));
 
-    session->set_local_answer(std::move(answer->sdp),
-                              std::move(answer->local_ice),
-                              answer->sdp_session_id,
-                              answer->sdp_session_version);
+    session->set_local_answer_metadata(std::move(answer->local_ice),
+                                       answer->sdp_session_id,
+                                       answer->sdp_session_version);
 
     WEBRTC_LOG_INFO(
         "WHEP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={} "
@@ -770,11 +768,11 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
         session->stream_id(),
         session->session_id(),
         offer.size(),
-        session->local_sdp_answer().size(),
+        answer->sdp.size(),
         session->remote_offer_summary().media.size(),
         session->accepted_remote_media_mline_indexes().size(),
         session->outbound_media_sources().size());
-    auto response = make_sdp_http_response(request, 200, session->local_sdp_answer());
+    auto response = make_sdp_http_response(request, 200, answer->sdp);
 
     set_session_resource_headers(response, *session);
 

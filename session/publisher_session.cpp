@@ -29,7 +29,6 @@ publisher_session::publisher_session(std::string session_id,
     : session_id_(std::move(session_id)),
       stream_id_(std::move(stream_id)),
       remote_offer_summary_(std::move(remote_offer_summary)),
-      state_(session_state::sdp_received),
       created_at_milliseconds_(created_at_milliseconds),
       updated_at_milliseconds_(created_at_milliseconds)
 {
@@ -40,8 +39,6 @@ const std::string& publisher_session::session_id() const { return session_id_; }
 const std::string& publisher_session::stream_id() const { return stream_id_; }
 
 const sdp::webrtc_offer_summary& publisher_session::remote_offer_summary() const { return remote_offer_summary_; }
-
-const std::string& publisher_session::local_sdp_answer() const { return local_sdp_answer_; }
 
 const ice_credentials& publisher_session::local_ice() const { return local_ice_; }
 
@@ -61,11 +58,12 @@ uint64_t publisher_session::sdp_session_version() const { return sdp_session_ver
 
 const std::vector<remote_ice_candidate>& publisher_session::remote_ice_candidates() const { return remote_ice_candidates_; }
 
-bool publisher_session::remote_ice_completed() const { return remote_ice_completed_; }
+bool publisher_session::remote_ice_completed() const
+{
+    return !remote_ice_candidates_.empty() && remote_ice_candidates_.back().end_of_candidates;
+}
 
 const std::vector<int>& publisher_session::accepted_remote_media_mline_indexes() const { return accepted_remote_media_mline_indexes_; }
-
-session_state publisher_session::state() const { return state_; }
 
 uint64_t publisher_session::created_at_milliseconds() const { return created_at_milliseconds_; }
 
@@ -85,20 +83,15 @@ void publisher_session::set_transport(std::shared_ptr<whip_session_transport> tr
     updated_at_milliseconds_ = now_milliseconds();
 }
 
-void publisher_session::set_local_answer(std::string local_sdp_answer,
-                                         ice_credentials local_ice,
-                                         uint64_t sdp_session_id,
-                                         uint64_t sdp_session_version)
+void publisher_session::set_local_answer_metadata(ice_credentials local_ice,
+                                                uint64_t sdp_session_id,
+                                                uint64_t sdp_session_version)
 {
-    local_sdp_answer_ = std::move(local_sdp_answer);
-
     local_ice_ = std::move(local_ice);
 
     sdp_session_id_ = sdp_session_id;
 
     sdp_session_version_ = sdp_session_version;
-
-    state_ = session_state::sdp_answered;
 
     updated_at_milliseconds_ = now_milliseconds();
 }
@@ -114,10 +107,6 @@ void publisher_session::apply_remote_ice_restart_offer(sdp::webrtc_offer_summary
     remote_offer_summary_ = std::move(remote_offer_summary);
 
     remote_ice_candidates_.clear();
-
-    remote_ice_completed_ = false;
-
-    state_ = session_state::sdp_received;
 
     updated_at_milliseconds_ = now_milliseconds();
 }
@@ -139,8 +128,6 @@ std::expected<void, std::string> publisher_session::add_remote_ice_candidate(rem
 
     if (candidate.end_of_candidates)
     {
-        remote_ice_completed_ = true;
-
         remote_ice_candidates_.push_back(std::move(candidate));
 
         updated_at_milliseconds_ = now_milliseconds();
@@ -148,7 +135,7 @@ std::expected<void, std::string> publisher_session::add_remote_ice_candidate(rem
         return {};
     }
 
-    if (remote_ice_completed_)
+    if (remote_ice_completed())
     {
         return make_error("remote ice candidates already completed");
     }

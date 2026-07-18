@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "net/http.h"
-#include "session/session_state.h"
 
 namespace webrtc
 {
@@ -295,7 +294,6 @@ std::string make_session_resource_etag(const session_type& session)
      * runtime state.
      *
      * Do not include:
-     *   - session state
      *   - session.updated_at_milliseconds()
      *   - ICE selected pair / DTLS / SRTP / media runtime state
      *
@@ -353,7 +351,7 @@ void set_session_resource_headers(const http_response_ptr& response, const sessi
         response->set("Link", trickle_ice_http_detail::k_configured_ice_server_link_header);
     }
 
-    response->set(std::string(k_session_resource_state_header), std::string(session_state_to_string(session.state())));
+    response->set(std::string(k_session_resource_state_header), "sdp_answered");
 
     response->set(std::string(k_session_resource_updated_at_header), std::to_string(session.updated_at_milliseconds()));
 

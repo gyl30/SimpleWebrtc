@@ -359,10 +359,9 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
     session->set_accepted_remote_media_mline_indexes(std::move(answer->accepted_mline_indexes));
 
-    session->set_local_answer(std::move(answer->sdp),
-                              std::move(answer->local_ice),
-                              answer->sdp_session_id,
-                              answer->sdp_session_version);
+    session->set_local_answer_metadata(std::move(answer->local_ice),
+                                       answer->sdp_session_id,
+                                       answer->sdp_session_version);
 
     transport->set_peer_context(session->local_ice().pwd, make_dtls_peer_identity(*session));
     session->set_transport(std::move(transport));
@@ -379,7 +378,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         session->remote_offer_summary().media.size(),
         session->accepted_remote_media_mline_indexes().size());
 
-    auto response = make_sdp_http_response(request, 201, session->local_sdp_answer());
+    auto response = make_sdp_http_response(request, 201, answer->sdp);
 
     const std::string session_location_path = "/whip/session/" + session->session_id();
 
@@ -494,20 +493,19 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
 
     session->set_accepted_remote_media_mline_indexes(std::move(answer->accepted_mline_indexes));
 
-    session->set_local_answer(std::move(answer->sdp),
-                              std::move(answer->local_ice),
-                              answer->sdp_session_id,
-                              answer->sdp_session_version);
+    session->set_local_answer_metadata(std::move(answer->local_ice),
+                                       answer->sdp_session_id,
+                                       answer->sdp_session_version);
 
     WEBRTC_LOG_INFO("WHIP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={}",
                     session->stream_id(),
                     session->session_id(),
                     offer.size(),
-                    session->local_sdp_answer().size(),
+                    answer->sdp.size(),
                     session->remote_offer_summary().media.size(),
                     session->accepted_remote_media_mline_indexes().size());
 
-    auto response = make_sdp_http_response(request, 200, session->local_sdp_answer());
+    auto response = make_sdp_http_response(request, 200, answer->sdp);
 
     set_session_resource_headers(response, *session);
 

@@ -70,7 +70,7 @@ inline session_lifecycle_entry_response make_session_lifecycle_entry_response(co
     response.type = std::string(stream_session_kind_to_string(snapshot.kind));
     response.stream_id = snapshot.stream_id;
     response.session_id = snapshot.session_id;
-    response.state = std::string(session_state_to_string(snapshot.state));
+    response.state = "sdp_answered";
     response.created_at_milliseconds = snapshot.created_at_milliseconds;
     response.updated_at_milliseconds = snapshot.updated_at_milliseconds;
 
@@ -189,7 +189,7 @@ inline std::string make_stream_list_response_body(const std::vector<stream_sessi
             if (stream.publisher_session_id.empty())
             {
                 stream.publisher_session_id = snapshot.session_id;
-                stream.publisher_state = std::string(session_state_to_string(snapshot.state));
+                stream.publisher_state = "sdp_answered";
             }
         }
         else if (snapshot.kind == stream_session_kind::subscriber)

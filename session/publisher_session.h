@@ -10,7 +10,6 @@
 #include "ice/ice_candidate.h"
 #include "ice/ice_credentials.h"
 #include "net/udp_port_allocator.h"
-#include "session/session_state.h"
 #include "session/whip_session_transport.h"
 #include "signaling/sdp/sdp_summary.h"
 
@@ -41,8 +40,6 @@ class publisher_session
 
     [[nodiscard]] const sdp::webrtc_offer_summary& remote_offer_summary() const;
 
-    [[nodiscard]] const std::string& local_sdp_answer() const;
-
     [[nodiscard]] const ice_credentials& local_ice() const;
 
     [[nodiscard]] uint16_t local_udp_port() const;
@@ -57,8 +54,6 @@ class publisher_session
 
     [[nodiscard]] const std::vector<int>& accepted_remote_media_mline_indexes() const;
 
-    [[nodiscard]] session_state state() const;
-
     [[nodiscard]] uint64_t created_at_milliseconds() const;
 
     [[nodiscard]] uint64_t updated_at_milliseconds() const;
@@ -68,10 +63,9 @@ class publisher_session
 
     void set_transport(std::shared_ptr<whip_session_transport> transport);
 
-    void set_local_answer(std::string local_sdp_answer,
-                          ice_credentials local_ice,
-                          uint64_t sdp_session_id,
-                          uint64_t sdp_session_version);
+    void set_local_answer_metadata(ice_credentials local_ice,
+                                   uint64_t sdp_session_id,
+                                   uint64_t sdp_session_version);
 
     void set_accepted_remote_media_mline_indexes(std::vector<int> accepted_remote_media_mline_indexes);
     void apply_remote_ice_restart_offer(sdp::webrtc_offer_summary remote_offer_summary);
@@ -84,7 +78,6 @@ class publisher_session
 
     sdp::webrtc_offer_summary remote_offer_summary_;
 
-    std::string local_sdp_answer_;
     ice_credentials local_ice_;
     udp_port_reservation_ptr local_udp_port_;
     std::shared_ptr<whip_session_transport> transport_;
@@ -93,11 +86,8 @@ class publisher_session
     uint64_t sdp_session_version_ = 0;
 
     std::vector<remote_ice_candidate> remote_ice_candidates_;
-    bool remote_ice_completed_ = false;
 
     std::vector<int> accepted_remote_media_mline_indexes_;
-
-    session_state state_ = session_state::sdp_received;
 
     uint64_t created_at_milliseconds_ = 0;
     uint64_t updated_at_milliseconds_ = 0;

@@ -10,7 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include "session/session_state.h"
 #include "util/random.h"
 #include "util/timestamp.h"
 
@@ -403,8 +402,6 @@ std::vector<stream_session_lifecycle_snapshot> stream_registry::session_lifecycl
 
         snapshot.session_id = session->session_id();
 
-        snapshot.state = session->state();
-
         snapshot.created_at_milliseconds = session->created_at_milliseconds();
 
         snapshot.updated_at_milliseconds = session->updated_at_milliseconds();
@@ -423,8 +420,6 @@ std::vector<stream_session_lifecycle_snapshot> stream_registry::session_lifecycl
         snapshot.stream_id = session->stream_id();
 
         snapshot.session_id = session->session_id();
-
-        snapshot.state = session->state();
 
         snapshot.created_at_milliseconds = session->created_at_milliseconds();
 
