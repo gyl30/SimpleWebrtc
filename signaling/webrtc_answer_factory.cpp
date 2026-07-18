@@ -370,7 +370,6 @@ sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_v
     options.local_ice_pwd = local_ice.pwd;
     options.local_fingerprint = config_.local_fingerprint;
 
-    options.ice_lite = true;
     options.local_candidates = make_local_ice_candidates(config_, local_candidate_port);
     options.local_stream_id = make_local_stream_id(k_local_stream_id_prefix, stream_id);
 

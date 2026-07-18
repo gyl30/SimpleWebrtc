@@ -28,7 +28,6 @@ enum class answer_endpoint_role
 
 using validation_result = std::expected<void, std::string>;
 using media_direction_result = std::expected<media_direction, std::string>;
-using setup_text_result = std::expected<std::string, std::string>;
 using sdp_answer_result = std::expected<session_description, std::string>;
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
@@ -159,34 +158,6 @@ validation_result validate_candidate_options(const sdp_answer_options& options)
 
 validation_result validate_options(const sdp_answer_options& options)
 {
-    auto origin_username_result = validate_token(options.origin_username, "origin username");
-
-    if (!origin_username_result)
-    {
-        return std::unexpected(origin_username_result.error());
-    }
-
-    auto network_type_result = validate_token(options.network_type, "network type");
-
-    if (!network_type_result)
-    {
-        return std::unexpected(network_type_result.error());
-    }
-
-    auto address_type_result = validate_token(options.address_type, "address type");
-
-    if (!address_type_result)
-    {
-        return std::unexpected(address_type_result.error());
-    }
-
-    auto unicast_address_result = validate_token(options.unicast_address, "unicast address");
-
-    if (!unicast_address_result)
-    {
-        return std::unexpected(unicast_address_result.error());
-    }
-
     auto media_address_result = validate_token(options.media_address, "media address");
 
     if (!media_address_result)
@@ -229,30 +200,7 @@ validation_result validate_options(const sdp_answer_options& options)
         return std::unexpected(stream_id_result.error());
     }
 
-    auto candidate_result = validate_candidate_options(options);
-
-    if (!candidate_result)
-    {
-        return std::unexpected(candidate_result.error());
-    }
-
-    switch (options.local_setup)
-    {
-        case dtls_connection_role::active:
-        case dtls_connection_role::passive:
-            break;
-
-        case dtls_connection_role::actpass:
-            return make_error("local setup must not be actpass");
-
-        case dtls_connection_role::holdconn:
-            return make_error("local setup must not be holdconn");
-
-        case dtls_connection_role::unknown:
-            return make_error("local setup must not be unknown");
-    }
-
-    return {};
+    return validate_candidate_options(options);
 }
 
 validation_result validate_offer_for_answer(const webrtc_offer_summary& offer)
@@ -620,29 +568,6 @@ std::expected<void, std::string> validate_answer_bundle_group(const session_desc
     }
 
     return {};
-}
-
-setup_text_result format_setup_role(dtls_connection_role role)
-{
-    switch (role)
-    {
-        case dtls_connection_role::active:
-            return std::string("active");
-
-        case dtls_connection_role::passive:
-            return std::string("passive");
-
-        case dtls_connection_role::actpass:
-            return make_error("answer setup must not be actpass");
-
-        case dtls_connection_role::holdconn:
-            return make_error("answer setup must not be holdconn");
-
-        case dtls_connection_role::unknown:
-            return make_error("answer setup is unknown");
-    }
-
-    return make_error("unsupported answer setup");
 }
 
 std::expected<std::string, std::string> format_direction(media_direction direction)
@@ -1872,25 +1797,14 @@ std::expected<void, std::string> validate_whep_answer_media_forwarding_identity(
     return {};
 }
 
-connection_information make_rejected_connection(const sdp_answer_options& options)
+connection_information make_rejected_connection()
 {
     connection_information connection;
-
-    connection.network_type = options.network_type;
-
-    connection.address_type = options.address_type;
+    connection.network_type = "IN";
+    connection.address_type = "IP4";
 
     sdp_address address;
-
-    if (options.address_type == "IP6")
-    {
-        address.address = "::";
-    }
-    else
-    {
-        address.address = "0.0.0.0";
-    }
-
+    address.address = "0.0.0.0";
     connection.address = address;
 
     return connection;
@@ -1936,20 +1850,20 @@ void push_property_attribute(std::vector<sdp_attribute>& attributes, std::string
 origin_line make_origin(const sdp_answer_options& options)
 {
     origin_line origin;
-    origin.username = options.origin_username;
+    origin.username = "-";
     origin.session_id = options.session_id;
     origin.session_version = options.session_version;
-    origin.network_type = options.network_type;
-    origin.address_type = options.address_type;
-    origin.unicast_address = options.unicast_address;
+    origin.network_type = "IN";
+    origin.address_type = "IP4";
+    origin.unicast_address = "0.0.0.0";
     return origin;
 }
 
 connection_information make_connection(const sdp_answer_options& options)
 {
     connection_information connection;
-    connection.network_type = options.network_type;
-    connection.address_type = options.address_type;
+    connection.network_type = "IN";
+    connection.address_type = "IP4";
 
     sdp_address address;
     address.address = options.media_address;
@@ -2777,12 +2691,9 @@ void append_ice_candidate_attributes(media_description& answer_media, const sdp_
         push_attribute(answer_media.attributes, "candidate", make_candidate_value(candidate));
     }
 
-    if (options.end_of_candidates)
-    {
-        push_property_attribute(answer_media.attributes, "end-of-candidates");
-    }
+    push_property_attribute(answer_media.attributes, "end-of-candidates");
 }
-std::expected<media_description, std::string> make_rejected_answer_media(const sdp_answer_options& options, const media_summary& media)
+std::expected<media_description, std::string> make_rejected_answer_media(const media_summary& media)
 {
     auto inactive_text = format_direction(media_direction::inactive);
 
@@ -2815,7 +2726,7 @@ std::expected<media_description, std::string> make_rejected_answer_media(const s
         answer_media.media_name.formats.push_back("0");
     }
 
-    answer_media.connection = make_rejected_connection(options);
+    answer_media.connection = make_rejected_connection();
 
     push_attribute(answer_media.attributes, k_attribute_mid, media.mid);
 
@@ -2853,7 +2764,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 
     if (*answer_direction == media_direction::inactive)
     {
-        return make_rejected_answer_media(options, media);
+        return make_rejected_answer_media(media);
     }
     std::vector<codec_info> codecs;
     const media_summary* forwarded_publisher_media = nullptr;
@@ -2861,19 +2772,19 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
     {
         if (whep_subscriber_offer == nullptr)
         {
-            return make_rejected_answer_media(options, media);
+            return make_rejected_answer_media(media);
         }
         const media_summary* publisher_media = find_matching_publisher_media(media, *whep_subscriber_offer, *whep_publisher_offer);
         if (publisher_media == nullptr)
         {
-            return make_rejected_answer_media(options, media);
+            return make_rejected_answer_media(media);
         }
         forwarded_publisher_media = publisher_media;
 
         auto codec_result = negotiate_codecs(media, *publisher_media);
         if (!codec_result)
         {
-            return make_rejected_answer_media(options, media);
+            return make_rejected_answer_media(media);
         }
 
         codecs = std::move(*codec_result);
@@ -2886,7 +2797,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
         {
             if (role == answer_endpoint_role::whip)
             {
-                return make_rejected_answer_media(options, media);
+                return make_rejected_answer_media(media);
             }
 
             return std::unexpected(codec_result.error());
@@ -3041,28 +2952,15 @@ sdp_answer_result build_answer(answer_endpoint_role role,
         return std::unexpected(offer_result.error());
     }
 
-    auto setup_text = format_setup_role(options.local_setup);
-
-    if (!setup_text)
-    {
-        return std::unexpected(setup_text.error());
-    }
-
     session_description answer;
 
     answer.version.value = 0;
     answer.origin = make_origin(options);
     answer.session_name = "-";
     answer.time_descriptions.push_back(make_zero_time_description());
-    if (options.ice_lite)
-    {
-        push_property_attribute(answer.attributes, "ice-lite");
-    }
 
-    if (options.enable_trickle)
-    {
-        push_attribute(answer.attributes, "ice-options", "trickle");
-    }
+    push_property_attribute(answer.attributes, "ice-lite");
+    push_attribute(answer.attributes, "ice-options", "trickle");
 
     push_attribute(answer.attributes, k_attribute_ice_ufrag, options.local_ice_ufrag);
 
@@ -3070,7 +2968,7 @@ sdp_answer_result build_answer(answer_endpoint_role role,
 
     push_attribute(answer.attributes, k_attribute_fingerprint, make_fingerprint_value(options.local_fingerprint));
 
-    push_attribute(answer.attributes, k_attribute_setup, *setup_text);
+    push_attribute(answer.attributes, k_attribute_setup, "passive");
 
     push_attribute(answer.attributes, "msid-semantic", "WMS *");
 

@@ -38,13 +38,9 @@ struct sdp_answer_media_source
 
 struct sdp_answer_options
 {
-    std::string origin_username = "-";
     uint64_t session_id = 1;
     uint64_t session_version = 1;
 
-    std::string network_type = "IN";
-    std::string address_type = "IP4";
-    std::string unicast_address = "0.0.0.0";
     std::string media_address = "0.0.0.0";
 
     std::string local_ice_ufrag;
@@ -52,14 +48,8 @@ struct sdp_answer_options
 
     fingerprint_info local_fingerprint;
 
-    dtls_connection_role local_setup = dtls_connection_role::passive;
-
-    bool ice_lite = false;
-    bool enable_trickle = true;
-
     std::vector<sdp_ice_candidate_options> local_candidates;
 
-    bool end_of_candidates = true;
     std::string local_stream_id = "-";
     std::vector<sdp_answer_media_source> media_sources;
 };
