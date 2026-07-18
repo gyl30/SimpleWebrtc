@@ -1,6 +1,5 @@
 #include "signaling/sdp/sdp_answer_builder.h"
 
-#include <algorithm>
 #include <cstddef>
 #include <cctype>
 #include <expected>
@@ -8,8 +7,6 @@
 #include <set>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -20,29 +17,10 @@ namespace webrtc::sdp
 {
 namespace
 {
-enum class answer_endpoint_role
-{
-    whip,
-    whep,
-};
-
 using validation_result = std::expected<void, std::string>;
-using media_direction_result = std::expected<media_direction, std::string>;
 using sdp_answer_result = std::expected<session_description, std::string>;
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
-
-std::unexpected<std::string> make_media_error(std::string_view prefix, const media_summary& media, std::string_view suffix)
-{
-    std::string message;
-    message.reserve(prefix.size() + media.mid.size() + suffix.size() + 16);
-    message.append(prefix);
-    message.append(" media mid ");
-    message.append(media.mid);
-    message.push_back(' ');
-    message.append(suffix);
-    return std::unexpected(std::move(message));
-}
 
 bool contains_whitespace(std::string_view value)
 {
@@ -158,76 +136,6 @@ validation_result validate_options(const sdp_answer_options& options)
     return validate_candidate_options(options);
 }
 
-validation_result validate_offer_for_answer(const webrtc_offer_summary& offer)
-{
-    if (offer.ice_ufrag.empty())
-    {
-        return make_error("offer ice-ufrag is empty");
-    }
-
-    if (offer.ice_pwd.empty())
-    {
-        return make_error("offer ice-pwd is empty");
-    }
-
-    if (offer.fingerprint.algorithm.empty())
-    {
-        return make_error("offer fingerprint algorithm is empty");
-    }
-
-    if (offer.fingerprint.value.empty())
-    {
-        return make_error("offer fingerprint value is empty");
-    }
-
-    if (offer.setup != dtls_connection_role::actpass)
-    {
-        return make_error("offer setup must be actpass");
-    }
-
-    if (offer.bundle_mids.empty())
-    {
-        return make_error("offer has no bundle mids");
-    }
-
-    if (offer.media.empty())
-    {
-        return make_error("offer has no media");
-    }
-
-    for (const auto& media : offer.media)
-    {
-        auto mid_result = validate_token(media.mid, "media mid");
-        if (!mid_result)
-        {
-            return std::unexpected(mid_result.error());
-        }
-
-        auto kind_result = validate_token(media.kind, "media kind");
-        if (!kind_result)
-        {
-            return std::unexpected(kind_result.error());
-        }
-
-        if (media.kind != "audio" && media.kind != "video")
-        {
-            return make_media_error("offer", media, "has unsupported kind");
-        }
-
-        if (!media.rtcp_mux)
-        {
-            return make_media_error("offer", media, "does not enable rtcp-mux");
-        }
-
-        if (media.codecs.empty())
-        {
-            return make_media_error("offer", media, "has no codecs");
-        }
-    }
-
-    return {};
-}
-
 std::optional<std::string> find_answer_media_mid(const media_description& media)
 {
     const std::optional<std::string> mid = media.find_attribute_value(k_attribute_mid);
@@ -276,70 +184,14 @@ std::expected<std::string, std::string> make_bundle_group_value(const session_de
 }
 bool is_answer_media_rejected(const media_description& media) { return media.media_name.port == 0; }
 
-std::expected<std::string, std::string> format_direction(media_direction direction)
+media_direction make_answer_direction(bool is_whep, const media_summary& media)
 {
-    switch (direction)
+    if (media.direction == media_direction::inactive)
     {
-        case media_direction::send_recv:
-            return std::string(k_attribute_send_recv);
-
-        case media_direction::send_only:
-            return std::string(k_attribute_send_only);
-
-        case media_direction::recv_only:
-            return std::string(k_attribute_recv_only);
-
-        case media_direction::inactive:
-            return std::string(k_attribute_inactive);
-
-        case media_direction::unknown:
-            return make_error("media direction is unknown");
+        return media_direction::inactive;
     }
 
-    return make_error("unsupported media direction");
-}
-
-media_direction_result make_answer_direction(answer_endpoint_role role, const media_summary& media)
-{
-    if (role == answer_endpoint_role::whip)
-    {
-        switch (media.direction)
-        {
-            case media_direction::send_only:
-            case media_direction::send_recv:
-                return media_direction::recv_only;
-
-            case media_direction::inactive:
-                return media_direction::inactive;
-
-            case media_direction::recv_only:
-                return make_media_error("whip", media, "must not be recvonly");
-
-            case media_direction::unknown:
-                return make_media_error("whip", media, "has unknown direction");
-        }
-    }
-
-    if (role == answer_endpoint_role::whep)
-    {
-        switch (media.direction)
-        {
-            case media_direction::recv_only:
-            case media_direction::send_recv:
-                return media_direction::send_only;
-
-            case media_direction::inactive:
-                return media_direction::inactive;
-
-            case media_direction::send_only:
-                return make_media_error("whep", media, "must not be sendonly");
-
-            case media_direction::unknown:
-                return make_media_error("whep", media, "has unknown direction");
-        }
-    }
-
-    return make_error("unsupported answer endpoint role");
+    return is_whep ? media_direction::send_only : media_direction::recv_only;
 }
 bool media_can_send(const media_summary& media)
 {
@@ -481,19 +333,6 @@ const media_summary* find_matching_publisher_media(const media_summary& subscrib
     return find_send_capable_media_by_kind_ordinal(publisher_offer, subscriber_media.kind, *subscriber_ordinal);
 }
 
-bool answer_media_has_send_direction(const media_description& media)
-{
-    for (const auto& attribute : media.attributes)
-    {
-        if (attribute.key == k_attribute_send_only || attribute.key == k_attribute_send_recv)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 constexpr std::string_view k_rtp_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
 
 constexpr std::string_view k_rtp_stream_id_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id";
@@ -507,38 +346,6 @@ constexpr std::string_view k_transport_wide_cc_extension_uri_02 = "http://www.we
 constexpr std::string_view k_absolute_send_time_extension_uri = "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
 
 constexpr std::string_view k_audio_level_extension_uri = "urn:ietf:params:rtp-hdrext:ssrc-audio-level";
-
-struct parsed_extmap_attribute
-{
-    uint16_t id = 0;
-    std::string direction;
-    std::string uri;
-};
-
-struct parsed_rid_attribute
-{
-    std::string rid;
-    std::string direction;
-};
-
-std::string trim_sdp_token(std::string_view value)
-{
-    std::size_t begin = 0;
-
-    while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin])) != 0)
-    {
-        begin += 1;
-    }
-
-    std::size_t end = value.size();
-
-    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0)
-    {
-        end -= 1;
-    }
-
-    return std::string(value.substr(begin, end - begin));
-}
 
 std::vector<std::string> split_sdp_tokens(std::string_view value)
 {
@@ -571,538 +378,6 @@ std::vector<std::string> split_sdp_tokens(std::string_view value)
     return tokens;
 }
 
-std::string lower_sdp_copy(std::string_view value)
-{
-    std::string result;
-
-    result.reserve(value.size());
-
-    for (const char ch : value)
-    {
-        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-
-    return result;
-}
-
-std::expected<uint16_t, std::string> parse_u16_sdp_token(std::string_view value)
-{
-    const std::string normalized = trim_sdp_token(value);
-
-    if (normalized.empty())
-    {
-        return make_error("sdp integer token is empty");
-    }
-
-    uint32_t parsed = 0;
-
-    for (char ch : normalized)
-    {
-        if (std::isdigit(static_cast<unsigned char>(ch)) == 0)
-        {
-            return make_error("sdp integer token is invalid");
-        }
-
-        parsed = parsed * 10U + static_cast<uint32_t>(ch - '0');
-
-        if (parsed > 65535U)
-        {
-            return make_error("sdp integer token is out of range");
-        }
-    }
-
-    return static_cast<uint16_t>(parsed);
-}
-
-std::expected<parsed_extmap_attribute, std::string> parse_extmap_attribute_value(std::string_view value)
-{
-    const std::vector<std::string> tokens = split_sdp_tokens(value);
-
-    if (tokens.size() < 2)
-    {
-        return make_error("extmap attribute value is incomplete");
-    }
-
-    const std::string& id_token = tokens[0];
-
-    const std::size_t slash_position = id_token.find('/');
-
-    const std::string id_text = slash_position == std::string::npos ? id_token : id_token.substr(0, slash_position);
-
-    auto id = parse_u16_sdp_token(id_text);
-
-    if (!id)
-    {
-        return std::unexpected(id.error());
-    }
-
-    if (*id == 0 || *id > 255)
-    {
-        return make_error("extmap id is out of range");
-    }
-
-    parsed_extmap_attribute result;
-
-    result.id = *id;
-
-    if (slash_position != std::string::npos)
-    {
-        result.direction = lower_sdp_copy(id_token.substr(slash_position + 1));
-    }
-
-    result.uri = tokens[1];
-
-    if (result.uri.empty())
-    {
-        return make_error("extmap uri is empty");
-    }
-
-    return result;
-}
-
-std::expected<parsed_rid_attribute, std::string> parse_rid_attribute_value(std::string_view value)
-{
-    const std::vector<std::string> tokens = split_sdp_tokens(value);
-
-    if (tokens.size() < 2)
-    {
-        return make_error("rid attribute value is incomplete");
-    }
-
-    parsed_rid_attribute result;
-
-    result.rid = tokens[0];
-
-    result.direction = lower_sdp_copy(tokens[1]);
-
-    if (result.rid.empty())
-    {
-        return make_error("rid id is empty");
-    }
-
-    if (result.direction != "send" && result.direction != "recv")
-    {
-        return make_error("rid direction is invalid");
-    }
-
-    return result;
-}
-
-std::unordered_map<std::string, parsed_extmap_attribute> collect_extmaps_by_uri(const media_summary& media)
-{
-    std::unordered_map<std::string, parsed_extmap_attribute> extmaps;
-
-    for (const auto& extension : media.header_extensions)
-    {
-        parsed_extmap_attribute parsed;
-
-        parsed.id = static_cast<uint16_t>(extension.id);
-
-        parsed.uri = extension.uri;
-
-        parsed.direction = std::string(to_string(extension.direction));
-
-        extmaps.emplace(parsed.uri, std::move(parsed));
-    }
-
-    return extmaps;
-}
-
-std::expected<std::vector<parsed_extmap_attribute>, std::string> parse_answer_extmaps(const media_description& media)
-{
-    std::vector<parsed_extmap_attribute> extmaps;
-
-    for (const auto& attribute : media.attributes)
-    {
-        if (attribute.key != "extmap")
-        {
-            continue;
-        }
-
-        auto parsed = parse_extmap_attribute_value(attribute.value);
-
-        if (!parsed)
-        {
-            return std::unexpected(parsed.error());
-        }
-
-        extmaps.push_back(*parsed);
-    }
-
-    return extmaps;
-}
-
-std::expected<std::vector<parsed_rid_attribute>, std::string> parse_answer_rids(const media_description& media)
-{
-    std::vector<parsed_rid_attribute> rids;
-
-    for (const auto& attribute : media.attributes)
-    {
-        if (attribute.key != "rid")
-        {
-            continue;
-        }
-
-        auto parsed = parse_rid_attribute_value(attribute.value);
-
-        if (!parsed)
-        {
-            return std::unexpected(parsed.error());
-        }
-
-        rids.push_back(*parsed);
-    }
-
-    return rids;
-}
-
-bool answer_media_has_rtx_codec(const media_description& media)
-{
-    for (const auto& attribute : media.attributes)
-    {
-        if (attribute.key != k_attribute_rtp_map)
-        {
-            continue;
-        }
-
-        const std::vector<std::string> tokens = split_sdp_tokens(attribute.value);
-
-        if (tokens.size() < 2)
-        {
-            continue;
-        }
-
-        const std::string codec_text = lower_sdp_copy(tokens[1]);
-
-        if (codec_text.rfind("rtx/", 0) == 0)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-std::expected<void, std::string> validate_answer_extmap_uniqueness(const media_description& media)
-{
-    auto extmaps = parse_answer_extmaps(media);
-
-    if (!extmaps)
-    {
-        return std::unexpected(extmaps.error());
-    }
-
-    std::unordered_set<uint16_t> ids;
-    std::unordered_set<std::string> uris;
-
-    for (const auto& extmap : *extmaps)
-    {
-        if (!ids.insert(extmap.id).second)
-        {
-            return make_error("answer media has duplicate extmap id");
-        }
-
-        if (!uris.insert(extmap.uri).second)
-        {
-            return make_error("answer media has duplicate extmap uri");
-        }
-    }
-
-    return {};
-}
-
-std::expected<void, std::string> validate_answer_extmaps_are_offer_subset(const media_summary& offer_media, const media_description& answer_media)
-{
-    const auto offer_extmaps_by_uri = collect_extmaps_by_uri(offer_media);
-
-    auto answer_extmaps = parse_answer_extmaps(answer_media);
-
-    if (!answer_extmaps)
-    {
-        return std::unexpected(answer_extmaps.error());
-    }
-
-    for (const auto& answer_extmap : *answer_extmaps)
-    {
-        auto offer_iterator = offer_extmaps_by_uri.find(answer_extmap.uri);
-
-        if (offer_iterator == offer_extmaps_by_uri.end())
-        {
-            std::string message = "answer media extmap uri was not offered uri=";
-
-            message.append(answer_extmap.uri);
-
-            return std::unexpected(std::move(message));
-        }
-
-        if (offer_iterator->second.id != answer_extmap.id)
-        {
-            std::string message = "answer media extmap id does not match offer uri=";
-
-            message.append(answer_extmap.uri);
-
-            return std::unexpected(std::move(message));
-        }
-    }
-
-    return {};
-}
-
-std::expected<void, std::string> validate_repaired_rid_extmap_consistency(const media_description& answer_media)
-{
-    auto answer_extmaps = parse_answer_extmaps(answer_media);
-
-    if (!answer_extmaps)
-    {
-        return std::unexpected(answer_extmaps.error());
-    }
-
-    bool has_rid_extmap = false;
-    bool has_repaired_rid_extmap = false;
-
-    for (const auto& extmap : *answer_extmaps)
-    {
-        if (extmap.uri == k_rtp_stream_id_extension_uri)
-        {
-            has_rid_extmap = true;
-        }
-
-        if (extmap.uri == k_repaired_rtp_stream_id_extension_uri)
-        {
-            has_repaired_rid_extmap = true;
-        }
-    }
-
-    if (!has_repaired_rid_extmap)
-    {
-        return {};
-    }
-
-    if (!has_rid_extmap)
-    {
-        return make_error("answer media repaired-rid extmap requires rid extmap");
-    }
-
-    if (!answer_media_has_rtx_codec(answer_media))
-    {
-        return make_error("answer media repaired-rid extmap requires rtx codec");
-    }
-
-    return {};
-}
-
-std::set<std::string> collect_offer_rid_ids(const media_summary& offer_media)
-{
-    std::set<std::string> rid_ids;
-
-    for (const auto& rid : offer_media.rids)
-    {
-        rid_ids.insert(rid.id);
-    }
-
-    return rid_ids;
-}
-
-std::expected<void, std::string> validate_answer_rids(const media_summary& offer_media, const media_description& answer_media)
-{
-    auto answer_rids = parse_answer_rids(answer_media);
-
-    if (!answer_rids)
-    {
-        return std::unexpected(answer_rids.error());
-    }
-
-    if (answer_rids->empty())
-    {
-        return {};
-    }
-
-    const std::set<std::string> offer_rids = collect_offer_rid_ids(offer_media);
-
-    if (offer_rids.empty())
-    {
-        return make_error("answer media has rid attributes but offer has none");
-    }
-
-    std::set<std::string> answer_rid_ids;
-
-    for (const auto& rid : *answer_rids)
-    {
-        if (!answer_rid_ids.insert(rid.rid).second)
-        {
-            return make_error("answer media has duplicate rid id");
-        }
-
-        if (offer_rids.find(rid.rid) == offer_rids.end())
-        {
-            std::string message = "answer media rid was not offered rid=";
-
-            message.append(rid.rid);
-
-            return std::unexpected(std::move(message));
-        }
-    }
-
-    return {};
-}
-
-std::vector<std::string> extract_simulcast_rids_from_list(std::string_view value)
-{
-    std::vector<std::string> rids;
-
-    std::string current;
-
-    for (char ch : value)
-    {
-        if (ch == ';' || ch == ',')
-        {
-            if (!current.empty())
-            {
-                rids.push_back(current);
-
-                current.clear();
-            }
-
-            continue;
-        }
-
-        if (ch == '~')
-        {
-            continue;
-        }
-
-        current.push_back(ch);
-    }
-
-    if (!current.empty())
-    {
-        rids.push_back(current);
-    }
-
-    return rids;
-}
-
-std::expected<void, std::string> validate_answer_simulcast_rids(const media_description& answer_media)
-{
-    auto answer_rids = parse_answer_rids(answer_media);
-
-    if (!answer_rids)
-    {
-        return std::unexpected(answer_rids.error());
-    }
-
-    std::set<std::string> rid_ids;
-
-    for (const auto& rid : *answer_rids)
-    {
-        rid_ids.insert(rid.rid);
-    }
-
-    for (const auto& attribute : answer_media.attributes)
-    {
-        if (attribute.key != "simulcast")
-        {
-            continue;
-        }
-
-        const std::vector<std::string> tokens = split_sdp_tokens(attribute.value);
-
-        if (tokens.size() < 2)
-        {
-            return make_error("answer simulcast attribute is incomplete");
-        }
-
-        for (std::size_t index = 1; index < tokens.size(); index += 2)
-        {
-            const std::vector<std::string> simulcast_rids = extract_simulcast_rids_from_list(tokens[index]);
-
-            for (const auto& rid : simulcast_rids)
-            {
-                if (rid_ids.find(rid) == rid_ids.end())
-                {
-                    std::string message = "answer simulcast references unknown rid=";
-
-                    message.append(rid);
-
-                    return std::unexpected(std::move(message));
-                }
-            }
-        }
-    }
-
-    return {};
-}
-std::size_t count_msid_attributes(const media_description& media)
-{
-    std::size_t count = 0;
-
-    for (const auto& attribute : media.attributes)
-    {
-        if (attribute.key == "msid")
-        {
-            count += 1;
-        }
-    }
-
-    return count;
-}
-std::expected<void, std::string> validate_answer_msid_attributes(const media_description& answer_media)
-{
-    std::set<std::string> msid_values;
-
-    for (const auto& attribute : answer_media.attributes)
-    {
-        if (attribute.key != "msid")
-        {
-            continue;
-        }
-
-        const std::vector<std::string> tokens = split_sdp_tokens(attribute.value);
-
-        if (tokens.empty())
-        {
-            return make_error("answer msid attribute is empty");
-        }
-
-        if (tokens[0] == "-")
-        {
-            return make_error("answer msid stream id is invalid");
-        }
-
-        if (!msid_values.insert(attribute.value).second)
-        {
-            return make_error("answer media has duplicate msid attribute");
-        }
-    }
-
-    return {};
-}
-std::expected<void, std::string> validate_answer_msid_direction_consistency(const media_description& answer_media)
-{
-    if (is_answer_media_rejected(answer_media))
-    {
-        return {};
-    }
-
-    const std::size_t msid_count = count_msid_attributes(answer_media);
-
-    if (answer_media_has_send_direction(answer_media))
-    {
-        if (msid_count != 1)
-        {
-            return make_error("sending answer media must have exactly one msid attribute");
-        }
-
-        return {};
-    }
-
-    if (msid_count != 0)
-    {
-        return make_error("non sending answer media must not have msid attribute");
-    }
-
-    return {};
-}
 bool media_has_header_extension_uri(const media_summary& media, std::string_view uri)
 {
     for (const auto& extension : media.header_extensions)
@@ -1175,62 +450,6 @@ bool media_has_answerable_recv_rid(const media_summary& media, std::string_view 
     return false;
 }
 
-std::expected<void, std::string> validate_accepted_answer_media_identity(const media_summary& offer_media, const media_description& answer_media)
-{
-    if (is_answer_media_rejected(answer_media))
-    {
-        return {};
-    }
-
-    auto extmap_uniqueness_result = validate_answer_extmap_uniqueness(answer_media);
-
-    if (!extmap_uniqueness_result)
-    {
-        return std::unexpected(extmap_uniqueness_result.error());
-    }
-
-    auto extmap_subset_result = validate_answer_extmaps_are_offer_subset(offer_media, answer_media);
-
-    if (!extmap_subset_result)
-    {
-        return std::unexpected(extmap_subset_result.error());
-    }
-
-    auto repaired_rid_result = validate_repaired_rid_extmap_consistency(answer_media);
-
-    if (!repaired_rid_result)
-    {
-        return std::unexpected(repaired_rid_result.error());
-    }
-
-    auto rid_result = validate_answer_rids(offer_media, answer_media);
-
-    if (!rid_result)
-    {
-        return std::unexpected(rid_result.error());
-    }
-
-    auto simulcast_result = validate_answer_simulcast_rids(answer_media);
-
-    if (!simulcast_result)
-    {
-        return std::unexpected(simulcast_result.error());
-    }
-
-    auto msid_result = validate_answer_msid_attributes(answer_media);
-    if (!msid_result)
-    {
-        return std::unexpected(msid_result.error());
-    }
-
-    auto msid_direction_result = validate_answer_msid_direction_consistency(answer_media);
-    if (!msid_direction_result)
-    {
-        return std::unexpected(msid_direction_result.error());
-    }
-
-    return {};
-}
 bool string_vector_contains_value(const std::vector<std::string>& values, std::string_view value)
 {
     for (const auto& current : values)
@@ -1243,159 +462,6 @@ bool string_vector_contains_value(const std::vector<std::string>& values, std::s
 
     return false;
 }
-std::expected<void, std::string> validate_whep_answer_media_forwarding_identity(const media_summary& subscriber_media,
-                                                                                const media_summary* forwarded_publisher_media,
-                                                                                const media_description& answer_media)
-{
-    if (is_answer_media_rejected(answer_media))
-    {
-        return {};
-    }
-
-    if (forwarded_publisher_media == nullptr)
-    {
-        return {};
-    }
-
-    if (subscriber_media.kind != forwarded_publisher_media->kind)
-    {
-        return make_error("whep answer publisher media kind mismatch");
-    }
-
-    auto answer_extmaps = parse_answer_extmaps(answer_media);
-
-    if (!answer_extmaps)
-    {
-        return std::unexpected(answer_extmaps.error());
-    }
-
-    for (const auto& extmap : *answer_extmaps)
-    {
-        if (!forwarded_publisher_can_supply_header_extension(forwarded_publisher_media, extmap.uri))
-        {
-            std::string message = "whep answer extmap is not supplied by publisher uri=";
-
-            message.append(extmap.uri);
-
-            return std::unexpected(std::move(message));
-        }
-    }
-
-    auto answer_rids = parse_answer_rids(answer_media);
-
-    if (!answer_rids)
-    {
-        return std::unexpected(answer_rids.error());
-    }
-
-    std::set<std::string> answer_rid_ids;
-
-    for (const auto& rid : *answer_rids)
-    {
-        if (!answer_rid_ids.insert(rid.rid).second)
-        {
-            return make_error("whep answer media has duplicate rid id");
-        }
-
-        if (rid.direction != "send" && rid.direction != "sendrecv")
-        {
-            std::string message = "whep answer rid direction must be send rid=";
-
-            message.append(rid.rid);
-
-            return std::unexpected(std::move(message));
-        }
-
-        if (!media_has_answerable_send_rid(*forwarded_publisher_media, rid.rid))
-        {
-            std::string message = "whep answer rid is not supplied by publisher rid=";
-
-            message.append(rid.rid);
-
-            return std::unexpected(std::move(message));
-        }
-
-        if (forwarded_publisher_media->simulcast.has_value() &&
-            !string_vector_contains_value(forwarded_publisher_media->simulcast->send_rids, rid.rid))
-        {
-            std::string message = "whep answer rid is not in publisher simulcast send list rid=";
-
-            message.append(rid.rid);
-
-            return std::unexpected(std::move(message));
-        }
-    }
-
-    for (const auto& attribute : answer_media.attributes)
-    {
-        if (attribute.key != "simulcast")
-        {
-            continue;
-        }
-
-        const std::vector<std::string> tokens = split_sdp_tokens(attribute.value);
-
-        if (tokens.size() < 2)
-        {
-            return make_error("whep answer simulcast attribute is incomplete");
-        }
-
-        if ((tokens.size() % 2U) != 0U)
-        {
-            return make_error("whep answer simulcast attribute must contain direction rid-list pairs");
-        }
-
-        for (std::size_t index = 0; index < tokens.size(); index += 2)
-        {
-            const std::string& direction = tokens[index];
-
-            if (direction != "send")
-            {
-                std::string message = "whep answer simulcast direction must be send direction=";
-
-                message.append(direction);
-
-                return std::unexpected(std::move(message));
-            }
-
-            const std::vector<std::string> simulcast_rids = extract_simulcast_rids_from_list(tokens[index + 1]);
-
-            for (const auto& rid : simulcast_rids)
-            {
-                if (answer_rid_ids.find(rid) == answer_rid_ids.end())
-                {
-                    std::string message = "whep answer simulcast references unknown rid=";
-
-                    message.append(rid);
-
-                    return std::unexpected(std::move(message));
-                }
-
-                if (!media_has_answerable_send_rid(*forwarded_publisher_media, rid))
-                {
-                    std::string message = "whep answer simulcast rid is not supplied by publisher rid=";
-
-                    message.append(rid);
-
-                    return std::unexpected(std::move(message));
-                }
-
-                if (!forwarded_publisher_media->simulcast.has_value() ||
-                    !string_vector_contains_value(forwarded_publisher_media->simulcast->send_rids, rid))
-                {
-                    std::string message = "whep answer simulcast rid is not in publisher send list rid=";
-
-                    message.append(rid);
-
-                    return std::unexpected(std::move(message));
-                }
-            }
-        }
-    }
-
-    return {};
-}
-
 void push_attribute(std::vector<sdp_attribute>& attributes, std::string_view key, std::string_view value)
 {
     attributes.push_back(make_attribute(std::string(key), std::string(value)));
@@ -1855,12 +921,12 @@ std::string make_msid_value(const sdp_answer_options& options, const media_summa
     return value;
 }
 
-std::string make_answer_msid_value(answer_endpoint_role role,
+std::string make_answer_msid_value(bool is_whep,
                                    const sdp_answer_options& options,
                                    const media_summary& media,
                                    const media_summary* forwarded_publisher_media)
 {
-    if (role == answer_endpoint_role::whep && forwarded_publisher_media != nullptr)
+    if (is_whep)
     {
         return make_msid_value(options, *forwarded_publisher_media);
     }
@@ -2216,15 +1282,8 @@ void append_ice_candidate_attributes(media_description& answer_media, const sdp_
 
     push_property_attribute(answer_media.attributes, "end-of-candidates");
 }
-std::expected<media_description, std::string> make_rejected_answer_media(const media_summary& media)
+media_description make_rejected_answer_media(const media_summary& media)
 {
-    auto inactive_text = format_direction(media_direction::inactive);
-
-    if (!inactive_text)
-    {
-        return std::unexpected(inactive_text.error());
-    }
-
     media_description answer_media;
 
     answer_media.media_name.media = media.kind;
@@ -2245,7 +1304,7 @@ std::expected<media_description, std::string> make_rejected_answer_media(const m
 
     push_attribute(answer_media.attributes, k_attribute_mid, media.mid);
 
-    push_property_attribute(answer_media.attributes, *inactive_text);
+    push_property_attribute(answer_media.attributes, to_string(media_direction::inactive));
 
     if (media.rtcp_mux)
     {
@@ -2259,31 +1318,23 @@ std::expected<media_description, std::string> make_rejected_answer_media(const m
 
     return answer_media;
 }
-std::expected<media_description, std::string> make_answer_media(answer_endpoint_role role,
-                                                                const sdp_answer_options& options,
+std::expected<media_description, std::string> make_answer_media(const sdp_answer_options& options,
                                                                 const media_summary& media,
-                                                                const webrtc_offer_summary* whep_subscriber_offer,
+                                                                const webrtc_offer_summary& offer,
                                                                 const webrtc_offer_summary* whep_publisher_offer)
 {
-    auto answer_direction = make_answer_direction(role, media);
-    if (!answer_direction)
-    {
-        return std::unexpected(answer_direction.error());
-    }
+    const bool is_whep = whep_publisher_offer != nullptr;
+    const media_direction answer_direction = make_answer_direction(is_whep, media);
 
-    if (*answer_direction == media_direction::inactive)
+    if (answer_direction == media_direction::inactive)
     {
         return make_rejected_answer_media(media);
     }
     std::vector<codec_info> codecs;
     const media_summary* forwarded_publisher_media = nullptr;
-    if (role == answer_endpoint_role::whep && whep_publisher_offer != nullptr)
+    if (is_whep)
     {
-        if (whep_subscriber_offer == nullptr)
-        {
-            return make_rejected_answer_media(media);
-        }
-        const media_summary* publisher_media = find_matching_publisher_media(media, *whep_subscriber_offer, *whep_publisher_offer);
+        const media_summary* publisher_media = find_matching_publisher_media(media, offer, *whep_publisher_offer);
         if (publisher_media == nullptr)
         {
             return make_rejected_answer_media(media);
@@ -2304,23 +1355,12 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 
         if (!codec_result)
         {
-            if (role == answer_endpoint_role::whip)
-            {
-                return make_rejected_answer_media(media);
-            }
-
-            return std::unexpected(codec_result.error());
+            return make_rejected_answer_media(media);
         }
 
         codecs = std::move(*codec_result);
     }
 
-    auto answer_direction_text = format_direction(*answer_direction);
-
-    if (!answer_direction_text)
-    {
-        return std::unexpected(answer_direction_text.error());
-    }
     media_description answer_media;
 
     answer_media.media_name.media = media.kind;
@@ -2334,7 +1374,7 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 
     push_attribute(answer_media.attributes, k_attribute_mid, media.mid);
 
-    push_property_attribute(answer_media.attributes, *answer_direction_text);
+    push_property_attribute(answer_media.attributes, to_string(answer_direction));
 
     push_property_attribute(answer_media.attributes, k_attribute_rtcp_mux);
 
@@ -2345,11 +1385,11 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 
     append_header_extension_attributes(answer_media, media, forwarded_publisher_media);
 
-    if (role == answer_endpoint_role::whip && *answer_direction == media_direction::recv_only)
+    if (!is_whep && answer_direction == media_direction::recv_only)
     {
         append_whip_simulcast_receive_attributes(answer_media, media);
     }
-    if (role == answer_endpoint_role::whep && *answer_direction == media_direction::send_only)
+    if (is_whep && answer_direction == media_direction::send_only)
     {
         append_whep_simulcast_send_attributes(answer_media, media, forwarded_publisher_media);
     }
@@ -2360,13 +1400,13 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
 
     append_ice_candidate_attributes(answer_media, options);
 
-    if (*answer_direction == media_direction::send_only || *answer_direction == media_direction::send_recv)
+    if (answer_direction == media_direction::send_only || answer_direction == media_direction::send_recv)
     {
-        const std::string answer_msid_value = make_answer_msid_value(role, options, media, forwarded_publisher_media);
+        const std::string answer_msid_value = make_answer_msid_value(is_whep, options, media, forwarded_publisher_media);
 
         push_attribute(answer_media.attributes, "msid", answer_msid_value);
 
-        if (role == answer_endpoint_role::whep)
+        if (is_whep)
         {
             const auto* media_source = find_answer_media_source(options, media, forwarded_publisher_media);
 
@@ -2377,27 +1417,10 @@ std::expected<media_description, std::string> make_answer_media(answer_endpoint_
         }
     }
 
-    auto identity_result = validate_accepted_answer_media_identity(media, answer_media);
-    if (!identity_result)
-    {
-        return std::unexpected(identity_result.error());
-    }
-
-    if (role == answer_endpoint_role::whep && forwarded_publisher_media != nullptr)
-    {
-        auto forwarding_identity_result = validate_whep_answer_media_forwarding_identity(media, forwarded_publisher_media, answer_media);
-
-        if (!forwarding_identity_result)
-        {
-            return std::unexpected(forwarding_identity_result.error());
-        }
-    }
-
     return answer_media;
 }
 
 validation_result append_answer_media_descriptions(session_description& answer,
-                                                   answer_endpoint_role role,
                                                    const sdp_answer_options& options,
                                                    const webrtc_offer_summary& offer,
                                                    const webrtc_offer_summary* whep_publisher_offer)
@@ -2406,7 +1429,7 @@ validation_result append_answer_media_descriptions(session_description& answer,
 
     for (const auto& media : offer.media)
     {
-        auto answer_media = make_answer_media(role, options, media, &offer, whep_publisher_offer);
+        auto answer_media = make_answer_media(options, media, offer, whep_publisher_offer);
         if (!answer_media)
         {
             return std::unexpected(answer_media.error());
@@ -2419,12 +1442,12 @@ validation_result append_answer_media_descriptions(session_description& answer,
         answer.media_descriptions.push_back(std::move(*answer_media));
     }
 
-    if (role == answer_endpoint_role::whip && !has_accepted_media)
+    if (whep_publisher_offer == nullptr && !has_accepted_media)
     {
         return make_error("whip answer has no supported publisher media");
     }
 
-    if (role == answer_endpoint_role::whep && whep_publisher_offer != nullptr && !has_accepted_media)
+    if (whep_publisher_offer != nullptr && !has_accepted_media)
     {
         return make_error("whep answer has no compatible publisher media");
     }
@@ -2432,8 +1455,7 @@ validation_result append_answer_media_descriptions(session_description& answer,
     return {};
 }
 
-sdp_answer_result build_answer(answer_endpoint_role role,
-                               const webrtc_offer_summary& offer,
+sdp_answer_result build_answer(const webrtc_offer_summary& offer,
                                const sdp_answer_options& options,
                                const webrtc_offer_summary* whep_publisher_offer)
 {
@@ -2441,12 +1463,6 @@ sdp_answer_result build_answer(answer_endpoint_role role,
     if (!options_result)
     {
         return std::unexpected(options_result.error());
-    }
-
-    auto offer_result = validate_offer_for_answer(offer);
-    if (!offer_result)
-    {
-        return std::unexpected(offer_result.error());
     }
 
     session_description answer;
@@ -2467,7 +1483,7 @@ sdp_answer_result build_answer(answer_endpoint_role role,
 
     push_attribute(answer.attributes, "msid-semantic", "WMS *");
 
-    auto media_result = append_answer_media_descriptions(answer, role, options, offer, whep_publisher_offer);
+    auto media_result = append_answer_media_descriptions(answer, options, offer, whep_publisher_offer);
     if (!media_result)
     {
         return std::unexpected(media_result.error());
@@ -2485,12 +1501,11 @@ sdp_answer_result build_answer(answer_endpoint_role role,
     return answer;
 }
 
-sdp_answer_text_result build_answer_sdp(answer_endpoint_role role,
-                                        const webrtc_offer_summary& offer,
+sdp_answer_text_result build_answer_sdp(const webrtc_offer_summary& offer,
                                         const sdp_answer_options& options,
                                         const webrtc_offer_summary* whep_publisher_offer)
 {
-    auto answer = build_answer(role, offer, options, whep_publisher_offer);
+    auto answer = build_answer(offer, options, whep_publisher_offer);
     if (!answer)
     {
         return std::unexpected(answer.error());
@@ -2508,14 +1523,14 @@ sdp_answer_text_result build_answer_sdp(answer_endpoint_role role,
 
 sdp_answer_text_result build_whip_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options)
 {
-    return build_answer_sdp(answer_endpoint_role::whip, offer, options, nullptr);
+    return build_answer_sdp(offer, options, nullptr);
 }
 
 sdp_answer_text_result build_whep_answer_sdp(const webrtc_offer_summary& subscriber_offer,
                                              const webrtc_offer_summary& publisher_offer,
                                              const sdp_answer_options& options)
 {
-    return build_answer_sdp(answer_endpoint_role::whep, subscriber_offer, options, &publisher_offer);
+    return build_answer_sdp(subscriber_offer, options, &publisher_offer);
 }
 
 }    // namespace webrtc::sdp

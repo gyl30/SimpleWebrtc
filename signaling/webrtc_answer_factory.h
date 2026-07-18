@@ -82,16 +82,14 @@ class webrtc_answer_factory
                                                 uint16_t local_candidate_port) const;
 
     [[nodiscard]]
-    generated_sdp_answer_result build_answer(bool is_whip,
-                                             std::string_view stream_id,
+    generated_sdp_answer_result build_answer(std::string_view stream_id,
                                              const sdp::webrtc_offer_summary& offer,
                                              const sdp::webrtc_offer_summary* whep_publisher_offer,
                                              std::vector<sdp::sdp_answer_media_source> media_sources,
                                              uint16_t local_candidate_port);
 
     [[nodiscard]]
-    generated_sdp_answer_result build_answer_with_origin(bool is_whip,
-                                                         std::string_view stream_id,
+    generated_sdp_answer_result build_answer_with_origin(std::string_view stream_id,
                                                          const sdp::webrtc_offer_summary& offer,
                                                          const sdp::webrtc_offer_summary* whep_publisher_offer,
                                                          uint64_t sdp_session_id,
