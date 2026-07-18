@@ -289,17 +289,16 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         return json_error_response(request, 400, k_whip_sdp_answer_failed_error, make_prefixed_error("cannot build sdp answer: ", answer.error()));
     }
 
-    auto runtime_offer_filter = make_runtime_offer_filter_result(
-        *offer_summary, std::move(answer->accepted_mids), std::move(answer->accepted_mline_indexes));
+    auto runtime_offer = make_runtime_offer_summary(*offer_summary, answer->accepted_mline_indexes);
 
-    if (!runtime_offer_filter)
+    if (!runtime_offer)
     {
-        WEBRTC_LOG_WARN("WHIP runtime publisher offer filter failed stream={} error={}", stream_id, runtime_offer_filter.error());
+        WEBRTC_LOG_WARN("WHIP runtime publisher offer filter failed stream={} error={}", stream_id, runtime_offer.error());
 
         return json_error_response(request,
                                    400,
                                    k_whip_runtime_offer_filter_failed_error,
-                                   make_prefixed_error("failed to filter runtime publisher offer: ", runtime_offer_filter.error()));
+                                   make_prefixed_error("failed to filter runtime publisher offer: ", runtime_offer.error()));
     }
 
     auto session_result = [&]() -> publisher_session_result
@@ -307,10 +306,10 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         if (replace_session_id.has_value())
         {
             return registry_->replace_publisher_session(
-                *replace_session_id, std::string(stream_id), std::move(runtime_offer_filter->offer_summary));
+                *replace_session_id, std::string(stream_id), std::move(*runtime_offer));
         }
 
-        return registry_->create_publisher_session(std::string(stream_id), std::move(runtime_offer_filter->offer_summary));
+        return registry_->create_publisher_session(std::string(stream_id), std::move(*runtime_offer));
     }();
     if (!session_result)
     {
@@ -358,14 +357,12 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
     session->set_local_udp_port_reservation(std::move(*local_udp_port));
 
-    session->set_accepted_remote_media_mline_indexes(std::move(runtime_offer_filter->accepted_mline_indexes));
+    session->set_accepted_remote_media_mline_indexes(std::move(answer->accepted_mline_indexes));
 
-    generated_sdp_answer generated_answer = std::move(*answer);
-
-    session->set_local_answer(std::move(generated_answer.sdp),
-                              std::move(generated_answer.local_ice),
-                              generated_answer.sdp_session_id,
-                              generated_answer.sdp_session_version);
+    session->set_local_answer(std::move(answer->sdp),
+                              std::move(answer->local_ice),
+                              answer->sdp_session_id,
+                              answer->sdp_session_version);
 
     transport->set_ice_context(session->stream_id(), session->session_id(), session->local_ice(), session->remote_offer_summary().ice_ufrag);
     transport->set_dtls_peer_identity(make_dtls_peer_identity(*session));
@@ -475,17 +472,16 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
         return json_error_response(request, 400, make_prefixed_error("cannot build sdp answer: ", answer.error()));
     }
 
-    auto runtime_offer_filter = make_runtime_offer_filter_result(
-        *offer_summary, std::move(answer->accepted_mids), std::move(answer->accepted_mline_indexes));
+    auto runtime_offer = make_runtime_offer_summary(*offer_summary, answer->accepted_mline_indexes);
 
-    if (!runtime_offer_filter)
+    if (!runtime_offer)
     {
-        WEBRTC_LOG_WARN("WHIP runtime restart offer summary failed session={} error={}", session_id, runtime_offer_filter.error());
+        WEBRTC_LOG_WARN("WHIP runtime restart offer summary failed session={} error={}", session_id, runtime_offer.error());
 
         return json_error_response(
-            request, 400, make_prefixed_error("failed to build runtime publisher offer summary: ", runtime_offer_filter.error()));
+            request, 400, make_prefixed_error("failed to build runtime publisher offer summary: ", runtime_offer.error()));
     }
-    auto restart_compatibility = sdp::validate_ice_restart_offer_compatibility(session->remote_offer_summary(), runtime_offer_filter->offer_summary);
+    auto restart_compatibility = sdp::validate_ice_restart_offer_compatibility(session->remote_offer_summary(), *runtime_offer);
     if (!restart_compatibility)
     {
         WEBRTC_LOG_WARN("WHIP SDP ICE restart incompatible offer session={} error={}", session_id, restart_compatibility.error());
@@ -495,15 +491,14 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
                                    k_whip_ice_restart_incompatible_offer_error,
                                    make_prefixed_error("invalid ice restart offer: ", restart_compatibility.error()));
     }
-    generated_sdp_answer generated_answer = std::move(*answer);
-    session->apply_remote_ice_restart_offer(std::move(runtime_offer_filter->offer_summary));
+    session->apply_remote_ice_restart_offer(std::move(*runtime_offer));
 
-    session->set_accepted_remote_media_mline_indexes(std::move(runtime_offer_filter->accepted_mline_indexes));
+    session->set_accepted_remote_media_mline_indexes(std::move(answer->accepted_mline_indexes));
 
-    session->set_local_answer(std::move(generated_answer.sdp),
-                              std::move(generated_answer.local_ice),
-                              generated_answer.sdp_session_id,
-                              generated_answer.sdp_session_version);
+    session->set_local_answer(std::move(answer->sdp),
+                              std::move(answer->local_ice),
+                              answer->sdp_session_id,
+                              answer->sdp_session_version);
 
     WEBRTC_LOG_INFO("WHIP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={}",
                     session->stream_id(),

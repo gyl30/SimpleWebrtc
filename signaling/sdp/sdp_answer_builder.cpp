@@ -19,16 +19,10 @@ namespace webrtc::sdp
 namespace
 {
 using validation_result = std::expected<void, std::string>;
-struct accepted_answer_media
-{
-    std::vector<std::string> mids;
-    std::vector<int> mline_indexes;
-};
-
 struct built_sdp_answer
 {
     session_description description;
-    accepted_answer_media accepted_media;
+    std::vector<int> accepted_mline_indexes;
 };
 
 using sdp_answer_result = std::expected<built_sdp_answer, std::string>;
@@ -149,14 +143,14 @@ validation_result validate_options(const sdp_answer_options& options)
     return validate_candidate_options(options);
 }
 
-std::string make_bundle_group_value(const std::vector<std::string>& accepted_mids)
+std::string make_bundle_group_value(const webrtc_offer_summary& offer, std::span<const int> accepted_mline_indexes)
 {
     std::string value = "BUNDLE";
 
-    for (const auto& mid : accepted_mids)
+    for (const int mline_index : accepted_mline_indexes)
     {
         value.push_back(' ');
-        value.append(mid);
+        value.append(offer.media[static_cast<std::size_t>(mline_index)].mid);
     }
 
     return value;
@@ -1399,16 +1393,15 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
     return answer_media;
 }
 
-std::expected<accepted_answer_media, std::string> append_answer_media_descriptions(
+std::expected<std::vector<int>, std::string> append_answer_media_descriptions(
     session_description& answer,
     const sdp_answer_options& options,
     const webrtc_offer_summary& offer,
     const webrtc_offer_summary* whep_publisher_offer)
 {
-    accepted_answer_media accepted_media;
+    std::vector<int> accepted_mline_indexes;
 
-    accepted_media.mids.reserve(offer.media.size());
-    accepted_media.mline_indexes.reserve(offer.media.size());
+    accepted_mline_indexes.reserve(offer.media.size());
 
     for (std::size_t index = 0; index < offer.media.size(); ++index)
     {
@@ -1427,20 +1420,19 @@ std::expected<accepted_answer_media, std::string> append_answer_media_descriptio
                 return make_error("accepted offer media mline index is too large");
             }
 
-            accepted_media.mids.push_back(media.mid);
-            accepted_media.mline_indexes.push_back(static_cast<int>(index));
+            accepted_mline_indexes.push_back(static_cast<int>(index));
         }
 
         answer.media_descriptions.push_back(std::move(*answer_media));
     }
 
-    if (accepted_media.mids.empty())
+    if (accepted_mline_indexes.empty())
     {
         return whep_publisher_offer == nullptr ? make_error("whip answer has no supported publisher media")
                                                : make_error("whep answer has no compatible publisher media");
     }
 
-    return accepted_media;
+    return accepted_mline_indexes;
 }
 
 sdp_answer_result build_answer(const webrtc_offer_summary& offer,
@@ -1472,11 +1464,11 @@ sdp_answer_result build_answer(const webrtc_offer_summary& offer,
         return std::unexpected(accepted_media.error());
     }
 
-    answer.accepted_media = std::move(*accepted_media);
+    answer.accepted_mline_indexes = std::move(*accepted_media);
 
     answer.description.attributes.insert(
         answer.description.attributes.begin(),
-        make_attribute(std::string(k_attribute_group), make_bundle_group_value(answer.accepted_media.mids)));
+        make_attribute(std::string(k_attribute_group), make_bundle_group_value(offer, answer.accepted_mline_indexes)));
 
     return answer;
 }
@@ -1493,8 +1485,7 @@ sdp_answer_text_result build_answer_sdp(const webrtc_offer_summary& offer,
 
     generated_sdp_answer_text result;
     result.sdp = format_session_description(answer->description);
-    result.accepted_mids = std::move(answer->accepted_media.mids);
-    result.accepted_mline_indexes = std::move(answer->accepted_media.mline_indexes);
+    result.accepted_mline_indexes = std::move(answer->accepted_mline_indexes);
 
     return result;
 }

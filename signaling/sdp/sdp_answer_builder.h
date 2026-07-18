@@ -38,13 +38,12 @@ struct sdp_answer_options
     uint16_t local_candidate_port = 0;
 
     std::string local_stream_id = "-";
-    std::vector<sdp_answer_media_source> media_sources;
+    std::span<const sdp_answer_media_source> media_sources;
 };
 
 struct generated_sdp_answer_text
 {
     std::string sdp;
-    std::vector<std::string> accepted_mids;
     std::vector<int> accepted_mline_indexes;
 };
 

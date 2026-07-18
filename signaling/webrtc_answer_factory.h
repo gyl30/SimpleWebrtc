@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <expected>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,8 +24,6 @@ struct generated_sdp_answer
     uint64_t sdp_session_id = 0;
     uint64_t sdp_session_version = 0;
 
-    std::vector<sdp::sdp_answer_media_source> media_sources;
-    std::vector<std::string> accepted_mids;
     std::vector<int> accepted_mline_indexes;
 };
 
@@ -56,7 +55,7 @@ class webrtc_answer_factory
     generated_sdp_answer_result build_whep_answer(std::string_view stream_id,
                                                   const sdp::webrtc_offer_summary& subscriber_offer,
                                                   const sdp::webrtc_offer_summary& publisher_offer,
-                                                  std::vector<sdp::sdp_answer_media_source> media_sources,
+                                                  std::span<const sdp::sdp_answer_media_source> media_sources,
                                                   uint16_t local_candidate_port);
 
     [[nodiscard]]
@@ -72,22 +71,15 @@ class webrtc_answer_factory
                                                           const sdp::webrtc_offer_summary& publisher_offer,
                                                           uint64_t sdp_session_id,
                                                           uint64_t sdp_session_version,
-                                                          std::vector<sdp::sdp_answer_media_source> media_sources,
+                                                          std::span<const sdp::sdp_answer_media_source> media_sources,
                                                           uint16_t local_candidate_port);
 
    private:
     [[nodiscard]]
-    sdp::sdp_answer_options make_answer_options(std::string_view stream_id,
-                                                const ice_credentials& local_ice,
-                                                uint64_t session_id,
-                                                uint64_t session_version,
-                                                uint16_t local_candidate_port) const;
-
-    [[nodiscard]]
     generated_sdp_answer_result build_answer(std::string_view stream_id,
                                              const sdp::webrtc_offer_summary& offer,
                                              const sdp::webrtc_offer_summary* whep_publisher_offer,
-                                             std::vector<sdp::sdp_answer_media_source> media_sources,
+                                             std::span<const sdp::sdp_answer_media_source> media_sources,
                                              uint16_t local_candidate_port);
 
     [[nodiscard]]
@@ -96,7 +88,7 @@ class webrtc_answer_factory
                                                          const sdp::webrtc_offer_summary* whep_publisher_offer,
                                                          uint64_t sdp_session_id,
                                                          uint64_t sdp_session_version,
-                                                         std::vector<sdp::sdp_answer_media_source> media_sources,
+                                                         std::span<const sdp::sdp_answer_media_source> media_sources,
                                                          uint16_t local_candidate_port);
     [[nodiscard]]
     static uint64_t make_initial_session_id();
