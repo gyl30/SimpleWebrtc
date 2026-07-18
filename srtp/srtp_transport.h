@@ -37,36 +37,8 @@ struct srtp_packet_process_result
     uint32_t ssrc = 0;
     uint8_t payload_type = 0;
 
-    bool marker = false;
     uint16_t sequence_number = 0;
     uint32_t timestamp = 0;
-
-    uint8_t rtcp_count = 0;
-    uint16_t rtcp_length = 0;
-    std::string packet_type_name;
-
-    std::size_t rtcp_block_count = 0;
-    std::size_t rtcp_feedback_block_count = 0;
-
-    bool rtcp_is_feedback = false;
-    std::string rtcp_feedback_name;
-    uint32_t rtcp_sender_ssrc = 0;
-    uint32_t rtcp_media_ssrc = 0;
-    std::size_t rtcp_nack_count = 0;
-    std::size_t rtcp_fir_count = 0;
-
-    bool rtcp_has_generic_nack = false;
-    bool rtcp_has_keyframe_request = false;
-    bool rtcp_has_transport_cc = false;
-
-    bool rtcp_has_remb = false;
-    uint64_t rtcp_remb_bitrate_bps = 0;
-
-    std::size_t rtcp_report_packet_count = 0;
-    std::size_t rtcp_report_block_count = 0;
-    uint8_t rtcp_last_fraction_lost = 0;
-    int32_t rtcp_last_cumulative_lost = 0;
-    uint32_t rtcp_last_jitter = 0;
 
     std::vector<uint8_t> plain_packet;
     std::vector<uint8_t> protected_packet;

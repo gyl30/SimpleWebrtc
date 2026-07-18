@@ -69,133 +69,112 @@ srtp_packet_process_result make_ignored_result(srtp_packet_kind kind, std::strin
     return result;
 }
 
-srtp_transport_result make_unprotected_rtp_result(std::vector<uint8_t> packet)
+void log_unprotected_rtp_packet(std::string_view remote_endpoint,
+                                  std::size_t protected_size,
+                                  std::size_t unprotected_size,
+                                  const rtp_packet_header& header,
+                                  uint64_t packet_count)
 {
-    auto header = parse_rtp_packet_header(packet);
-
-    if (!header)
-    {
-        std::string message = "rtp header parse failed after srtp unprotect: ";
-
-        message.append(header.error());
-
-        return std::unexpected(std::move(message));
-    }
-
-    srtp_packet_process_result result;
-    result.state = srtp_packet_process_state::unprotected;
-    result.kind = srtp_packet_kind::rtp;
-    result.ssrc = header->ssrc;
-    result.payload_type = header->payload_type;
-    result.marker = header->marker;
-    result.sequence_number = header->sequence_number;
-    result.timestamp = header->timestamp;
-    result.plain_packet = std::move(packet);
-
-    return result;
+    WEBRTC_LOG_DEBUG(
+        "srtp inbound rtp unprotected remote={} size={} plain_size={} ssrc={} payload_type={} marker={} sequence={} timestamp={} packets={}",
+        remote_endpoint,
+        protected_size,
+        unprotected_size,
+        header.ssrc,
+        static_cast<unsigned int>(header.payload_type),
+        header.marker ? 1 : 0,
+        header.sequence_number,
+        header.timestamp,
+        packet_count);
 }
 
-void fill_rtcp_report_fields_from_compound(const rtcp_compound_packet& compound, srtp_packet_process_result& result)
+void log_unprotected_rtcp_packet(std::string_view remote_endpoint,
+                                 std::size_t protected_size,
+                                 std::size_t unprotected_size,
+                                 const rtcp_compound_packet& compound,
+                                 uint64_t packet_count)
 {
-    result.rtcp_report_packet_count = compound.report_packet_count;
-    result.rtcp_report_block_count = compound.report_block_count;
-    if (compound.last_report_block.has_value())
+    const rtcp_compound_block* first_block = compound.blocks.empty() ? nullptr : &compound.blocks.front();
+    const uint32_t first_ssrc = first_block != nullptr && first_block->has_ssrc ? first_block->ssrc : 0;
+    const uint8_t first_packet_type = first_block != nullptr ? first_block->packet_type : 0;
+
+    if (compound.has_feedback)
     {
-        result.rtcp_last_fraction_lost = compound.last_report_block->fraction_lost;
-        result.rtcp_last_cumulative_lost = compound.last_report_block->cumulative_lost;
-        result.rtcp_last_jitter = compound.last_report_block->jitter;
-    }
-}
+        std::string feedback_name = rtcp_compound_feedback_summary_to_string(compound);
+        uint32_t feedback_sender_ssrc = 0;
+        uint32_t feedback_media_ssrc = 0;
 
-void fill_rtcp_fields_from_compound(const rtcp_compound_packet& compound, srtp_packet_process_result& result)
-{
-    result.rtcp_block_count = compound.blocks.size();
-
-    result.rtcp_feedback_block_count = compound.feedback_block_count;
-
-    if (!compound.blocks.empty())
-    {
-        const rtcp_compound_block& first_block = compound.blocks.front();
-
-        result.payload_type = first_block.packet_type;
-        result.rtcp_count = first_block.count;
-        result.rtcp_length = first_block.length;
-        result.packet_type_name = first_block.packet_type_name;
-
-        if (first_block.has_ssrc)
+        for (const auto& block : compound.blocks)
         {
-            result.ssrc = first_block.ssrc;
-        }
-    }
+            if (!block.is_feedback)
+            {
+                continue;
+            }
 
-    result.rtcp_is_feedback = compound.has_feedback;
-    result.rtcp_feedback_name = rtcp_compound_feedback_summary_to_string(compound);
-    result.rtcp_nack_count = compound.nack_count;
-    result.rtcp_fir_count = compound.fir_count;
-    result.rtcp_has_generic_nack = compound.has_generic_nack;
-    result.rtcp_has_keyframe_request = compound.has_keyframe_request;
-    result.rtcp_has_transport_cc = compound.has_transport_cc;
+            feedback_sender_ssrc = block.feedback_sender_ssrc;
+            feedback_media_ssrc = block.feedback_media_ssrc;
 
-    result.rtcp_has_remb = compound.has_remb;
-    result.rtcp_remb_bitrate_bps = compound.remb_bitrate_bps;
+            if (!block.feedback_name.empty() && feedback_name == "feedback")
+            {
+                feedback_name = block.feedback_name;
+            }
 
-    for (const auto& block : compound.blocks)
-    {
-        if (!block.is_feedback)
-        {
-            continue;
+            break;
         }
 
-        result.rtcp_sender_ssrc = block.feedback_sender_ssrc;
-        result.rtcp_media_ssrc = block.feedback_media_ssrc;
+        WEBRTC_LOG_DEBUG(
+            "srtp inbound rtcp compound feedback unprotected remote={} size={} plain_size={} blocks={} feedback_blocks={} reports={} "
+            "report_blocks={} ssrc={} first_packet_type={} feedback={} sender_ssrc={} media_ssrc={} nack_count={} fir_count={} "
+            "keyframe_request={} generic_nack={} transport_cc={} remb={} remb_bitrate={} packets={}",
+            remote_endpoint,
+            protected_size,
+            unprotected_size,
+            compound.blocks.size(),
+            compound.feedback_block_count,
+            compound.report_packet_count,
+            compound.report_block_count,
+            first_ssrc,
+            static_cast<unsigned int>(first_packet_type),
+            feedback_name,
+            feedback_sender_ssrc,
+            feedback_media_ssrc,
+            compound.nack_count,
+            compound.fir_count,
+            compound.has_keyframe_request ? 1 : 0,
+            compound.has_generic_nack ? 1 : 0,
+            compound.has_transport_cc ? 1 : 0,
+            compound.has_remb ? 1 : 0,
+            compound.remb_bitrate_bps,
+            packet_count);
 
-        if (!block.feedback_name.empty() && result.rtcp_feedback_name == "feedback")
-        {
-            result.rtcp_feedback_name = block.feedback_name;
-        }
-
-        break;
-    }
-    fill_rtcp_report_fields_from_compound(compound, result);
-}
-
-srtp_transport_result make_unprotected_rtcp_result(std::vector<uint8_t> packet)
-{
-    auto compound = parse_rtcp_compound_packet(packet);
-
-    if (!compound)
-    {
-        std::string message = "rtcp compound parse failed after srtp unprotect: ";
-
-        message.append(compound.error());
-
-        return std::unexpected(std::move(message));
-    }
-
-    srtp_packet_process_result result;
-    result.state = srtp_packet_process_state::unprotected;
-    result.kind = srtp_packet_kind::rtcp;
-
-    fill_rtcp_fields_from_compound(*compound, result);
-
-    result.plain_packet = std::move(packet);
-
-    return result;
-}
-
-srtp_transport_result make_unprotected_result(srtp_packet_kind kind, std::vector<uint8_t> packet)
-{
-    if (kind == srtp_packet_kind::rtp)
-    {
-        return make_unprotected_rtp_result(std::move(packet));
+        return;
     }
 
-    if (kind == srtp_packet_kind::rtcp)
-    {
-        return make_unprotected_rtcp_result(std::move(packet));
-    }
+    const uint8_t first_count = first_block != nullptr ? first_block->count : 0;
+    const uint16_t first_length = first_block != nullptr ? first_block->length : 0;
+    const std::string_view first_packet_type_name = first_block != nullptr ? first_block->packet_type_name : std::string_view{};
+    const uint8_t fraction_lost = compound.last_report_block.has_value() ? compound.last_report_block->fraction_lost : 0;
+    const int32_t cumulative_lost = compound.last_report_block.has_value() ? compound.last_report_block->cumulative_lost : 0;
+    const uint32_t jitter = compound.last_report_block.has_value() ? compound.last_report_block->jitter : 0;
 
-    return make_error("srtp packet kind is unknown");
+    WEBRTC_LOG_DEBUG(
+        "srtp inbound rtcp compound unprotected remote={} size={} plain_size={} blocks={} reports={} report_blocks={} ssrc={} "
+        "packet_type={} packet_type_name={} count={} length={} fraction_lost={} cumulative_lost={} jitter={} packets={}",
+        remote_endpoint,
+        protected_size,
+        unprotected_size,
+        compound.blocks.size(),
+        compound.report_packet_count,
+        compound.report_block_count,
+        first_ssrc,
+        static_cast<unsigned int>(first_packet_type),
+        first_packet_type_name,
+        static_cast<unsigned int>(first_count),
+        first_length,
+        static_cast<unsigned int>(fraction_lost),
+        cumulative_lost,
+        jitter,
+        packet_count);
 }
 
 srtp_transport_result make_protected_result(srtp_packet_kind kind, std::vector<uint8_t> packet)
@@ -356,81 +335,54 @@ struct srtp_transport::impl
         const std::size_t unprotected_size = *unprotect_result;
         packet.resize(unprotected_size);
 
-        auto result = make_unprotected_result(kind, std::move(packet));
+        srtp_packet_process_result result;
+        result.state = srtp_packet_process_state::unprotected;
+        result.kind = kind;
 
-        if (!result)
-        {
-            return std::unexpected(result.error());
-        }
-
-        peer.inbound_packet_count += 1;
         if (kind == srtp_packet_kind::rtp)
         {
-            WEBRTC_LOG_DEBUG(
-                "srtp inbound rtp unprotected remote={} size={} plain_size={} ssrc={} payload_type={} marker={} sequence={} timestamp={} packets={}",
-                remote_endpoint,
-                data.size(),
-                unprotected_size,
-                result->ssrc,
-                static_cast<unsigned int>(result->payload_type),
-                result->marker ? 1 : 0,
-                result->sequence_number,
-                result->timestamp,
-                peer.inbound_packet_count);
-        }
-        else
-        {
-            if (result->rtcp_is_feedback)
+            auto header = parse_rtp_packet_header(packet);
+
+            if (!header)
             {
-                WEBRTC_LOG_DEBUG(
-                    "srtp inbound rtcp compound feedback unprotected remote={} size={} plain_size={} blocks={} feedback_blocks={} reports={} "
-                    "report_blocks={} ssrc={} first_packet_type={} feedback={} sender_ssrc={} media_ssrc={} nack_count={} fir_count={} "
-                    "keyframe_request={} generic_nack={} transport_cc={} remb={} remb_bitrate={} packets={}",
-                    remote_endpoint,
-                    data.size(),
-                    unprotected_size,
-                    result->rtcp_block_count,
-                    result->rtcp_feedback_block_count,
-                    result->rtcp_report_packet_count,
-                    result->rtcp_report_block_count,
-                    result->ssrc,
-                    static_cast<unsigned int>(result->payload_type),
-                    result->rtcp_feedback_name,
-                    result->rtcp_sender_ssrc,
-                    result->rtcp_media_ssrc,
-                    result->rtcp_nack_count,
-                    result->rtcp_fir_count,
-                    result->rtcp_has_keyframe_request ? 1 : 0,
-                    result->rtcp_has_generic_nack ? 1 : 0,
-                    result->rtcp_has_transport_cc ? 1 : 0,
-                    result->rtcp_has_remb ? 1 : 0,
-                    result->rtcp_remb_bitrate_bps,
-                    peer.inbound_packet_count);
+                std::string message = "rtp header parse failed after srtp unprotect: ";
+
+                message.append(header.error());
+
+                return std::unexpected(std::move(message));
             }
-            else
-            {
-                WEBRTC_LOG_DEBUG(
-                    "srtp inbound rtcp compound unprotected remote={} size={} plain_size={} blocks={} reports={} report_blocks={} ssrc={} "
-                    "packet_type={} packet_type_name={} count={} length={} fraction_lost={} cumulative_lost={} jitter={} packets={}",
-                    remote_endpoint,
-                    data.size(),
-                    unprotected_size,
-                    result->rtcp_block_count,
-                    result->rtcp_report_packet_count,
-                    result->rtcp_report_block_count,
-                    result->ssrc,
-                    static_cast<unsigned int>(result->payload_type),
-                    result->packet_type_name,
-                    static_cast<unsigned int>(result->rtcp_count),
-                    result->rtcp_length,
-                    static_cast<unsigned int>(result->rtcp_last_fraction_lost),
-                    result->rtcp_last_cumulative_lost,
-                    result->rtcp_last_jitter,
-                    peer.inbound_packet_count);
-            }
+
+            result.ssrc = header->ssrc;
+            result.payload_type = header->payload_type;
+            result.sequence_number = header->sequence_number;
+            result.timestamp = header->timestamp;
+            result.plain_packet = std::move(packet);
+
+            peer.inbound_packet_count += 1;
+
+            log_unprotected_rtp_packet(remote_endpoint, data.size(), unprotected_size, *header, peer.inbound_packet_count);
+
+            return result;
         }
 
-        return std::move(*result);
+        auto compound = parse_rtcp_compound_packet(packet);
+
+        if (!compound)
+        {
+            std::string message = "rtcp compound parse failed after srtp unprotect: ";
+
+            message.append(compound.error());
+
+            return std::unexpected(std::move(message));
+        }
+
+        result.plain_packet = std::move(packet);
+
+        peer.inbound_packet_count += 1;
+
+        log_unprotected_rtcp_packet(remote_endpoint, data.size(), unprotected_size, *compound, peer.inbound_packet_count);
+
+        return result;
     }
 
     srtp_transport_result protect_outbound_packet(std::span<const uint8_t> plain_packet, std::string_view remote_endpoint, srtp_packet_kind kind)
