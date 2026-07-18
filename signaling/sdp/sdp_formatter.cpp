@@ -111,16 +111,6 @@ const value_type* get_optional_pointer(const std::optional<value_type>& value)
     return &value.value();
 }
 
-const std::string* get_present_text_pointer(const std::optional<std::string>& value)
-{
-    if (!value.has_value())
-    {
-        return nullptr;
-    }
-
-    return &value.value();
-}
-
 const connection_information* get_present_connection_pointer(const std::optional<connection_information>& connection)
 {
     if (!connection.has_value())
@@ -150,18 +140,6 @@ format_result append_text_line(std::string& output, char type, std::string_view 
 
     append_raw_line(output, type, value);
     return {};
-}
-
-template <typename optional_text_type>
-format_result append_optional_text_line(std::string& output, char type, const optional_text_type& value, std::string_view field_name)
-{
-    const auto* text = get_present_text_pointer(value);
-    if (text == nullptr)
-    {
-        return {};
-    }
-
-    return append_text_line(output, type, *text, field_name, true);
 }
 
 format_result append_version(std::string& output, const sdp_version& version)
@@ -224,48 +202,6 @@ format_result append_origin(std::string& output, const origin_line& origin)
     return {};
 }
 
-template <typename address_type>
-format_result append_address_suffixes(std::string& value, const address_type& address)
-{
-    if constexpr (requires { address.ttl; })
-    {
-        const auto* ttl = get_optional_pointer(address.ttl);
-
-        if (ttl != nullptr)
-        {
-            using ttl_type = std::remove_cvref_t<decltype(*ttl)>;
-
-            if (is_negative<ttl_type>(*ttl))
-            {
-                return make_error("connection address ttl must not be negative");
-            }
-
-            value.push_back('/');
-            value.append(std::to_string(*ttl));
-        }
-    }
-
-    if constexpr (requires { address.range; })
-    {
-        const auto* range = get_optional_pointer(address.range);
-
-        if (range != nullptr)
-        {
-            using range_type = std::remove_cvref_t<decltype(*range)>;
-
-            if (is_negative<range_type>(*range) || *range == 0)
-            {
-                return make_error("connection address range must be greater than zero");
-            }
-
-            value.push_back('/');
-            value.append(std::to_string(*range));
-        }
-    }
-
-    return {};
-}
-
 format_result append_connection(std::string& output, const connection_information& connection)
 {
     auto network_type_result = validate_token(connection.network_type, "connection network type");
@@ -302,13 +238,6 @@ format_result append_connection(std::string& output, const connection_informatio
 
         value.push_back(' ');
         value.append(address->address);
-
-        auto suffix_result = append_address_suffixes(value, *address);
-
-        if (!suffix_result)
-        {
-            return std::unexpected(suffix_result.error());
-        }
     }
 
     append_raw_line(output, 'c', value);
@@ -326,140 +255,6 @@ format_result append_optional_connection(std::string& output, const connection_t
     }
 
     return append_connection(output, *connection_value);
-}
-
-format_result append_bandwidth(std::string& output, const bandwidth_line& bandwidth)
-{
-    auto type_result = validate_token(bandwidth.type, "bandwidth type");
-
-    if (!type_result)
-    {
-        return std::unexpected(type_result.error());
-    }
-
-    if (bandwidth.type.find(':') != std::string::npos)
-    {
-        return make_error("bandwidth type must not contain colon");
-    }
-
-    std::string value;
-    value.reserve(bandwidth.type.size() + 32);
-
-    if (bandwidth.experimental)
-    {
-        value.append("X-");
-    }
-
-    value.append(bandwidth.type);
-    value.push_back(':');
-    value.append(std::to_string(bandwidth.value));
-
-    append_raw_line(output, 'b', value);
-    return {};
-}
-
-format_result append_bandwidth_lines(std::string& output, const std::vector<bandwidth_line>& bandwidth_lines)
-{
-    for (const auto& bandwidth : bandwidth_lines)
-    {
-        auto result = append_bandwidth(output, bandwidth);
-        if (!result)
-        {
-            return std::unexpected(result.error());
-        }
-    }
-
-    return {};
-}
-
-format_result append_timing(std::string& output, const timing_line& timing)
-{
-    std::string value;
-    value.reserve(48);
-
-    value.append(std::to_string(timing.start_time));
-    value.push_back(' ');
-    value.append(std::to_string(timing.stop_time));
-
-    append_raw_line(output, 't', value);
-    return {};
-}
-
-format_result append_repeat_time(std::string& output, const repeat_time& repeat)
-{
-    std::string value;
-    value.reserve(64 + repeat.offsets.size() * 16);
-
-    value.append(std::to_string(repeat.interval));
-    value.push_back(' ');
-    value.append(std::to_string(repeat.duration));
-
-    for (const auto offset : repeat.offsets)
-    {
-        value.push_back(' ');
-        value.append(std::to_string(offset));
-    }
-
-    append_raw_line(output, 'r', value);
-    return {};
-}
-
-format_result append_time_descriptions(std::string& output, const std::vector<time_description>& time_descriptions)
-{
-    if (time_descriptions.empty())
-    {
-        return make_error("session description has no timing lines");
-    }
-
-    for (const auto& time_description_value : time_descriptions)
-    {
-        auto timing_result = append_timing(output, time_description_value.timing);
-
-        if (!timing_result)
-        {
-            return std::unexpected(timing_result.error());
-        }
-
-        for (const auto& repeat : time_description_value.repeat_times)
-        {
-            auto repeat_result = append_repeat_time(output, repeat);
-
-            if (!repeat_result)
-            {
-                return std::unexpected(repeat_result.error());
-            }
-        }
-    }
-
-    return {};
-}
-
-format_result append_time_zones(std::string& output, const std::vector<time_zone>& time_zones)
-{
-    if (time_zones.empty())
-    {
-        return {};
-    }
-
-    std::string value;
-    value.reserve(time_zones.size() * 32);
-
-    for (std::size_t index = 0; index < time_zones.size(); ++index)
-    {
-        if (index != 0)
-        {
-            value.push_back(' ');
-        }
-
-        value.append(std::to_string(time_zones[index].adjustment_time));
-
-        value.push_back(' ');
-
-        value.append(std::to_string(time_zones[index].offset));
-    }
-
-    append_raw_line(output, 'z', value);
-    return {};
 }
 
 format_result append_attribute(std::string& output, const sdp_attribute& attribute)
@@ -545,21 +340,6 @@ format_result append_media_name(std::string& output, const media_name_line& medi
     value.push_back(' ');
     value.append(std::to_string(media_name.port.value));
 
-    const auto* port_range = get_optional_pointer(media_name.port.range);
-
-    if (port_range != nullptr)
-    {
-        using range_type = std::remove_cvref_t<decltype(*port_range)>;
-
-        if (is_negative<range_type>(*port_range) || *port_range == 0)
-        {
-            return make_error("media port range must be greater than zero");
-        }
-
-        value.push_back('/');
-        value.append(std::to_string(*port_range));
-    }
-
     value.push_back(' ');
 
     for (std::size_t index = 0; index < media_name.protocols.size(); ++index)
@@ -612,32 +392,11 @@ format_result append_media_description(std::string& output, const media_descript
         return std::unexpected(media_name_result.error());
     }
 
-    auto title_result = append_optional_text_line(output, 'i', media.media_title, "media title");
-
-    if (!title_result)
-    {
-        return std::unexpected(title_result.error());
-    }
-
     auto connection_result = append_optional_connection(output, media.connection);
 
     if (!connection_result)
     {
         return std::unexpected(connection_result.error());
-    }
-
-    auto bandwidth_result = append_bandwidth_lines(output, media.bandwidth_lines);
-
-    if (!bandwidth_result)
-    {
-        return std::unexpected(bandwidth_result.error());
-    }
-
-    auto encryption_key_result = append_optional_text_line(output, 'k', media.encryption_key, "media encryption key");
-
-    if (!encryption_key_result)
-    {
-        return std::unexpected(encryption_key_result.error());
     }
 
     auto attributes_result = append_attributes(output, media.attributes);
@@ -692,34 +451,6 @@ sdp_format_result format_session_description(const session_description& descript
         return std::unexpected(session_name_result.error());
     }
 
-    auto session_information_result = append_optional_text_line(output, 'i', description.session_information, "session information");
-
-    if (!session_information_result)
-    {
-        return std::unexpected(session_information_result.error());
-    }
-
-    auto uri_result = append_optional_text_line(output, 'u', description.uri, "session uri");
-
-    if (!uri_result)
-    {
-        return std::unexpected(uri_result.error());
-    }
-
-    auto email_result = append_optional_text_line(output, 'e', description.email_address, "session email address");
-
-    if (!email_result)
-    {
-        return std::unexpected(email_result.error());
-    }
-
-    auto phone_result = append_optional_text_line(output, 'p', description.phone_number, "session phone number");
-
-    if (!phone_result)
-    {
-        return std::unexpected(phone_result.error());
-    }
-
     auto connection_result = append_optional_connection(output, description.connection);
 
     if (!connection_result)
@@ -727,33 +458,7 @@ sdp_format_result format_session_description(const session_description& descript
         return std::unexpected(connection_result.error());
     }
 
-    auto bandwidth_result = append_bandwidth_lines(output, description.bandwidth_lines);
-
-    if (!bandwidth_result)
-    {
-        return std::unexpected(bandwidth_result.error());
-    }
-
-    auto time_result = append_time_descriptions(output, description.time_descriptions);
-
-    if (!time_result)
-    {
-        return std::unexpected(time_result.error());
-    }
-
-    auto time_zone_result = append_time_zones(output, description.time_zones);
-
-    if (!time_zone_result)
-    {
-        return std::unexpected(time_zone_result.error());
-    }
-
-    auto encryption_key_result = append_optional_text_line(output, 'k', description.encryption_key, "session encryption key");
-
-    if (!encryption_key_result)
-    {
-        return std::unexpected(encryption_key_result.error());
-    }
+    append_raw_line(output, 't', "0 0");
 
     auto attributes_result = append_attributes(output, description.attributes);
 

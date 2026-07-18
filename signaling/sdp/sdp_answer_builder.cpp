@@ -978,9 +978,9 @@ std::string lower_sdp_copy(std::string_view value)
 
     result.reserve(value.size());
 
-    for (unsigned char ch : value)
+    for (const char ch : value)
     {
-        result.push_back(static_cast<char>(std::tolower(ch)));
+        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
     }
 
     return result;
@@ -1872,14 +1872,6 @@ connection_information make_connection(const sdp_answer_options& options)
     return connection;
 }
 
-time_description make_zero_time_description()
-{
-    time_description time;
-    time.timing.start_time = 0;
-    time.timing.stop_time = 0;
-    return time;
-}
-
 std::string make_fingerprint_value(const fingerprint_info& fingerprint)
 {
     std::string value;
@@ -1941,9 +1933,9 @@ std::string lower_rtcp_feedback_ascii(std::string_view value)
 
     result.reserve(value.size());
 
-    for (unsigned char ch : value)
+    for (const char ch : value)
     {
-        result.push_back(static_cast<char>(std::tolower(ch)));
+        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
     }
 
     return result;
@@ -2957,7 +2949,6 @@ sdp_answer_result build_answer(answer_endpoint_role role,
     answer.version.value = 0;
     answer.origin = make_origin(options);
     answer.session_name = "-";
-    answer.time_descriptions.push_back(make_zero_time_description());
 
     push_property_attribute(answer.attributes, "ice-lite");
     push_attribute(answer.attributes, "ice-options", "trickle");

@@ -56,9 +56,9 @@ std::string lower_copy(std::string_view value)
 
     result.reserve(value.size());
 
-    for (unsigned char ch : value)
+    for (const char ch : value)
     {
-        result.push_back(static_cast<char>(std::tolower(ch)));
+        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
     }
 
     return result;

@@ -186,7 +186,7 @@ std::expected<connection_information, std::string> parse_connection_information_
     return connection;
 }
 
-std::expected<bandwidth_line, std::string> parse_bandwidth_line(std::string_view value)
+std::expected<void, std::string> validate_bandwidth_line(std::string_view value)
 {
     value = trim(value);
 
@@ -199,11 +199,8 @@ std::expected<bandwidth_line, std::string> parse_bandwidth_line(std::string_view
     auto type = value.substr(0, colon_position);
     const auto bandwidth_value = value.substr(colon_position + 1);
 
-    bandwidth_line line;
-
     if (type.starts_with("X-"))
     {
-        line.experimental = true;
         type = type.substr(2);
     }
     else if (!is_any_of(type, {"CT", "AS", "TIAS", "RS", "RR"}))
@@ -217,13 +214,10 @@ std::expected<bandwidth_line, std::string> parse_bandwidth_line(std::string_view
         return make_error(parsed_value.error());
     }
 
-    line.type = std::string(type);
-    line.value = *parsed_value;
-
-    return line;
+    return {};
 }
 
-std::expected<timing_line, std::string> parse_timing_line(std::string_view value)
+std::expected<void, std::string> validate_timing_line(std::string_view value)
 {
     const auto fields = split_whitespace(value);
     if (fields.size() != 2)
@@ -243,14 +237,10 @@ std::expected<timing_line, std::string> parse_timing_line(std::string_view value
         return make_error(stop_time.error());
     }
 
-    timing_line timing;
-    timing.start_time = *start_time;
-    timing.stop_time = *stop_time;
-
-    return timing;
+    return {};
 }
 
-std::expected<repeat_time, std::string> parse_repeat_time_line(std::string_view value)
+std::expected<void, std::string> validate_repeat_time_line(std::string_view value)
 {
     const auto fields = split_whitespace(value);
     if (fields.size() < 2)
@@ -270,10 +260,6 @@ std::expected<repeat_time, std::string> parse_repeat_time_line(std::string_view 
         return make_error(duration.error());
     }
 
-    repeat_time repeat;
-    repeat.interval = *interval;
-    repeat.duration = *duration;
-
     for (std::size_t i = 2; i < fields.size(); ++i)
     {
         auto offset = parse_time_units(fields[i]);
@@ -281,22 +267,18 @@ std::expected<repeat_time, std::string> parse_repeat_time_line(std::string_view 
         {
             return make_error(offset.error());
         }
-
-        repeat.offsets.push_back(*offset);
     }
 
-    return repeat;
+    return {};
 }
 
-std::expected<std::vector<time_zone>, std::string> parse_time_zone_line(std::string_view value)
+std::expected<void, std::string> validate_time_zone_line(std::string_view value)
 {
     const auto fields = split_whitespace(value);
     if (fields.empty() || fields.size() % 2 != 0)
     {
         return make_error("invalid time zone line");
     }
-
-    std::vector<time_zone> result;
 
     for (std::size_t i = 0; i < fields.size(); i += 2)
     {
@@ -311,14 +293,9 @@ std::expected<std::vector<time_zone>, std::string> parse_time_zone_line(std::str
         {
             return make_error(offset.error());
         }
-
-        time_zone zone;
-        zone.adjustment_time = *adjustment_time;
-        zone.offset = *offset;
-        result.push_back(zone);
     }
 
-    return result;
+    return {};
 }
 
 std::expected<ranged_port, std::string> parse_ranged_port(std::string_view value)
@@ -349,8 +326,6 @@ std::expected<ranged_port, std::string> parse_ranged_port(std::string_view value
         {
             return make_error("invalid media port range");
         }
-
-        port.range = *range;
     }
 
     return port;
@@ -499,7 +474,6 @@ std::expected<void, std::string> parse_session_level_line(session_description& d
             return {};
 
         case 'i':
-            description.session_information = std::string(value);
             return {};
 
         case 'u':
@@ -508,15 +482,10 @@ std::expected<void, std::string> parse_session_level_line(session_description& d
                 return make_error("empty uri line");
             }
 
-            description.uri = std::string(value);
             return {};
 
         case 'e':
-            description.email_address = std::string(value);
-            return {};
-
         case 'p':
-            description.phone_number = std::string(value);
             return {};
 
         case 'c':
@@ -533,62 +502,55 @@ std::expected<void, std::string> parse_session_level_line(session_description& d
 
         case 'b':
         {
-            auto bandwidth = parse_bandwidth_line(value);
-            if (!bandwidth)
+            auto validation = validate_bandwidth_line(value);
+            if (!validation)
             {
-                return make_error(bandwidth.error());
+                return make_error(validation.error());
             }
 
-            description.bandwidth_lines.push_back(*bandwidth);
             return {};
         }
 
         case 't':
         {
-            auto timing = parse_timing_line(value);
-            if (!timing)
+            auto validation = validate_timing_line(value);
+            if (!validation)
             {
-                return make_error(timing.error());
+                return make_error(validation.error());
             }
 
-            time_description time;
-            time.timing = *timing;
-            description.time_descriptions.push_back(time);
             has_timing = true;
             return {};
         }
 
         case 'r':
         {
-            if (description.time_descriptions.empty())
+            if (!has_timing)
             {
                 return make_error("repeat time appears before timing");
             }
 
-            auto repeat = parse_repeat_time_line(value);
-            if (!repeat)
+            auto validation = validate_repeat_time_line(value);
+            if (!validation)
             {
-                return make_error(repeat.error());
+                return make_error(validation.error());
             }
 
-            description.time_descriptions.back().repeat_times.push_back(*repeat);
             return {};
         }
 
         case 'z':
         {
-            auto zones = parse_time_zone_line(value);
-            if (!zones)
+            auto validation = validate_time_zone_line(value);
+            if (!validation)
             {
-                return make_error(zones.error());
+                return make_error(validation.error());
             }
 
-            description.time_zones.insert(description.time_zones.end(), zones->begin(), zones->end());
             return {};
         }
 
         case 'k':
-            description.encryption_key = std::string(value);
             return {};
 
         case 'a':
@@ -613,7 +575,6 @@ std::expected<void, std::string> parse_media_level_line(media_description& media
     switch (type)
     {
         case 'i':
-            media.media_title = std::string(value);
             return {};
 
         case 'c':
@@ -630,18 +591,16 @@ std::expected<void, std::string> parse_media_level_line(media_description& media
 
         case 'b':
         {
-            auto bandwidth = parse_bandwidth_line(value);
-            if (!bandwidth)
+            auto validation = validate_bandwidth_line(value);
+            if (!validation)
             {
-                return make_error(bandwidth.error());
+                return make_error(validation.error());
             }
 
-            media.bandwidth_lines.push_back(*bandwidth);
             return {};
         }
 
         case 'k':
-            media.encryption_key = std::string(value);
             return {};
 
         case 'a':
