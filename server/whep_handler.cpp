@@ -820,7 +820,7 @@ http_response_ptr whep_handler::patch_session(http_request_t& request, std::stri
 
             return json_error_response(request, status, error_code, message);
         },
-        [this, &request](const auto& updated_session) -> http_response_ptr
+        [&request](const auto& updated_session) -> http_response_ptr
         {
             auto response = create_response(request, 204, "");
             add_http_common_headers(response);

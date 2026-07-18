@@ -58,8 +58,6 @@ inline std::string make_http_error_response_body(std::string_view error_code, st
     return serialize_struct(response);
 }
 
-inline std::string make_http_error_response_body(std::string_view message) { return make_http_error_response_body("error", message); }
-
 inline void add_http_common_headers(const http_response_ptr& response)
 {
     response->set(boost::beast::http::field::access_control_allow_origin, "*");
@@ -94,11 +92,6 @@ inline http_response_ptr make_json_http_error_response(http_request_t& request,
                                                        std::string_view message)
 {
     return make_json_http_response(request, status_code, make_http_error_response_body(error_code, message));
-}
-
-inline http_response_ptr make_json_http_error_response(http_request_t& request, int status_code, std::string_view message)
-{
-    return make_json_http_error_response(request, status_code, "error", message);
 }
 
 inline http_response_ptr make_text_http_response(http_request_t& request, int status_code, std::string_view body)

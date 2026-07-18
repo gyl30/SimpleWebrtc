@@ -299,7 +299,7 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
             415, "trickle_ice_unsupported_media_type", "unsupported media type, expected application/json or application/trickle-ice-sdpfrag");
     }
 
-    if (trickle_ice_patch_body_too_large(request.req.body().size()))
+    if (request.req.body().size() > k_trickle_ice_max_patch_body_bytes)
     {
         WEBRTC_LOG_WARN("{} trickle ice patch body too large session={} body_size={} limit={}",
                         protocol_name,
@@ -347,7 +347,7 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
         return fail(400, "trickle_ice_invalid_candidates", message);
     }
 
-    if (trickle_ice_candidate_batch_too_large(patch_body->candidates.size()))
+    if (patch_body->candidates.size() > k_trickle_ice_max_candidates_per_patch)
     {
         WEBRTC_LOG_WARN("{} trickle ice patch too many candidates session={} candidates={} limit={}",
                         protocol_name,
