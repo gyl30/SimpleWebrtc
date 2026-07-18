@@ -16,6 +16,38 @@ namespace webrtc::sdp
 {
 namespace
 {
+enum class h264_profile_kind
+{
+    unknown,
+    constrained_baseline,
+    baseline,
+    main,
+    constrained_high,
+    high
+};
+
+struct h264_profile_level_id
+{
+    uint8_t profile_idc = 0;
+    uint8_t profile_iop = 0;
+    uint8_t level_idc = 0;
+
+    h264_profile_kind profile = h264_profile_kind::unknown;
+
+    std::string normalized_value;
+};
+
+struct h264_fmtp_parameters
+{
+    bool has_packetization_mode = false;
+    uint8_t packetization_mode = 0;
+
+    bool has_level_asymmetry_allowed = false;
+    bool level_asymmetry_allowed = false;
+
+    std::optional<h264_profile_level_id> profile_level_id;
+};
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 std::string lower_copy(std::string_view value)
@@ -461,7 +493,6 @@ bool h264_level_asymmetry_allowed_effective_value(const h264_fmtp_parameters& pa
 
     return h264_assume_level_asymmetry_allowed_when_missing_from_env();
 }
-}    // namespace
 
 std::expected<h264_fmtp_parameters, std::string> parse_h264_fmtp(std::string_view fmtp)
 {
@@ -536,8 +567,9 @@ std::expected<h264_fmtp_parameters, std::string> parse_h264_fmtp(std::string_vie
 
     return parameters;
 }
+}    // namespace
 
-std::expected<h264_fmtp_answer_negotiation, std::string> negotiate_h264_fmtp_for_answer(std::string_view offer_fmtp, std::string_view local_fmtp)
+std::expected<std::string, std::string> negotiate_h264_fmtp_for_answer(std::string_view offer_fmtp, std::string_view local_fmtp)
 {
     auto offer_parameters = parse_h264_fmtp(offer_fmtp);
 
@@ -589,17 +621,12 @@ std::expected<h264_fmtp_answer_negotiation, std::string> negotiate_h264_fmtp_for
     const h264_profile_level_id selected_profile_level_id =
         select_answer_profile_level_id(offer_profile_level_id, local_profile_level_id, level_asymmetry_allowed);
 
-    h264_fmtp_answer_negotiation negotiation;
-    negotiation.answer_fmtp = make_answer_fmtp(selected_profile_level_id, *offer_packetization_mode, level_asymmetry_allowed);
-
-    return negotiation;
+    return make_answer_fmtp(selected_profile_level_id, *offer_packetization_mode, level_asymmetry_allowed);
 }
 
-std::expected<h264_fmtp_relay_compatibility, std::string> check_h264_fmtp_relay_compatibility(std::string_view publisher_fmtp,
-                                                                                              std::string_view subscriber_fmtp)
+std::expected<bool, std::string> check_h264_fmtp_relay_compatibility(std::string_view publisher_fmtp,
+                                                                     std::string_view subscriber_fmtp)
 {
-    h264_fmtp_relay_compatibility compatibility;
-
     auto publisher_parameters = parse_h264_fmtp(publisher_fmtp);
 
     if (!publisher_parameters)
@@ -618,19 +645,19 @@ std::expected<h264_fmtp_relay_compatibility, std::string> check_h264_fmtp_relay_
 
     if (!publisher_packetization_mode)
     {
-        return compatibility;
+        return false;
     }
 
     auto subscriber_packetization_mode = effective_packetization_mode_for_relay(*subscriber_parameters);
 
     if (!subscriber_packetization_mode)
     {
-        return compatibility;
+        return false;
     }
 
     if (*publisher_packetization_mode != *subscriber_packetization_mode)
     {
-        return compatibility;
+        return false;
     }
 
     if (publisher_parameters->profile_level_id.has_value() && subscriber_parameters->profile_level_id.has_value())
@@ -641,18 +668,16 @@ std::expected<h264_fmtp_relay_compatibility, std::string> check_h264_fmtp_relay_
 
         if (!publisher_profile_is_decodable_by_subscriber(publisher_profile_level_id.profile, subscriber_profile_level_id.profile))
         {
-            return compatibility;
+            return false;
         }
 
         if (level_rank(subscriber_profile_level_id) < level_rank(publisher_profile_level_id))
         {
-            return compatibility;
+            return false;
         }
     }
 
-    compatibility.compatible = true;
-
-    return compatibility;
+    return true;
 }
 
 }    // namespace webrtc::sdp

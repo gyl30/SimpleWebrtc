@@ -188,7 +188,7 @@ std::optional<std::string> normalize_h264_answer_fmtp(std::string_view offer_fmt
         return std::nullopt;
     }
 
-    return negotiation->answer_fmtp;
+    return *negotiation;
 }
 
 bool is_h264_codec(const codec_info& codec)
@@ -653,7 +653,7 @@ bool h264_codecs_are_compatible(const codec_info& publisher_codec, const codec_i
         return false;
     }
 
-    return compatibility->compatible;
+    return *compatibility;
 }
 bool codecs_are_compatible(const codec_info& publisher_codec, const codec_info& subscriber_codec)
 {
