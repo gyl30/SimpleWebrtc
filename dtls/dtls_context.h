@@ -12,11 +12,6 @@
 namespace webrtc
 {
 
-struct dtls_context_config
-{
-    std::shared_ptr<dtls_certificate> certificate;
-    std::string srtp_profiles = "SRTP_AES128_CM_SHA1_80:SRTP_AES128_CM_SHA1_32";
-};
 class dtls_context
 {
    public:
@@ -38,7 +33,7 @@ class dtls_context
 
 using dtls_context_result = std::expected<std::shared_ptr<dtls_context>, std::string>;
 
-[[nodiscard]] dtls_context_result make_dtls_context(const dtls_context_config& config);
+[[nodiscard]] dtls_context_result make_dtls_context(const std::shared_ptr<dtls_certificate>& certificate);
 }    // namespace webrtc
 
 #endif

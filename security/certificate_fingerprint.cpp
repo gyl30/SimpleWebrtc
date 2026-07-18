@@ -208,7 +208,6 @@ std::expected<std::vector<unsigned char>, std::string> parse_fingerprint_value(s
 
     return digest;
 }
-}    // namespace
 
 certificate_fingerprint_result calculate_certificate_fingerprint(X509* certificate, std::string_view algorithm)
 {
@@ -267,6 +266,7 @@ certificate_fingerprint_result calculate_certificate_fingerprint(X509* certifica
 
     return fingerprint;
 }
+}    // namespace
 
 certificate_fingerprint_result verify_certificate_fingerprint(X509* certificate, const sdp::fingerprint_info& expected_fingerprint)
 {

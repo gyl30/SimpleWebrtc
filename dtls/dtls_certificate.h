@@ -21,8 +21,6 @@ struct dtls_certificate
 
 using dtls_certificate_result = std::expected<std::shared_ptr<dtls_certificate>, std::string>;
 
-[[nodiscard]] dtls_certificate_result generate_dtls_certificate();
-
 [[nodiscard]] dtls_certificate_result get_process_dtls_certificate();
 }    // namespace webrtc
 

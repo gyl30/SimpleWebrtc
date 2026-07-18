@@ -13,6 +13,8 @@ namespace webrtc
 {
 namespace
 {
+inline constexpr char k_dtls_srtp_profiles[] = "SRTP_AES128_CM_SHA1_80:SRTP_AES128_CM_SHA1_32";
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 std::string make_openssl_error(std::string_view prefix)
@@ -36,26 +38,21 @@ std::string make_openssl_error(std::string_view prefix)
     return message;
 }
 
-std::expected<void, std::string> validate_config(const dtls_context_config& config)
+std::expected<void, std::string> validate_certificate(const std::shared_ptr<dtls_certificate>& certificate)
 {
-    if (config.certificate == nullptr)
+    if (certificate == nullptr)
     {
         return make_error("dtls certificate is null");
     }
 
-    if (config.certificate->certificate == nullptr)
+    if (certificate->certificate == nullptr)
     {
         return make_error("dtls x509 certificate is null");
     }
 
-    if (config.certificate->private_key == nullptr)
+    if (certificate->private_key == nullptr)
     {
         return make_error("dtls private key is null");
-    }
-
-    if (config.srtp_profiles.empty())
-    {
-        return make_error("dtls srtp profiles is empty");
     }
 
     return {};
@@ -88,13 +85,13 @@ dtls_context::~dtls_context()
 
 SSL_CTX* dtls_context::native_handle() const { return native_handle_; }
 
-dtls_context_result make_dtls_context(const dtls_context_config& config)
+dtls_context_result make_dtls_context(const std::shared_ptr<dtls_certificate>& certificate)
 {
-    auto config_result = validate_config(config);
+    auto certificate_result = validate_certificate(certificate);
 
-    if (!config_result)
+    if (!certificate_result)
     {
-        return std::unexpected(config_result.error());
+        return std::unexpected(certificate_result.error());
     }
 
     OPENSSL_init_ssl(0, nullptr);
@@ -119,12 +116,12 @@ dtls_context_result make_dtls_context(const dtls_context_config& config)
         return std::unexpected(make_openssl_error("dtls set min protocol version failed"));
     }
 
-    if (SSL_CTX_use_certificate(native_context, config.certificate->certificate.get()) != 1)
+    if (SSL_CTX_use_certificate(native_context, certificate->certificate.get()) != 1)
     {
         return std::unexpected(make_openssl_error("dtls load certificate failed"));
     }
 
-    if (SSL_CTX_use_PrivateKey(native_context, config.certificate->private_key.get()) != 1)
+    if (SSL_CTX_use_PrivateKey(native_context, certificate->private_key.get()) != 1)
     {
         return std::unexpected(make_openssl_error("dtls load private key failed"));
     }
@@ -134,7 +131,7 @@ dtls_context_result make_dtls_context(const dtls_context_config& config)
         return std::unexpected(make_openssl_error("dtls private key check failed"));
     }
 
-    if (SSL_CTX_set_tlsext_use_srtp(native_context, config.srtp_profiles.c_str()) != 0)
+    if (SSL_CTX_set_tlsext_use_srtp(native_context, k_dtls_srtp_profiles) != 0)
     {
         return std::unexpected(make_openssl_error("dtls set srtp profiles failed"));
     }

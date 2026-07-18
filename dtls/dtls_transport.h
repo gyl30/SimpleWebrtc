@@ -90,8 +90,6 @@ class dtls_transport
     [[nodiscard]]
     std::optional<dtls_peer_identity> get_peer_identity(std::string_view remote_endpoint) const;
 
-    [[nodiscard]] bool is_handshake_done(std::string_view remote_endpoint) const;
-
    private:
     struct impl;
 

@@ -24,6 +24,8 @@ inline constexpr std::size_t k_srtp_master_key_and_salt_size = k_srtp_aes128_mas
 
 using srtp_master_key_and_salt = std::array<uint8_t, k_srtp_master_key_and_salt_size>;
 
+std::string srtp_error_to_string(srtp_err_status_t status);
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 srtp_err_status_t init_srtp_once()
@@ -336,6 +338,8 @@ std::string srtp_direction_to_string(srtp_direction direction)
     return "unknown";
 }
 
+namespace
+{
 std::string srtp_error_to_string(srtp_err_status_t status)
 {
     switch (status)
@@ -428,6 +432,8 @@ std::string srtp_error_to_string(srtp_err_status_t status)
             return "unknown";
     }
 }
+}    // namespace
+
 bool is_srtp_replay_error(std::string_view error)
 {
     return error.find("replay_fail") != std::string_view::npos || error.find("replay_old") != std::string_view::npos;

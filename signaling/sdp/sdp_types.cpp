@@ -95,6 +95,8 @@ std::string_view to_string(media_direction direction)
     return "";
 }
 
+namespace
+{
 std::optional<media_direction> parse_media_direction(std::string_view value)
 {
     if (value == "sendrecv")
@@ -119,6 +121,7 @@ std::optional<media_direction> parse_media_direction(std::string_view value)
 
     return std::nullopt;
 }
+}    // namespace
 
 std::string_view to_string(dtls_connection_role role)
 {

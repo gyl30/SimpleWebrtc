@@ -188,8 +188,6 @@ srtp_transport_result make_protected_result(srtp_packet_kind kind, std::vector<u
 
 struct srtp_peer_state
 {
-    bool sessions_ready = false;
-
     std::string session_id;
     std::string stream_id;
     std::string local_ice_ufrag;
@@ -473,7 +471,7 @@ struct srtp_transport::impl
 
         if (!identity.has_value())
         {
-            if (peer.sessions_ready)
+            if (peer.inbound_session.has_value() || peer.outbound_session.has_value())
             {
                 WEBRTC_LOG_INFO("srtp sessions reset because dtls identity is missing remote={} old_session={} old_generation={}",
                                 remote_endpoint,
@@ -486,7 +484,7 @@ struct srtp_transport::impl
             return false;
         }
 
-        if (peer.sessions_ready && peer_identity_matches(peer, *identity))
+        if (peer.inbound_session.has_value() && peer.outbound_session.has_value() && peer_identity_matches(peer, *identity))
         {
             return true;
         }
@@ -517,12 +515,7 @@ struct srtp_transport::impl
 
         if (!material.has_value())
         {
-            if (!dtls_transport_->is_handshake_done(remote_endpoint))
-            {
-                return false;
-            }
-
-            return make_error("dtls handshake is complete but srtp keying material is empty");
+            return false;
         }
 
         auto material_identity = dtls_transport_->get_peer_identity(remote_endpoint);
@@ -558,8 +551,6 @@ struct srtp_transport::impl
         peer.inbound_session.emplace(std::move(*inbound));
 
         peer.outbound_session.emplace(std::move(*outbound));
-
-        peer.sessions_ready = true;
 
         WEBRTC_LOG_INFO(
             "srtp sessions created remote={} session={} stream={} generation={} profile={} local_ufrag={} remote_ufrag={} inbound={} outbound={}",

@@ -218,7 +218,6 @@ std::expected<sdp::fingerprint_info, std::string> make_certificate_fingerprint(X
 
     return fingerprint;
 }
-}    // namespace
 
 dtls_certificate_result generate_dtls_certificate()
 {
@@ -253,6 +252,7 @@ dtls_certificate_result generate_dtls_certificate()
 
     return result;
 }
+}    // namespace
 
 dtls_certificate_result get_process_dtls_certificate()
 {

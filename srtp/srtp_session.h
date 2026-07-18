@@ -74,8 +74,6 @@ using srtp_session_result = std::expected<srtp_session, std::string>;
 
 [[nodiscard]] std::string srtp_direction_to_string(srtp_direction direction);
 
-[[nodiscard]] std::string srtp_error_to_string(srtp_err_status_t status);
-
 [[nodiscard]] bool is_srtp_replay_error(std::string_view error);
 }    // namespace webrtc
 

@@ -83,22 +83,7 @@ struct webrtc_offer_summary
 using webrtc_offer_summary_result = std::expected<webrtc_offer_summary, std::string>;
 
 [[nodiscard]]
-bool media_has_rtp_header_extension_uri(const media_summary& media, std::string_view uri);
-
-[[nodiscard]]
 bool media_has_rtx_codec(const media_summary& media);
-
-[[nodiscard]]
-bool media_has_rid(const media_summary& media, std::string_view rid);
-
-[[nodiscard]]
-std::expected<void, std::string> validate_media_summary_identity(const media_summary& media);
-
-[[nodiscard]]
-bool offer_ice_credentials_are_complete(const webrtc_offer_summary& offer);
-
-[[nodiscard]]
-bool offer_ice_credentials_equal(const webrtc_offer_summary& left, const webrtc_offer_summary& right);
 
 [[nodiscard]]
 bool offer_has_ice_restart(const webrtc_offer_summary& previous_offer, const webrtc_offer_summary& next_offer);

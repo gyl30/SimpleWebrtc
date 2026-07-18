@@ -25,7 +25,6 @@
 #include "signaling/webrtc_answer_factory.h"
 #include "util/file.h"
 #include "util/random.h"
-#include "util/reflect.h"
 #include "util/scoped_exit.h"
 #include "dtls/dtls_certificate.h"
 #include "dtls/dtls_context.h"
@@ -33,14 +32,6 @@
 static std::string get_log_dir(const std::string& app_dir) { return app_dir + "/log"; }
 
 static std::string get_log_fileaname(const std::string& app) { return app + ".log"; }
-
-struct version
-{
-    std::string name;
-    std::string version;
-};
-
-REFLECT_STRUCT(version, (name)(version));    // NOLINT
 
 static std::string get_env_or_default(const char* name, const std::string& default_value)
 {
@@ -396,11 +387,7 @@ int main(int argc, char* argv[])
                     answer_factory_config.local_fingerprint.algorithm,
                     answer_factory_config.local_fingerprint.value);
 
-    webrtc::dtls_context_config per_session_dtls_context_config;
-
-    per_session_dtls_context_config.certificate = *dtls_certificate;
-
-    auto per_session_dtls_context = webrtc::make_dtls_context(per_session_dtls_context_config);
+    auto per_session_dtls_context = webrtc::make_dtls_context(*dtls_certificate);
 
     if (!per_session_dtls_context)
     {
@@ -467,13 +454,7 @@ int main(int argc, char* argv[])
 
     http_router->set_admin_token(get_env_or_default("WEBRTC_ADMIN_TOKEN", ""));
 
-    version v;
-
-    static const std::string version_str = R"({"name": "SimpleWebrtc", "version": "0.1"})";
-
-    webrtc::deserialize_struct(v, version_str);
-
-    WEBRTC_LOG_INFO("Webrtc     version {} {}", v.name, v.version);
+    WEBRTC_LOG_INFO("Webrtc     version {} {}", "SimpleWebrtc", "0.1");
 
     webrtc::tcp_handler tcp;
 

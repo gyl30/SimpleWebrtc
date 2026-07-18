@@ -25,10 +25,6 @@ class udp_port_allocator
     void release(uint16_t port);
 
    private:
-    [[nodiscard]]
-    bool owns(uint16_t port) const;
-
-   private:
     udp_port_range range_;
 
     uint16_t next_port_ = 0;

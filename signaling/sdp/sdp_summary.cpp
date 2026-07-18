@@ -16,6 +16,10 @@ namespace webrtc::sdp
 {
 namespace
 {
+bool media_has_rtp_header_extension_uri(const media_summary& media, std::string_view uri);
+bool media_has_rid(const media_summary& media, std::string_view rid);
+std::expected<void, std::string> validate_media_summary_identity(const media_summary& media);
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 std::unexpected<std::string> make_media_restart_error(const media_summary& media, std::string_view message)
 {
@@ -1341,12 +1345,15 @@ webrtc_offer_summary_result extract_webrtc_offer_summary(const session_descripti
     return summary;
 }
 
+namespace
+{
 bool offer_ice_credentials_are_complete(const webrtc_offer_summary& offer) { return !offer.ice_ufrag.empty() && !offer.ice_pwd.empty(); }
 
 bool offer_ice_credentials_equal(const webrtc_offer_summary& left, const webrtc_offer_summary& right)
 {
     return left.ice_ufrag == right.ice_ufrag && left.ice_pwd == right.ice_pwd;
 }
+}    // namespace
 
 bool offer_has_ice_restart(const webrtc_offer_summary& previous_offer, const webrtc_offer_summary& next_offer)
 {
@@ -1428,6 +1435,8 @@ std::string offer_ice_credentials_to_string(const webrtc_offer_summary& offer)
     return result;
 }
 
+namespace
+{
 bool media_has_rtp_header_extension_uri(const media_summary& media, std::string_view uri)
 {
     if (uri.empty())
@@ -1445,6 +1454,7 @@ bool media_has_rtp_header_extension_uri(const media_summary& media, std::string_
 
     return false;
 }
+}    // namespace
 
 bool media_has_rtx_codec(const media_summary& media)
 {
@@ -1458,6 +1468,8 @@ bool media_has_rtx_codec(const media_summary& media)
 
     return false;
 }
+namespace
+{
 bool media_has_rid(const media_summary& media, std::string_view rid)
 {
     if (rid.empty())
@@ -1560,5 +1572,6 @@ std::expected<void, std::string> validate_media_summary_identity(const media_sum
 
     return {};
 }
+}    // namespace
 
 }    // namespace webrtc::sdp

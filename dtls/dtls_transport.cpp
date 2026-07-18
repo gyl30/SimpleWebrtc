@@ -565,47 +565,37 @@ std::expected<void, std::string> run_dtls_handshake(SSL* ssl,
         return make_error("dtls ssl is null");
     }
 
-    for (int loop_count = 0; loop_count < 8; ++loop_count)
+    if (SSL_is_init_finished(ssl) == 1)
     {
-        if (SSL_is_init_finished(ssl) == 1)
-        {
-            return {};
-        }
-
-        ERR_clear_error();
-
-        const int result = SSL_do_handshake(ssl);
-
-        const int ssl_error = result == 1 ? SSL_ERROR_NONE : SSL_get_error(ssl, result);
-
-        std::string fatal_error;
-
-        if (result != 1 && ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE)
-        {
-            fatal_error = make_openssl_error(ssl_error, "dtls handshake failed");
-        }
-
-        auto drain_result = drain_ssl_write_bio(ssl, ip_mtu, udp_payload_mtu, packets);
-
-        if (!drain_result)
-        {
-            return std::unexpected(drain_result.error());
-        }
-
-        if (result == 1)
-        {
-            return {};
-        }
-
-        if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
-        {
-            return {};
-        }
-
-        return std::unexpected(std::move(fatal_error));
+        return {};
     }
 
-    return {};
+    ERR_clear_error();
+
+    const int result = SSL_do_handshake(ssl);
+
+    const int ssl_error = result == 1 ? SSL_ERROR_NONE : SSL_get_error(ssl, result);
+
+    std::string fatal_error;
+
+    if (result != 1 && ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE)
+    {
+        fatal_error = make_openssl_error(ssl_error, "dtls handshake failed");
+    }
+
+    auto drain_result = drain_ssl_write_bio(ssl, ip_mtu, udp_payload_mtu, packets);
+
+    if (!drain_result)
+    {
+        return std::unexpected(drain_result.error());
+    }
+
+    if (result == 1 || ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
+    {
+        return {};
+    }
+
+    return std::unexpected(std::move(fatal_error));
 }
 
 std::expected<void, std::string> consume_dtls_application_data_and_alerts(
@@ -676,14 +666,9 @@ struct dtls_peer_state
 
     uint64_t packet_count = 0;
     uint64_t byte_count = 0;
-    bool handshake_started = false;
-    bool fingerprint_verified = false;
-    bool handshake_done = false;
-    bool handshake_failed = false;
 
     dtls_network_family network_family = dtls_network_family::unknown;
 
-    std::uint16_t ip_mtu = 0;
     std::uint16_t udp_payload_mtu = 0;
 
     steady_clock::time_point handshake_started_at;
@@ -813,13 +798,8 @@ struct dtls_transport::impl
             return packets;
         }
 
-        if (peer->handshake_failed)
+        if (!peer->handshake_error.empty())
         {
-            if (peer->handshake_error.empty())
-            {
-                return make_error("dtls peer handshake previously failed");
-            }
-
             return std::unexpected(peer->handshake_error);
         }
 
@@ -854,7 +834,6 @@ struct dtls_transport::impl
             }
 
             peer->network_family = network_family;
-            peer->ip_mtu = config_.ip_mtu;
             peer->udp_payload_mtu = *udp_payload_mtu_result;
 
             auto ssl_result = make_ssl(context_, peer->udp_payload_mtu);
@@ -870,8 +849,6 @@ struct dtls_transport::impl
 
             peer->ssl = std::move(*ssl_result);
 
-            peer->handshake_started = true;
-
             peer->handshake_started_at = steady_clock::now();
 
             WEBRTC_LOG_INFO("dtls handshake started remote={} stream={} session={} network_family={} ip_mtu={} udp_payload_mtu={}",
@@ -879,7 +856,7 @@ struct dtls_transport::impl
                             peer->identity.stream_id,
                             peer->identity.session_id,
                             dtls_network_family_to_string(peer->network_family),
-                            peer->ip_mtu,
+                            config_.ip_mtu,
                             peer->udp_payload_mtu);
         }
 
@@ -896,7 +873,7 @@ struct dtls_transport::impl
 
         log_packet_locked(*peer, data, remote_endpoint, *header);
 
-        auto handshake_result = run_dtls_handshake(peer->ssl.get(), peer->ip_mtu, peer->udp_payload_mtu, packets);
+        auto handshake_result = run_dtls_handshake(peer->ssl.get(), config_.ip_mtu, peer->udp_payload_mtu, packets);
 
         if (!handshake_result)
         {
@@ -914,12 +891,12 @@ struct dtls_transport::impl
             return std::unexpected(complete_result.error());
         }
 
-        if (peer->handshake_done)
+        if (peer->keying_material.has_value())
         {
             bool received_close_notify = false;
 
             auto consume_result =
-                consume_dtls_application_data_and_alerts(peer->ssl.get(), peer->ip_mtu, peer->udp_payload_mtu, packets, received_close_notify);
+                consume_dtls_application_data_and_alerts(peer->ssl.get(), config_.ip_mtu, peer->udp_payload_mtu, packets, received_close_notify);
 
             if (!consume_result)
             {
@@ -955,16 +932,6 @@ struct dtls_transport::impl
             return std::nullopt;
         }
 
-        if (!validate_dtls_peer_identity(peer->identity))
-        {
-            return std::nullopt;
-        }
-
-        if (!peer->handshake_done || !peer->fingerprint_verified || peer->handshake_failed)
-        {
-            return std::nullopt;
-        }
-
         return peer->keying_material;
     }
     std::optional<dtls_peer_identity> get_peer_identity(std::string_view remote_endpoint) const
@@ -981,24 +948,6 @@ struct dtls_transport::impl
         return peer->identity;
     }
 
-    bool is_handshake_done(std::string_view remote_endpoint) const
-    {
-        std::lock_guard lock(mutex_);
-
-        const auto* peer = find_peer_locked_const(remote_endpoint);
-
-        if (peer == nullptr)
-        {
-            return false;
-        }
-
-        if (!validate_dtls_peer_identity(peer->identity))
-        {
-            return false;
-        }
-
-        return peer->handshake_done && peer->fingerprint_verified && !peer->handshake_failed;
-    }
     dtls_peer_state* find_peer_locked(std::string_view remote_endpoint)
     {
         const auto iterator = peers_by_endpoint_.find(std::string(remote_endpoint));
@@ -1025,9 +974,10 @@ struct dtls_transport::impl
 
     void mark_handshake_failed_locked(dtls_peer_state& peer, std::string error, std::string_view remote_endpoint)
     {
-        peer.handshake_failed = true;
-        peer.handshake_done = false;
-        peer.fingerprint_verified = false;
+        if (error.empty())
+        {
+            error = "dtls peer handshake previously failed";
+        }
 
         peer.handshake_error = std::move(error);
 
@@ -1045,11 +995,6 @@ struct dtls_transport::impl
 
     std::expected<void, std::string> verify_remote_certificate_locked(dtls_peer_state& peer, std::string_view remote_endpoint)
     {
-        if (peer.fingerprint_verified)
-        {
-            return {};
-        }
-
         auto identity_result = validate_dtls_peer_identity(peer.identity);
 
         if (!identity_result)
@@ -1081,8 +1026,6 @@ struct dtls_transport::impl
             return std::unexpected(fingerprint.error());
         }
 
-        peer.fingerprint_verified = true;
-
         WEBRTC_LOG_INFO("dtls remote certificate fingerprint verified remote={} role={} stream={} session={} algorithm={} fingerprint={}",
                         remote_endpoint,
                         dtls_peer_role_to_string(peer.identity.role),
@@ -1101,7 +1044,7 @@ struct dtls_transport::impl
             return {};
         }
 
-        if (peer.handshake_done)
+        if (peer.keying_material.has_value())
         {
             return {};
         }
@@ -1135,14 +1078,11 @@ struct dtls_transport::impl
 
         peer.keying_material = std::move(*material);
 
-        peer.handshake_done = true;
-
-        const auto elapsed =
-            peer.handshake_started ? std::chrono::duration_cast<milliseconds>(steady_clock::now() - peer.handshake_started_at) : milliseconds::zero();
+        const auto elapsed = std::chrono::duration_cast<milliseconds>(steady_clock::now() - peer.handshake_started_at);
 
         WEBRTC_LOG_INFO(
             "dtls handshake complete remote={} role={} stream={} session={} profile={} key_size={} salt_size={} packets={} bytes={} "
-            "duration_ms={} fingerprint_verified={}",
+            "duration_ms={}",
             remote_endpoint,
             dtls_peer_role_to_string(peer.identity.role),
             peer.identity.stream_id,
@@ -1152,8 +1092,7 @@ struct dtls_transport::impl
             peer.keying_material->client_write_master_salt.size(),
             peer.packet_count,
             peer.byte_count,
-            elapsed.count(),
-            peer.fingerprint_verified ? 1 : 0);
+            elapsed.count());
 
         return {};
     }
@@ -1240,5 +1179,4 @@ std::optional<dtls_peer_identity> dtls_transport::get_peer_identity(std::string_
     return impl_->get_peer_identity(remote_endpoint);
 }
 
-bool dtls_transport::is_handshake_done(std::string_view remote_endpoint) const { return impl_->is_handshake_done(remote_endpoint); }
 }    // namespace webrtc

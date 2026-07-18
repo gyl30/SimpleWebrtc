@@ -13,6 +13,8 @@ std::unexpected<std::string> make_error(std::string_view message)
     return std::unexpected(std::string(message));
 }
 
+bool is_line_break(char ch) { return ch == '\n' || ch == '\r'; }
+
 std::string escape_char_for_error(char ch)
 {
     switch (ch)
@@ -163,11 +165,6 @@ std::string sdp_lexer::make_syntax_error(std::size_t position) const
     message += "\"";
 
     return message;
-}
-
-bool is_line_break(char ch)
-{
-    return ch == '\n' || ch == '\r';
 }
 
 bool is_whitespace(char ch)

@@ -68,25 +68,7 @@ std::optional<uint16_t> udp_port_allocator::acquire()
     return std::nullopt;
 }
 
-void udp_port_allocator::release(uint16_t port)
-{
-    if (!owns(port))
-    {
-        return;
-    }
-
-    used_ports_.erase(port);
-}
-
-bool udp_port_allocator::owns(uint16_t port) const
-{
-    if (!udp_port_range_is_valid(range_))
-    {
-        return false;
-    }
-
-    return port >= range_.min_port && port <= range_.max_port;
-}
+void udp_port_allocator::release(uint16_t port) { used_ports_.erase(port); }
 
 udp_port_reservation::udp_port_reservation(std::shared_ptr<udp_port_allocator> allocator, uint16_t port)
     : allocator_(std::move(allocator)), port_(port)
