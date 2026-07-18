@@ -108,13 +108,6 @@ uint64_t subscriber_session::created_at_milliseconds() const { return created_at
 
 uint64_t subscriber_session::updated_at_milliseconds() const { return updated_at_milliseconds_; }
 
-void subscriber_session::set_state(session_state state)
-{
-    state_ = state;
-
-    updated_at_milliseconds_ = now_milliseconds();
-}
-
 void subscriber_session::set_local_udp_port_reservation(udp_port_reservation_ptr local_udp_port)
 {
     local_udp_port_ = std::move(local_udp_port);

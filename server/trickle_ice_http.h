@@ -326,9 +326,6 @@ std::string make_session_resource_etag(const session_type& session)
      *   - session.updated_at_milliseconds()
      *   - ICE selected pair / DTLS / SRTP / media runtime state
      *
-     * Otherwise a client can receive an ETag from POST /whip or POST /whep and
-     * immediately fail a valid If-Match request because the session moved from
-     * sdp_answered to ice_connected.
      */
     hash = trickle_ice_http_detail::fnv1a_append_string(hash, trickle_ice_http_detail::string_like_view(session.session_id()));
 

@@ -21,7 +21,6 @@ namespace webrtc
 {
 enum class stream_registry_error : uint8_t
 {
-    none = 0,
     stream_already_has_publisher,
     publisher_not_found,
     publisher_session_not_found,
@@ -32,7 +31,6 @@ enum class stream_registry_error : uint8_t
 
 enum class stream_session_kind : uint8_t
 {
-    unknown,
     publisher,
     subscriber,
 };
@@ -51,7 +49,7 @@ struct stream_session_lifecycle_snapshot
     stream_session_kind kind = stream_session_kind::publisher;
     std::string stream_id;
     std::string session_id;
-    session_state state = session_state::created;
+    session_state state = session_state::sdp_received;
     uint64_t created_at_milliseconds = 0;
     uint64_t updated_at_milliseconds = 0;
 };

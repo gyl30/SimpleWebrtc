@@ -27,9 +27,6 @@ std::string_view stream_registry_error_to_string(stream_registry_error error)
 {
     switch (error)
     {
-        case stream_registry_error::none:
-            return "none";
-
         case stream_registry_error::stream_already_has_publisher:
             return "stream_already_has_publisher";
 
@@ -55,9 +52,6 @@ std::string_view stream_session_kind_to_string(stream_session_kind kind)
 {
     switch (kind)
     {
-        case stream_session_kind::unknown:
-            return "unknown";
-
         case stream_session_kind::publisher:
             return "publisher";
 
@@ -121,8 +115,6 @@ publisher_session_result stream_registry::replace_publisher_session(std::string 
     {
         return std::unexpected(stream_registry_error::publisher_republish_stream_mismatch);
     }
-
-    previous_session->set_state(session_state::closed);
 
     remember_removed_session_locked(stream_session_kind::publisher, previous_session->stream_id(), previous_session->session_id());
 
@@ -192,8 +184,6 @@ subscriber_session_result stream_registry::replace_subscriber_session(std::strin
     {
         return std::unexpected(stream_registry_error::subscriber_reconnect_stream_mismatch);
     }
-
-    previous_session->set_state(session_state::closed);
 
     remember_removed_session_locked(stream_session_kind::subscriber, previous_session->stream_id(), previous_session->session_id());
 
@@ -386,8 +376,6 @@ remove_session_result stream_registry::remove_publisher_session(std::string_view
 
     const std::string stream_id = publisher->stream_id();
 
-    publisher->set_state(session_state::closed);
-
     remember_removed_session_locked(stream_session_kind::publisher, stream_id, publisher->session_id());
 
     /*
@@ -420,8 +408,6 @@ remove_session_result stream_registry::remove_subscriber_session(std::string_vie
 
     const std::string stream_id = subscriber->stream_id();
     const std::string subscriber_session_id = subscriber->session_id();
-
-    subscriber->set_state(session_state::closed);
 
     remember_removed_session_locked(stream_session_kind::subscriber, stream_id, subscriber_session_id);
 

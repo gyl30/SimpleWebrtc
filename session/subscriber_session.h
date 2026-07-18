@@ -69,8 +69,6 @@ class subscriber_session
     [[nodiscard]] uint64_t updated_at_milliseconds() const;
 
    public:
-    void set_state(session_state state);
-
     void set_local_udp_port_reservation(udp_port_reservation_ptr local_udp_port);
 
     void set_transport(std::shared_ptr<whep_session_transport> transport);
@@ -105,7 +103,7 @@ class subscriber_session
     std::vector<sdp::sdp_answer_media_source> outbound_media_sources_;
     bool remote_ice_completed_ = false;
 
-    session_state state_ = session_state::created;
+    session_state state_ = session_state::sdp_received;
 
     uint64_t created_at_milliseconds_ = 0;
     uint64_t updated_at_milliseconds_ = 0;
