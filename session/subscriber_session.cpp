@@ -21,39 +21,6 @@ uint64_t now_milliseconds() { return static_cast<uint64_t>(timestamp::now().mill
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
-bool remote_ice_candidates_equal(const remote_ice_candidate& left, const remote_ice_candidate& right)
-{
-    return left.candidate == right.candidate && left.sdp_mid == right.sdp_mid && left.sdp_mline_index == right.sdp_mline_index &&
-           left.end_of_candidates == right.end_of_candidates;
-}
-
-bool contains_remote_ice_candidate(const std::vector<remote_ice_candidate>& candidates, const remote_ice_candidate& candidate)
-{
-    for (const auto& current : candidates)
-    {
-        if (remote_ice_candidates_equal(current, candidate))
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-std::size_t count_remote_ice_candidates(const std::vector<remote_ice_candidate>& candidates)
-{
-    std::size_t count = 0;
-
-    for (const auto& candidate : candidates)
-    {
-        if (!candidate.end_of_candidates)
-        {
-            count += 1;
-        }
-    }
-
-    return count;
-}
 }    // namespace
 
 subscriber_session::subscriber_session(std::string session_id,
@@ -163,10 +130,6 @@ void subscriber_session::apply_remote_ice_restart_offer(sdp::webrtc_offer_summar
 
 std::expected<void, std::string> subscriber_session::add_remote_ice_candidate(remote_ice_candidate candidate)
 {
-    if (contains_remote_ice_candidate(remote_ice_candidates_, candidate))
-    {
-        return {};
-    }
     if (!candidate.end_of_candidates)
     {
         WEBRTC_LOG_INFO("subscriber remote ice candidate session={} stream={} mid={} mline={} address={} port={} hostname={} mdns={}",
@@ -181,11 +144,6 @@ std::expected<void, std::string> subscriber_session::add_remote_ice_candidate(re
     }
     if (candidate.end_of_candidates)
     {
-        if (remote_ice_completed_)
-        {
-            return {};
-        }
-
         remote_ice_completed_ = true;
 
         remote_ice_candidates_.push_back(std::move(candidate));
@@ -200,9 +158,7 @@ std::expected<void, std::string> subscriber_session::add_remote_ice_candidate(re
         return make_error("remote ice candidates already completed");
     }
 
-    const std::size_t candidate_count = count_remote_ice_candidates(remote_ice_candidates_);
-
-    if (candidate_count >= k_max_remote_ice_candidates)
+    if (remote_ice_candidates_.size() >= k_max_remote_ice_candidates)
     {
         return make_error("too many remote ice candidates");
     }

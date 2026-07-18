@@ -27,64 +27,41 @@ struct trickle_ice_candidate_batch_request
 
 REFLECT_STRUCT(webrtc::trickle_ice_candidate_batch_request, (candidates));    // NOLINT
 
-inline std::expected<trickle_ice_candidate_request, std::string> parse_trickle_ice_candidate_request(std::string_view body)
+inline std::expected<std::vector<remote_ice_candidate>, std::string> parse_trickle_ice_candidates(std::string_view body)
 {
     if (body.empty())
     {
         return std::unexpected(std::string("empty trickle ice request"));
     }
 
-    trickle_ice_candidate_request request;
-
-    if (!deserialize_struct(request, body.data(), body.size()))
-    {
-        return std::unexpected(std::string("invalid trickle ice json"));
-    }
-
-    return request;
-}
-inline std::expected<std::vector<trickle_ice_candidate_request>, std::string> parse_trickle_ice_candidate_requests(std::string_view body)
-{
-    if (body.empty())
-    {
-        return std::unexpected(std::string("empty trickle ice request"));
-    }
-
+    std::vector<trickle_ice_candidate_request> requests;
     trickle_ice_candidate_batch_request batch_request;
 
     if (deserialize_struct(batch_request, body.data(), body.size()))
     {
-        return std::move(batch_request.candidates);
+        requests = std::move(batch_request.candidates);
     }
-
-    auto single_request = parse_trickle_ice_candidate_request(body);
-
-    if (!single_request)
+    else
     {
-        return std::unexpected(single_request.error());
+        trickle_ice_candidate_request request;
+
+        if (!deserialize_struct(request, body.data(), body.size()))
+        {
+            return std::unexpected(std::string("invalid trickle ice json"));
+        }
+
+        requests.push_back(std::move(request));
     }
 
-    std::vector<trickle_ice_candidate_request> requests;
-
-    requests.push_back(std::move(*single_request));
-
-    return requests;
-}
-
-inline remote_ice_candidate_result make_remote_ice_candidate_from_trickle_request(const trickle_ice_candidate_request& request)
-{
-    return make_remote_ice_candidate(request.candidate, request.sdpMid, request.sdpMLineIndex);
-}
-inline std::expected<std::vector<remote_ice_candidate>, std::string> make_remote_ice_candidates_from_trickle_requests(
-    const std::vector<trickle_ice_candidate_request>& requests)
-{
     std::vector<remote_ice_candidate> candidates;
 
     candidates.reserve(requests.size());
 
     for (std::size_t index = 0; index < requests.size(); ++index)
     {
-        auto candidate = make_remote_ice_candidate_from_trickle_request(requests[index]);
+        const auto& request = requests[index];
+
+        auto candidate = make_remote_ice_candidate(request.candidate, request.sdpMid, request.sdpMLineIndex);
 
         if (!candidate)
         {
@@ -104,6 +81,7 @@ inline std::expected<std::vector<remote_ice_candidate>, std::string> make_remote
 
     return candidates;
 }
+
 }    // namespace webrtc
 
 #endif
