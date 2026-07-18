@@ -238,20 +238,6 @@ log_init_result init_log(const std::string& filename)
     return {};
 }
 
-void set_level(const std::string& level)
-{
-    auto parsed_level = parse_log_level(level);
-
-    if (!parsed_level)
-    {
-        spdlog::set_level(spdlog::level::info);
-
-        return;
-    }
-
-    spdlog::set_level(*parsed_level);
-}
-
 void shutdown_log()
 {
     const auto logger = spdlog::default_logger();

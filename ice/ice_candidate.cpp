@@ -36,7 +36,6 @@ constexpr std::string_view k_candidate_prefix = "candidate:";
 
 enum class ice_candidate_transport
 {
-    unknown,
     udp,
     tcp,
 };

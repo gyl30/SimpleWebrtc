@@ -35,7 +35,6 @@ using srtp_packet_result = std::expected<std::size_t, std::string>;
 class srtp_session
 {
    public:
-    srtp_session() = default;
     ~srtp_session();
 
     srtp_session(const srtp_session&) = delete;

@@ -28,12 +28,6 @@ class tcp_server : public std::enable_shared_from_this<tcp_server>
     {
         WEBRTC_LOG_INFO("{} server {}:{} create", name_, host_, port_);
     }
-    tcp_server(std::string host, uint16_t port, std::string name, boost::asio::io_context& ex, tcp_handler h)
-        : host_(std::move(host)), port_(port), name_(std::move(name)), handler_(std::move(h)), io_(ex)
-    {
-        WEBRTC_LOG_INFO("{} server {}:{} create", name_, host, port_);
-    }
-
     ~tcp_server() { WEBRTC_LOG_INFO("{} server :{} destroy", name_, port_); }
 
    public:

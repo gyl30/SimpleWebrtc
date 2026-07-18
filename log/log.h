@@ -14,8 +14,6 @@ using log_init_result = std::expected<void, std::string>;
 
 [[nodiscard]] log_init_result init_log(const std::string& filename);
 
-void set_level(const std::string& level);
-
 void shutdown_log();
 }    // namespace webrtc
 
