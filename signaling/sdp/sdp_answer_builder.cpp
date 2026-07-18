@@ -274,256 +274,7 @@ std::expected<std::string, std::string> make_bundle_group_value(const session_de
 
     return value;
 }
-std::vector<std::string> split_space_separated_tokens(std::string_view value)
-{
-    std::vector<std::string> tokens;
-
-    std::size_t position = 0;
-
-    while (position < value.size())
-    {
-        position = value.find_first_not_of(" \t", position);
-
-        if (position == std::string_view::npos)
-        {
-            break;
-        }
-
-        const std::size_t end = value.find_first_of(" \t", position);
-
-        if (end == std::string_view::npos)
-        {
-            tokens.emplace_back(value.substr(position));
-
-            break;
-        }
-
-        tokens.emplace_back(value.substr(position, end - position));
-
-        position = end + 1;
-    }
-
-    return tokens;
-}
-
-bool string_vector_contains(const std::vector<std::string>& values, std::string_view value)
-{
-    for (const auto& current : values)
-    {
-        if (current == value)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 bool is_answer_media_rejected(const media_description& media) { return media.media_name.port == 0; }
-
-std::expected<std::vector<std::string>, std::string> collect_answer_bundle_mids(const session_description& answer)
-{
-    const auto group_attributes = answer.find_attributes(k_attribute_group);
-
-    std::optional<std::vector<std::string>> bundle_mids;
-
-    for (const auto* attribute : group_attributes)
-    {
-        if (attribute == nullptr)
-        {
-            continue;
-        }
-
-        const std::vector<std::string> tokens = split_space_separated_tokens(attribute->value);
-
-        if (tokens.empty())
-        {
-            return make_error("answer group attribute is empty");
-        }
-
-        if (tokens.front() != "BUNDLE")
-        {
-            continue;
-        }
-
-        if (bundle_mids.has_value())
-        {
-            return make_error("answer has multiple bundle groups");
-        }
-
-        if (tokens.size() == 1)
-        {
-            return make_error("answer bundle group has no mids");
-        }
-
-        std::vector<std::string> current_bundle_mids;
-
-        current_bundle_mids.reserve(tokens.size() - 1);
-
-        for (std::size_t index = 1; index < tokens.size(); ++index)
-        {
-            const std::string& mid = tokens[index];
-
-            if (mid.empty())
-            {
-                return make_error("answer bundle mid is empty");
-            }
-
-            if (string_vector_contains(current_bundle_mids, mid))
-            {
-                std::string message = "answer bundle mid duplicated mid=";
-
-                message.append(mid);
-
-                return std::unexpected(std::move(message));
-            }
-
-            current_bundle_mids.push_back(mid);
-        }
-
-        bundle_mids = std::move(current_bundle_mids);
-    }
-
-    if (!bundle_mids.has_value())
-    {
-        return make_error("answer bundle group is missing");
-    }
-
-    return *bundle_mids;
-}
-struct answer_media_mid_state
-{
-    std::vector<std::string> all_mids;
-
-    std::vector<std::string> accepted_mids;
-
-    std::vector<std::string> rejected_mids;
-};
-
-std::expected<answer_media_mid_state, std::string> collect_answer_media_mid_state(const session_description& answer)
-{
-    answer_media_mid_state state;
-
-    if (answer.media_descriptions.empty())
-    {
-        return make_error("answer has no media descriptions");
-    }
-
-    for (const auto& media : answer.media_descriptions)
-    {
-        const std::optional<std::string> mid = find_answer_media_mid(media);
-
-        if (!mid.has_value())
-        {
-            return make_error("answer media is missing mid");
-        }
-
-        if (string_vector_contains(state.all_mids, *mid))
-        {
-            std::string message = "answer media mid duplicated mid=";
-
-            message.append(*mid);
-
-            return std::unexpected(std::move(message));
-        }
-
-        state.all_mids.push_back(*mid);
-
-        if (is_answer_media_rejected(media))
-        {
-            state.rejected_mids.push_back(*mid);
-        }
-        else
-        {
-            state.accepted_mids.push_back(*mid);
-        }
-    }
-
-    if (state.accepted_mids.empty())
-    {
-        return make_error("answer has no accepted media mids");
-    }
-
-    return state;
-}
-
-std::expected<void, std::string> validate_rejected_mids_are_not_bundled(const std::vector<std::string>& rejected_mids,
-                                                                        const std::vector<std::string>& bundle_mids)
-{
-    for (const auto& rejected_mid : rejected_mids)
-    {
-        if (string_vector_contains(bundle_mids, rejected_mid))
-        {
-            std::string message = "answer bundle contains rejected mid=";
-
-            message.append(rejected_mid);
-
-            return std::unexpected(std::move(message));
-        }
-    }
-
-    return {};
-}
-
-std::expected<void, std::string> validate_answer_bundle_group(const session_description& answer)
-{
-    auto media_mid_state = collect_answer_media_mid_state(answer);
-
-    if (!media_mid_state)
-    {
-        return std::unexpected(media_mid_state.error());
-    }
-
-    auto bundle_mids = collect_answer_bundle_mids(answer);
-
-    if (!bundle_mids)
-    {
-        return std::unexpected(bundle_mids.error());
-    }
-
-    auto rejected_bundle_result = validate_rejected_mids_are_not_bundled(media_mid_state->rejected_mids, *bundle_mids);
-
-    if (!rejected_bundle_result)
-    {
-        return std::unexpected(rejected_bundle_result.error());
-    }
-
-    if (media_mid_state->accepted_mids.size() != bundle_mids->size())
-    {
-        return make_error("answer bundle mids and accepted media mids size mismatch");
-    }
-
-    for (std::size_t index = 0; index < media_mid_state->accepted_mids.size(); ++index)
-    {
-        const std::string& accepted_mid = media_mid_state->accepted_mids[index];
-
-        const std::string& bundle_mid = (*bundle_mids)[index];
-
-        if (!string_vector_contains(media_mid_state->accepted_mids, bundle_mid))
-        {
-            std::string message = "answer bundle mid is not accepted mid=";
-
-            message.append(bundle_mid);
-
-            return std::unexpected(std::move(message));
-        }
-
-        if (accepted_mid != bundle_mid)
-        {
-            std::string message = "answer bundle mid order mismatch expected=";
-
-            message.append(accepted_mid);
-
-            message.append(" actual=");
-
-            message.append(bundle_mid);
-
-            return std::unexpected(std::move(message));
-        }
-    }
-
-    return {};
-}
 
 std::expected<std::string, std::string> format_direction(media_direction direction)
 {
@@ -730,12 +481,6 @@ const media_summary* find_matching_publisher_media(const media_summary& subscrib
     return find_send_capable_media_by_kind_ordinal(publisher_offer, subscriber_media.kind, *subscriber_ordinal);
 }
 
-bool answer_media_has_inactive_direction(const media_description& media)
-{
-    const auto inactive_attributes = media.find_attributes(k_attribute_inactive);
-
-    return !inactive_attributes.empty();
-}
 bool answer_media_has_send_direction(const media_description& media)
 {
     for (const auto& attribute : media.attributes)
@@ -749,107 +494,6 @@ bool answer_media_has_send_direction(const media_description& media)
     return false;
 }
 
-bool rejected_answer_media_attribute_is_allowed(std::string_view key)
-{
-    if (key == k_attribute_mid)
-    {
-        return true;
-    }
-
-    if (key == k_attribute_inactive)
-    {
-        return true;
-    }
-
-    if (key == k_attribute_rtcp_mux)
-    {
-        return true;
-    }
-
-    if (key == k_attribute_rtcp_rsize)
-    {
-        return true;
-    }
-
-    return false;
-}
-
-bool rejected_answer_media_attribute_is_forbidden(std::string_view key)
-{
-    if (key == k_attribute_rtp_map || key == k_attribute_fmtp || key == k_attribute_rtcp_feedback || key == "extmap" || key == "msid" ||
-        key == "ssrc" || key == "ssrc-group" || key == "rid" || key == "repaired-rid" || key == "simulcast" || key == "candidate" ||
-        key == "end-of-candidates" || key == k_attribute_ice_ufrag || key == k_attribute_ice_pwd || key == k_attribute_fingerprint ||
-        key == k_attribute_setup || key == k_attribute_send_recv || key == k_attribute_send_only || key == k_attribute_recv_only || key == "ptime" ||
-        key == "maxptime")
-    {
-        return true;
-    }
-
-    return false;
-}
-
-std::expected<void, std::string> validate_rejected_answer_media_attributes(const media_description& media)
-{
-    std::size_t mid_count = 0;
-    std::size_t inactive_count = 0;
-
-    for (const auto& attribute : media.attributes)
-    {
-        if (attribute.key == k_attribute_mid)
-        {
-            mid_count += 1;
-
-            if (attribute.value.empty())
-            {
-                return make_error("rejected answer media mid is empty");
-            }
-
-            continue;
-        }
-
-        if (attribute.key == k_attribute_inactive)
-        {
-            inactive_count += 1;
-
-            if (!attribute.value.empty())
-            {
-                return make_error("rejected answer media inactive attribute must be property");
-            }
-
-            continue;
-        }
-
-        if (rejected_answer_media_attribute_is_forbidden(attribute.key))
-        {
-            std::string message = "rejected answer media has forbidden attribute key=";
-
-            message.append(attribute.key);
-
-            return std::unexpected(std::move(message));
-        }
-
-        if (!rejected_answer_media_attribute_is_allowed(attribute.key))
-        {
-            std::string message = "rejected answer media has unsupported attribute key=";
-
-            message.append(attribute.key);
-
-            return std::unexpected(std::move(message));
-        }
-    }
-
-    if (mid_count != 1)
-    {
-        return make_error("rejected answer media must have exactly one mid attribute");
-    }
-
-    if (inactive_count != 1)
-    {
-        return make_error("rejected answer media must have exactly one inactive attribute");
-    }
-
-    return {};
-}
 constexpr std::string_view k_rtp_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
 
 constexpr std::string_view k_rtp_stream_id_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id";
@@ -1752,34 +1396,6 @@ std::expected<void, std::string> validate_whep_answer_media_forwarding_identity(
     return {};
 }
 
-std::expected<void, std::string> validate_answer_media_rejection_state(const media_description& media)
-{
-    const bool rejected = is_answer_media_rejected(media);
-
-    const bool inactive = answer_media_has_inactive_direction(media);
-
-    if (!rejected && inactive)
-    {
-        return make_error("answer media must not use inactive direction with nonzero port");
-    }
-
-    if (rejected && !inactive)
-    {
-        return make_error("rejected answer media must use inactive direction");
-    }
-
-    if (rejected)
-    {
-        auto attribute_result = validate_rejected_answer_media_attributes(media);
-
-        if (!attribute_result)
-        {
-            return std::unexpected(attribute_result.error());
-        }
-    }
-
-    return {};
-}
 void push_attribute(std::vector<sdp_attribute>& attributes, std::string_view key, std::string_view value)
 {
     attributes.push_back(make_attribute(std::string(key), std::string(value)));
@@ -2641,12 +2257,6 @@ std::expected<media_description, std::string> make_rejected_answer_media(const m
         push_property_attribute(answer_media.attributes, k_attribute_rtcp_rsize);
     }
 
-    auto rejection_state_result = validate_answer_media_rejection_state(answer_media);
-    if (!rejection_state_result)
-    {
-        return std::unexpected(rejection_state_result.error());
-    }
-
     return answer_media;
 }
 std::expected<media_description, std::string> make_answer_media(answer_endpoint_role role,
@@ -2802,13 +2412,6 @@ validation_result append_answer_media_descriptions(session_description& answer,
             return std::unexpected(answer_media.error());
         }
 
-        auto rejection_state_result = validate_answer_media_rejection_state(*answer_media);
-
-        if (!rejection_state_result)
-        {
-            return std::unexpected(rejection_state_result.error());
-        }
-
         if (!is_answer_media_rejected(*answer_media))
         {
             has_accepted_media = true;
@@ -2878,13 +2481,6 @@ sdp_answer_result build_answer(answer_endpoint_role role,
     }
 
     answer.attributes.insert(answer.attributes.begin(), make_attribute(std::string(k_attribute_group), *bundle_group_value));
-
-    auto bundle_group_validation = validate_answer_bundle_group(answer);
-
-    if (!bundle_group_validation)
-    {
-        return std::unexpected(bundle_group_validation.error());
-    }
 
     return answer;
 }
