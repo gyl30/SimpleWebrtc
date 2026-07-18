@@ -90,21 +90,6 @@ std::string make_candidate_field_name(std::string_view prefix, std::string_view 
     return value;
 }
 
-sdp_ice_candidate_options make_legacy_candidate_options(const sdp_answer_options& options)
-{
-    sdp_ice_candidate_options candidate;
-
-    candidate.foundation = options.local_candidate_foundation;
-    candidate.component = options.local_candidate_component;
-    candidate.transport = options.local_candidate_transport;
-    candidate.priority = options.local_candidate_priority;
-    candidate.address = options.local_candidate_address;
-    candidate.port = options.local_candidate_port;
-    candidate.type = options.local_candidate_type;
-
-    return candidate;
-}
-
 validation_result validate_candidate_options(const sdp_ice_candidate_options& candidate, std::string_view prefix)
 {
     auto foundation_result = validate_token(candidate.foundation, make_candidate_field_name(prefix, "foundation"));
@@ -155,16 +140,6 @@ validation_result validate_candidate_options(const sdp_ice_candidate_options& ca
 
 validation_result validate_candidate_options(const sdp_answer_options& options)
 {
-    if (!options.include_host_candidate)
-    {
-        return {};
-    }
-
-    if (options.local_candidates.empty())
-    {
-        return validate_candidate_options(make_legacy_candidate_options(options), "local candidate");
-    }
-
     for (std::size_t index = 0; index < options.local_candidates.size(); ++index)
     {
         std::string prefix("local candidate ");
@@ -2797,19 +2772,9 @@ void append_media_timing_attributes(media_description& answer_media, const media
 
 void append_ice_candidate_attributes(media_description& answer_media, const sdp_answer_options& options)
 {
-    if (options.include_host_candidate)
+    for (const auto& candidate : options.local_candidates)
     {
-        if (options.local_candidates.empty())
-        {
-            push_attribute(answer_media.attributes, "candidate", make_candidate_value(make_legacy_candidate_options(options)));
-        }
-        else
-        {
-            for (const auto& candidate : options.local_candidates)
-            {
-                push_attribute(answer_media.attributes, "candidate", make_candidate_value(candidate));
-            }
-        }
+        push_attribute(answer_media.attributes, "candidate", make_candidate_value(candidate));
     }
 
     if (options.end_of_candidates)

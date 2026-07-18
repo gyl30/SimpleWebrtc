@@ -57,16 +57,6 @@ struct sdp_answer_options
     bool ice_lite = false;
     bool enable_trickle = true;
 
-    bool include_host_candidate = false;
-
-    std::string local_candidate_foundation = "1";
-    uint32_t local_candidate_component = 1;
-    std::string local_candidate_transport = "udp";
-    uint32_t local_candidate_priority = 2130706431;
-    std::string local_candidate_address;
-    uint16_t local_candidate_port = 0;
-    std::string local_candidate_type = "host";
-
     std::vector<sdp_ice_candidate_options> local_candidates;
 
     bool end_of_candidates = true;

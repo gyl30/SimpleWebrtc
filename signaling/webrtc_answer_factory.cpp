@@ -215,21 +215,6 @@ std::string make_candidate_field_name(std::string_view prefix, std::string_view 
     return value;
 }
 
-sdp::sdp_ice_candidate_options make_legacy_ice_candidate_options(const webrtc_answer_factory_config& config)
-{
-    sdp::sdp_ice_candidate_options candidate;
-
-    candidate.foundation = config.ice_candidate_foundation;
-    candidate.component = config.ice_candidate_component;
-    candidate.transport = config.ice_candidate_transport;
-    candidate.priority = config.ice_candidate_priority;
-    candidate.address = config.ice_candidate_address;
-    candidate.port = config.ice_candidate_port;
-    candidate.type = config.ice_candidate_type;
-
-    return candidate;
-}
-
 std::vector<sdp::sdp_ice_candidate_options> make_local_ice_candidates(const webrtc_answer_factory_config& config, uint16_t local_candidate_port)
 {
     std::vector<sdp::sdp_ice_candidate_options> candidates = config.ice_candidates;
@@ -297,16 +282,6 @@ validation_result validate_ice_candidate_config(const sdp::sdp_ice_candidate_opt
 
 validation_result validate_ice_candidates_config(const webrtc_answer_factory_config& config)
 {
-    if (!config.include_host_candidate)
-    {
-        return {};
-    }
-
-    if (config.ice_candidates.empty())
-    {
-        return validate_ice_candidate_config(make_legacy_ice_candidate_options(config), "ice candidate");
-    }
-
     for (std::size_t index = 0; index < config.ice_candidates.size(); ++index)
     {
         std::string prefix("ice candidate ");
@@ -471,15 +446,6 @@ sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_v
     options.ice_lite = config_.ice_lite;
     options.enable_trickle = config_.enable_trickle;
 
-    options.include_host_candidate = config_.include_host_candidate;
-
-    options.local_candidate_foundation = config_.ice_candidate_foundation;
-    options.local_candidate_component = config_.ice_candidate_component;
-    options.local_candidate_transport = config_.ice_candidate_transport;
-    options.local_candidate_priority = config_.ice_candidate_priority;
-    options.local_candidate_address = config_.ice_candidate_address;
-    options.local_candidate_port = local_candidate_port == 0 ? config_.ice_candidate_port : local_candidate_port;
-    options.local_candidate_type = config_.ice_candidate_type;
     options.local_candidates = make_local_ice_candidates(config_, local_candidate_port);
     options.end_of_candidates = config_.end_of_candidates;
 
