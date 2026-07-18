@@ -9,7 +9,6 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "session/session_state.h"
@@ -120,7 +119,6 @@ class stream_registry
     std::unordered_map<std::string, std::shared_ptr<publisher_session>> publishers_by_stream_id_;
     std::unordered_map<std::string, std::shared_ptr<publisher_session>> publishers_by_session_id_;
     std::unordered_map<std::string, std::shared_ptr<subscriber_session>> subscribers_by_session_id_;
-    std::unordered_map<std::string, std::unordered_set<std::string>> subscriber_session_ids_by_stream_id_;
     std::unordered_map<std::string, removed_session_tombstone> removed_session_tombstones_by_session_id_;
 };
 }    // namespace webrtc

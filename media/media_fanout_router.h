@@ -22,7 +22,7 @@ class media_fanout_router
     void unsubscribe(std::string_view subscriber_session_id);
 
     [[nodiscard]]
-    std::size_t publish_rtp(std::string_view stream_id, std::string_view publisher_session_id, std::span<const uint8_t> packet);
+    std::size_t publish_rtp(std::string_view stream_id, std::span<const uint8_t> packet);
 
    private:
     struct subscription
@@ -32,7 +32,7 @@ class media_fanout_router
     };
 
    private:
-    mutable std::mutex mutex_;
+    std::mutex mutex_;
 
     std::unordered_map<std::string, subscription> subscriptions_by_session_id_;
 };

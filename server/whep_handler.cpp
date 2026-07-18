@@ -613,8 +613,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                               generated_answer->sdp_session_id,
                               generated_answer->sdp_session_version);
 
-    transport->set_ice_context(session->stream_id(), session->session_id(), session->local_ice(), session->remote_offer_summary().ice_ufrag);
-    transport->set_dtls_peer_identity(make_dtls_peer_identity(*session));
+    transport->set_peer_context(session->local_ice().pwd, make_dtls_peer_identity(*session));
     session->set_transport(std::move(transport));
 
     WEBRTC_LOG_INFO(

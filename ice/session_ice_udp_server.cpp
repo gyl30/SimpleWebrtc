@@ -1,6 +1,5 @@
 #include "ice/session_ice_udp_server.h"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -188,32 +187,20 @@ void session_ice_udp_server::on_receive(boost::system::error_code ec, std::size_
         return;
     }
 
-    if (handler_ == nullptr)
-    {
-        do_receive();
-
-        return;
-    }
-
-    const std::size_t packet_size = std::min(bytes_transferred, receive_buffer_.size());
+    const std::size_t packet_size = bytes_transferred;
 
     session_udp_packet packet;
 
     packet.data.assign(receive_buffer_.begin(), receive_buffer_.begin() + static_cast<std::ptrdiff_t>(packet_size));
     packet.remote_endpoint = remote_endpoint_;
 
-    session_udp_dispatch_result result = handler_->handle_udp_packet(packet);
+    auto outbound_packets = handler_->handle_udp_packet(packet);
 
-    send_outbound_packets(std::move(result));
+    for (auto& outbound_packet : outbound_packets)
+    {
+        send(std::move(outbound_packet.data), outbound_packet.remote_endpoint);
+    }
 
     do_receive();
-}
-
-void session_ice_udp_server::send_outbound_packets(session_udp_dispatch_result result)
-{
-    for (auto& packet : result.outbound_packets)
-    {
-        send(std::move(packet.data), packet.remote_endpoint);
-    }
 }
 }    // namespace webrtc

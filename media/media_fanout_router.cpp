@@ -43,7 +43,6 @@ void media_fanout_router::unsubscribe(std::string_view subscriber_session_id)
     }
 
     std::string stream_id;
-    bool removed = false;
 
     {
         std::lock_guard lock(mutex_);
@@ -58,19 +57,14 @@ void media_fanout_router::unsubscribe(std::string_view subscriber_session_id)
         stream_id = iterator->second.stream_id;
 
         subscriptions_by_session_id_.erase(iterator);
-
-        removed = true;
     }
 
-    if (removed)
-    {
-        WEBRTC_LOG_INFO("media fanout unsubscribe stream={} session={}", stream_id, subscriber_session_id);
-    }
+    WEBRTC_LOG_INFO("media fanout unsubscribe stream={} session={}", stream_id, subscriber_session_id);
 }
 
-std::size_t media_fanout_router::publish_rtp(std::string_view stream_id, std::string_view publisher_session_id, std::span<const uint8_t> packet)
+std::size_t media_fanout_router::publish_rtp(std::string_view stream_id, std::span<const uint8_t> packet)
 {
-    if (stream_id.empty() || publisher_session_id.empty() || packet.empty())
+    if (stream_id.empty() || packet.empty())
     {
         return 0;
     }
@@ -87,11 +81,6 @@ std::size_t media_fanout_router::publish_rtp(std::string_view stream_id, std::st
             (void)subscriber_session_id;
 
             if (current.stream_id != stream_id)
-            {
-                continue;
-            }
-
-            if (!current.handler)
             {
                 continue;
             }

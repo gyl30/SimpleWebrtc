@@ -24,10 +24,7 @@ struct session_udp_outbound_packet
     boost::asio::ip::udp::endpoint remote_endpoint;
 };
 
-struct session_udp_dispatch_result
-{
-    std::vector<session_udp_outbound_packet> outbound_packets;
-};
+using session_udp_outbound_packet_list = std::vector<session_udp_outbound_packet>;
 
 class session_ice_udp_packet_handler
 {
@@ -35,7 +32,7 @@ class session_ice_udp_packet_handler
     virtual ~session_ice_udp_packet_handler() = default;
 
     [[nodiscard]]
-    virtual session_udp_dispatch_result handle_udp_packet(const session_udp_packet& packet) = 0;
+    virtual session_udp_outbound_packet_list handle_udp_packet(const session_udp_packet& packet) = 0;
 };
 
 using session_ice_udp_server_result = std::expected<void, std::string>;
@@ -66,8 +63,6 @@ class session_ice_udp_server
     void do_receive();
 
     void on_receive(boost::system::error_code ec, std::size_t bytes_transferred);
-
-    void send_outbound_packets(session_udp_dispatch_result result);
 
    private:
     boost::asio::ip::udp::socket socket_;

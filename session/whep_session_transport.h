@@ -11,7 +11,6 @@
 
 #include <boost/asio.hpp>
 
-#include "ice/ice_credentials.h"
 #include "ice/session_ice_udp_server.h"
 #include "dtls/dtls_context.h"
 #include "dtls/dtls_transport.h"
@@ -45,31 +44,19 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     [[nodiscard]]
     whep_session_transport_result start(uint16_t local_port);
 
-    void set_ice_context(std::string stream_id, std::string session_id, ice_credentials local_ice, std::string remote_ice_ufrag);
-
-    void set_dtls_peer_identity(dtls_peer_identity identity);
+    void set_peer_context(std::string local_ice_pwd, dtls_peer_identity identity);
 
     void send_rtp(std::span<const uint8_t> plain_rtp);
-
-    void stop();
 
    private:
     void subscribe_media();
 
     void unsubscribe_media();
 
-    session_udp_dispatch_result handle_udp_packet(const session_udp_packet& packet) override;
+    session_udp_outbound_packet_list handle_udp_packet(const session_udp_packet& packet) override;
 
    private:
     session_ice_udp_server udp_server_;
-
-    std::string stream_id_;
-
-    std::string session_id_;
-
-    ice_credentials local_ice_;
-
-    std::string remote_ice_ufrag_;
 
     std::shared_ptr<dtls_transport> dtls_transport_;
 
@@ -77,11 +64,9 @@ class whep_session_transport : public session_ice_udp_packet_handler,
 
     std::shared_ptr<media_fanout_router> media_fanout_router_;
 
-    dtls_peer_identity dtls_identity_;
+    std::string local_ice_pwd_;
 
-    bool dtls_identity_ready_ = false;
-
-    bool media_subscribed_ = false;
+    std::optional<dtls_peer_identity> dtls_identity_;
 
     std::size_t received_packet_count_ = 0;
 
