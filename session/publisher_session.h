@@ -59,8 +59,6 @@ class publisher_session
 
     [[nodiscard]] session_state state() const;
 
-    [[nodiscard]] std::string state_string() const;
-
     [[nodiscard]] uint64_t created_at_milliseconds() const;
 
     [[nodiscard]] uint64_t updated_at_milliseconds() const;

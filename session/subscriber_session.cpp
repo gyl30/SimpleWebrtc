@@ -102,8 +102,6 @@ const std::vector<sdp::sdp_answer_media_source>& subscriber_session::outbound_me
 
 session_state subscriber_session::state() const { return state_; }
 
-std::string subscriber_session::state_string() const { return std::string(session_state_to_string(state_)); }
-
 uint64_t subscriber_session::created_at_milliseconds() const { return created_at_milliseconds_; }
 
 uint64_t subscriber_session::updated_at_milliseconds() const { return updated_at_milliseconds_; }

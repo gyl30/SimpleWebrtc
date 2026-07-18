@@ -12,18 +12,6 @@
 
 namespace webrtc
 {
-inline constexpr uint32_t kStunMagicCookie = 0x2112A442U;
-
-inline constexpr uint16_t kStunAttributeMappedAddress = 0x0001U;
-inline constexpr uint16_t kStunAttributeUsername = 0x0006U;
-inline constexpr uint16_t kStunAttributeMessageIntegrity = 0x0008U;
-inline constexpr uint16_t kStunAttributeXorMappedAddress = 0x0020U;
-inline constexpr uint16_t kStunAttributePriority = 0x0024U;
-inline constexpr uint16_t kStunAttributeUseCandidate = 0x0025U;
-inline constexpr uint16_t kStunAttributeFingerprint = 0x8028U;
-inline constexpr uint16_t kStunAttributeIceControlled = 0x8029U;
-inline constexpr uint16_t kStunAttributeIceControlling = 0x802AU;
-
 enum class stun_message_class
 {
     request,
@@ -80,8 +68,6 @@ using stun_message_result = std::expected<stun_message, std::string>;
 using stun_packet_result = std::expected<std::vector<uint8_t>, std::string>;
 
 [[nodiscard]] bool is_stun_packet(std::span<const uint8_t> data);
-
-[[nodiscard]] stun_validation_result validate_stun_header(std::span<const uint8_t> data);
 
 [[nodiscard]] stun_message_result parse_stun_message(std::span<const uint8_t> data);
 

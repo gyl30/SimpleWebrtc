@@ -25,6 +25,18 @@ constexpr std::size_t kStunTransactionIdSize = 12;
 constexpr std::size_t kStunMessageIntegritySize = 20;
 constexpr std::size_t kStunFingerprintSize = 4;
 
+constexpr uint32_t kStunMagicCookie = 0x2112A442U;
+
+constexpr uint16_t kStunAttributeMappedAddress = 0x0001U;
+constexpr uint16_t kStunAttributeUsername = 0x0006U;
+constexpr uint16_t kStunAttributeMessageIntegrity = 0x0008U;
+constexpr uint16_t kStunAttributeXorMappedAddress = 0x0020U;
+constexpr uint16_t kStunAttributePriority = 0x0024U;
+constexpr uint16_t kStunAttributeUseCandidate = 0x0025U;
+constexpr uint16_t kStunAttributeFingerprint = 0x8028U;
+constexpr uint16_t kStunAttributeIceControlled = 0x8029U;
+constexpr uint16_t kStunAttributeIceControlling = 0x802AU;
+
 constexpr uint16_t kStunBindingMethod = 0x0001U;
 constexpr uint32_t kStunFingerprintXorValue = 0x5354554EU;
 
@@ -836,6 +848,8 @@ bool is_stun_packet(std::span<const uint8_t> data)
     return data.size() >= total_size;
 }
 
+namespace
+{
 stun_validation_result validate_stun_header(std::span<const uint8_t> data)
 {
     if (data.size() < kStunHeaderSize)
@@ -874,6 +888,7 @@ stun_validation_result validate_stun_header(std::span<const uint8_t> data)
 
     return {};
 }
+}    // namespace
 
 stun_message_result parse_stun_message(std::span<const uint8_t> data)
 {

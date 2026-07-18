@@ -34,6 +34,23 @@ namespace
 using steady_clock = std::chrono::steady_clock;
 using milliseconds = std::chrono::milliseconds;
 
+std::string dtls_peer_role_to_string(dtls_peer_role role)
+{
+    switch (role)
+    {
+        case dtls_peer_role::publisher:
+            return "publisher";
+
+        case dtls_peer_role::subscriber:
+            return "subscriber";
+
+        case dtls_peer_role::unknown:
+            return "unknown";
+    }
+
+    return "unknown";
+}
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 std::string make_openssl_error(std::string_view prefix)
@@ -1224,21 +1241,4 @@ std::optional<dtls_peer_identity> dtls_transport::get_peer_identity(std::string_
 }
 
 bool dtls_transport::is_handshake_done(std::string_view remote_endpoint) const { return impl_->is_handshake_done(remote_endpoint); }
-
-std::string dtls_peer_role_to_string(dtls_peer_role role)
-{
-    switch (role)
-    {
-        case dtls_peer_role::publisher:
-            return "publisher";
-
-        case dtls_peer_role::subscriber:
-            return "subscriber";
-
-        case dtls_peer_role::unknown:
-            return "unknown";
-    }
-
-    return "unknown";
-}
 }    // namespace webrtc

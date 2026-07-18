@@ -24,6 +24,7 @@ class udp_port_allocator
 
     void release(uint16_t port);
 
+   private:
     [[nodiscard]]
     bool owns(uint16_t port) const;
 

@@ -24,6 +24,23 @@ namespace webrtc
 {
 namespace
 {
+std::string srtp_packet_kind_to_string(srtp_packet_kind kind)
+{
+    switch (kind)
+    {
+        case srtp_packet_kind::rtp:
+            return "rtp";
+
+        case srtp_packet_kind::rtcp:
+            return "rtcp";
+
+        case srtp_packet_kind::unknown:
+            return "unknown";
+    }
+
+    return "unknown";
+}
+
 inline constexpr std::size_t k_srtp_protect_extra_capacity = 64;
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
@@ -625,23 +642,6 @@ srtp_transport_result srtp_transport::protect_outbound_packet(std::span<const ui
                                                               srtp_packet_kind kind)
 {
     return impl_->protect_outbound_packet(plain_packet, remote_endpoint, kind);
-}
-
-std::string srtp_packet_kind_to_string(srtp_packet_kind kind)
-{
-    switch (kind)
-    {
-        case srtp_packet_kind::rtp:
-            return "rtp";
-
-        case srtp_packet_kind::rtcp:
-            return "rtcp";
-
-        case srtp_packet_kind::unknown:
-            return "unknown";
-    }
-
-    return "unknown";
 }
 
 std::string srtp_packet_process_state_to_string(srtp_packet_process_state state)

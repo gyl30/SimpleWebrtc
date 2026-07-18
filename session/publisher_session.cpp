@@ -100,8 +100,6 @@ const std::vector<int>& publisher_session::accepted_remote_media_mline_indexes()
 
 session_state publisher_session::state() const { return state_; }
 
-std::string publisher_session::state_string() const { return std::string(session_state_to_string(state_)); }
-
 uint64_t publisher_session::created_at_milliseconds() const { return created_at_milliseconds_; }
 
 uint64_t publisher_session::updated_at_milliseconds() const { return updated_at_milliseconds_; }

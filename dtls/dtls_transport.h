@@ -99,7 +99,6 @@ class dtls_transport
     std::unique_ptr<impl> impl_;
 };
 
-[[nodiscard]] std::string dtls_peer_role_to_string(dtls_peer_role role);
 }    // namespace webrtc
 
 #endif

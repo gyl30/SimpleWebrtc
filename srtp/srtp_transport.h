@@ -103,8 +103,6 @@ class srtp_transport
     std::unique_ptr<impl> impl_;
 };
 
-[[nodiscard]] std::string srtp_packet_kind_to_string(srtp_packet_kind kind);
-
 [[nodiscard]] std::string srtp_packet_process_state_to_string(srtp_packet_process_state state);
 }    // namespace webrtc
 
