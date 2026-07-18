@@ -27,12 +27,6 @@ enum class stun_method
     binding = 1,
 };
 
-struct stun_address
-{
-    std::string ip;
-    uint16_t port = 0;
-};
-
 struct stun_message
 {
     stun_method method = stun_method::unknown;
@@ -50,13 +44,6 @@ struct stun_message
     bool has_fingerprint = false;
 };
 
-struct stun_binding_success_response_options
-{
-    stun_address mapped_address;
-
-    std::string message_integrity_key;
-};
-
 using stun_validation_result = std::expected<void, std::string>;
 
 using stun_message_result = std::expected<stun_message, std::string>;
@@ -68,7 +55,9 @@ using stun_packet_result = std::expected<std::vector<uint8_t>, std::string>;
 [[nodiscard]] stun_message_result parse_stun_message(std::span<const uint8_t> data);
 
 [[nodiscard]] stun_packet_result write_stun_binding_success_response(const stun_message& request,
-                                                                     const stun_binding_success_response_options& options);
+                                                                     std::string_view mapped_ip,
+                                                                     uint16_t mapped_port,
+                                                                     std::string_view message_integrity_key);
 
 [[nodiscard]] stun_validation_result verify_stun_fingerprint(std::span<const uint8_t> data);
 

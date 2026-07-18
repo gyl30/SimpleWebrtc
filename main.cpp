@@ -313,25 +313,43 @@ int main(int argc, char* argv[])
 
     boost::asio::io_context io_context;
     auto registry = std::make_shared<webrtc::stream_registry>();
-    auto session_transport_config_result = webrtc::load_session_transport_runtime_config();
+    auto session_udp_port_range_result = webrtc::load_session_udp_port_range();
 
-    if (!session_transport_config_result)
+    if (!session_udp_port_range_result)
     {
-        WEBRTC_LOG_ERROR("load session transport runtime config failed: {}", session_transport_config_result.error());
+        WEBRTC_LOG_ERROR("load session transport runtime config failed: {}", session_udp_port_range_result.error());
 
         return 1;
     }
 
-    const webrtc::session_transport_runtime_config session_transport_config = std::move(*session_transport_config_result);
+    auto dtls_ip_mtu_result = webrtc::load_dtls_ip_mtu();
 
-    auto session_udp_port_allocator = std::make_shared<webrtc::udp_port_allocator>(session_transport_config.session_udp_port_range);
+    if (!dtls_ip_mtu_result)
+    {
+        WEBRTC_LOG_ERROR("load session transport runtime config failed: {}", dtls_ip_mtu_result.error());
+
+        return 1;
+    }
+
+    const webrtc::udp_port_range session_udp_port_range = *session_udp_port_range_result;
+    const std::uint16_t dtls_ip_mtu = *dtls_ip_mtu_result;
+
+    WEBRTC_LOG_INFO("session transport runtime config loaded dtls_ip_mtu={} ipv4_udp_payload_mtu={} ipv6_udp_payload_mtu={} "
+                    "session_udp_port_min={} session_udp_port_max={}",
+                    dtls_ip_mtu,
+                    dtls_ip_mtu - webrtc::k_ipv4_udp_overhead,
+                    dtls_ip_mtu - webrtc::k_ipv6_udp_overhead,
+                    session_udp_port_range.min_port,
+                    session_udp_port_range.max_port);
+
+    auto session_udp_port_allocator = std::make_shared<webrtc::udp_port_allocator>(session_udp_port_range);
 
     for (const auto& address : ice_public_ips)
     {
         WEBRTC_LOG_INFO("ice host candidate address={} session_port_range={}-{}",
                         address,
-                        session_transport_config.session_udp_port_range.min_port,
-                        session_transport_config.session_udp_port_range.max_port);
+                        session_udp_port_range.min_port,
+                        session_udp_port_range.max_port);
     }
 
     auto answer_factory =
@@ -342,7 +360,7 @@ int main(int argc, char* argv[])
                                                         io_context,
                                                         std::move(ice_bind_host),
                                                         *per_session_dtls_context,
-                                                        session_transport_config.dtls_ip_mtu,
+                                                        dtls_ip_mtu,
                                                         std::move(admin_token));
 
     WEBRTC_LOG_INFO("Webrtc     version {} {}", "SimpleWebrtc", "0.1");

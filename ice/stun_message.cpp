@@ -319,23 +319,7 @@ std::expected<void, std::string> append_attribute(std::vector<uint8_t>& packet, 
     return {};
 }
 
-std::expected<std::string, std::string> format_ip_address(int family, const uint8_t* address)
-{
-    char buffer[INET6_ADDRSTRLEN]{};
-
-    const char* result = inet_ntop(family, address, buffer, sizeof(buffer));
-
-    if (result == nullptr)
-    {
-        return make_error("format stun address failed");
-    }
-
-    return std::string(buffer);
-}
-
-std::expected<stun_address, std::string> parse_address_attribute_value(uint16_t type,
-                                                                       std::span<const uint8_t> value,
-                                                                       const std::array<uint8_t, kStunTransactionIdSize>& transaction_id)
+std::expected<void, std::string> validate_address_attribute_value(std::span<const uint8_t> value)
 {
     if (value.size() < 4)
     {
@@ -359,69 +343,7 @@ std::expected<stun_address, std::string> parse_address_attribute_value(uint16_t 
         return make_error("stun address attribute has unsupported family");
     }
 
-    uint16_t port = read_u16(value, 2);
-
-    if (type == kStunAttributeXorMappedAddress)
-    {
-        port = static_cast<uint16_t>(port ^ static_cast<uint16_t>(kStunMagicCookie >> 16U));
-    }
-
-    stun_address address;
-    address.port = port;
-
-    if (family == 0x01U)
-    {
-        std::array<uint8_t, 4> ip_bytes{};
-
-        for (std::size_t i = 0; i < ip_bytes.size(); ++i)
-        {
-            ip_bytes[i] = value[4 + i];
-
-            if (type == kStunAttributeXorMappedAddress)
-            {
-                ip_bytes[i] = static_cast<uint8_t>(ip_bytes[i] ^ kStunMagicCookieBytes[i]);
-            }
-        }
-
-        auto text = format_ip_address(AF_INET, ip_bytes.data());
-
-        if (!text)
-        {
-            return std::unexpected(text.error());
-        }
-
-        address.ip = std::move(*text);
-        return address;
-    }
-
-    std::array<uint8_t, 16> ip_bytes{};
-
-    for (std::size_t i = 0; i < ip_bytes.size(); ++i)
-    {
-        ip_bytes[i] = value[4 + i];
-
-        if (type == kStunAttributeXorMappedAddress)
-        {
-            if (i < kStunMagicCookieBytes.size())
-            {
-                ip_bytes[i] = static_cast<uint8_t>(ip_bytes[i] ^ kStunMagicCookieBytes[i]);
-            }
-            else
-            {
-                ip_bytes[i] = static_cast<uint8_t>(ip_bytes[i] ^ transaction_id[i - kStunMagicCookieBytes.size()]);
-            }
-        }
-    }
-
-    auto text = format_ip_address(AF_INET6, ip_bytes.data());
-
-    if (!text)
-    {
-        return std::unexpected(text.error());
-    }
-
-    address.ip = std::move(*text);
-    return address;
+    return {};
 }
 
 std::expected<void, std::string> decode_known_attribute(stun_message& message, uint16_t type, std::span<const uint8_t> value)
@@ -430,7 +352,7 @@ std::expected<void, std::string> decode_known_attribute(stun_message& message, u
     {
         case kStunAttributeMappedAddress:
         {
-            auto address = parse_address_attribute_value(type, value, message.transaction_id);
+            auto address = validate_address_attribute_value(value);
 
             if (!address)
             {
@@ -442,7 +364,7 @@ std::expected<void, std::string> decode_known_attribute(stun_message& message, u
 
         case kStunAttributeXorMappedAddress:
         {
-            auto address = parse_address_attribute_value(type, value, message.transaction_id);
+            auto address = validate_address_attribute_value(value);
 
             if (!address)
             {
@@ -565,10 +487,11 @@ std::expected<parsed_ip_address, std::string> parse_ip_address(std::string_view 
     return make_error("stun mapped address ip is invalid");
 }
 
-std::expected<std::vector<uint8_t>, std::string> make_xor_mapped_address_value(const stun_address& address,
+std::expected<std::vector<uint8_t>, std::string> make_xor_mapped_address_value(std::string_view mapped_ip,
+                                                                               uint16_t mapped_port,
                                                                                const std::array<uint8_t, kStunTransactionIdSize>& transaction_id)
 {
-    auto parsed = parse_ip_address(address.ip);
+    auto parsed = parse_ip_address(mapped_ip);
     if (!parsed)
     {
         return std::unexpected(parsed.error());
@@ -580,7 +503,7 @@ std::expected<std::vector<uint8_t>, std::string> make_xor_mapped_address_value(c
     value.push_back(0);
     value.push_back(parsed->is_ipv6 ? 0x02U : 0x01U);
 
-    const uint16_t xor_port = static_cast<uint16_t>(address.port ^ static_cast<uint16_t>(kStunMagicCookie >> 16U));
+    const uint16_t xor_port = static_cast<uint16_t>(mapped_port ^ static_cast<uint16_t>(kStunMagicCookie >> 16U));
 
     append_u16(value, xor_port);
 
@@ -684,19 +607,21 @@ std::expected<void, std::string> validate_binding_request(const stun_message& re
     return {};
 }
 
-std::expected<void, std::string> validate_response_options(const stun_binding_success_response_options& options)
+std::expected<void, std::string> validate_binding_success_response(std::string_view mapped_ip,
+                                                                   uint16_t mapped_port,
+                                                                   std::string_view message_integrity_key)
 {
-    if (options.mapped_address.ip.empty())
+    if (mapped_ip.empty())
     {
         return make_error("stun mapped address ip is empty");
     }
 
-    if (options.mapped_address.port == 0)
+    if (mapped_port == 0)
     {
         return make_error("stun mapped address port is zero");
     }
 
-    if (options.message_integrity_key.empty())
+    if (message_integrity_key.empty())
     {
         return make_error("stun message integrity key is empty");
     }
@@ -938,7 +863,10 @@ stun_message_result parse_stun_message(std::span<const uint8_t> data)
     return message;
 }
 
-stun_packet_result write_stun_binding_success_response(const stun_message& request, const stun_binding_success_response_options& options)
+stun_packet_result write_stun_binding_success_response(const stun_message& request,
+                                                        std::string_view mapped_ip,
+                                                        uint16_t mapped_port,
+                                                        std::string_view message_integrity_key)
 {
     auto request_result = validate_binding_request(request);
     if (!request_result)
@@ -946,17 +874,17 @@ stun_packet_result write_stun_binding_success_response(const stun_message& reque
         return std::unexpected(request_result.error());
     }
 
-    auto options_result = validate_response_options(options);
-    if (!options_result)
+    auto response_result = validate_binding_success_response(mapped_ip, mapped_port, message_integrity_key);
+    if (!response_result)
     {
-        return std::unexpected(options_result.error());
+        return std::unexpected(response_result.error());
     }
 
     const uint16_t response_type = encode_message_type(kStunBindingMethod, stun_message_class::success_response);
 
     std::vector<uint8_t> packet = make_stun_header(response_type, request.transaction_id);
 
-    auto xor_address_value = make_xor_mapped_address_value(options.mapped_address, request.transaction_id);
+    auto xor_address_value = make_xor_mapped_address_value(mapped_ip, mapped_port, request.transaction_id);
 
     if (!xor_address_value)
     {
@@ -978,7 +906,7 @@ stun_packet_result write_stun_binding_success_response(const stun_message& reque
         return std::unexpected(length_result.error());
     }
 
-    auto integrity_result = append_message_integrity(packet, options.message_integrity_key);
+    auto integrity_result = append_message_integrity(packet, message_integrity_key);
 
     if (!integrity_result)
     {

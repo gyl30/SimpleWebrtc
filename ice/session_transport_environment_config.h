@@ -9,14 +9,9 @@
 
 namespace webrtc
 {
-struct session_transport_runtime_config
-{
-    std::uint16_t dtls_ip_mtu = 0;
+[[nodiscard]] std::expected<udp_port_range, std::string> load_session_udp_port_range();
 
-    udp_port_range session_udp_port_range;
-};
-
-[[nodiscard]] std::expected<session_transport_runtime_config, std::string> load_session_transport_runtime_config();
+[[nodiscard]] std::expected<std::uint16_t, std::string> load_dtls_ip_mtu();
 }    // namespace webrtc
 
 #endif

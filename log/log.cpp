@@ -34,15 +34,6 @@ inline constexpr uint32_t k_default_log_file_count = 5U;
 inline constexpr uint32_t k_minimum_log_file_count = 1U;
 inline constexpr uint32_t k_maximum_log_file_count = 100U;
 
-struct log_config
-{
-    spdlog::level::level_enum level = spdlog::level::info;
-
-    std::size_t file_size_bytes = static_cast<std::size_t>(k_default_log_file_size_bytes);
-
-    std::size_t file_count = static_cast<std::size_t>(k_default_log_file_count);
-};
-
 std::expected<spdlog::level::level_enum, std::string> parse_log_level(std::string_view value)
 {
     if (value == "trace")
@@ -134,22 +125,51 @@ std::expected<Integer, std::string> load_integer_environment(const char* environ
     return parse_integer<Integer>(environment_value, minimum, maximum, environment_name);
 }
 
-std::expected<log_config, std::string> load_log_config()
+void initialize_default_logger(const std::string& filename,
+                               spdlog::level::level_enum level,
+                               std::size_t file_size_bytes,
+                               std::size_t file_count)
 {
-    log_config config;
+    std::vector<spdlog::sink_ptr> sinks;
+
+    sinks.reserve(2);
+
+    sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
+
+    sinks.push_back(std::make_shared<spdlog::sinks::rotating_file_sink_mt>(filename, file_size_bytes, file_count));
+
+    auto logger = std::make_shared<spdlog::logger>("", sinks.begin(), sinks.end());
+
+    auto net_logger = std::make_shared<spdlog::logger>("net", sinks.begin(), sinks.end());
+
+    spdlog::set_default_logger(std::move(logger));
+
+    spdlog::register_logger(std::move(net_logger));
+
+    spdlog::flush_every(std::chrono::seconds(3));
+
+    spdlog::set_pattern("%Y%m%d %T.%f %t %L %v %s:%#");
+
+    spdlog::set_level(level);
+}
+}    // namespace
+
+log_init_result init_log(const std::string& filename)
+{
+    spdlog::level::level_enum level = spdlog::level::info;
 
     const char* level_value = std::getenv(k_log_level_environment);
 
     if (level_value != nullptr)
     {
-        auto level = parse_log_level(level_value);
+        auto parsed_level = parse_log_level(level_value);
 
-        if (!level)
+        if (!parsed_level)
         {
-            return std::unexpected(level.error());
+            return std::unexpected(parsed_level.error());
         }
 
-        config.level = *level;
+        level = *parsed_level;
     }
 
     auto file_size = load_integer_environment<uint64_t>(
@@ -173,50 +193,12 @@ std::expected<log_config, std::string> load_log_config()
         return std::unexpected(file_count.error());
     }
 
-    config.file_size_bytes = static_cast<std::size_t>(*file_size);
-    config.file_count = static_cast<std::size_t>(*file_count);
-
-    return config;
-}
-
-void initialize_default_logger(const std::string& filename, const log_config& config)
-{
-    std::vector<spdlog::sink_ptr> sinks;
-
-    sinks.reserve(2);
-
-    sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
-
-    sinks.push_back(std::make_shared<spdlog::sinks::rotating_file_sink_mt>(filename, config.file_size_bytes, config.file_count));
-
-    auto logger = std::make_shared<spdlog::logger>("", sinks.begin(), sinks.end());
-
-    auto net_logger = std::make_shared<spdlog::logger>("net", sinks.begin(), sinks.end());
-
-    spdlog::set_default_logger(std::move(logger));
-
-    spdlog::register_logger(std::move(net_logger));
-
-    spdlog::flush_every(std::chrono::seconds(3));
-
-    spdlog::set_pattern("%Y%m%d %T.%f %t %L %v %s:%#");
-
-    spdlog::set_level(config.level);
-}
-}    // namespace
-
-log_init_result init_log(const std::string& filename)
-{
-    auto config = load_log_config();
-
-    if (!config)
-    {
-        return std::unexpected(config.error());
-    }
+    const std::size_t file_size_bytes = static_cast<std::size_t>(*file_size);
+    const std::size_t file_count_value = static_cast<std::size_t>(*file_count);
 
     try
     {
-        initialize_default_logger(filename, *config);
+        initialize_default_logger(filename, level, file_size_bytes, file_count_value);
     }
     catch (const spdlog::spdlog_ex& error)
     {
@@ -230,10 +212,10 @@ log_init_result init_log(const std::string& filename)
     }
 
     WEBRTC_LOG_INFO("log configuration level={} file={} file_size_bytes={} file_count={}",
-                    log_level_to_string(config->level),
+                    log_level_to_string(level),
                     filename,
-                    config->file_size_bytes,
-                    config->file_count);
+                    file_size_bytes,
+                    file_count_value);
 
     return {};
 }

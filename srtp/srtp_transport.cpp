@@ -530,18 +530,14 @@ struct srtp_transport::impl
             return false;
         }
 
-        auto inbound_config = make_inbound_srtp_session_config(*material);
-
-        auto outbound_config = make_outbound_srtp_session_config(*material);
-
-        auto inbound = make_srtp_session(inbound_config);
+        auto inbound = make_inbound_srtp_session(*material);
 
         if (!inbound)
         {
             return std::unexpected(inbound.error());
         }
 
-        auto outbound = make_srtp_session(outbound_config);
+        auto outbound = make_outbound_srtp_session(*material);
 
         if (!outbound)
         {

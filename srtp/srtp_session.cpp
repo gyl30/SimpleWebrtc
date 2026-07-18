@@ -38,9 +38,9 @@ srtp_err_status_t init_srtp_once()
     return status;
 }
 
-std::expected<void, std::string> validate_config(const srtp_session_config& config)
+std::expected<void, std::string> validate_profile(srtp_profile_id profile)
 {
-    if (config.profile == srtp_profile_id::unknown)
+    if (profile == srtp_profile_id::unknown)
     {
         return make_error("srtp profile is unknown");
     }
@@ -87,17 +87,18 @@ std::expected<void, std::string> set_crypto_policy(srtp_profile_id profile, srtp
     return make_error("srtp profile is unsupported");
 }
 
-srtp_master_key_and_salt make_master_key_and_salt(const srtp_session_config& config)
+srtp_master_key_and_salt make_master_key_and_salt(const std::array<uint8_t, k_srtp_aes128_master_key_size>& master_key,
+                                                  const std::array<uint8_t, k_srtp_aes128_master_salt_size>& master_salt)
 {
     srtp_master_key_and_salt key{};
 
     std::size_t offset = 0;
 
-    std::copy_n(config.master_key.begin(), config.master_key.size(), key.begin());
+    std::copy_n(master_key.begin(), master_key.size(), key.begin());
 
-    offset += config.master_key.size();
+    offset += master_key.size();
 
-    std::copy_n(config.master_salt.begin(), config.master_salt.size(), key.begin() + static_cast<std::ptrdiff_t>(offset));
+    std::copy_n(master_salt.begin(), master_salt.size(), key.begin() + static_cast<std::ptrdiff_t>(offset));
 
     return key;
 }
@@ -254,7 +255,13 @@ void srtp_session::reset()
     }
 }
 
-srtp_session_result make_srtp_session(const srtp_session_config& config)
+namespace
+{
+std::expected<srtp_t, std::string> make_srtp_native_handle(
+    srtp_direction direction,
+    srtp_profile_id profile,
+    const std::array<uint8_t, k_srtp_aes128_master_key_size>& master_key,
+    const std::array<uint8_t, k_srtp_aes128_master_salt_size>& master_salt)
 {
     const srtp_err_status_t init_status = init_srtp_once();
 
@@ -265,7 +272,7 @@ srtp_session_result make_srtp_session(const srtp_session_config& config)
         return std::unexpected(std::move(message));
     }
 
-    auto validate_result = validate_config(config);
+    auto validate_result = validate_profile(profile);
 
     if (!validate_result)
     {
@@ -273,20 +280,20 @@ srtp_session_result make_srtp_session(const srtp_session_config& config)
     }
 
     srtp_policy_t policy{};
-    policy.ssrc.type = make_ssrc_type(config.direction);
+    policy.ssrc.type = make_ssrc_type(direction);
     policy.ssrc.value = 0;
     policy.window_size = 1024;
     policy.allow_repeat_tx = 1;
     policy.next = nullptr;
 
-    auto policy_result = set_crypto_policy(config.profile, policy);
+    auto policy_result = set_crypto_policy(profile, policy);
 
     if (!policy_result)
     {
         return std::unexpected(policy_result.error());
     }
 
-    auto key = make_master_key_and_salt(config);
+    auto key = make_master_key_and_salt(master_key, master_salt);
 
     policy.key = key.data();
 
@@ -301,27 +308,38 @@ srtp_session_result make_srtp_session(const srtp_session_config& config)
         return std::unexpected(std::move(message));
     }
 
-    return srtp_session(native_handle);
+    return native_handle;
+}
+}    // namespace
+
+srtp_session_result make_inbound_srtp_session(const srtp_keying_material& material)
+{
+    auto native_handle = make_srtp_native_handle(srtp_direction::inbound,
+                                                 material.profile,
+                                                 material.client_write_master_key,
+                                                 material.client_write_master_salt);
+
+    if (!native_handle)
+    {
+        return std::unexpected(native_handle.error());
+    }
+
+    return srtp_session(*native_handle);
 }
 
-srtp_session_config make_inbound_srtp_session_config(const srtp_keying_material& material)
+srtp_session_result make_outbound_srtp_session(const srtp_keying_material& material)
 {
-    srtp_session_config config;
-    config.direction = srtp_direction::inbound;
-    config.profile = material.profile;
-    config.master_key = material.client_write_master_key;
-    config.master_salt = material.client_write_master_salt;
-    return config;
-}
+    auto native_handle = make_srtp_native_handle(srtp_direction::outbound,
+                                                 material.profile,
+                                                 material.server_write_master_key,
+                                                 material.server_write_master_salt);
 
-srtp_session_config make_outbound_srtp_session_config(const srtp_keying_material& material)
-{
-    srtp_session_config config;
-    config.direction = srtp_direction::outbound;
-    config.profile = material.profile;
-    config.master_key = material.server_write_master_key;
-    config.master_salt = material.server_write_master_salt;
-    return config;
+    if (!native_handle)
+    {
+        return std::unexpected(native_handle.error());
+    }
+
+    return srtp_session(*native_handle);
 }
 
 std::string srtp_direction_to_string(srtp_direction direction)

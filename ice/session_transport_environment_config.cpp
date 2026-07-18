@@ -53,7 +53,9 @@ uint16_t get_env_u16_or_default(const char* name, uint16_t default_value)
     return static_cast<uint16_t>(parsed);
 }
 
-std::expected<udp_port_range, std::string> make_session_udp_port_range_from_env()
+}    // namespace
+
+std::expected<udp_port_range, std::string> load_session_udp_port_range()
 {
     udp_port_range range;
 
@@ -77,7 +79,7 @@ std::expected<udp_port_range, std::string> make_session_udp_port_range_from_env(
     return range;
 }
 
-std::expected<std::uint16_t, std::string> parse_dtls_ip_mtu_from_env()
+std::expected<std::uint16_t, std::string> load_dtls_ip_mtu()
 {
     const char* value = std::getenv("WEBRTC_DTLS_MTU");
 
@@ -116,38 +118,5 @@ std::expected<std::uint16_t, std::string> parse_dtls_ip_mtu_from_env()
     }
 
     return static_cast<std::uint16_t>(parsed);
-}
-
-}    // namespace
-
-std::expected<session_transport_runtime_config, std::string> load_session_transport_runtime_config()
-{
-    auto dtls_ip_mtu = parse_dtls_ip_mtu_from_env();
-
-    auto session_udp_port_range = make_session_udp_port_range_from_env();
-
-    if (!session_udp_port_range)
-    {
-        return std::unexpected(session_udp_port_range.error());
-    }
-
-    if (!dtls_ip_mtu)
-    {
-        return std::unexpected(dtls_ip_mtu.error());
-    }
-
-    session_transport_runtime_config config;
-    config.dtls_ip_mtu = *dtls_ip_mtu;
-    config.session_udp_port_range = *session_udp_port_range;
-
-    WEBRTC_LOG_INFO("session transport runtime config loaded dtls_ip_mtu={} ipv4_udp_payload_mtu={} ipv6_udp_payload_mtu={} "
-                    "session_udp_port_min={} session_udp_port_max={}",
-                    config.dtls_ip_mtu,
-                    config.dtls_ip_mtu - k_ipv4_udp_overhead,
-                    config.dtls_ip_mtu - k_ipv6_udp_overhead,
-                    config.session_udp_port_range.min_port,
-                    config.session_udp_port_range.max_port);
-
-    return config;
 }
 }    // namespace webrtc

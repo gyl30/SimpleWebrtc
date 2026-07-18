@@ -1,13 +1,12 @@
 #ifndef SIMPLE_WEBRTC_SRTP_SRTP_SESSION_H
 #define SIMPLE_WEBRTC_SRTP_SRTP_SESSION_H
 
-#include <array>
 #include <cstddef>
-#include <string_view>
 #include <cstdint>
 #include <expected>
 #include <span>
 #include <string>
+#include <string_view>
 
 #include <srtp2/srtp.h>
 
@@ -19,15 +18,6 @@ enum class srtp_direction
 {
     inbound,
     outbound,
-};
-
-struct srtp_session_config
-{
-    srtp_direction direction = srtp_direction::inbound;
-    srtp_profile_id profile = srtp_profile_id::unknown;
-
-    std::array<uint8_t, k_srtp_aes128_master_key_size> master_key{};
-    std::array<uint8_t, k_srtp_aes128_master_salt_size> master_salt{};
 };
 
 using srtp_packet_result = std::expected<std::size_t, std::string>;
@@ -58,7 +48,8 @@ class srtp_session
     void reset();
 
    private:
-    friend std::expected<srtp_session, std::string> make_srtp_session(const srtp_session_config& config);
+    friend std::expected<srtp_session, std::string> make_inbound_srtp_session(const srtp_keying_material& material);
+    friend std::expected<srtp_session, std::string> make_outbound_srtp_session(const srtp_keying_material& material);
 
    private:
     srtp_t native_handle_ = nullptr;
@@ -66,11 +57,9 @@ class srtp_session
 
 using srtp_session_result = std::expected<srtp_session, std::string>;
 
-[[nodiscard]] srtp_session_result make_srtp_session(const srtp_session_config& config);
+[[nodiscard]] srtp_session_result make_inbound_srtp_session(const srtp_keying_material& material);
 
-[[nodiscard]] srtp_session_config make_inbound_srtp_session_config(const srtp_keying_material& material);
-
-[[nodiscard]] srtp_session_config make_outbound_srtp_session_config(const srtp_keying_material& material);
+[[nodiscard]] srtp_session_result make_outbound_srtp_session(const srtp_keying_material& material);
 
 [[nodiscard]] std::string srtp_direction_to_string(srtp_direction direction);
 

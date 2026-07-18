@@ -41,13 +41,7 @@ std::optional<session_udp_outbound_packet> make_stun_binding_response(const stun
         return std::nullopt;
     }
 
-    stun_binding_success_response_options options;
-
-    options.mapped_address.ip = remote_ip;
-    options.mapped_address.port = remote_endpoint.port();
-    options.message_integrity_key = context.local_ice_pwd;
-
-    auto response = write_stun_binding_success_response(request, options);
+    auto response = write_stun_binding_success_response(request, remote_ip, remote_endpoint.port(), context.local_ice_pwd);
 
     if (!response)
     {
