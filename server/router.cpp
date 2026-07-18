@@ -470,6 +470,8 @@ http_response_ptr router::handle_session(http_request_t& request, std::string_vi
             return make_json_http_response(request, 500, json_error_body("delete publisher session failed"));
         }
 
+        media_fanout_router_->clear_publisher_source(snapshot->stream_id, snapshot->session_id);
+
         return make_text_http_response(request, 204, "");
     }
 
@@ -562,6 +564,8 @@ http_response_ptr router::handle_stream(http_request_t& request, std::string_vie
 
             return make_json_http_response(request, 500, json_error_body("delete stream failed"));
         }
+
+        media_fanout_router_->clear_publisher_source(stream_id, publisher_session_id);
 
         return make_text_http_response(request, 204, "");
     }

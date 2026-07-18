@@ -288,6 +288,17 @@ struct srtp_transport::impl
         return &peer;
     }
 
+    void forget_peer(std::string_view remote_endpoint)
+    {
+        if (remote_endpoint.empty())
+        {
+            return;
+        }
+
+        std::lock_guard lock(mutex_);
+        peers_by_endpoint_.erase(std::string(remote_endpoint));
+    }
+
     srtp_transport_result handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)
     {
         const srtp_packet_kind kind = classify_packet(data);
@@ -530,6 +541,11 @@ struct srtp_transport::impl
 srtp_transport::srtp_transport(std::shared_ptr<dtls_transport> dtls_transport) : impl_(std::make_unique<impl>(std::move(dtls_transport))) {}
 
 srtp_transport::~srtp_transport() = default;
+
+void srtp_transport::forget_peer(std::string_view remote_endpoint)
+{
+    impl_->forget_peer(remote_endpoint);
+}
 
 srtp_transport_result srtp_transport::handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)
 {

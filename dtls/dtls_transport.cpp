@@ -694,6 +694,18 @@ struct dtls_transport::impl
                         peer.identity.remote_ice_ufrag,
                         peer.identity.remote_fingerprint.algorithm);
     }
+
+    void forget_peer(std::string_view remote_endpoint)
+    {
+        if (remote_endpoint.empty())
+        {
+            return;
+        }
+
+        std::lock_guard lock(mutex_);
+        peers_by_endpoint_.erase(std::string(remote_endpoint));
+    }
+
     dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data,
                                                    std::string_view remote_endpoint,
                                                    dtls_network_family network_family)
@@ -1073,6 +1085,11 @@ dtls_transport::~dtls_transport() = default;
 void dtls_transport::remember_peer(std::string_view remote_endpoint, dtls_peer_identity identity)
 {
     impl_->remember_peer(remote_endpoint, std::move(identity));
+}
+
+void dtls_transport::forget_peer(std::string_view remote_endpoint)
+{
+    impl_->forget_peer(remote_endpoint);
 }
 
 dtls_transport_packet_result dtls_transport::handle_udp_packet(std::span<const uint8_t> data,

@@ -44,7 +44,11 @@ class whip_session_transport : public session_ice_udp_packet_handler
 
     void set_peer_context(std::string local_ice_pwd, dtls_peer_identity identity);
 
+    void send_keyframe_request(uint32_t media_ssrc);
+
    private:
+    void reset_selected_peer();
+
     session_udp_outbound_packet_list handle_udp_packet(const session_udp_packet& packet) override;
 
    private:
@@ -61,6 +65,7 @@ class whip_session_transport : public session_ice_udp_packet_handler
     std::optional<dtls_peer_identity> dtls_identity_;
 
     std::size_t received_packet_count_ = 0;
+    uint32_t rtcp_sender_ssrc_ = 0;
 
     // 仅由通过完整 STUN 校验的 connectivity check 更新。
     std::optional<boost::asio::ip::udp::endpoint> selected_remote_endpoint_;

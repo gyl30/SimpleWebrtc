@@ -15,6 +15,7 @@
 #include <boost/beast/http.hpp>
 
 #include "log/log.h"
+#include "media/whep_rtp_rewriter.h"
 #include "net/http.h"
 #include "server/signaling_json.h"
 #include "server/trickle_ice_http.h"
@@ -546,6 +547,30 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                                    make_prefixed_error("failed to filter runtime subscriber offer: ", runtime_offer.error()));
     }
 
+    auto accepted_outbound_media_sources =
+        filter_whep_outbound_media_sources(outbound_media_sources, generated_answer->accepted_mline_indexes);
+
+    whep_rtp_rewriter_target rewriter_target{
+        .subscriber_offer = *offer_summary,
+        .accepted_mline_indexes = generated_answer->accepted_mline_indexes,
+        .accepted_media_sources = accepted_outbound_media_sources,
+    };
+
+    auto rewriter_config =
+        make_whep_rtp_rewriter_config(publisher->session_id(), publisher->remote_offer_summary(), rewriter_target);
+
+    if (!rewriter_config)
+    {
+        WEBRTC_LOG_WARN("WHEP build RTP rewrite mapping failed stream={} publisher_session={} error={}",
+                        stream_id,
+                        publisher->session_id(),
+                        rewriter_config.error());
+        return json_error_response(request,
+                                   400,
+                                   k_whep_sdp_answer_failed_error,
+                                   make_prefixed_error("failed to build rtp rewrite mapping: ", rewriter_config.error()));
+    }
+
     auto session_result = [&]() -> subscriber_session_result
     {
         if (reconnect_session_id.has_value())
@@ -599,14 +624,12 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     const auto& session = *session_result;
 
-    auto accepted_outbound_media_sources =
-        filter_whep_outbound_media_sources(outbound_media_sources, generated_answer->accepted_mline_indexes);
-
     session->complete_initial_setup(std::move(generated_answer->local_ice),
                                     generated_answer->sdp_session_id,
                                     generated_answer->sdp_session_version,
                                     std::move(generated_answer->accepted_mline_indexes),
                                     std::move(accepted_outbound_media_sources),
+                                    std::move(rewriter_target),
                                     std::move(*local_udp_port),
                                     std::move(transport));
 
@@ -746,11 +769,33 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
                                    k_whep_ice_restart_incompatible_offer_error,
                                    make_prefixed_error("invalid ice restart offer: ", restart_compatibility.error()));
     }
+    whep_rtp_rewriter_target rewriter_target{
+        .subscriber_offer = *offer_summary,
+        .accepted_mline_indexes = answer->accepted_mline_indexes,
+        .accepted_media_sources = session->outbound_media_sources(),
+    };
+
+    auto rewriter_config =
+        make_whep_rtp_rewriter_config(publisher->session_id(), publisher->remote_offer_summary(), rewriter_target);
+
+    if (!rewriter_config)
+    {
+        WEBRTC_LOG_WARN("WHEP rebuild RTP rewrite mapping failed session={} publisher_session={} error={}",
+                        session_id,
+                        publisher->session_id(),
+                        rewriter_config.error());
+        return json_error_response(request,
+                                   409,
+                                   k_whep_ice_restart_incompatible_offer_error,
+                                   make_prefixed_error("invalid ice restart rtp mapping: ", rewriter_config.error()));
+    }
+
     session->apply_remote_ice_restart(std::move(*runtime_offer),
                                       std::move(answer->accepted_mline_indexes),
                                       std::move(answer->local_ice),
                                       answer->sdp_session_id,
-                                      answer->sdp_session_version);
+                                      answer->sdp_session_version,
+                                      std::move(rewriter_target));
 
     WEBRTC_LOG_INFO(
         "WHEP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={} "

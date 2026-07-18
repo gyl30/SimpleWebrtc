@@ -16,11 +16,28 @@
 #include "ice/session_ice_udp_server.h"
 #include "log/log.h"
 #include "net/socket.h"
+#include "rtp/rtcp_feedback.h"
 #include "session/session_stun_binding.h"
 #include "srtp/srtp_transport.h"
 
 namespace webrtc
 {
+namespace
+{
+uint32_t make_rtcp_sender_ssrc(std::string_view session_id)
+{
+    uint32_t hash = 2166136261U;
+
+    for (const char value : session_id)
+    {
+        hash ^= static_cast<uint8_t>(value);
+        hash *= 16777619U;
+    }
+
+    return hash == 0 ? 1U : hash;
+}
+}    // namespace
+
 whip_session_transport::whip_session_transport(boost::asio::io_context& io_context,
                                                std::string bind_host,
                                                std::shared_ptr<dtls_context> dtls_context,
@@ -39,8 +56,62 @@ whip_session_transport_result whip_session_transport::start(uint16_t local_port)
 
 void whip_session_transport::set_peer_context(std::string local_ice_pwd, dtls_peer_identity identity)
 {
+    reset_selected_peer();
     local_ice_pwd_ = std::move(local_ice_pwd);
+    rtcp_sender_ssrc_ = make_rtcp_sender_ssrc(identity.session_id);
     dtls_identity_ = std::move(identity);
+}
+
+void whip_session_transport::send_keyframe_request(uint32_t media_ssrc)
+{
+    if (media_ssrc == 0 || rtcp_sender_ssrc_ == 0 || !selected_remote_endpoint_.has_value())
+    {
+        return;
+    }
+
+    const boost::asio::ip::udp::endpoint remote_endpoint = *selected_remote_endpoint_;
+    const std::string remote_address = format_udp_endpoint(remote_endpoint);
+    const auto plain_packet = make_rtcp_pli_packet(rtcp_sender_ssrc_, media_ssrc);
+
+    auto protected_packet =
+        srtp_transport_->protect_outbound_packet(plain_packet, remote_address, srtp_packet_kind::rtcp);
+
+    if (!protected_packet)
+    {
+        WEBRTC_LOG_WARN("WHIP keyframe request protect failed remote={} media_ssrc={} error={}",
+                        remote_address,
+                        media_ssrc,
+                        protected_packet.error());
+        return;
+    }
+
+    if (protected_packet->state != srtp_packet_process_state::protected_packet ||
+        protected_packet->protected_packet.empty())
+    {
+        WEBRTC_LOG_DEBUG("WHIP keyframe request ignored remote={} media_ssrc={} state={} reason={}",
+                         remote_address,
+                         media_ssrc,
+                         srtp_packet_process_state_to_string(protected_packet->state),
+                         protected_packet->reason);
+        return;
+    }
+
+    udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
+
+    WEBRTC_LOG_INFO("WHIP keyframe request sent remote={} media_ssrc={}", remote_address, media_ssrc);
+}
+
+void whip_session_transport::reset_selected_peer()
+{
+    if (!selected_remote_endpoint_.has_value())
+    {
+        return;
+    }
+
+    const std::string remote_address = format_udp_endpoint(*selected_remote_endpoint_);
+    srtp_transport_->forget_peer(remote_address);
+    dtls_transport_->forget_peer(remote_address);
+    selected_remote_endpoint_.reset();
 }
 
 session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const session_udp_packet& packet)
@@ -141,7 +212,7 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
     {
         const std::span<const uint8_t> plain_packet(srtp_packet->plain_packet.data(), srtp_packet->plain_packet.size());
 
-        const std::size_t target_count = media_fanout_router_->publish_rtp(stream_id, plain_packet);
+        const std::size_t target_count = media_fanout_router_->publish_rtp(stream_id, session_id, plain_packet);
 
         WEBRTC_LOG_DEBUG("WHIP RTP published stream={} session={} remote={} ssrc={} pt={} seq={} timestamp={} size={} targets={}",
                          stream_id,

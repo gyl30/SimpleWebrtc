@@ -67,6 +67,7 @@ class subscriber_session
                                 uint64_t sdp_session_version,
                                 std::vector<int> accepted_remote_media_mline_indexes,
                                 std::vector<sdp::sdp_answer_media_source> outbound_media_sources,
+                                whep_rtp_rewriter_target rewriter_target,
                                 udp_port_reservation_ptr local_udp_port,
                                 std::shared_ptr<whep_session_transport> transport);
 
@@ -74,7 +75,8 @@ class subscriber_session
                                   std::vector<int> accepted_remote_media_mline_indexes,
                                   ice_credentials local_ice,
                                   uint64_t sdp_session_id,
-                                  uint64_t sdp_session_version);
+                                  uint64_t sdp_session_version,
+                                  whep_rtp_rewriter_target rewriter_target);
 
     [[nodiscard]] std::expected<void, std::string> add_remote_ice_candidate(remote_ice_candidate candidate);
 

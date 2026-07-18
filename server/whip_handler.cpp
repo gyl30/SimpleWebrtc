@@ -361,6 +361,18 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
                                     std::move(*local_udp_port),
                                     std::move(transport));
 
+    media_fanout_router_->set_publisher_source(
+        session->stream_id(),
+        session->session_id(),
+        session->remote_offer_summary(),
+        [weak_session = std::weak_ptr<publisher_session>(session)](uint32_t media_ssrc)
+        {
+            if (const auto current_session = weak_session.lock())
+            {
+                current_session->request_keyframe(media_ssrc);
+            }
+        });
+
     WEBRTC_LOG_INFO(
         "WHIP create publisher stream={} session={} republish={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={} "
         "accepted_mline_count={}",
@@ -490,6 +502,18 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
                                       answer->sdp_session_id,
                                       answer->sdp_session_version);
 
+    media_fanout_router_->set_publisher_source(
+        session->stream_id(),
+        session->session_id(),
+        session->remote_offer_summary(),
+        [weak_session = std::weak_ptr<publisher_session>(session)](uint32_t media_ssrc)
+        {
+            if (const auto current_session = weak_session.lock())
+            {
+                current_session->request_keyframe(media_ssrc);
+            }
+        });
+
     WEBRTC_LOG_INFO("WHIP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={}",
                     session->stream_id(),
                     session->session_id(),
@@ -580,6 +604,9 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
         return json_error_response(request, 412, k_whip_precondition_failed_error, precondition.error());
     }
 
+    const std::string stream_id = session->stream_id();
+    const std::string publisher_session_id = session->session_id();
+
     auto result = registry_->remove_publisher_session(session_id);
 
     if (!result)
@@ -599,6 +626,8 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
         WEBRTC_LOG_ERROR("WHIP delete publisher failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
         return json_error_response(request, 500, k_whip_delete_session_failed_error, "delete publisher session failed");
     }
+
+    media_fanout_router_->clear_publisher_source(stream_id, publisher_session_id);
 
     auto response = create_response(request, 204, "");
 

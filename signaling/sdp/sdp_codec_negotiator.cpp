@@ -751,7 +751,7 @@ const codec_info* find_compatible_publisher_primary_codec(const media_summary& p
     return nullptr;
 }
 
-bool media_has_rtx_codec_for_apt(const media_summary& media, uint16_t apt_payload_type)
+const codec_info* find_rtx_codec_for_apt(const media_summary& media, uint16_t apt_payload_type)
 {
     for (const auto& codec : media.codecs)
     {
@@ -772,10 +772,15 @@ bool media_has_rtx_codec_for_apt(const media_summary& media, uint16_t apt_payloa
             continue;
         }
 
-        return true;
+        return &codec;
     }
 
-    return false;
+    return nullptr;
+}
+
+bool media_has_rtx_codec_for_apt(const media_summary& media, uint16_t apt_payload_type)
+{
+    return find_rtx_codec_for_apt(media, apt_payload_type) != nullptr;
 }
 
 bool rtx_codec_is_answerable(const media_summary& subscriber_media,
@@ -1013,6 +1018,85 @@ codec_negotiation_result negotiate_codecs(const media_summary& subscriber_media,
     append_answerable_rtx_codecs(subscriber_media, publisher_media, selected_codecs);
 
     return selected_codecs;
+}
+
+codec_payload_type_mapping_result negotiate_codec_payload_type_mappings(const media_summary& subscriber_media,
+                                                                         const media_summary& publisher_media)
+{
+    auto selected_codecs = negotiate_codecs(subscriber_media, publisher_media);
+
+    if (!selected_codecs)
+    {
+        return std::unexpected(selected_codecs.error());
+    }
+
+    std::vector<codec_payload_type_mapping> mappings;
+    mappings.reserve(selected_codecs->size());
+
+    for (const auto& subscriber_codec : *selected_codecs)
+    {
+        if (is_rtx_codec(subscriber_codec))
+        {
+            continue;
+        }
+
+        const codec_info* publisher_codec = find_compatible_publisher_primary_codec(publisher_media, subscriber_codec);
+
+        if (publisher_codec == nullptr)
+        {
+            return make_media_error(subscriber_media, "selected codec has no publisher payload type mapping");
+        }
+
+        mappings.push_back(codec_payload_type_mapping{
+            .publisher_payload_type = publisher_codec->payload_type,
+            .subscriber_payload_type = subscriber_codec.payload_type,
+            .publisher_associated_payload_type = std::nullopt,
+            .subscriber_associated_payload_type = std::nullopt,
+        });
+    }
+
+    for (const auto& subscriber_codec : *selected_codecs)
+    {
+        if (!is_rtx_codec(subscriber_codec))
+        {
+            continue;
+        }
+
+        const auto subscriber_apt = find_codec_apt_payload_type(subscriber_codec);
+
+        if (!subscriber_apt.has_value())
+        {
+            return make_media_error(subscriber_media, "selected rtx codec has no apt");
+        }
+
+        const auto primary_mapping = std::find_if(
+            mappings.begin(),
+            mappings.end(),
+            [subscriber_apt](const codec_payload_type_mapping& mapping)
+            { return mapping.subscriber_payload_type == *subscriber_apt && !mapping.subscriber_associated_payload_type.has_value(); });
+
+        if (primary_mapping == mappings.end())
+        {
+            return make_media_error(subscriber_media, "selected rtx codec primary mapping is missing");
+        }
+
+        const codec_info* publisher_rtx_codec =
+            find_rtx_codec_for_apt(publisher_media, primary_mapping->publisher_payload_type);
+
+        if (publisher_rtx_codec == nullptr)
+        {
+            return make_media_error(subscriber_media, "selected rtx codec has no publisher payload type mapping");
+        }
+
+        mappings.push_back(codec_payload_type_mapping{
+            .publisher_payload_type = publisher_rtx_codec->payload_type,
+            .subscriber_payload_type = subscriber_codec.payload_type,
+            .publisher_associated_payload_type = primary_mapping->publisher_payload_type,
+            .subscriber_associated_payload_type = primary_mapping->subscriber_payload_type,
+        });
+    }
+
+    return mappings;
 }
 
 }    // namespace webrtc::sdp

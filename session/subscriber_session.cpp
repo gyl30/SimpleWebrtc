@@ -69,6 +69,7 @@ void subscriber_session::complete_initial_setup(ice_credentials local_ice,
                                                 uint64_t sdp_session_version,
                                                 std::vector<int> accepted_remote_media_mline_indexes,
                                                 std::vector<sdp::sdp_answer_media_source> outbound_media_sources,
+                                                whep_rtp_rewriter_target rewriter_target,
                                                 udp_port_reservation_ptr local_udp_port,
                                                 std::shared_ptr<whep_session_transport> transport)
 {
@@ -79,7 +80,9 @@ void subscriber_session::complete_initial_setup(ice_credentials local_ice,
     outbound_media_sources_ = std::move(outbound_media_sources);
     local_udp_port_ = std::move(local_udp_port);
 
-    transport->set_peer_context(local_ice_.pwd, make_dtls_peer_identity(*this));
+    transport->set_peer_context(local_ice_.pwd,
+                                make_dtls_peer_identity(*this),
+                                std::move(rewriter_target));
     transport_ = std::move(transport);
 
     updated_at_milliseconds_ = now_milliseconds();
@@ -89,7 +92,8 @@ void subscriber_session::apply_remote_ice_restart(sdp::webrtc_offer_summary remo
                                                   std::vector<int> accepted_remote_media_mline_indexes,
                                                   ice_credentials local_ice,
                                                   uint64_t sdp_session_id,
-                                                  uint64_t sdp_session_version)
+                                                  uint64_t sdp_session_version,
+                                                  whep_rtp_rewriter_target rewriter_target)
 {
     remote_offer_summary_ = std::move(remote_offer_summary);
     remote_ice_candidates_.clear();
@@ -97,6 +101,10 @@ void subscriber_session::apply_remote_ice_restart(sdp::webrtc_offer_summary remo
     local_ice_ = std::move(local_ice);
     sdp_session_id_ = sdp_session_id;
     sdp_session_version_ = sdp_session_version;
+
+    transport_->restart_peer_context(local_ice_.pwd,
+                                     make_dtls_peer_identity(*this),
+                                     std::move(rewriter_target));
 
     updated_at_milliseconds_ = now_milliseconds();
 }

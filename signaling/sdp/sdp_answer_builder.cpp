@@ -273,9 +273,9 @@ const media_summary* find_send_capable_media_by_kind_ordinal(const webrtc_offer_
     return nullptr;
 }
 
-const media_summary* find_matching_publisher_media(const media_summary& subscriber_media,
-                                                   const webrtc_offer_summary& subscriber_offer,
-                                                   const webrtc_offer_summary& publisher_offer)
+const media_summary* find_matching_publisher_media_impl(const media_summary& subscriber_media,
+                                                         const webrtc_offer_summary& subscriber_offer,
+                                                         const webrtc_offer_summary& publisher_offer)
 {
     if (!media_can_receive(subscriber_media))
     {
@@ -651,9 +651,10 @@ std::string make_extmap_value(const rtp_header_extension& extension)
 }
 bool rtp_header_extension_id_requires_two_byte(int id) { return id >= 15 && id <= 255; }
 
-void append_header_extension_attributes(media_description& answer_media, const media_summary& media, const media_summary* forwarded_publisher_media)
+std::vector<rtp_header_extension> select_answer_header_extensions_impl(
+    const media_summary& media, const media_summary* forwarded_publisher_media)
 {
-    bool answer_needs_extmap_allow_mixed = false;
+    std::vector<rtp_header_extension> selected_extensions;
 
     for (const auto& extension : media.header_extensions)
     {
@@ -677,13 +678,27 @@ void append_header_extension_attributes(media_description& answer_media, const m
             continue;
         }
 
+        if (rtp_header_extension_id_requires_two_byte(extension.id) && !media.extmap_allow_mixed)
+        {
+            continue;
+        }
+
+        selected_extensions.push_back(extension);
+    }
+
+    return selected_extensions;
+}
+
+void append_header_extension_attributes(media_description& answer_media, const media_summary& media, const media_summary* forwarded_publisher_media)
+{
+    const auto selected_extensions = select_answer_header_extensions_impl(media, forwarded_publisher_media);
+
+    bool answer_needs_extmap_allow_mixed = false;
+
+    for (const auto& extension : selected_extensions)
+    {
         if (rtp_header_extension_id_requires_two_byte(extension.id))
         {
-            if (!media.extmap_allow_mixed)
-            {
-                continue;
-            }
-
             answer_needs_extmap_allow_mixed = true;
         }
 
@@ -1307,7 +1322,7 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
     const media_summary* forwarded_publisher_media = nullptr;
     if (is_whep)
     {
-        const media_summary* publisher_media = find_matching_publisher_media(media, offer, *whep_publisher_offer);
+        const media_summary* publisher_media = find_whep_forwarded_publisher_media(media, offer, *whep_publisher_offer);
         if (publisher_media == nullptr)
         {
             return make_rejected_answer_media(media);
@@ -1490,6 +1505,19 @@ sdp_answer_text_result build_answer_sdp(const webrtc_offer_summary& offer,
     return result;
 }
 }    // namespace
+
+const media_summary* find_whep_forwarded_publisher_media(const media_summary& subscriber_media,
+                                                         const webrtc_offer_summary& subscriber_offer,
+                                                         const webrtc_offer_summary& publisher_offer)
+{
+    return find_matching_publisher_media_impl(subscriber_media, subscriber_offer, publisher_offer);
+}
+
+std::vector<rtp_header_extension> select_whep_answer_header_extensions(const media_summary& subscriber_media,
+                                                                       const media_summary& publisher_media)
+{
+    return select_answer_header_extensions_impl(subscriber_media, &publisher_media);
+}
 
 sdp_answer_text_result build_whip_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options)
 {

@@ -62,6 +62,8 @@ class srtp_transport
     srtp_transport& operator=(srtp_transport&&) = delete;
 
    public:
+    void forget_peer(std::string_view remote_endpoint);
+
     [[nodiscard]] srtp_transport_result handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint);
 
     [[nodiscard]] srtp_transport_result protect_outbound_packet(std::span<const uint8_t> plain_packet,

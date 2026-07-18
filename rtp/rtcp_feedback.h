@@ -7,6 +7,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace webrtc
 {
@@ -35,6 +36,8 @@ using rtcp_feedback_packet_result = std::expected<rtcp_feedback_packet, std::str
 [[nodiscard]] rtcp_feedback_packet_result parse_rtcp_feedback_packet(std::span<const uint8_t> data);
 
 [[nodiscard]] std::string rtcp_feedback_format_to_string(uint8_t packet_type, uint8_t format);
+
+[[nodiscard]] std::vector<uint8_t> make_rtcp_pli_packet(uint32_t sender_ssrc, uint32_t media_ssrc);
 }    // namespace webrtc
 
 #endif

@@ -6,10 +6,11 @@
 #include <string>
 #include <string_view>
 #include <utility>
+
+#include "ice/ice_candidate.h"
 #include "log/log.h"
 #include "session/peer_transport.h"
 #include "util/timestamp.h"
-#include "ice/ice_candidate.h"
 
 namespace webrtc
 {
@@ -81,6 +82,14 @@ void publisher_session::complete_initial_setup(ice_credentials local_ice,
     updated_at_milliseconds_ = now_milliseconds();
 }
 
+void publisher_session::request_keyframe(uint32_t media_ssrc)
+{
+    if (transport_ != nullptr)
+    {
+        transport_->send_keyframe_request(media_ssrc);
+    }
+}
+
 void publisher_session::apply_remote_ice_restart(sdp::webrtc_offer_summary remote_offer_summary,
                                                  std::vector<int> accepted_remote_media_mline_indexes,
                                                  ice_credentials local_ice,
@@ -93,6 +102,8 @@ void publisher_session::apply_remote_ice_restart(sdp::webrtc_offer_summary remot
     local_ice_ = std::move(local_ice);
     sdp_session_id_ = sdp_session_id;
     sdp_session_version_ = sdp_session_version;
+
+    transport_->set_peer_context(local_ice_.pwd, make_dtls_peer_identity(*this));
 
     updated_at_milliseconds_ = now_milliseconds();
 }
