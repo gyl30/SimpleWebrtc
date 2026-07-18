@@ -141,29 +141,6 @@ bool fingerprints_equal(const sdp::fingerprint_info& left, const sdp::fingerprin
     return left.algorithm == right.algorithm && left.value == right.value;
 }
 
-std::string_view dtls_setup_role_to_string(sdp::dtls_connection_role role)
-{
-    switch (role)
-    {
-        case sdp::dtls_connection_role::active:
-            return "active";
-
-        case sdp::dtls_connection_role::passive:
-            return "passive";
-
-        case sdp::dtls_connection_role::actpass:
-            return "actpass";
-
-        case sdp::dtls_connection_role::holdconn:
-            return "holdconn";
-
-        case sdp::dtls_connection_role::unknown:
-            return "unknown";
-    }
-
-    return "unknown";
-}
-
 std::string_view dtls_network_family_to_string(dtls_network_family family)
 {
     switch (family)
@@ -213,25 +190,6 @@ std::expected<std::uint16_t, std::string> make_dtls_udp_payload_mtu(std::uint16_
     return static_cast<std::uint16_t>(ip_mtu - overhead);
 }
 
-std::string make_expected_dtls_generation(std::string_view session_id, std::string_view local_ice_ufrag, std::string_view remote_ice_ufrag)
-{
-    std::string generation;
-
-    generation.reserve(session_id.size() + local_ice_ufrag.size() + remote_ice_ufrag.size() + 2);
-
-    generation.append(session_id);
-
-    generation.push_back('|');
-
-    generation.append(local_ice_ufrag);
-
-    generation.push_back('|');
-
-    generation.append(remote_ice_ufrag);
-
-    return generation;
-}
-
 std::expected<void, std::string> validate_dtls_peer_identity(const dtls_peer_identity& identity)
 {
     if (identity.role == dtls_peer_role::unknown)
@@ -259,28 +217,6 @@ std::expected<void, std::string> validate_dtls_peer_identity(const dtls_peer_ide
         return make_error("dtls peer remote ice ufrag is empty");
     }
 
-    if (identity.generation.empty())
-    {
-        return make_error("dtls peer generation is empty");
-    }
-
-    const std::string expected_generation = make_expected_dtls_generation(identity.session_id, identity.local_ice_ufrag, identity.remote_ice_ufrag);
-
-    if (identity.generation != expected_generation)
-    {
-        return make_error("dtls peer generation does not match ice credentials");
-    }
-
-    if (identity.local_setup != sdp::dtls_connection_role::passive)
-    {
-        return make_error("dtls local setup must be passive");
-    }
-
-    if (identity.remote_setup != sdp::dtls_connection_role::actpass)
-    {
-        return make_error("dtls remote setup must be actpass");
-    }
-
     if (identity.remote_fingerprint.algorithm.empty())
     {
         return make_error("remote dtls fingerprint algorithm is empty");
@@ -297,9 +233,14 @@ std::expected<void, std::string> validate_dtls_peer_identity(const dtls_peer_ide
 bool identities_equal(const dtls_peer_identity& left, const dtls_peer_identity& right)
 {
     return left.role == right.role && left.session_id == right.session_id && left.stream_id == right.stream_id &&
-           left.local_ice_ufrag == right.local_ice_ufrag && left.remote_ice_ufrag == right.remote_ice_ufrag && left.generation == right.generation &&
-           left.local_setup == right.local_setup && left.remote_setup == right.remote_setup &&
+           left.local_ice_ufrag == right.local_ice_ufrag && left.remote_ice_ufrag == right.remote_ice_ufrag &&
            fingerprints_equal(left.remote_fingerprint, right.remote_fingerprint);
+}
+
+bool same_srtp_generation(const dtls_peer_identity& left, const dtls_peer_identity& right)
+{
+    return left.session_id == right.session_id && left.stream_id == right.stream_id && left.local_ice_ufrag == right.local_ice_ufrag &&
+           left.remote_ice_ufrag == right.remote_ice_ufrag;
 }
 
 std::expected<void, std::string> configure_datagram_bio_mtu(BIO* bio, std::uint16_t udp_payload_mtu, std::string_view bio_name)
@@ -698,75 +639,60 @@ struct dtls_transport::impl
             return;
         }
 
-        const auto validation_result = validate_dtls_peer_identity(identity);
-
         std::lock_guard lock(mutex_);
 
         const std::string endpoint_key(remote_endpoint);
+        const auto existing = peers_by_endpoint_.find(endpoint_key);
+
+        if (existing != peers_by_endpoint_.end() && identities_equal(existing->second.identity, identity))
+        {
+            return;
+        }
+
+        const auto validation_result = validate_dtls_peer_identity(identity);
 
         if (!validation_result)
         {
             peers_by_endpoint_.erase(endpoint_key);
 
-            WEBRTC_LOG_WARN("dtls peer identity rejected remote={} session={} stream={} generation={} local_setup={} remote_setup={} error={}",
+            WEBRTC_LOG_WARN("dtls peer identity rejected remote={} session={} stream={} error={}",
                             remote_endpoint,
                             identity.session_id,
                             identity.stream_id,
-                            identity.generation,
-                            dtls_setup_role_to_string(identity.local_setup),
-                            dtls_setup_role_to_string(identity.remote_setup),
                             validation_result.error());
 
             return;
         }
 
         auto [iterator, inserted] = peers_by_endpoint_.try_emplace(endpoint_key);
-
         auto& peer = iterator->second;
-
-        if (!inserted && identities_equal(peer.identity, identity))
-        {
-            return;
-        }
 
         if (!inserted)
         {
             WEBRTC_LOG_INFO(
-                "dtls peer identity changed reset transport remote={} old_session={} new_session={} old_generation={} new_generation={} "
-                "old_local_ufrag={} new_local_ufrag={} old_remote_ufrag={} new_remote_ufrag={} old_local_setup={} new_local_setup={} "
-                "old_remote_setup={} new_remote_setup={}",
+                "dtls peer identity changed reset transport remote={} old_session={} new_session={} old_local_ufrag={} new_local_ufrag={} "
+                "old_remote_ufrag={} new_remote_ufrag={}",
                 remote_endpoint,
                 peer.identity.session_id,
                 identity.session_id,
-                peer.identity.generation,
-                identity.generation,
                 peer.identity.local_ice_ufrag,
                 identity.local_ice_ufrag,
                 peer.identity.remote_ice_ufrag,
-                identity.remote_ice_ufrag,
-                dtls_setup_role_to_string(peer.identity.local_setup),
-                dtls_setup_role_to_string(identity.local_setup),
-                dtls_setup_role_to_string(peer.identity.remote_setup),
-                dtls_setup_role_to_string(identity.remote_setup));
+                identity.remote_ice_ufrag);
 
             peer = dtls_peer_state{};
         }
 
         peer.identity = std::move(identity);
 
-        WEBRTC_LOG_INFO(
-            "dtls remember peer remote={} role={} stream={} session={} generation={} local_ufrag={} remote_ufrag={} local_setup={} remote_setup={} "
-            "fingerprint_algorithm={}",
-            remote_endpoint,
-            dtls_peer_role_to_string(peer.identity.role),
-            peer.identity.stream_id,
-            peer.identity.session_id,
-            peer.identity.generation,
-            peer.identity.local_ice_ufrag,
-            peer.identity.remote_ice_ufrag,
-            dtls_setup_role_to_string(peer.identity.local_setup),
-            dtls_setup_role_to_string(peer.identity.remote_setup),
-            peer.identity.remote_fingerprint.algorithm);
+        WEBRTC_LOG_INFO("dtls remember peer remote={} role={} stream={} session={} local_ufrag={} remote_ufrag={} fingerprint_algorithm={}",
+                        remote_endpoint,
+                        dtls_peer_role_to_string(peer.identity.role),
+                        peer.identity.stream_id,
+                        peer.identity.session_id,
+                        peer.identity.local_ice_ufrag,
+                        peer.identity.remote_ice_ufrag,
+                        peer.identity.remote_fingerprint.algorithm);
     }
     dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data,
                                                    std::string_view remote_endpoint,
@@ -921,13 +847,14 @@ struct dtls_transport::impl
         return packets;
     }
 
-    std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint) const
+    std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint,
+                                                                  const dtls_peer_identity& expected_identity) const
     {
         std::lock_guard lock(mutex_);
 
         const auto* peer = find_peer_locked_const(remote_endpoint);
 
-        if (peer == nullptr)
+        if (peer == nullptr || !same_srtp_generation(peer->identity, expected_identity))
         {
             return std::nullopt;
         }
@@ -995,20 +922,6 @@ struct dtls_transport::impl
 
     std::expected<void, std::string> verify_remote_certificate_locked(dtls_peer_state& peer, std::string_view remote_endpoint)
     {
-        auto identity_result = validate_dtls_peer_identity(peer.identity);
-
-        if (!identity_result)
-        {
-            WEBRTC_LOG_WARN("dtls remote certificate verify rejected identity remote={} session={} stream={} generation={} error={}",
-                            remote_endpoint,
-                            peer.identity.session_id,
-                            peer.identity.stream_id,
-                            peer.identity.generation,
-                            identity_result.error());
-
-            return std::unexpected(identity_result.error());
-        }
-
         if (peer.ssl == nullptr)
         {
             return make_error("dtls ssl is null");
@@ -1101,7 +1014,7 @@ struct dtls_transport::impl
     {
         if (header.content_type == dtls_record_content_type::handshake)
         {
-            const dtls_handshake_type handshake_type = get_dtls_handshake_type(data);
+            const dtls_handshake_type handshake_type = get_dtls_handshake_type(data, header);
 
             if (handshake_type == dtls_handshake_type::client_hello)
             {
@@ -1169,9 +1082,10 @@ dtls_transport_packet_result dtls_transport::handle_udp_packet(std::span<const u
     return impl_->handle_udp_packet(data, remote_endpoint, network_family);
 }
 
-std::optional<srtp_keying_material> dtls_transport::get_srtp_keying_material(std::string_view remote_endpoint) const
+std::optional<srtp_keying_material> dtls_transport::get_srtp_keying_material(std::string_view remote_endpoint,
+                                                                               const dtls_peer_identity& expected_identity) const
 {
-    return impl_->get_srtp_keying_material(remote_endpoint);
+    return impl_->get_srtp_keying_material(remote_endpoint, expected_identity);
 }
 
 std::optional<dtls_peer_identity> dtls_transport::get_peer_identity(std::string_view remote_endpoint) const

@@ -33,11 +33,6 @@ struct dtls_peer_identity
     std::string local_ice_ufrag;
     std::string remote_ice_ufrag;
 
-    std::string generation;
-
-    sdp::dtls_connection_role local_setup = sdp::dtls_connection_role::unknown;
-    sdp::dtls_connection_role remote_setup = sdp::dtls_connection_role::unknown;
-
     sdp::fingerprint_info remote_fingerprint;
 };
 
@@ -80,7 +75,8 @@ class dtls_transport
                                                                  dtls_network_family network_family);
 
     [[nodiscard]]
-    std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint) const;
+    std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint,
+                                                                  const dtls_peer_identity& expected_identity) const;
 
     [[nodiscard]]
     std::optional<dtls_peer_identity> get_peer_identity(std::string_view remote_endpoint) const;

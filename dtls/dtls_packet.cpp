@@ -162,26 +162,9 @@ dtls_record_header_result parse_dtls_record_header(std::span<const uint8_t> data
     return header;
 }
 
-dtls_handshake_type get_dtls_handshake_type(std::span<const uint8_t> data)
+dtls_handshake_type get_dtls_handshake_type(std::span<const uint8_t> data, const dtls_record_header& header)
 {
-    auto header = parse_dtls_record_header(data);
-
-    if (!header)
-    {
-        return dtls_handshake_type::unknown;
-    }
-
-    if (header->content_type != dtls_record_content_type::handshake)
-    {
-        return dtls_handshake_type::unknown;
-    }
-
-    if (header->length == 0)
-    {
-        return dtls_handshake_type::unknown;
-    }
-
-    if (data.size() <= k_dtls_record_header_size)
+    if (header.content_type != dtls_record_content_type::handshake || header.length == 0 || data.size() <= k_dtls_record_header_size)
     {
         return dtls_handshake_type::unknown;
     }

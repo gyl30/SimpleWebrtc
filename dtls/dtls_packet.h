@@ -52,7 +52,7 @@ using dtls_record_header_result = std::expected<dtls_record_header, std::string>
 
 [[nodiscard]] dtls_record_header_result parse_dtls_record_header(std::span<const uint8_t> data);
 
-[[nodiscard]] dtls_handshake_type get_dtls_handshake_type(std::span<const uint8_t> data);
+[[nodiscard]] dtls_handshake_type get_dtls_handshake_type(std::span<const uint8_t> data, const dtls_record_header& header);
 
 [[nodiscard]] std::string dtls_record_content_type_to_string(dtls_record_content_type value);
 
