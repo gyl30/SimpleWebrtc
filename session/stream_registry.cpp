@@ -106,18 +106,11 @@ publisher_session_result stream_registry::replace_publisher_session(std::string 
         return std::unexpected(stream_registry_error::publisher_republish_stream_mismatch);
     }
 
-    const auto stream_iterator = publishers_by_stream_id_.find(stream_id);
-
-    if (stream_iterator == publishers_by_stream_id_.end() || stream_iterator->second->session_id() != previous_session_id)
-    {
-        return std::unexpected(stream_registry_error::publisher_republish_stream_mismatch);
-    }
-
     remember_removed_session_locked(stream_session_kind::publisher, previous_session->session_id());
 
     publishers_by_session_id_.erase(previous_iterator);
 
-    publishers_by_stream_id_.erase(stream_iterator);
+    publishers_by_stream_id_.erase(stream_id);
 
     const std::string session_id = make_unique_session_id_locked();
     const uint64_t created_at = now_milliseconds();
@@ -240,11 +233,6 @@ std::shared_ptr<subscriber_session> stream_registry::find_subscriber_by_session_
 
 std::optional<stream_session_kind> stream_registry::find_removed_session_kind(std::string_view session_id) const
 {
-    if (session_id.empty())
-    {
-        return std::nullopt;
-    }
-
     const uint64_t current_time_milliseconds = now_milliseconds();
 
     std::lock_guard lock(mutex_);
@@ -267,11 +255,6 @@ std::optional<stream_session_kind> stream_registry::find_removed_session_kind(st
 bool stream_registry::is_removed_session_tombstone_expired_locked(const removed_session_tombstone& tombstone,
                                                                   uint64_t current_time_milliseconds) const
 {
-    if (tombstone.removed_at_milliseconds == 0)
-    {
-        return false;
-    }
-
     if (current_time_milliseconds <= tombstone.removed_at_milliseconds)
     {
         return false;
@@ -281,11 +264,6 @@ bool stream_registry::is_removed_session_tombstone_expired_locked(const removed_
 }
 void stream_registry::remember_removed_session_locked(stream_session_kind kind, std::string_view session_id)
 {
-    if (session_id.empty())
-    {
-        return;
-    }
-
     const uint64_t current_time_milliseconds = now_milliseconds();
 
     removed_session_tombstones_by_session_id_[std::string(session_id)] = removed_session_tombstone{
@@ -322,11 +300,6 @@ void stream_registry::prune_removed_session_tombstones_locked(uint64_t current_t
             {
                 oldest_iterator = iterator;
             }
-        }
-
-        if (oldest_iterator == removed_session_tombstones_by_session_id_.end())
-        {
-            return;
         }
 
         removed_session_tombstones_by_session_id_.erase(oldest_iterator);

@@ -18,7 +18,6 @@
 #include "server/http_error_response.h"
 #include "server/runtime_offer_filter.h"
 #include "server/trickle_ice_patch_handler.h"
-#include "session/peer_transport.h"
 #include "session/whip_session_transport.h"
 #include "signaling/sdp/sdp_offer_validator.h"
 #include "signaling/sdp/sdp_parser.h"
@@ -355,16 +354,12 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
     const auto& session = *session_result;
 
-    session->set_local_udp_port_reservation(std::move(*local_udp_port));
-
-    session->set_accepted_remote_media_mline_indexes(std::move(answer->accepted_mline_indexes));
-
-    session->set_local_answer_metadata(std::move(answer->local_ice),
-                                       answer->sdp_session_id,
-                                       answer->sdp_session_version);
-
-    transport->set_peer_context(session->local_ice().pwd, make_dtls_peer_identity(*session));
-    session->set_transport(std::move(transport));
+    session->complete_initial_setup(std::move(answer->local_ice),
+                                    answer->sdp_session_id,
+                                    answer->sdp_session_version,
+                                    std::move(answer->accepted_mline_indexes),
+                                    std::move(*local_udp_port),
+                                    std::move(transport));
 
     WEBRTC_LOG_INFO(
         "WHIP create publisher stream={} session={} republish={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={} "
@@ -489,13 +484,11 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
                                    k_whip_ice_restart_incompatible_offer_error,
                                    make_prefixed_error("invalid ice restart offer: ", restart_compatibility.error()));
     }
-    session->apply_remote_ice_restart_offer(std::move(*runtime_offer));
-
-    session->set_accepted_remote_media_mline_indexes(std::move(answer->accepted_mline_indexes));
-
-    session->set_local_answer_metadata(std::move(answer->local_ice),
-                                       answer->sdp_session_id,
-                                       answer->sdp_session_version);
+    session->apply_remote_ice_restart(std::move(*runtime_offer),
+                                      std::move(answer->accepted_mline_indexes),
+                                      std::move(answer->local_ice),
+                                      answer->sdp_session_id,
+                                      answer->sdp_session_version);
 
     WEBRTC_LOG_INFO("WHIP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={}",
                     session->stream_id(),

@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "log/log.h"
+#include "session/peer_transport.h"
 #include "util/timestamp.h"
 #include "ice/ice_candidate.h"
 
@@ -43,15 +44,7 @@ const sdp::webrtc_offer_summary& subscriber_session::remote_offer_summary() cons
 
 const ice_credentials& subscriber_session::local_ice() const { return local_ice_; }
 
-uint16_t subscriber_session::local_udp_port() const
-{
-    if (local_udp_port_ == nullptr)
-    {
-        return 0;
-    }
-
-    return local_udp_port_->port();
-}
+uint16_t subscriber_session::local_udp_port() const { return local_udp_port_->port(); }
 
 uint64_t subscriber_session::sdp_session_id() const { return sdp_session_id_; }
 
@@ -71,48 +64,39 @@ uint64_t subscriber_session::created_at_milliseconds() const { return created_at
 
 uint64_t subscriber_session::updated_at_milliseconds() const { return updated_at_milliseconds_; }
 
-void subscriber_session::set_local_udp_port_reservation(udp_port_reservation_ptr local_udp_port)
+void subscriber_session::complete_initial_setup(ice_credentials local_ice,
+                                                uint64_t sdp_session_id,
+                                                uint64_t sdp_session_version,
+                                                std::vector<int> accepted_remote_media_mline_indexes,
+                                                std::vector<sdp::sdp_answer_media_source> outbound_media_sources,
+                                                udp_port_reservation_ptr local_udp_port,
+                                                std::shared_ptr<whep_session_transport> transport)
 {
+    local_ice_ = std::move(local_ice);
+    sdp_session_id_ = sdp_session_id;
+    sdp_session_version_ = sdp_session_version;
+    accepted_remote_media_mline_indexes_ = std::move(accepted_remote_media_mline_indexes);
+    outbound_media_sources_ = std::move(outbound_media_sources);
     local_udp_port_ = std::move(local_udp_port);
 
-    updated_at_milliseconds_ = now_milliseconds();
-}
-
-void subscriber_session::set_transport(std::shared_ptr<whep_session_transport> transport)
-{
+    transport->set_peer_context(local_ice_.pwd, make_dtls_peer_identity(*this));
     transport_ = std::move(transport);
 
     updated_at_milliseconds_ = now_milliseconds();
 }
 
-void subscriber_session::set_local_answer_metadata(ice_credentials local_ice,
-                                                uint64_t sdp_session_id,
-                                                uint64_t sdp_session_version)
-{
-    local_ice_ = std::move(local_ice);
-
-    sdp_session_id_ = sdp_session_id;
-
-    sdp_session_version_ = sdp_session_version;
-
-    updated_at_milliseconds_ = now_milliseconds();
-}
-
-void subscriber_session::set_outbound_media_sources(std::vector<int> accepted_remote_media_mline_indexes,
-                                                    std::vector<sdp::sdp_answer_media_source> outbound_media_sources)
-{
-    accepted_remote_media_mline_indexes_ = std::move(accepted_remote_media_mline_indexes);
-
-    outbound_media_sources_ = std::move(outbound_media_sources);
-
-    updated_at_milliseconds_ = now_milliseconds();
-}
-
-void subscriber_session::apply_remote_ice_restart_offer(sdp::webrtc_offer_summary remote_offer_summary)
+void subscriber_session::apply_remote_ice_restart(sdp::webrtc_offer_summary remote_offer_summary,
+                                                  std::vector<int> accepted_remote_media_mline_indexes,
+                                                  ice_credentials local_ice,
+                                                  uint64_t sdp_session_id,
+                                                  uint64_t sdp_session_version)
 {
     remote_offer_summary_ = std::move(remote_offer_summary);
-
     remote_ice_candidates_.clear();
+    accepted_remote_media_mline_indexes_ = std::move(accepted_remote_media_mline_indexes);
+    local_ice_ = std::move(local_ice);
+    sdp_session_id_ = sdp_session_id;
+    sdp_session_version_ = sdp_session_version;
 
     updated_at_milliseconds_ = now_milliseconds();
 }

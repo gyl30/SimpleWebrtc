@@ -151,11 +151,6 @@ bool remote_ice_candidate_media_is_accepted(const session_type& session, const r
     const auto& accepted_mline_indexes = session.accepted_remote_media_mline_indexes();
     const auto& media_values = session.remote_offer_summary().media;
 
-    if (accepted_mline_indexes.size() != media_values.size())
-    {
-        return false;
-    }
-
     for (std::size_t index = 0; index < media_values.size(); ++index)
     {
         if (has_mid && media_values[index].mid != candidate.sdp_mid)

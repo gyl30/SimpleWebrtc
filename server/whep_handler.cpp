@@ -21,7 +21,6 @@
 #include "server/http_error_response.h"
 #include "server/runtime_offer_filter.h"
 #include "server/trickle_ice_patch_handler.h"
-#include "session/peer_transport.h"
 #include "session/whep_session_transport.h"
 #include "signaling/sdp/sdp_offer_validator.h"
 #include "signaling/sdp/sdp_parser.h"
@@ -600,20 +599,16 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     const auto& session = *session_result;
 
-    session->set_local_udp_port_reservation(std::move(*local_udp_port));
-
     auto accepted_outbound_media_sources =
         filter_whep_outbound_media_sources(outbound_media_sources, generated_answer->accepted_mline_indexes);
 
-    session->set_outbound_media_sources(std::move(generated_answer->accepted_mline_indexes),
-                                        std::move(accepted_outbound_media_sources));
-
-    session->set_local_answer_metadata(std::move(generated_answer->local_ice),
-                                       generated_answer->sdp_session_id,
-                                       generated_answer->sdp_session_version);
-
-    transport->set_peer_context(session->local_ice().pwd, make_dtls_peer_identity(*session));
-    session->set_transport(std::move(transport));
+    session->complete_initial_setup(std::move(generated_answer->local_ice),
+                                    generated_answer->sdp_session_id,
+                                    generated_answer->sdp_session_version,
+                                    std::move(generated_answer->accepted_mline_indexes),
+                                    std::move(accepted_outbound_media_sources),
+                                    std::move(*local_udp_port),
+                                    std::move(transport));
 
     WEBRTC_LOG_INFO(
         "WHEP create subscriber stream={} session={} reconnect={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={} "
@@ -715,14 +710,12 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
 
     const uint64_t next_sdp_session_version = session->sdp_session_version() + 1U;
 
-    auto restart_outbound_media_sources = session->outbound_media_sources();
-
     auto answer = answer_factory_->build_whep_restart_answer(session->stream_id(),
                                                              *offer_summary,
                                                              publisher->remote_offer_summary(),
                                                              session->sdp_session_id(),
                                                              next_sdp_session_version,
-                                                             restart_outbound_media_sources,
+                                                             session->outbound_media_sources(),
                                                              session->local_udp_port());
     if (!answer)
     {
@@ -753,14 +746,11 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
                                    k_whep_ice_restart_incompatible_offer_error,
                                    make_prefixed_error("invalid ice restart offer: ", restart_compatibility.error()));
     }
-    session->apply_remote_ice_restart_offer(std::move(*runtime_offer));
-
-    session->set_outbound_media_sources(std::move(answer->accepted_mline_indexes),
-                                        std::move(restart_outbound_media_sources));
-
-    session->set_local_answer_metadata(std::move(answer->local_ice),
-                                       answer->sdp_session_id,
-                                       answer->sdp_session_version);
+    session->apply_remote_ice_restart(std::move(*runtime_offer),
+                                      std::move(answer->accepted_mline_indexes),
+                                      std::move(answer->local_ice),
+                                      answer->sdp_session_id,
+                                      answer->sdp_session_version);
 
     WEBRTC_LOG_INFO(
         "WHEP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={} "
