@@ -59,15 +59,6 @@ uint32_t read_u32(std::span<const uint8_t> data, std::size_t offset)
            (static_cast<uint32_t>(data[offset + 2]) << 8U) | static_cast<uint32_t>(data[offset + 3]);
 }
 
-uint64_t read_u64(std::span<const uint8_t> data, std::size_t offset)
-{
-    const uint64_t high = static_cast<uint64_t>(read_u32(data, offset));
-
-    const uint64_t low = static_cast<uint64_t>(read_u32(data, offset + 4));
-
-    return (high << 32U) | low;
-}
-
 void append_u16(std::vector<uint8_t>& data, uint16_t value)
 {
     data.push_back(static_cast<uint8_t>((value >> 8U) & 0xFFU));
@@ -497,7 +488,7 @@ std::expected<void, std::string> decode_known_attribute(stun_message& message, u
                 return make_error("stun ice-controlling attribute has invalid size");
             }
 
-            message.ice_controlling = read_u64(value, 0);
+            message.has_ice_controlling = true;
             return {};
         }
 
@@ -508,7 +499,7 @@ std::expected<void, std::string> decode_known_attribute(stun_message& message, u
                 return make_error("stun ice-controlled attribute has invalid size");
             }
 
-            message.ice_controlled = read_u64(value, 0);
+            message.has_ice_controlled = true;
             return {};
         }
 
@@ -709,7 +700,7 @@ std::expected<void, std::string> validate_response_options(const stun_binding_su
         return make_error("stun mapped address port is zero");
     }
 
-    if (options.include_message_integrity && options.message_integrity_key.empty())
+    if (options.message_integrity_key.empty())
     {
         return make_error("stun message integrity key is empty");
     }
@@ -991,23 +982,17 @@ stun_packet_result write_stun_binding_success_response(const stun_message& reque
         return std::unexpected(length_result.error());
     }
 
-    if (options.include_message_integrity)
-    {
-        auto integrity_result = append_message_integrity(packet, options.message_integrity_key);
+    auto integrity_result = append_message_integrity(packet, options.message_integrity_key);
 
-        if (!integrity_result)
-        {
-            return std::unexpected(integrity_result.error());
-        }
+    if (!integrity_result)
+    {
+        return std::unexpected(integrity_result.error());
     }
 
-    if (options.include_fingerprint)
+    auto fingerprint_result = append_fingerprint(packet);
+    if (!fingerprint_result)
     {
-        auto fingerprint_result = append_fingerprint(packet);
-        if (!fingerprint_result)
-        {
-            return std::unexpected(fingerprint_result.error());
-        }
+        return std::unexpected(fingerprint_result.error());
     }
 
     return packet;

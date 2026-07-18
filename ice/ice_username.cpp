@@ -117,12 +117,12 @@ std::expected<void, std::string> validate_ice_connectivity_check(const stun_mess
         return make_error("ice connectivity check priority is zero");
     }
 
-    if (!message.ice_controlling.has_value())
+    if (!message.has_ice_controlling)
     {
         return make_error("ice-lite connectivity check missing ice-controlling");
     }
 
-    if (message.ice_controlled.has_value())
+    if (message.has_ice_controlled)
     {
         return make_error("ice-lite connectivity check contains ice-controlled");
     }

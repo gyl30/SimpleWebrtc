@@ -72,13 +72,9 @@ session_udp_dispatch_result whip_session_transport::handle_udp_packet(const sess
     {
         session_udp_dispatch_result result;
 
-        if (stun_result.accepted)
-        {
-            selected_remote_endpoint_ = packet.remote_endpoint;
-        }
-
         if (stun_result.response.has_value())
         {
+            selected_remote_endpoint_ = packet.remote_endpoint;
             result.outbound_packets.push_back(std::move(*stun_result.response));
         }
 

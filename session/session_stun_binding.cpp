@@ -47,8 +47,6 @@ std::optional<session_udp_outbound_packet> make_stun_binding_response(const stun
     options.mapped_address.port = remote_endpoint.port();
     options.mapped_address.is_ipv6 = remote_endpoint.address().is_v6();
     options.message_integrity_key = context.local_ice_pwd;
-    options.include_message_integrity = true;
-    options.include_fingerprint = true;
 
     auto response = write_stun_binding_success_response(request, options);
 
@@ -227,9 +225,7 @@ session_stun_binding_result handle_session_stun_binding(std::span<const uint8_t>
     }
 
     result.response = make_stun_binding_response(*message, remote_endpoint, context);
-    result.accepted = result.response.has_value();
-
-    if (result.accepted)
+    if (result.response.has_value())
     {
         WEBRTC_LOG_DEBUG("{} stun binding accepted stream={} session={} username={} remote={}",
                          context.log_prefix,

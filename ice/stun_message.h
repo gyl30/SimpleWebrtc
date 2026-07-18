@@ -43,8 +43,8 @@ struct stun_message
 
     std::optional<std::string> username;
     std::optional<uint32_t> priority;
-    std::optional<uint64_t> ice_controlling;
-    std::optional<uint64_t> ice_controlled;
+    bool has_ice_controlling = false;
+    bool has_ice_controlled = false;
 
     bool has_message_integrity = false;
 
@@ -56,9 +56,6 @@ struct stun_binding_success_response_options
     stun_address mapped_address;
 
     std::string message_integrity_key;
-
-    bool include_message_integrity = true;
-    bool include_fingerprint = true;
 };
 
 using stun_validation_result = std::expected<void, std::string>;

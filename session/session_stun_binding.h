@@ -25,10 +25,6 @@ struct session_stun_binding_context
 struct session_stun_binding_result
 {
     bool handled = false;
-
-    // 只有完整校验通过且成功生成 Binding Success 响应时才为 true。
-    bool accepted = false;
-
     std::optional<session_udp_outbound_packet> response;
 };
 
