@@ -18,6 +18,8 @@ namespace
 {
 using validation_result = std::expected<void, std::string>;
 
+inline constexpr std::string_view k_local_stream_id_prefix = "webrtc";
+
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 bool contains_whitespace(std::string_view value)
@@ -182,26 +184,6 @@ bool answer_sdp_contains_all_media_source_attributes(std::string_view answer_sdp
     return true;
 }
 
-validation_result validate_dtls_setup_role(sdp::dtls_connection_role setup)
-{
-    switch (setup)
-    {
-        case sdp::dtls_connection_role::active:
-        case sdp::dtls_connection_role::passive:
-            return {};
-
-        case sdp::dtls_connection_role::actpass:
-            return make_error("local setup must not be actpass");
-
-        case sdp::dtls_connection_role::holdconn:
-            return make_error("local setup must not be holdconn");
-
-        case sdp::dtls_connection_role::unknown:
-            return make_error("local setup must not be unknown");
-    }
-
-    return make_error("unsupported local setup");
-}
 std::string make_candidate_field_name(std::string_view prefix, std::string_view field)
 {
     std::string value;
@@ -282,6 +264,11 @@ validation_result validate_ice_candidate_config(const sdp::sdp_ice_candidate_opt
 
 validation_result validate_ice_candidates_config(const webrtc_answer_factory_config& config)
 {
+    if (config.ice_candidates.empty())
+    {
+        return make_error("ice candidate list is empty");
+    }
+
     for (std::size_t index = 0; index < config.ice_candidates.size(); ++index)
     {
         std::string prefix("ice candidate ");
@@ -363,62 +350,7 @@ validation_result webrtc_answer_factory::validate_config() const
         return std::unexpected(fingerprint_value_result.error());
     }
 
-    auto origin_username_result = validate_token(config_.origin_username, "origin username");
-
-    if (!origin_username_result)
-    {
-        return std::unexpected(origin_username_result.error());
-    }
-
-    auto network_type_result = validate_token(config_.network_type, "network type");
-
-    if (!network_type_result)
-    {
-        return std::unexpected(network_type_result.error());
-    }
-
-    auto address_type_result = validate_token(config_.address_type, "address type");
-
-    if (!address_type_result)
-    {
-        return std::unexpected(address_type_result.error());
-    }
-
-    auto unicast_address_result = validate_token(config_.unicast_address, "unicast address");
-
-    if (!unicast_address_result)
-    {
-        return std::unexpected(unicast_address_result.error());
-    }
-
-    auto media_address_result = validate_token(config_.media_address, "media address");
-
-    if (!media_address_result)
-    {
-        return std::unexpected(media_address_result.error());
-    }
-
-    auto stream_prefix_result = validate_token(config_.local_stream_id_prefix, "local stream id prefix");
-
-    if (!stream_prefix_result)
-    {
-        return std::unexpected(stream_prefix_result.error());
-    }
-
-    auto setup_result = validate_dtls_setup_role(config_.local_setup);
-
-    if (!setup_result)
-    {
-        return std::unexpected(setup_result.error());
-    }
-
-    auto candidate_result = validate_ice_candidates_config(config_);
-
-    if (!candidate_result)
-    {
-        return std::unexpected(candidate_result.error());
-    }
-    return {};
+    return validate_ice_candidates_config(config_);
 }
 
 sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_view stream_id,
@@ -429,27 +361,18 @@ sdp::sdp_answer_options webrtc_answer_factory::make_answer_options(std::string_v
 {
     sdp::sdp_answer_options options;
 
-    options.origin_username = config_.origin_username;
     options.session_id = session_id;
     options.session_version = session_version;
 
-    options.network_type = config_.network_type;
-    options.address_type = config_.address_type;
-    options.unicast_address = config_.unicast_address;
-    options.media_address = config_.media_address;
+    options.media_address = config_.ice_candidates.front().address;
 
     options.local_ice_ufrag = local_ice.ufrag;
     options.local_ice_pwd = local_ice.pwd;
     options.local_fingerprint = config_.local_fingerprint;
 
-    options.local_setup = config_.local_setup;
-    options.ice_lite = config_.ice_lite;
-    options.enable_trickle = config_.enable_trickle;
-
+    options.ice_lite = true;
     options.local_candidates = make_local_ice_candidates(config_, local_candidate_port);
-    options.end_of_candidates = config_.end_of_candidates;
-
-    options.local_stream_id = make_local_stream_id(config_.local_stream_id_prefix, stream_id);
+    options.local_stream_id = make_local_stream_id(k_local_stream_id_prefix, stream_id);
 
     return options;
 }

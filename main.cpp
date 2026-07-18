@@ -439,15 +439,11 @@ int main(int argc, char* argv[])
 
     auto session_udp_port_allocator = std::make_shared<webrtc::udp_port_allocator>(session_transport_config.session_udp_port_range);
 
-    answer_factory_config.media_address = ice_public_ips.front();
-
     for (std::size_t index = 0; index < ice_public_ips.size(); ++index)
     {
         answer_factory_config.ice_candidates.push_back(
             make_ice_host_candidate(ice_public_ips[index], session_transport_config.session_udp_port_range.min_port, index));
     }
-
-    answer_factory_config.end_of_candidates = true;
 
     WEBRTC_LOG_INFO(
         "certificate fingerprint {} {}", answer_factory_config.local_fingerprint.algorithm, answer_factory_config.local_fingerprint.value);

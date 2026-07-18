@@ -18,22 +18,7 @@ struct webrtc_answer_factory_config
 {
     sdp::fingerprint_info local_fingerprint;
 
-    std::string origin_username = "-";
-    std::string network_type = "IN";
-    std::string address_type = "IP4";
-    std::string unicast_address = "0.0.0.0";
-    std::string media_address = "0.0.0.0";
-
-    sdp::dtls_connection_role local_setup = sdp::dtls_connection_role::passive;
-
-    bool ice_lite = true;
-    bool enable_trickle = true;
-
     std::vector<sdp::sdp_ice_candidate_options> ice_candidates;
-
-    bool end_of_candidates = true;
-
-    std::string local_stream_id_prefix = "webrtc";
 };
 
 struct generated_sdp_answer
