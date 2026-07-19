@@ -76,7 +76,10 @@ void publisher_session::complete_initial_setup(ice_credentials local_ice,
     accepted_remote_media_mline_indexes_ = std::move(accepted_remote_media_mline_indexes);
     local_udp_port_ = std::move(local_udp_port);
 
-    transport->set_peer_context(local_ice_.pwd, make_dtls_peer_identity(*this));
+    transport->set_peer_context(local_ice_.pwd,
+                                make_dtls_peer_identity(*this),
+                                remote_offer_summary_,
+                                accepted_remote_media_mline_indexes_);
     transport_ = std::move(transport);
 
     updated_at_milliseconds_ = now_milliseconds();
@@ -111,7 +114,10 @@ void publisher_session::apply_remote_ice_restart(sdp::webrtc_offer_summary remot
     sdp_session_id_ = sdp_session_id;
     sdp_session_version_ = sdp_session_version;
 
-    transport_->restart_peer_context(local_ice_.pwd, make_dtls_peer_identity(*this));
+    transport_->restart_peer_context(local_ice_.pwd,
+                                     make_dtls_peer_identity(*this),
+                                     remote_offer_summary_,
+                                     accepted_remote_media_mline_indexes_);
 
     updated_at_milliseconds_ = now_milliseconds();
 }
