@@ -177,6 +177,7 @@ set(WEBRTC_SOURCES
     session/peer_transport.cpp
     session/publisher_session.cpp
     session/session_stun_binding.cpp
+    session/session_transport_peer_rebind.cpp
     session/subscriber_session.cpp
     session/whip_session_transport.cpp
     session/whep_session_transport.cpp

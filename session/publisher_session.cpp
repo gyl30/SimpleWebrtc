@@ -103,7 +103,7 @@ void publisher_session::apply_remote_ice_restart(sdp::webrtc_offer_summary remot
     sdp_session_id_ = sdp_session_id;
     sdp_session_version_ = sdp_session_version;
 
-    transport_->set_peer_context(local_ice_.pwd, make_dtls_peer_identity(*this));
+    transport_->restart_peer_context(local_ice_.pwd, make_dtls_peer_identity(*this));
 
     updated_at_milliseconds_ = now_milliseconds();
 }

@@ -299,6 +299,72 @@ struct srtp_transport::impl
         peers_by_endpoint_.erase(std::string(remote_endpoint));
     }
 
+    srtp_peer_rebind_result rebind_peer(std::string_view previous_remote_endpoint,
+                                        std::string_view next_remote_endpoint,
+                                        const dtls_peer_identity& identity)
+    {
+        if (previous_remote_endpoint.empty() || next_remote_endpoint.empty())
+        {
+            return std::unexpected("srtp peer rebind endpoint is empty");
+        }
+
+        std::lock_guard lock(mutex_);
+
+        const std::string previous_key(previous_remote_endpoint);
+        const std::string next_key(next_remote_endpoint);
+        auto previous = peers_by_endpoint_.find(previous_key);
+
+        if (previous == peers_by_endpoint_.end())
+        {
+            return false;
+        }
+
+        if (previous->second.session_id != identity.session_id ||
+            previous->second.stream_id != identity.stream_id)
+        {
+            return std::unexpected("srtp peer rebind session identity changed");
+        }
+
+        if (previous_key != next_key && peers_by_endpoint_.contains(next_key))
+        {
+            return std::unexpected("srtp peer rebind destination already exists");
+        }
+
+        if (previous_key == next_key)
+        {
+            bind_peer_identity(previous->second, identity);
+
+            WEBRTC_LOG_INFO("srtp peer rebound remote={} session={} stream={} local_ufrag={} remote_ufrag={} same_endpoint=1",
+                            next_remote_endpoint,
+                            previous->second.session_id,
+                            previous->second.stream_id,
+                            previous->second.local_ice_ufrag,
+                            previous->second.remote_ice_ufrag);
+
+            return true;
+        }
+
+        auto node = peers_by_endpoint_.extract(previous);
+        node.key() = next_key;
+        bind_peer_identity(node.mapped(), identity);
+        auto inserted = peers_by_endpoint_.insert(std::move(node));
+
+        if (!inserted.inserted)
+        {
+            return std::unexpected("srtp peer rebind destination insertion failed");
+        }
+
+        WEBRTC_LOG_INFO("srtp peer rebound previous_remote={} remote={} session={} stream={} local_ufrag={} remote_ufrag={} same_endpoint=0",
+                        previous_remote_endpoint,
+                        next_remote_endpoint,
+                        inserted.position->second.session_id,
+                        inserted.position->second.stream_id,
+                        inserted.position->second.local_ice_ufrag,
+                        inserted.position->second.remote_ice_ufrag);
+
+        return true;
+    }
+
     srtp_transport_result handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)
     {
         const srtp_packet_kind kind = classify_packet(data);
@@ -545,6 +611,13 @@ srtp_transport::~srtp_transport() = default;
 void srtp_transport::forget_peer(std::string_view remote_endpoint)
 {
     impl_->forget_peer(remote_endpoint);
+}
+
+srtp_peer_rebind_result srtp_transport::rebind_peer(std::string_view previous_remote_endpoint,
+                                                     std::string_view next_remote_endpoint,
+                                                     const dtls_peer_identity& identity)
+{
+    return impl_->rebind_peer(previous_remote_endpoint, next_remote_endpoint, identity);
 }
 
 srtp_transport_result srtp_transport::handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)

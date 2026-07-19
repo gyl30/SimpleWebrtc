@@ -36,6 +36,7 @@ struct stun_message
 
     std::optional<std::string> username;
     std::optional<uint32_t> priority;
+    bool has_use_candidate = false;
     bool has_ice_controlling = false;
     bool has_ice_controlled = false;
 

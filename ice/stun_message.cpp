@@ -399,6 +399,7 @@ std::expected<void, std::string> decode_known_attribute(stun_message& message, u
                 return make_error("stun use-candidate attribute must be empty");
             }
 
+            message.has_use_candidate = true;
             return {};
         }
 

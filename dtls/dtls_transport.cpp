@@ -237,6 +237,12 @@ bool identities_equal(const dtls_peer_identity& left, const dtls_peer_identity& 
            fingerprints_equal(left.remote_fingerprint, right.remote_fingerprint);
 }
 
+bool same_dtls_association(const dtls_peer_identity& left, const dtls_peer_identity& right)
+{
+    return left.role == right.role && left.session_id == right.session_id && left.stream_id == right.stream_id &&
+           fingerprints_equal(left.remote_fingerprint, right.remote_fingerprint);
+}
+
 bool same_srtp_generation(const dtls_peer_identity& left, const dtls_peer_identity& right)
 {
     return left.session_id == right.session_id && left.stream_id == right.stream_id && left.local_ice_ufrag == right.local_ice_ufrag &&
@@ -706,6 +712,114 @@ struct dtls_transport::impl
         peers_by_endpoint_.erase(std::string(remote_endpoint));
     }
 
+    dtls_peer_rebind_result rebind_peer(std::string_view previous_remote_endpoint,
+                                        std::string_view next_remote_endpoint,
+                                        dtls_peer_identity identity,
+                                        dtls_network_family network_family)
+    {
+        if (previous_remote_endpoint.empty() || next_remote_endpoint.empty())
+        {
+            return make_error("dtls peer rebind endpoint is empty");
+        }
+
+        auto validation_result = validate_dtls_peer_identity(identity);
+
+        if (!validation_result)
+        {
+            return std::unexpected(validation_result.error());
+        }
+
+        auto udp_payload_mtu = make_dtls_udp_payload_mtu(ip_mtu_, network_family);
+
+        if (!udp_payload_mtu)
+        {
+            return std::unexpected(udp_payload_mtu.error());
+        }
+
+        std::lock_guard lock(mutex_);
+
+        const std::string previous_key(previous_remote_endpoint);
+        const std::string next_key(next_remote_endpoint);
+        auto previous = peers_by_endpoint_.find(previous_key);
+
+        if (previous == peers_by_endpoint_.end())
+        {
+            return false;
+        }
+
+        if (!same_dtls_association(previous->second.identity, identity))
+        {
+            return make_error("dtls peer rebind identity changed outside ice credentials");
+        }
+
+        if (previous->second.ssl == nullptr || !previous->second.keying_material.has_value())
+        {
+            return false;
+        }
+
+        if (previous_key != next_key && peers_by_endpoint_.contains(next_key))
+        {
+            return make_error("dtls peer rebind destination already exists");
+        }
+
+        SSL* ssl = previous->second.ssl.get();
+        const std::uint16_t previous_udp_payload_mtu = previous->second.udp_payload_mtu;
+        auto write_bio_mtu = configure_datagram_bio_mtu(SSL_get_wbio(ssl), *udp_payload_mtu, "write");
+
+        if (!write_bio_mtu)
+        {
+            return std::unexpected(write_bio_mtu.error());
+        }
+
+        ERR_clear_error();
+        const long set_mtu_result = SSL_set_mtu(ssl, static_cast<long>(*udp_payload_mtu));
+
+        if (set_mtu_result != static_cast<long>(*udp_payload_mtu))
+        {
+            (void)configure_datagram_bio_mtu(SSL_get_wbio(ssl), previous_udp_payload_mtu, "write");
+            (void)SSL_set_mtu(ssl, static_cast<long>(previous_udp_payload_mtu));
+            return std::unexpected(make_openssl_error("dtls peer rebind set udp payload mtu failed"));
+        }
+
+        if (previous_key == next_key)
+        {
+            previous->second.identity = std::move(identity);
+            previous->second.network_family = network_family;
+            previous->second.udp_payload_mtu = *udp_payload_mtu;
+
+            WEBRTC_LOG_INFO("dtls peer rebound remote={} session={} stream={} local_ufrag={} remote_ufrag={} same_endpoint=1",
+                            next_remote_endpoint,
+                            previous->second.identity.session_id,
+                            previous->second.identity.stream_id,
+                            previous->second.identity.local_ice_ufrag,
+                            previous->second.identity.remote_ice_ufrag);
+
+            return true;
+        }
+
+        auto node = peers_by_endpoint_.extract(previous);
+        node.key() = next_key;
+        node.mapped().identity = std::move(identity);
+        node.mapped().network_family = network_family;
+        node.mapped().udp_payload_mtu = *udp_payload_mtu;
+        auto inserted = peers_by_endpoint_.insert(std::move(node));
+
+        if (!inserted.inserted)
+        {
+            return make_error("dtls peer rebind destination insertion failed");
+        }
+
+        WEBRTC_LOG_INFO("dtls peer rebound previous_remote={} remote={} session={} stream={} local_ufrag={} remote_ufrag={} same_endpoint=0",
+                        previous_remote_endpoint,
+                        next_remote_endpoint,
+                        inserted.position->second.identity.session_id,
+                        inserted.position->second.identity.stream_id,
+                        inserted.position->second.identity.local_ice_ufrag,
+                        inserted.position->second.identity.remote_ice_ufrag);
+
+        return true;
+    }
+
     dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data,
                                                    std::string_view remote_endpoint,
                                                    dtls_network_family network_family)
@@ -1090,6 +1204,14 @@ void dtls_transport::remember_peer(std::string_view remote_endpoint, dtls_peer_i
 void dtls_transport::forget_peer(std::string_view remote_endpoint)
 {
     impl_->forget_peer(remote_endpoint);
+}
+
+dtls_peer_rebind_result dtls_transport::rebind_peer(std::string_view previous_remote_endpoint,
+                                                     std::string_view next_remote_endpoint,
+                                                     dtls_peer_identity identity,
+                                                     dtls_network_family network_family)
+{
+    return impl_->rebind_peer(previous_remote_endpoint, next_remote_endpoint, std::move(identity), network_family);
 }
 
 dtls_transport_packet_result dtls_transport::handle_udp_packet(std::span<const uint8_t> data,

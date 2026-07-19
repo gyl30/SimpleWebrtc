@@ -53,6 +53,7 @@ inline constexpr std::uint16_t k_ipv6_udp_overhead = 40 + 8;
 using dtls_transport_packet_list = std::vector<std::vector<uint8_t>>;
 
 using dtls_transport_packet_result = std::expected<dtls_transport_packet_list, std::string>;
+using dtls_peer_rebind_result = std::expected<bool, std::string>;
 
 class dtls_transport
 {
@@ -71,6 +72,11 @@ class dtls_transport
     void remember_peer(std::string_view remote_endpoint, dtls_peer_identity identity);
 
     void forget_peer(std::string_view remote_endpoint);
+
+    [[nodiscard]] dtls_peer_rebind_result rebind_peer(std::string_view previous_remote_endpoint,
+                                                       std::string_view next_remote_endpoint,
+                                                       dtls_peer_identity identity,
+                                                       dtls_network_family network_family);
 
     [[nodiscard]] dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data,
                                                                  std::string_view remote_endpoint,

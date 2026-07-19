@@ -56,23 +56,51 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void send_rtp(uint64_t source_generation, std::span<const uint8_t> plain_rtp);
 
    private:
+    enum class peer_nomination_state
+    {
+        unchanged,
+        selected_fresh,
+        association_rebound,
+    };
+
+    struct pending_ice_restart
+    {
+        uint64_t generation = 0;
+        boost::asio::ip::udp::endpoint association_endpoint;
+        dtls_peer_identity association_identity;
+    };
+
+    using peer_nomination_result = std::expected<peer_nomination_state, std::string>;
+
     void subscribe_media();
     void unsubscribe_media();
     void handle_publisher_source(media_publisher_source_update update);
     void rebuild_rtp_rewriter_locked();
-    void reset_selected_peer();
+
+    void clear_peer_state();
+    void clear_peer_state_locked();
+    void schedule_ice_restart_timeout(uint64_t generation);
+    void handle_ice_restart_timeout(uint64_t generation);
+    [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
+        const boost::asio::ip::udp::endpoint& remote_endpoint);
 
     session_udp_outbound_packet_list handle_udp_packet(const session_udp_packet& packet) override;
 
    private:
     session_ice_udp_server udp_server_;
+    boost::asio::steady_timer ice_restart_timer_;
 
     std::shared_ptr<dtls_transport> dtls_transport_;
     std::shared_ptr<srtp_transport> srtp_transport_;
     std::shared_ptr<media_fanout_router> media_fanout_router_;
 
+    std::mutex peer_mutex_;
+    std::string stream_id_;
+    std::string session_id_;
     std::string local_ice_pwd_;
     std::optional<dtls_peer_identity> dtls_identity_;
+    uint64_t ice_generation_ = 0;
+    std::optional<pending_ice_restart> pending_ice_restart_;
 
     std::mutex rtp_rewriter_mutex_;
     whep_rtp_rewriter_target rtp_rewriter_target_;
@@ -86,7 +114,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     std::size_t rewritten_rtp_packet_count_ = 0;
     std::size_t dropped_rtp_packet_count_ = 0;
 
-    // 仅由通过完整 STUN 校验的 connectivity check 更新。
+    // 仅由当前 ICE generation 中携带 USE-CANDIDATE 的完整 STUN 校验结果更新。
     std::optional<boost::asio::ip::udp::endpoint> selected_remote_endpoint_;
 };
 }    // namespace webrtc

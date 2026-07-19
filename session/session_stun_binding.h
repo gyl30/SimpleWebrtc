@@ -25,6 +25,7 @@ struct session_stun_binding_context
 struct session_stun_binding_result
 {
     bool handled = false;
+    bool nominated = false;
     std::optional<session_udp_outbound_packet> response;
 };
 
