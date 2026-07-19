@@ -24,6 +24,7 @@
 #include "media/media_fanout_router.h"
 #include "media/video_keyframe_detector.h"
 #include "media/whep_rtp_rewriter.h"
+#include "rtp/rtcp_fir_sequence_tracker.h"
 #include "rtp/rtcp_report.h"
 #include "session/session_transport_media_log.h"
 #include "srtp/srtp_transport.h"
@@ -168,6 +169,9 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         rtcp_fir_received,
         rtcp_keyframe_feedback_received,
         rtcp_keyframe_feedback_forwarded,
+        rtcp_keyframe_feedback_coalesced,
+        rtcp_keyframe_feedback_target_ignored,
+        rtcp_fir_duplicate_ignored,
         rtcp_generic_nack_ignored,
         rtcp_transport_cc_ignored,
         rtcp_remb_ignored,
@@ -204,7 +208,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         std::atomic<bool> other_feedback_ignored_logged{false};
         std::atomic<bool> unknown_rtcp_block_ignored_logged{false};
         std::atomic<bool> keyframe_feedback_logged{false};
-        std::atomic<bool> unmapped_keyframe_feedback_logged{false};
+        std::atomic<bool> invalid_keyframe_feedback_target_logged{false};
+        std::atomic<bool> duplicate_fir_logged{false};
         std::array<std::atomic<uint32_t>, 16> logged_target_ssrcs{};
     };
 
@@ -220,12 +225,14 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void rebuild_rtp_rewriter_locked();
     void cancel_keyframe_recovery_locked();
     void reset_keyframe_recovery_locked();
+    void clear_keyframe_feedback_state_locked();
 
     [[nodiscard]] std::optional<keyframe_request_context> prepare_keyframe_request_locked(
         uint64_t source_generation,
         uint32_t source_ssrc,
         uint32_t target_ssrc,
-        bool force_dispatch);
+        bool force_dispatch,
+        bool coalesce_if_waiting);
 
     [[nodiscard]] bool dispatch_keyframe_request(const keyframe_request_context& context,
                                                  std::string_view reason);
@@ -281,6 +288,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     std::unordered_set<uint32_t> keyframe_waiting_source_ssrcs_;
     std::unordered_set<uint32_t> keyframe_ready_source_ssrcs_;
     std::unordered_set<uint32_t> unsupported_keyframe_detection_target_ssrcs_;
+    rtcp_fir_sequence_tracker fir_sequence_tracker_;
 
     std::size_t received_packet_count_ = 0;
     std::size_t rewritten_rtp_packet_count_ = 0;

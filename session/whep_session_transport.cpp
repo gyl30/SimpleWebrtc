@@ -41,6 +41,34 @@ constexpr auto k_media_log_interval = 5s;
 constexpr auto k_rtcp_sender_report_interval = 1s;
 constexpr std::size_t k_sender_report_history_size = 16;
 
+enum class inbound_keyframe_feedback_type
+{
+    pli,
+    fir,
+};
+
+struct inbound_keyframe_feedback
+{
+    inbound_keyframe_feedback_type type = inbound_keyframe_feedback_type::pli;
+    uint32_t sender_ssrc = 0;
+    uint32_t target_ssrc = 0;
+    uint8_t fir_sequence_number = 0;
+};
+
+std::string_view keyframe_feedback_type_to_string(inbound_keyframe_feedback_type type)
+{
+    switch (type)
+    {
+        case inbound_keyframe_feedback_type::pli:
+            return "pli";
+
+        case inbound_keyframe_feedback_type::fir:
+            return "fir";
+    }
+
+    return "unknown";
+}
+
 const sdp::media_summary* find_subscriber_media(const whep_rtp_rewriter_target& target,
                                                 std::string_view mid)
 {
@@ -397,6 +425,12 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         media_log_stats_.counters.take(media_log_event::rtcp_keyframe_feedback_received);
     const uint64_t rtcp_keyframe_feedback_forwarded =
         media_log_stats_.counters.take(media_log_event::rtcp_keyframe_feedback_forwarded);
+    const uint64_t rtcp_keyframe_feedback_coalesced =
+        media_log_stats_.counters.take(media_log_event::rtcp_keyframe_feedback_coalesced);
+    const uint64_t rtcp_keyframe_feedback_target_ignored =
+        media_log_stats_.counters.take(media_log_event::rtcp_keyframe_feedback_target_ignored);
+    const uint64_t rtcp_fir_duplicate_ignored =
+        media_log_stats_.counters.take(media_log_event::rtcp_fir_duplicate_ignored);
     const uint64_t rtcp_generic_nack_ignored =
         media_log_stats_.counters.take(media_log_event::rtcp_generic_nack_ignored);
     const uint64_t rtcp_transport_cc_ignored =
@@ -433,7 +467,9 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         rtcp_sender_report_received != 0 || rtcp_receiver_report_received != 0 ||
         rtcp_report_block_received != 0 || rtcp_sdes_received != 0 || rtcp_bye_received != 0 ||
         rtcp_pli_received != 0 || rtcp_fir_received != 0 || rtcp_keyframe_feedback_received != 0 ||
-        rtcp_keyframe_feedback_forwarded != 0 || rtcp_generic_nack_ignored != 0 ||
+        rtcp_keyframe_feedback_forwarded != 0 || rtcp_keyframe_feedback_coalesced != 0 ||
+        rtcp_keyframe_feedback_target_ignored != 0 || rtcp_fir_duplicate_ignored != 0 ||
+        rtcp_generic_nack_ignored != 0 ||
         rtcp_transport_cc_ignored != 0 || rtcp_remb_ignored != 0 ||
         rtcp_other_feedback_ignored != 0 || rtcp_unknown_block_ignored != 0 ||
         rtcp_parse_failed != 0 || rtcp_sender_report_sent != 0 || rtcp_sdes_sent != 0 ||
@@ -453,7 +489,8 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         "send_payload_bytes={} sender_timing_mapped={} dropped_no_endpoint={} dropped_stale_source_generation={} rewrite_failed={} rewrite_dropped={} protect_failed={} "
         "dropped_srtp_not_ready={} protect_ignored={} keyframe_request_submitted={} keyframe_completed={} rtcp_received={} rtcp_sr={} rtcp_rr={} "
         "rtcp_report_blocks={} rtcp_sdes={} rtcp_bye={} rtcp_pli={} rtcp_fir={} rtcp_keyframe_feedback_received={} "
-        "rtcp_keyframe_feedback_forwarded={} rtcp_generic_nack_ignored={} rtcp_transport_cc_ignored={} rtcp_remb_ignored={} "
+        "rtcp_keyframe_feedback_forwarded={} rtcp_keyframe_feedback_coalesced={} rtcp_keyframe_feedback_target_ignored={} "
+        "rtcp_fir_duplicate_ignored={} rtcp_generic_nack_ignored={} rtcp_transport_cc_ignored={} rtcp_remb_ignored={} "
         "rtcp_other_feedback_ignored={} rtcp_unknown_block_ignored={} rtcp_parse_failed={} rtcp_sr_sent={} rtcp_sdes_sent={} "
         "rtcp_send_bytes={} rtcp_build_failed={} rtcp_protect_failed={} rtcp_protect_ignored={} rtcp_rr_lsr_matched={} "
         "srtp_inbound_ignored={} srtp_unprotect_failed={} udp_received={} stun={} dtls={} dropped_unselected={} other_received={}",
@@ -485,6 +522,9 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         rtcp_fir_received,
         rtcp_keyframe_feedback_received,
         rtcp_keyframe_feedback_forwarded,
+        rtcp_keyframe_feedback_coalesced,
+        rtcp_keyframe_feedback_target_ignored,
+        rtcp_fir_duplicate_ignored,
         rtcp_generic_nack_ignored,
         rtcp_transport_cc_ignored,
         rtcp_remb_ignored,
@@ -616,6 +656,7 @@ void whep_session_transport::set_peer_context(std::string local_ice_pwd,
         publisher_source_.reset();
         publisher_source_generation_ = 0;
         clear_publisher_sender_timings_locked();
+        clear_keyframe_feedback_state_locked();
         reset_keyframe_recovery_locked();
         rebuild_rtp_rewriter_locked();
     }
@@ -931,7 +972,8 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
                 request_context = prepare_keyframe_request_locked(source_generation,
                                                                   rewritten->source_ssrc,
                                                                   rewritten->target_ssrc,
-                                                                  true);
+                                                                  true,
+                                                                  false);
             }
             else if (observation->state == video_keyframe_observation_state::unsupported_codec &&
                      unsupported_keyframe_detection_target_ssrcs_.insert(rewritten->target_ssrc).second)
@@ -950,6 +992,7 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
                 request_context = prepare_keyframe_request_locked(source_generation,
                                                                   rewritten->source_ssrc,
                                                                   rewritten->target_ssrc,
+                                                                  false,
                                                                   false);
             }
         }
@@ -1023,6 +1066,7 @@ void whep_session_transport::handle_publisher_source(media_publisher_source_upda
     if (update.generation != publisher_source_generation_)
     {
         clear_publisher_sender_timings_locked();
+        clear_keyframe_feedback_state_locked();
     }
 
     publisher_source_generation_ = update.generation;
@@ -1244,6 +1288,11 @@ void whep_session_transport::reset_keyframe_recovery_locked()
     unsupported_keyframe_detection_target_ssrcs_.clear();
 }
 
+void whep_session_transport::clear_keyframe_feedback_state_locked()
+{
+    fir_sequence_tracker_.clear();
+}
+
 void whep_session_transport::cancel_keyframe_recovery_locked()
 {
     media_fanout_router_->cancel_keyframe_requests(session_id_);
@@ -1254,10 +1303,18 @@ std::optional<whep_session_transport::keyframe_request_context>
 whep_session_transport::prepare_keyframe_request_locked(uint64_t source_generation,
                                                         uint32_t source_ssrc,
                                                         uint32_t target_ssrc,
-                                                        bool force_dispatch)
+                                                        bool force_dispatch,
+                                                        bool coalesce_if_waiting)
 {
     if (source_generation == 0 || source_ssrc == 0 || target_ssrc == 0 ||
         source_generation != publisher_source_generation_ || publisher_source_ == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    const bool already_waiting = keyframe_waiting_source_ssrcs_.contains(source_ssrc);
+
+    if (coalesce_if_waiting && already_waiting)
     {
         return std::nullopt;
     }
@@ -1549,7 +1606,37 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
         }
     }
 
-    if (compound->keyframe_request_media_ssrcs.empty())
+    std::vector<inbound_keyframe_feedback> feedback_requests;
+
+    for (const auto& block : compound->blocks)
+    {
+        if (block.feedback_name == "pli" && block.has_keyframe_request)
+        {
+            feedback_requests.push_back(inbound_keyframe_feedback{
+                .type = inbound_keyframe_feedback_type::pli,
+                .sender_ssrc = block.feedback_sender_ssrc,
+                .target_ssrc = block.feedback_media_ssrc,
+            });
+            continue;
+        }
+
+        if (block.feedback_name != "fir")
+        {
+            continue;
+        }
+
+        for (const auto& entry : block.fir_entries)
+        {
+            feedback_requests.push_back(inbound_keyframe_feedback{
+                .type = inbound_keyframe_feedback_type::fir,
+                .sender_ssrc = block.feedback_sender_ssrc,
+                .target_ssrc = entry.media_ssrc,
+                .fir_sequence_number = entry.sequence_number,
+            });
+        }
+    }
+
+    if (feedback_requests.empty())
     {
         WEBRTC_LOG_TRACE(
             "WHEP inbound RTCP stream={} session={} blocks={} sr={} rr={} report_blocks={} sdes={} bye={} pli={} fir={} "
@@ -1574,55 +1661,151 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
     }
 
     record_media_log_event(media_log_event::rtcp_keyframe_feedback_received,
-                           compound->keyframe_request_media_ssrcs.size());
+                           feedback_requests.size());
     std::vector<keyframe_request_context> requests;
     std::unordered_set<uint32_t> requested_source_ssrcs;
+    std::size_t coalesced = 0;
+    std::size_t target_ignored = 0;
+    std::size_t duplicate_fir = 0;
 
     {
         std::lock_guard lock(rtp_rewriter_mutex_);
 
-        for (const uint32_t target_ssrc : compound->keyframe_request_media_ssrcs)
+        for (const auto& feedback : feedback_requests)
         {
-            const auto source_ssrc = rtp_rewriter_.source_ssrc_for_target_ssrc(target_ssrc);
+            std::string_view rejection_reason;
 
-            if (!source_ssrc.has_value())
+            if (feedback.target_ssrc == 0)
             {
-                if (!media_log_stats_.unmapped_keyframe_feedback_logged.exchange(true,
-                                                                                  std::memory_order_relaxed))
+                rejection_reason = "zero_target_ssrc";
+            }
+            else
+            {
+                const auto sender_iterator = outbound_rtcp_senders_.find(feedback.target_ssrc);
+
+                if (sender_iterator == outbound_rtcp_senders_.end())
+                {
+                    rejection_reason = "unknown_or_non_primary_target_ssrc";
+                }
+                else if (sender_iterator->second.kind != "video")
+                {
+                    rejection_reason = "non_video_target_ssrc";
+                }
+            }
+
+            std::optional<uint32_t> source_ssrc;
+
+            if (rejection_reason.empty())
+            {
+                source_ssrc = rtp_rewriter_.source_ssrc_for_target_ssrc(feedback.target_ssrc);
+
+                if (!source_ssrc.has_value())
+                {
+                    rejection_reason = "source_ssrc_unmapped";
+                }
+            }
+
+            if (!rejection_reason.empty())
+            {
+                target_ignored += 1;
+
+                if (!media_log_stats_.invalid_keyframe_feedback_target_logged.exchange(
+                        true,
+                        std::memory_order_relaxed))
                 {
                     WEBRTC_LOG_DEBUG(
-                        "WHEP first keyframe feedback target unmapped stream={} session={} target_ssrc={} source_generation={}",
+                        "WHEP first keyframe feedback target ignored stream={} session={} type={} sender_ssrc={} target_ssrc={} "
+                        "source_generation={} reason={}",
                         stream_id_,
                         session_id_,
-                        target_ssrc,
-                        publisher_source_generation_);
+                        keyframe_feedback_type_to_string(feedback.type),
+                        feedback.sender_ssrc,
+                        feedback.target_ssrc,
+                        publisher_source_generation_,
+                        rejection_reason);
                 }
 
                 WEBRTC_LOG_TRACE(
-                    "WHEP keyframe feedback target unmapped stream={} session={} target_ssrc={} source_generation={}",
+                    "WHEP keyframe feedback target ignored stream={} session={} type={} sender_ssrc={} target_ssrc={} "
+                    "source_generation={} reason={}",
                     stream_id_,
                     session_id_,
-                    target_ssrc,
-                    publisher_source_generation_);
+                    keyframe_feedback_type_to_string(feedback.type),
+                    feedback.sender_ssrc,
+                    feedback.target_ssrc,
+                    publisher_source_generation_,
+                    rejection_reason);
                 continue;
+            }
+
+            if (feedback.type == inbound_keyframe_feedback_type::fir)
+            {
+                if (!fir_sequence_tracker_.accept(feedback.sender_ssrc,
+                                                   feedback.target_ssrc,
+                                                   feedback.fir_sequence_number))
+                {
+                    duplicate_fir += 1;
+
+                    if (!media_log_stats_.duplicate_fir_logged.exchange(true,
+                                                                        std::memory_order_relaxed))
+                    {
+                        WEBRTC_LOG_DEBUG(
+                            "WHEP first duplicate FIR ignored stream={} session={} sender_ssrc={} target_ssrc={} "
+                            "sequence_number={} source_generation={}",
+                            stream_id_,
+                            session_id_,
+                            feedback.sender_ssrc,
+                            feedback.target_ssrc,
+                            feedback.fir_sequence_number,
+                            publisher_source_generation_);
+                    }
+
+                    WEBRTC_LOG_TRACE(
+                        "WHEP duplicate FIR ignored stream={} session={} sender_ssrc={} target_ssrc={} sequence_number={} "
+                        "source_generation={}",
+                        stream_id_,
+                        session_id_,
+                        feedback.sender_ssrc,
+                        feedback.target_ssrc,
+                        feedback.fir_sequence_number,
+                        publisher_source_generation_);
+                    continue;
+                }
             }
 
             if (!requested_source_ssrcs.insert(*source_ssrc).second)
             {
+                coalesced += 1;
                 continue;
             }
 
+            const bool already_waiting = keyframe_waiting_source_ssrcs_.contains(*source_ssrc);
             auto request = prepare_keyframe_request_locked(publisher_source_generation_,
                                                            *source_ssrc,
-                                                           target_ssrc,
+                                                           feedback.target_ssrc,
+                                                           true,
                                                            true);
 
-            if (request.has_value())
+            if (!request.has_value())
             {
-                requests.push_back(std::move(*request));
+                if (already_waiting)
+                {
+                    coalesced += 1;
+                }
+                else
+                {
+                    target_ignored += 1;
+                }
+                continue;
             }
+
+            requests.push_back(std::move(*request));
         }
     }
+
+    record_media_log_event(media_log_event::rtcp_keyframe_feedback_coalesced, coalesced);
+    record_media_log_event(media_log_event::rtcp_keyframe_feedback_target_ignored, target_ignored);
+    record_media_log_event(media_log_event::rtcp_fir_duplicate_ignored, duplicate_fir);
 
     std::size_t forwarded = 0;
 
@@ -1639,25 +1822,34 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
     if (!media_log_stats_.keyframe_feedback_logged.exchange(true, std::memory_order_relaxed))
     {
         WEBRTC_LOG_DEBUG(
-            "WHEP first inbound keyframe feedback stream={} session={} requested={} forwarded={} pli={} fir={} summary={}",
+            "WHEP first inbound keyframe feedback stream={} session={} requested={} forwarded={} coalesced={} target_ignored={} "
+            "fir_duplicate_ignored={} pli={} fir={} summary={}",
             stream_id_,
             session_id_,
-            compound->keyframe_request_media_ssrcs.size(),
+            feedback_requests.size(),
             forwarded,
+            coalesced,
+            target_ignored,
+            duplicate_fir,
             compound->pli_count,
             compound->fir_block_count,
             rtcp_compound_feedback_summary_to_string(*compound));
     }
 
     WEBRTC_LOG_TRACE(
-        "WHEP inbound keyframe feedback stream={} session={} requested={} forwarded={} pli={} fir={} summary={}",
+        "WHEP inbound keyframe feedback stream={} session={} requested={} forwarded={} coalesced={} target_ignored={} "
+        "fir_duplicate_ignored={} pli={} fir={} summary={}",
         stream_id_,
         session_id_,
-        compound->keyframe_request_media_ssrcs.size(),
+        feedback_requests.size(),
         forwarded,
+        coalesced,
+        target_ignored,
+        duplicate_fir,
         compound->pli_count,
         compound->fir_block_count,
         rtcp_compound_feedback_summary_to_string(*compound));
+
 }
 
 void whep_session_transport::clear_peer_state()
