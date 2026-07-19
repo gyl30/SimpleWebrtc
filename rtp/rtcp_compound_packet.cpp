@@ -42,6 +42,7 @@ void fill_feedback_block(const rtcp_feedback_packet& feedback, rtcp_compound_blo
     block.has_generic_nack = feedback.has_generic_nack;
     block.has_keyframe_request = feedback.has_keyframe_request;
     block.has_transport_cc = feedback.has_transport_cc;
+    block.keyframe_request_media_ssrcs = feedback.keyframe_request_media_ssrcs;
 
     block.has_remb = feedback.remb_bitrate_bps.has_value();
     block.remb_bitrate_bps = feedback.remb_bitrate_bps.value_or(0);
@@ -63,6 +64,17 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
     packet.has_generic_nack = packet.has_generic_nack || block.has_generic_nack;
     packet.has_keyframe_request = packet.has_keyframe_request || block.has_keyframe_request;
     packet.has_transport_cc = packet.has_transport_cc || block.has_transport_cc;
+
+    for (const uint32_t media_ssrc : block.keyframe_request_media_ssrcs)
+    {
+        if (std::find(packet.keyframe_request_media_ssrcs.begin(),
+                      packet.keyframe_request_media_ssrcs.end(),
+                      media_ssrc) == packet.keyframe_request_media_ssrcs.end())
+        {
+            packet.keyframe_request_media_ssrcs.push_back(media_ssrc);
+        }
+    }
+
     packet.has_remb = packet.has_remb || block.has_remb;
     packet.remb_bitrate_bps = std::max(packet.remb_bitrate_bps, block.remb_bitrate_bps);
 }

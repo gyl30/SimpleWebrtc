@@ -26,6 +26,7 @@ struct rtcp_feedback_packet
     bool has_keyframe_request = false;
     bool has_transport_cc = false;
 
+    std::vector<uint32_t> keyframe_request_media_ssrcs;
     std::optional<uint64_t> remb_bitrate_bps;
 };
 

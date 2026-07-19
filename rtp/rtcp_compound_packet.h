@@ -36,6 +36,7 @@ struct rtcp_compound_block
     bool has_generic_nack = false;
     bool has_keyframe_request = false;
     bool has_transport_cc = false;
+    std::vector<uint32_t> keyframe_request_media_ssrcs;
 
     bool has_remb = false;
     uint64_t remb_bitrate_bps = 0;
@@ -53,6 +54,7 @@ struct rtcp_compound_packet
     bool has_generic_nack = false;
     bool has_keyframe_request = false;
     bool has_transport_cc = false;
+    std::vector<uint32_t> keyframe_request_media_ssrcs;
 
     bool has_remb = false;
     uint64_t remb_bitrate_bps = 0;

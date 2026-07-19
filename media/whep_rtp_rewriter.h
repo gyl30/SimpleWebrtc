@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -19,6 +20,7 @@ struct whep_rtp_payload_type_mapping
     uint8_t source_payload_type = 0;
     uint8_t target_payload_type = 0;
     uint32_t clock_rate = 0;
+    std::string codec_name;
 
     bool rtx = false;
 
@@ -82,6 +84,7 @@ struct whep_rtp_rewrite_result
     std::vector<uint8_t> packet;
     std::string reason;
     std::string kind;
+    std::string codec_name;
 
     bool rtx = false;
     bool keyframe_request_needed = false;
@@ -119,6 +122,8 @@ class whep_rtp_rewriter
     void clear_source();
 
     [[nodiscard]] whep_rtp_rewrite_packet_result rewrite(std::span<const uint8_t> packet);
+
+    [[nodiscard]] std::optional<uint32_t> source_ssrc_for_target_ssrc(uint32_t target_ssrc) const;
 
    private:
     struct impl;

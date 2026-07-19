@@ -19,6 +19,7 @@
 #include "dtls/dtls_transport.h"
 #include "ice/session_ice_udp_server.h"
 #include "media/media_fanout_router.h"
+#include "media/video_keyframe_detector.h"
 #include "media/whep_rtp_rewriter.h"
 #include "session/session_transport_media_log.h"
 #include "srtp/srtp_transport.h"
@@ -73,6 +74,14 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         dtls_peer_identity association_identity;
     };
 
+    struct keyframe_request_context
+    {
+        std::string publisher_session_id;
+        uint64_t source_generation = 0;
+        uint32_t source_ssrc = 0;
+        uint32_t target_ssrc = 0;
+    };
+
     using peer_nomination_result = std::expected<peer_nomination_state, std::string>;
 
     enum class media_log_event
@@ -87,7 +96,14 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         rewrite_dropped,
         protect_failed,
         protect_ignored,
-        keyframe_requested,
+        keyframe_request_submitted,
+        keyframe_completed,
+        rtcp_received,
+        rtcp_keyframe_feedback_received,
+        rtcp_keyframe_feedback_forwarded,
+        rtcp_nack_received,
+        srtp_inbound_ignored,
+        srtp_inbound_failed,
         udp_received,
         stun_received,
         dtls_received,
@@ -102,6 +118,9 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         session_transport_log_counters<media_log_event> counters;
         std::atomic<bool> rewrite_drop_logged{false};
         std::atomic<bool> protect_ignore_logged{false};
+        std::atomic<bool> rtcp_parse_failure_logged{false};
+        std::atomic<bool> keyframe_feedback_logged{false};
+        std::atomic<bool> unmapped_keyframe_feedback_logged{false};
         std::array<std::atomic<uint32_t>, 16> logged_target_ssrcs{};
     };
 
@@ -109,6 +128,20 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void unsubscribe_media();
     void handle_publisher_source(media_publisher_source_update update);
     void rebuild_rtp_rewriter_locked();
+    void cancel_keyframe_recovery_locked();
+    void reset_keyframe_recovery_locked();
+
+    [[nodiscard]] std::optional<keyframe_request_context> prepare_keyframe_request_locked(
+        uint64_t source_generation,
+        uint32_t source_ssrc,
+        uint32_t target_ssrc,
+        bool force_dispatch);
+
+    [[nodiscard]] bool dispatch_keyframe_request(const keyframe_request_context& context,
+                                                 std::string_view reason);
+
+    void complete_keyframe_request(const keyframe_request_context& context);
+    void handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp);
 
     void clear_peer_state();
     void clear_peer_state_locked();
@@ -141,8 +174,10 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     media_publisher_source_ptr publisher_source_;
     uint64_t publisher_source_generation_ = 0;
     whep_rtp_rewriter rtp_rewriter_;
-    std::unordered_set<uint32_t> pending_keyframe_request_ssrcs_;
-    std::unordered_set<uint32_t> requested_keyframe_ssrcs_;
+    video_keyframe_tracker keyframe_tracker_;
+    std::unordered_set<uint32_t> keyframe_waiting_source_ssrcs_;
+    std::unordered_set<uint32_t> keyframe_ready_source_ssrcs_;
+    std::unordered_set<uint32_t> unsupported_keyframe_detection_target_ssrcs_;
 
     std::size_t received_packet_count_ = 0;
     std::size_t rewritten_rtp_packet_count_ = 0;

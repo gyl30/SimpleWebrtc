@@ -210,6 +210,7 @@ set(WEBRTC_SOURCES
     srtp/srtp_session.cpp
     srtp/srtp_transport.cpp
     media/media_fanout_router.cpp
+    media/video_keyframe_detector.cpp
     media/whep_rtp_rewriter.cpp
     signaling/webrtc_answer_factory.cpp)
 

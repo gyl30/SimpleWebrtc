@@ -223,7 +223,7 @@ router::router(std::shared_ptr<stream_registry> registry,
                std::uint16_t dtls_ip_mtu,
                std::string admin_token)
     : registry_(registry),
-      media_fanout_router_(std::make_shared<media_fanout_router>()),
+      media_fanout_router_(std::make_shared<media_fanout_router>(io_context)),
       admin_token_(std::move(admin_token)),
       whip_(registry, answer_factory, udp_port_allocator, io_context, udp_bind_host, dtls_context, dtls_ip_mtu, media_fanout_router_),
       whep_(std::move(registry),

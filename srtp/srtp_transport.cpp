@@ -365,6 +365,25 @@ struct srtp_transport::impl
         return true;
     }
 
+    srtp_peer_ready_result peer_ready(std::string_view remote_endpoint)
+    {
+        if (remote_endpoint.empty())
+        {
+            return false;
+        }
+
+        std::lock_guard lock(mutex_);
+        std::string ignored_reason;
+        auto peer_result = find_ready_peer_locked(remote_endpoint, ignored_reason);
+
+        if (!peer_result)
+        {
+            return std::unexpected(peer_result.error());
+        }
+
+        return *peer_result != nullptr;
+    }
+
     srtp_transport_result handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)
     {
         const srtp_packet_kind kind = classify_packet(data);
@@ -618,6 +637,11 @@ srtp_peer_rebind_result srtp_transport::rebind_peer(std::string_view previous_re
                                                      const dtls_peer_identity& identity)
 {
     return impl_->rebind_peer(previous_remote_endpoint, next_remote_endpoint, identity);
+}
+
+srtp_peer_ready_result srtp_transport::peer_ready(std::string_view remote_endpoint)
+{
+    return impl_->peer_ready(remote_endpoint);
 }
 
 srtp_transport_result srtp_transport::handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)

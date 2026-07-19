@@ -49,6 +49,7 @@ struct srtp_packet_process_result
 using srtp_transport_result = std::expected<srtp_packet_process_result, std::string>;
 
 using srtp_peer_rebind_result = std::expected<bool, std::string>;
+using srtp_peer_ready_result = std::expected<bool, std::string>;
 
 class srtp_transport
 {
@@ -69,6 +70,8 @@ class srtp_transport
     [[nodiscard]] srtp_peer_rebind_result rebind_peer(std::string_view previous_remote_endpoint,
                                                        std::string_view next_remote_endpoint,
                                                        const dtls_peer_identity& identity);
+
+    [[nodiscard]] srtp_peer_ready_result peer_ready(std::string_view remote_endpoint);
 
     [[nodiscard]] srtp_transport_result handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint);
 

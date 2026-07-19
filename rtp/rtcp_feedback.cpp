@@ -293,10 +293,18 @@ std::expected<void, std::string> parse_pli(std::size_t offset, std::size_t end, 
 
     packet.has_keyframe_request = true;
 
+    if (packet.media_ssrc != 0)
+    {
+        packet.keyframe_request_media_ssrcs.push_back(packet.media_ssrc);
+    }
+
     return {};
 }
 
-std::expected<void, std::string> parse_fir(std::size_t offset, std::size_t end, rtcp_feedback_packet& packet)
+std::expected<void, std::string> parse_fir(std::span<const uint8_t> data,
+                                           std::size_t offset,
+                                           std::size_t end,
+                                           rtcp_feedback_packet& packet)
 {
     const std::size_t fci_size = end - offset;
 
@@ -307,6 +315,17 @@ std::expected<void, std::string> parse_fir(std::size_t offset, std::size_t end, 
 
     packet.has_keyframe_request = true;
     packet.fir_count = fci_size / 8;
+    packet.keyframe_request_media_ssrcs.reserve(packet.fir_count);
+
+    for (std::size_t current = offset; current < end; current += 8)
+    {
+        const uint32_t media_ssrc = read_u32(data, current);
+
+        if (media_ssrc != 0)
+        {
+            packet.keyframe_request_media_ssrcs.push_back(media_ssrc);
+        }
+    }
 
     return {};
 }
@@ -414,7 +433,7 @@ std::expected<void, std::string> parse_payload_feedback(std::span<const uint8_t>
             return parse_pli(offset, end, packet);
 
         case k_rtcp_payload_feedback_fir:
-            return parse_fir(offset, end, packet);
+            return parse_fir(data, offset, end, packet);
 
         case k_rtcp_payload_feedback_afb:
             return parse_remb(data, offset, end, packet);

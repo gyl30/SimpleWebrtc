@@ -1,5 +1,7 @@
 #include "media/media_fanout_router.h"
 
+#include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -10,10 +12,44 @@
 #include <utility>
 #include <vector>
 
+#include <boost/asio.hpp>
+
 #include "log/log.h"
 
 namespace webrtc
 {
+namespace
+{
+using namespace std::chrono_literals;
+constexpr std::array k_keyframe_retry_delays{200ms, 500ms, 1000ms, 2000ms};
+
+void hash_combine(std::size_t& seed, std::size_t value) noexcept
+{
+    seed ^= value + 0x9E3779B9U + (seed << 6U) + (seed >> 2U);
+}
+}    // namespace
+
+media_fanout_router::media_fanout_router(boost::asio::io_context& io_context) : io_context_(io_context) {}
+
+media_fanout_router::~media_fanout_router()
+{
+    std::lock_guard lock(mutex_);
+
+    for (auto& [key, state] : keyframe_requests_)
+    {
+        (void)key;
+        cancel_keyframe_request_state_locked(state);
+    }
+}
+
+std::size_t media_fanout_router::keyframe_request_key_hash::operator()(const keyframe_request_key& key) const noexcept
+{
+    std::size_t seed = std::hash<std::string>{}(key.stream_id);
+    hash_combine(seed, std::hash<std::string>{}(key.publisher_session_id));
+    hash_combine(seed, std::hash<uint64_t>{}(key.source_generation));
+    hash_combine(seed, std::hash<uint32_t>{}(key.media_ssrc));
+    return seed;
+}
 void media_fanout_router::subscribe(std::string stream_id,
                                     std::string subscriber_session_id,
                                     media_rtp_handler rtp_handler,
@@ -79,6 +115,7 @@ void media_fanout_router::unsubscribe(std::string_view subscriber_session_id)
         }
 
         stream_id = iterator->second.stream_id;
+        cancel_keyframe_requests_locked(subscriber_session_id);
         subscriptions_by_session_id_.erase(iterator);
     }
 
@@ -101,6 +138,7 @@ void media_fanout_router::set_publisher_source(std::string stream_id,
     {
         std::lock_guard lock(mutex_);
 
+        cancel_stream_keyframe_requests_locked(stream_id);
         const uint64_t generation = allocate_source_generation_locked();
 
         source = std::make_shared<media_publisher_source>(media_publisher_source{
@@ -159,6 +197,7 @@ void media_fanout_router::clear_publisher_source(std::string_view stream_id, std
             return;
         }
 
+        cancel_stream_keyframe_requests_locked(stream_id);
         generation = allocate_source_generation_locked();
         publisher_sources_by_stream_id_.erase(source_iterator);
         publisher_source_generations_by_stream_id_.insert_or_assign(std::string(stream_id), generation);
@@ -188,19 +227,32 @@ void media_fanout_router::clear_publisher_source(std::string_view stream_id, std
 }
 
 bool media_fanout_router::request_keyframe(std::string_view stream_id,
+                                           std::string_view subscriber_session_id,
                                            std::string_view publisher_session_id,
                                            uint64_t source_generation,
                                            uint32_t media_ssrc)
 {
-    if (stream_id.empty() || publisher_session_id.empty() || source_generation == 0 || media_ssrc == 0)
+    if (stream_id.empty() || subscriber_session_id.empty() || publisher_session_id.empty() ||
+        source_generation == 0 || media_ssrc == 0)
     {
         return false;
     }
 
     media_keyframe_request_handler handler;
+    std::size_t waiting_subscribers = 0;
+    bool send_immediately = false;
 
     {
         std::lock_guard lock(mutex_);
+
+        const auto subscription_iterator =
+            subscriptions_by_session_id_.find(std::string(subscriber_session_id));
+
+        if (subscription_iterator == subscriptions_by_session_id_.end() ||
+            subscription_iterator->second.stream_id != stream_id)
+        {
+            return false;
+        }
 
         const auto source_iterator = publisher_sources_by_stream_id_.find(std::string(stream_id));
 
@@ -211,11 +263,118 @@ bool media_fanout_router::request_keyframe(std::string_view stream_id,
             return false;
         }
 
-        handler = source_iterator->second->keyframe_request_handler;
+        keyframe_request_key key{
+            .stream_id = std::string(stream_id),
+            .publisher_session_id = std::string(publisher_session_id),
+            .source_generation = source_generation,
+            .media_ssrc = media_ssrc,
+        };
+        auto [iterator, inserted] = keyframe_requests_.try_emplace(std::move(key));
+        (void)inserted;
+        auto& state = iterator->second;
+        state.waiting_subscriber_session_ids.insert(std::string(subscriber_session_id));
+        waiting_subscribers = state.waiting_subscriber_session_ids.size();
+
+        if (!state.retry_active)
+        {
+            state.retry_active = true;
+            state.next_retry_delay_index = 0;
+            state.sent_count = 1;
+            handler = source_iterator->second->keyframe_request_handler;
+            send_immediately = true;
+            schedule_keyframe_retry_locked(iterator->first, state);
+        }
     }
 
-    handler(media_ssrc);
+    if (send_immediately)
+    {
+        handler(media_ssrc);
+        WEBRTC_LOG_DEBUG(
+            "media keyframe request dispatched stream={} publisher_session={} generation={} media_ssrc={} attempt=1 waiters={}",
+            stream_id,
+            publisher_session_id,
+            source_generation,
+            media_ssrc,
+            waiting_subscribers);
+    }
+    else
+    {
+        WEBRTC_LOG_TRACE(
+            "media keyframe request coalesced stream={} publisher_session={} generation={} media_ssrc={} subscriber_session={} waiters={}",
+            stream_id,
+            publisher_session_id,
+            source_generation,
+            media_ssrc,
+            subscriber_session_id,
+            waiting_subscribers);
+    }
+
     return true;
+}
+
+void media_fanout_router::complete_keyframe_request(std::string_view stream_id,
+                                                     std::string_view subscriber_session_id,
+                                                     std::string_view publisher_session_id,
+                                                     uint64_t source_generation,
+                                                     uint32_t media_ssrc)
+{
+    if (stream_id.empty() || subscriber_session_id.empty() || publisher_session_id.empty() ||
+        source_generation == 0 || media_ssrc == 0)
+    {
+        return;
+    }
+
+    std::size_t remaining = 0;
+    bool completed = false;
+
+    {
+        std::lock_guard lock(mutex_);
+        const keyframe_request_key key{
+            .stream_id = std::string(stream_id),
+            .publisher_session_id = std::string(publisher_session_id),
+            .source_generation = source_generation,
+            .media_ssrc = media_ssrc,
+        };
+        const auto iterator = keyframe_requests_.find(key);
+
+        if (iterator == keyframe_requests_.end())
+        {
+            return;
+        }
+
+        completed = iterator->second.waiting_subscriber_session_ids.erase(
+                        std::string(subscriber_session_id)) != 0U;
+        remaining = iterator->second.waiting_subscriber_session_ids.size();
+
+        if (remaining == 0)
+        {
+            cancel_keyframe_request_state_locked(iterator->second);
+            keyframe_requests_.erase(iterator);
+        }
+    }
+
+    if (completed)
+    {
+        WEBRTC_LOG_DEBUG(
+            "media keyframe subscriber ready stream={} publisher_session={} generation={} media_ssrc={} subscriber_session={} remaining={}",
+            stream_id,
+            publisher_session_id,
+            source_generation,
+            media_ssrc,
+            subscriber_session_id,
+            remaining);
+    }
+}
+
+void media_fanout_router::cancel_keyframe_requests(std::string_view subscriber_session_id)
+{
+    if (subscriber_session_id.empty())
+    {
+        return;
+    }
+
+    std::lock_guard lock(mutex_);
+    cancel_keyframe_requests_locked(subscriber_session_id);
 }
 
 std::size_t media_fanout_router::publish_rtp(std::string_view stream_id,
@@ -261,6 +420,132 @@ std::size_t media_fanout_router::publish_rtp(std::string_view stream_id,
     }
 
     return handlers.size();
+}
+
+void media_fanout_router::schedule_keyframe_retry_locked(const keyframe_request_key& key,
+                                                         keyframe_request_state& state)
+{
+    if (state.next_retry_delay_index >= k_keyframe_retry_delays.size())
+    {
+        state.retry_active = false;
+        return;
+    }
+
+    if (state.retry_timer == nullptr)
+    {
+        state.retry_timer = std::make_shared<boost::asio::steady_timer>(io_context_);
+    }
+
+    const auto delay = k_keyframe_retry_delays[state.next_retry_delay_index++];
+    const uint64_t timer_token = ++state.timer_token;
+    state.retry_timer->expires_after(delay);
+    const std::weak_ptr<media_fanout_router> weak_router = weak_from_this();
+
+    state.retry_timer->async_wait(
+        [weak_router, key, timer_token](const boost::system::error_code& error)
+        {
+            if (error == boost::asio::error::operation_aborted)
+            {
+                return;
+            }
+
+            if (const auto router = weak_router.lock())
+            {
+                router->handle_keyframe_retry(key, timer_token);
+            }
+        });
+}
+
+void media_fanout_router::handle_keyframe_retry(keyframe_request_key key, uint64_t timer_token)
+{
+    media_keyframe_request_handler handler;
+    std::size_t attempt = 0;
+    std::size_t waiting_subscribers = 0;
+
+    {
+        std::lock_guard lock(mutex_);
+        const auto request_iterator = keyframe_requests_.find(key);
+
+        if (request_iterator == keyframe_requests_.end() ||
+            request_iterator->second.timer_token != timer_token ||
+            request_iterator->second.waiting_subscriber_session_ids.empty())
+        {
+            return;
+        }
+
+        const auto source_iterator = publisher_sources_by_stream_id_.find(key.stream_id);
+
+        if (source_iterator == publisher_sources_by_stream_id_.end() ||
+            source_iterator->second->session_id != key.publisher_session_id ||
+            source_iterator->second->generation != key.source_generation)
+        {
+            cancel_keyframe_request_state_locked(request_iterator->second);
+            keyframe_requests_.erase(request_iterator);
+            return;
+        }
+
+        auto& state = request_iterator->second;
+        state.sent_count += 1;
+        attempt = state.sent_count;
+        waiting_subscribers = state.waiting_subscriber_session_ids.size();
+        handler = source_iterator->second->keyframe_request_handler;
+        schedule_keyframe_retry_locked(request_iterator->first, state);
+    }
+
+    handler(key.media_ssrc);
+    WEBRTC_LOG_DEBUG(
+        "media keyframe request retry stream={} publisher_session={} generation={} media_ssrc={} attempt={} waiters={}",
+        key.stream_id,
+        key.publisher_session_id,
+        key.source_generation,
+        key.media_ssrc,
+        attempt,
+        waiting_subscribers);
+}
+
+void media_fanout_router::cancel_keyframe_requests_locked(std::string_view subscriber_session_id)
+{
+    for (auto iterator = keyframe_requests_.begin(); iterator != keyframe_requests_.end();)
+    {
+        iterator->second.waiting_subscriber_session_ids.erase(std::string(subscriber_session_id));
+
+        if (iterator->second.waiting_subscriber_session_ids.empty())
+        {
+            cancel_keyframe_request_state_locked(iterator->second);
+            iterator = keyframe_requests_.erase(iterator);
+        }
+        else
+        {
+            ++iterator;
+        }
+    }
+}
+
+void media_fanout_router::cancel_stream_keyframe_requests_locked(std::string_view stream_id)
+{
+    for (auto iterator = keyframe_requests_.begin(); iterator != keyframe_requests_.end();)
+    {
+        if (iterator->first.stream_id == stream_id)
+        {
+            cancel_keyframe_request_state_locked(iterator->second);
+            iterator = keyframe_requests_.erase(iterator);
+        }
+        else
+        {
+            ++iterator;
+        }
+    }
+}
+
+void media_fanout_router::cancel_keyframe_request_state_locked(keyframe_request_state& state)
+{
+    state.retry_active = false;
+    state.timer_token += 1;
+
+    if (state.retry_timer != nullptr)
+    {
+        state.retry_timer->cancel();
+    }
 }
 
 uint64_t media_fanout_router::allocate_source_generation_locked()

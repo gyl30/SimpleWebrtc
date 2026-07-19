@@ -891,7 +891,8 @@ whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(
             }
 
             payload_mapping.clock_rate = target_codec->clock_rate;
-            media_mapping.payload_types.push_back(payload_mapping);
+            payload_mapping.codec_name = target_codec->name;
+            media_mapping.payload_types.push_back(std::move(payload_mapping));
         }
 
         if (!has_primary_payload_type)
@@ -1209,6 +1210,7 @@ struct whep_rtp_rewriter::impl
         result.state = whep_rtp_rewrite_state::rewritten;
         result.packet = std::move(rewritten_packet);
         result.kind = current.mapping.kind;
+        result.codec_name = resolved->payload_type->codec_name;
         result.rtx = is_rtx;
         result.keyframe_request_needed = keyframe_request_needed;
         result.source_ssrc = parsed->header.ssrc;
@@ -1221,6 +1223,29 @@ struct whep_rtp_rewriter::impl
         result.target_timestamp = target_timestamp;
 
         return result;
+    }
+
+    [[nodiscard]] std::optional<uint32_t> source_ssrc_for_target_ssrc(uint32_t target_ssrc) const
+    {
+        if (target_ssrc == 0)
+        {
+            return std::nullopt;
+        }
+
+        for (const auto& current : media)
+        {
+            if (current.mapping.target_ssrc == target_ssrc && current.source_primary_ssrc.has_value())
+            {
+                return current.source_primary_ssrc;
+            }
+
+            if (current.mapping.target_rtx_ssrc == target_ssrc && current.source_primary_ssrc.has_value())
+            {
+                return current.source_primary_ssrc;
+            }
+        }
+
+        return std::nullopt;
     }
 
     bool source_available = false;
@@ -1238,6 +1263,11 @@ void whep_rtp_rewriter::set_config(whep_rtp_rewriter_config config) { impl_->set
 void whep_rtp_rewriter::clear_source() { impl_->clear_source(); }
 
 whep_rtp_rewrite_packet_result whep_rtp_rewriter::rewrite(std::span<const uint8_t> packet) { return impl_->rewrite(packet); }
+
+std::optional<uint32_t> whep_rtp_rewriter::source_ssrc_for_target_ssrc(uint32_t target_ssrc) const
+{
+    return impl_->source_ssrc_for_target_ssrc(target_ssrc);
+}
 
 std::string_view whep_rtp_rewrite_state_to_string(whep_rtp_rewrite_state state)
 {
