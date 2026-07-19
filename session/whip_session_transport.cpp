@@ -36,7 +36,6 @@ namespace
 using namespace std::chrono_literals;
 constexpr auto k_ice_restart_timeout = 30s;
 constexpr auto k_media_log_interval = 5s;
-constexpr auto k_rtcp_receiver_report_interval = 1s;
 constexpr std::size_t k_maximum_rtp_sources = 64;
 constexpr std::size_t k_maximum_rtcp_report_blocks = 31;
 
@@ -140,7 +139,7 @@ whip_session_transport_result whip_session_transport::start(uint16_t local_port)
 
     media_log_interval_started_at_ = std::chrono::steady_clock::now();
     schedule_media_log_summary();
-    schedule_rtcp_receiver_reports();
+    schedule_rtcp_receiver_reports(true, false);
     return {};
 }
 
@@ -180,9 +179,45 @@ void whip_session_transport::handle_media_log_summary(const boost::system::error
     schedule_media_log_summary();
 }
 
-void whip_session_transport::schedule_rtcp_receiver_reports()
+rtcp_interval_input whip_session_transport::make_rtcp_interval_input_locked() const
 {
-    rtcp_receiver_report_timer_.expires_after(k_rtcp_receiver_report_interval);
+    std::size_t remote_sender_count = 0;
+
+    for (const auto& [source_ssrc, receiver] : inbound_rtcp_receivers_)
+    {
+        (void)source_ssrc;
+        remote_sender_count += receiver.receive_statistics.initialized() ? 1U : 0U;
+    }
+
+    const std::size_t remote_members = std::max<std::size_t>(remote_sender_count, 1);
+    return rtcp_interval_input{
+        .member_count = 1 + remote_members,
+        .sender_count = remote_sender_count,
+        .local_role = rtcp_interval_role::receiver,
+    };
+}
+
+void whip_session_transport::schedule_rtcp_receiver_reports(bool initial, bool packet_sent)
+{
+    rtcp_interval_input input;
+
+    {
+        std::lock_guard peer_lock(peer_mutex_);
+        input = make_rtcp_interval_input_locked();
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point deadline;
+    rtcp_interval_snapshot snapshot;
+
+    {
+        std::lock_guard interval_lock(rtcp_interval_mutex_);
+        deadline = initial ? rtcp_interval_scheduler_.schedule_initial(now, input)
+                           : rtcp_interval_scheduler_.schedule_after_fire(now, input, packet_sent);
+        snapshot = rtcp_interval_scheduler_.snapshot();
+    }
+
+    rtcp_receiver_report_timer_.expires_at(deadline);
     const std::weak_ptr<whip_session_transport> weak_transport = weak_from_this();
 
     rtcp_receiver_report_timer_.async_wait(
@@ -193,6 +228,29 @@ void whip_session_transport::schedule_rtcp_receiver_reports()
                 transport->handle_rtcp_receiver_reports(error);
             }
         });
+
+    if (packet_sent && !rtcp_interval_logged_)
+    {
+        rtcp_interval_logged_ = true;
+        WEBRTC_LOG_INFO(
+            "WHIP RTCP interval activated stream={} session={} role=receiver members={} senders={} average_packet_size={} next_interval_ms={}",
+            stream_id_,
+            session_id_,
+            input.member_count,
+            input.sender_count,
+            snapshot.average_packet_size,
+            snapshot.last_interval.count());
+    }
+
+    WEBRTC_LOG_TRACE(
+        "WHIP RTCP interval scheduled stream={} session={} initial={} role=receiver members={} senders={} average_packet_size={} interval_ms={}",
+        stream_id_,
+        session_id_,
+        snapshot.initial ? 1 : 0,
+        input.member_count,
+        input.sender_count,
+        snapshot.average_packet_size,
+        snapshot.last_interval.count());
 }
 
 void whip_session_transport::handle_rtcp_receiver_reports(const boost::system::error_code& error)
@@ -202,8 +260,26 @@ void whip_session_transport::handle_rtcp_receiver_reports(const boost::system::e
         return;
     }
 
-    send_rtcp_receiver_reports();
-    schedule_rtcp_receiver_reports();
+    const std::size_t wire_bytes = send_rtcp_receiver_reports();
+
+    if (wire_bytes != 0)
+    {
+        std::lock_guard interval_lock(rtcp_interval_mutex_);
+        rtcp_interval_scheduler_.note_transmission(wire_bytes);
+    }
+
+    schedule_rtcp_receiver_reports(false, wire_bytes != 0);
+}
+
+void whip_session_transport::note_rtcp_transmission_locked(
+    std::size_t protected_size,
+    const boost::asio::ip::udp::endpoint& remote_endpoint)
+{
+    const std::size_t wire_bytes =
+        protected_size +
+        (remote_endpoint.address().is_v6() ? k_ipv6_udp_overhead : k_ipv4_udp_overhead);
+    std::lock_guard interval_lock(rtcp_interval_mutex_);
+    rtcp_interval_scheduler_.note_transmission(wire_bytes);
 }
 
 void whip_session_transport::configure_remote_media_locked(
@@ -535,14 +611,15 @@ void whip_session_transport::update_receiver_sender_report(
     receiver.last_sender_report_received_at = received_at;
 }
 
-void whip_session_transport::send_rtcp_receiver_reports()
+std::size_t whip_session_transport::send_rtcp_receiver_reports()
 {
+    std::size_t wire_bytes = 0;
     std::lock_guard lock(peer_mutex_);
 
     if (closed_ || !rtcp_mux_enabled_ || rtcp_sender_ssrc_ == 0 || rtcp_cname_.empty() ||
         !selected_remote_endpoint_.has_value())
     {
-        return;
+        return 0;
     }
 
     const boost::asio::ip::udp::endpoint remote_endpoint = *selected_remote_endpoint_;
@@ -557,12 +634,12 @@ void whip_session_transport::send_rtcp_receiver_reports()
                         session_id_,
                         remote_address,
                         peer_ready.error());
-        return;
+        return 0;
     }
 
     if (!*peer_ready)
     {
-        return;
+        return 0;
     }
 
     std::vector<uint32_t> source_ssrcs;
@@ -578,7 +655,7 @@ void whip_session_transport::send_rtcp_receiver_reports()
 
     if (source_ssrcs.empty())
     {
-        return;
+        return 0;
     }
 
     std::ranges::sort(source_ssrcs);
@@ -719,6 +796,9 @@ void whip_session_transport::send_rtcp_receiver_reports()
         record_media_log_event(media_log_event::rtcp_report_block_sent, report_blocks.size());
         record_media_log_event(media_log_event::rtcp_sdes_sent);
         record_media_log_event(media_log_event::rtcp_send_bytes, protected_size);
+        wire_bytes += protected_size +
+                      (remote_endpoint.address().is_v6() ? k_ipv6_udp_overhead
+                                                         : k_ipv4_udp_overhead);
         udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
 
         WEBRTC_LOG_TRACE(
@@ -731,6 +811,8 @@ void whip_session_transport::send_rtcp_receiver_reports()
             report_blocks.size(),
             protected_size);
     }
+
+    return wire_bytes;
 }
 
 void whip_session_transport::log_media_summary(int64_t interval_ms)
@@ -892,6 +974,27 @@ void whip_session_transport::log_media_summary(int64_t interval_ms)
         other_received);
 
     log_receiver_states();
+    log_rtcp_interval_state();
+}
+
+void whip_session_transport::log_rtcp_interval_state()
+{
+    rtcp_interval_snapshot snapshot;
+
+    {
+        std::lock_guard interval_lock(rtcp_interval_mutex_);
+        snapshot = rtcp_interval_scheduler_.snapshot();
+    }
+
+    WEBRTC_LOG_DEBUG(
+        "WHIP RTCP interval state stream={} session={} initial={} members={} senders={} average_packet_size={} last_interval_ms={}",
+        stream_id_,
+        session_id_,
+        snapshot.initial ? 1 : 0,
+        snapshot.member_count,
+        snapshot.sender_count,
+        snapshot.average_packet_size,
+        snapshot.last_interval.count());
 }
 
 void whip_session_transport::log_receiver_states()
@@ -1316,6 +1419,7 @@ void whip_session_transport::send_keyframe_request(uint32_t media_ssrc)
                                ? media_log_event::rtcp_keyframe_feedback_reduced_size_sent
                                : media_log_event::rtcp_keyframe_feedback_compound_sent);
     record_media_log_event(media_log_event::rtcp_keyframe_feedback_send_bytes, protected_size);
+    note_rtcp_transmission_locked(protected_size, remote_endpoint);
     udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
 
     if (!media_log_stats_.keyframe_feedback_sent_logged.exchange(true, std::memory_order_relaxed))

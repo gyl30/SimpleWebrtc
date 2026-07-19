@@ -25,6 +25,7 @@
 #include "media/video_keyframe_detector.h"
 #include "media/whep_rtp_rewriter.h"
 #include "rtp/rtcp_fir_sequence_tracker.h"
+#include "rtp/rtcp_interval_scheduler.h"
 #include "rtp/rtcp_compound_packet.h"
 #include "rtp/rtcp_report.h"
 #include "session/session_transport_media_log.h"
@@ -259,12 +260,14 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void handle_ice_restart_timeout(uint64_t generation);
     void record_media_log_event(media_log_event event, uint64_t value = 1);
     void schedule_media_log_summary();
-    void schedule_rtcp_sender_reports();
+    void schedule_rtcp_sender_reports(bool initial, bool packet_sent);
     void handle_media_log_summary(const boost::system::error_code& error);
     void handle_rtcp_sender_reports(const boost::system::error_code& error);
-    void send_rtcp_sender_reports();
+    [[nodiscard]] std::size_t send_rtcp_sender_reports();
+    [[nodiscard]] rtcp_interval_input make_rtcp_interval_input();
     void log_media_summary(int64_t interval_ms);
     void log_outbound_rtcp_sender_state_snapshot();
+    void log_rtcp_interval_state();
     [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
         const boost::asio::ip::udp::endpoint& remote_endpoint);
 
@@ -276,6 +279,9 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     boost::asio::steady_timer media_log_timer_;
     boost::asio::steady_timer rtcp_sender_report_timer_;
     std::chrono::steady_clock::time_point media_log_interval_started_at_;
+    std::mutex rtcp_interval_mutex_;
+    rtcp_interval_scheduler rtcp_interval_scheduler_;
+    bool rtcp_interval_logged_ = false;
 
     std::shared_ptr<dtls_transport> dtls_transport_;
     std::shared_ptr<srtp_transport> srtp_transport_;

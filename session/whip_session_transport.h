@@ -21,6 +21,7 @@
 #include "ice/session_ice_udp_server.h"
 #include "media/media_fanout_router.h"
 #include "rtp/rtcp_compound_packet.h"
+#include "rtp/rtcp_interval_scheduler.h"
 #include "rtp/rtp_receive_statistics.h"
 #include "session/session_transport_media_log.h"
 #include "srtp/srtp_transport.h"
@@ -202,9 +203,13 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     void handle_media_log_summary(const boost::system::error_code& error);
     void log_media_summary(int64_t interval_ms);
     void log_receiver_states();
-    void schedule_rtcp_receiver_reports();
+    void log_rtcp_interval_state();
+    void schedule_rtcp_receiver_reports(bool initial, bool packet_sent);
     void handle_rtcp_receiver_reports(const boost::system::error_code& error);
-    void send_rtcp_receiver_reports();
+    [[nodiscard]] std::size_t send_rtcp_receiver_reports();
+    [[nodiscard]] rtcp_interval_input make_rtcp_interval_input_locked() const;
+    void note_rtcp_transmission_locked(std::size_t protected_size,
+                                       const boost::asio::ip::udp::endpoint& remote_endpoint);
     void handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp);
     [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
         const boost::asio::ip::udp::endpoint& remote_endpoint);
@@ -217,6 +222,9 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     boost::asio::steady_timer media_log_timer_;
     boost::asio::steady_timer rtcp_receiver_report_timer_;
     std::chrono::steady_clock::time_point media_log_interval_started_at_;
+    std::mutex rtcp_interval_mutex_;
+    rtcp_interval_scheduler rtcp_interval_scheduler_;
+    bool rtcp_interval_logged_ = false;
 
     std::shared_ptr<dtls_transport> dtls_transport_;
     std::shared_ptr<srtp_transport> srtp_transport_;

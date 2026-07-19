@@ -206,6 +206,7 @@ set(WEBRTC_SOURCES
     rtp/rtp_packet.cpp
     rtp/rtcp_feedback.cpp
     rtp/rtcp_fir_sequence_tracker.cpp
+    rtp/rtcp_interval_scheduler.cpp
     rtp/rtcp_report.cpp
     rtp/rtcp_packet_builder.cpp
     rtp/rtp_receive_statistics.cpp

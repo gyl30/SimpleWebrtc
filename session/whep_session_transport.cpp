@@ -38,7 +38,6 @@ namespace
 using namespace std::chrono_literals;
 constexpr auto k_ice_restart_timeout = 30s;
 constexpr auto k_media_log_interval = 5s;
-constexpr auto k_rtcp_sender_report_interval = 1s;
 constexpr std::size_t k_sender_report_history_size = 16;
 
 enum class inbound_keyframe_feedback_type
@@ -161,7 +160,7 @@ whep_session_transport_result whep_session_transport::start(uint16_t local_port)
 
     media_log_interval_started_at_ = std::chrono::steady_clock::now();
     schedule_media_log_summary();
-    schedule_rtcp_sender_reports();
+    schedule_rtcp_sender_reports(true, false);
     return {};
 }
 
@@ -201,9 +200,43 @@ void whep_session_transport::handle_media_log_summary(const boost::system::error
     schedule_media_log_summary();
 }
 
-void whep_session_transport::schedule_rtcp_sender_reports()
+rtcp_interval_input whep_session_transport::make_rtcp_interval_input()
 {
-    rtcp_sender_report_timer_.expires_after(k_rtcp_sender_report_interval);
+    std::lock_guard rtp_lock(rtp_rewriter_mutex_);
+    bool local_sender_active = false;
+
+    for (const auto& [target_ssrc, sender] : outbound_rtcp_senders_)
+    {
+        (void)target_ssrc;
+        local_sender_active = local_sender_active || sender.packet_count != 0;
+    }
+
+    const std::size_t remote_members =
+        std::max<std::size_t>(remote_rtcp_participant_ssrcs_.size(), 1);
+
+    return rtcp_interval_input{
+        .member_count = 1 + remote_members,
+        .sender_count = local_sender_active ? 1U : 0U,
+        .local_role = local_sender_active ? rtcp_interval_role::sender
+                                          : rtcp_interval_role::receiver,
+    };
+}
+
+void whep_session_transport::schedule_rtcp_sender_reports(bool initial, bool packet_sent)
+{
+    const auto input = make_rtcp_interval_input();
+    const auto now = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point deadline;
+    rtcp_interval_snapshot snapshot;
+
+    {
+        std::lock_guard interval_lock(rtcp_interval_mutex_);
+        deadline = initial ? rtcp_interval_scheduler_.schedule_initial(now, input)
+                           : rtcp_interval_scheduler_.schedule_after_fire(now, input, packet_sent);
+        snapshot = rtcp_interval_scheduler_.snapshot();
+    }
+
+    rtcp_sender_report_timer_.expires_at(deadline);
     const std::weak_ptr<whep_session_transport> weak_transport = weak_from_this();
 
     rtcp_sender_report_timer_.async_wait(
@@ -214,6 +247,31 @@ void whep_session_transport::schedule_rtcp_sender_reports()
                 transport->handle_rtcp_sender_reports(error);
             }
         });
+
+    if (packet_sent && !rtcp_interval_logged_)
+    {
+        rtcp_interval_logged_ = true;
+        WEBRTC_LOG_INFO(
+            "WHEP RTCP interval activated stream={} session={} role={} members={} senders={} average_packet_size={} next_interval_ms={}",
+            stream_id_,
+            session_id_,
+            input.local_role == rtcp_interval_role::sender ? "sender" : "receiver",
+            input.member_count,
+            input.sender_count,
+            snapshot.average_packet_size,
+            snapshot.last_interval.count());
+    }
+
+    WEBRTC_LOG_TRACE(
+        "WHEP RTCP interval scheduled stream={} session={} initial={} role={} members={} senders={} average_packet_size={} interval_ms={}",
+        stream_id_,
+        session_id_,
+        snapshot.initial ? 1 : 0,
+        input.local_role == rtcp_interval_role::sender ? "sender" : "receiver",
+        input.member_count,
+        input.sender_count,
+        snapshot.average_packet_size,
+        snapshot.last_interval.count());
 }
 
 void whep_session_transport::handle_rtcp_sender_reports(const boost::system::error_code& error)
@@ -223,17 +281,25 @@ void whep_session_transport::handle_rtcp_sender_reports(const boost::system::err
         return;
     }
 
-    send_rtcp_sender_reports();
-    schedule_rtcp_sender_reports();
+    const std::size_t wire_bytes = send_rtcp_sender_reports();
+
+    if (wire_bytes != 0)
+    {
+        std::lock_guard interval_lock(rtcp_interval_mutex_);
+        rtcp_interval_scheduler_.note_transmission(wire_bytes);
+    }
+
+    schedule_rtcp_sender_reports(false, wire_bytes != 0);
 }
 
-void whep_session_transport::send_rtcp_sender_reports()
+std::size_t whep_session_transport::send_rtcp_sender_reports()
 {
+    std::size_t wire_bytes = 0;
     std::unique_lock peer_lock(peer_mutex_);
 
     if (closed_ || !selected_remote_endpoint_.has_value())
     {
-        return;
+        return 0;
     }
 
     const boost::asio::ip::udp::endpoint remote_endpoint = *selected_remote_endpoint_;
@@ -248,12 +314,12 @@ void whep_session_transport::send_rtcp_sender_reports()
                         session_id_,
                         remote_address,
                         peer_ready.error());
-        return;
+        return 0;
     }
 
     if (!*peer_ready)
     {
-        return;
+        return 0;
     }
 
     std::lock_guard rtp_lock(rtp_rewriter_mutex_);
@@ -375,6 +441,9 @@ void whep_session_transport::send_rtcp_sender_reports()
         record_media_log_event(media_log_event::rtcp_sender_report_sent);
         record_media_log_event(media_log_event::rtcp_sdes_sent);
         record_media_log_event(media_log_event::rtcp_send_bytes, protected_size);
+        wire_bytes += protected_size +
+                      (remote_endpoint.address().is_v6() ? k_ipv6_udp_overhead
+                                                         : k_ipv4_udp_overhead);
         udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
 
         if (!sender.sender_report_logged)
@@ -413,6 +482,8 @@ void whep_session_transport::send_rtcp_sender_reports()
             sender.sender_report_count,
             protected_size);
     }
+
+    return wire_bytes;
 }
 
 void whep_session_transport::log_media_summary(int64_t interval_ms)
@@ -593,6 +664,27 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         other_received);
 
     log_outbound_rtcp_sender_state_snapshot();
+    log_rtcp_interval_state();
+}
+
+void whep_session_transport::log_rtcp_interval_state()
+{
+    rtcp_interval_snapshot snapshot;
+
+    {
+        std::lock_guard interval_lock(rtcp_interval_mutex_);
+        snapshot = rtcp_interval_scheduler_.snapshot();
+    }
+
+    WEBRTC_LOG_DEBUG(
+        "WHEP RTCP interval state stream={} session={} initial={} members={} senders={} average_packet_size={} last_interval_ms={}",
+        stream_id_,
+        session_id_,
+        snapshot.initial ? 1 : 0,
+        snapshot.member_count,
+        snapshot.sender_count,
+        snapshot.average_packet_size,
+        snapshot.last_interval.count());
 }
 
 void whep_session_transport::log_outbound_rtcp_sender_state_snapshot()
