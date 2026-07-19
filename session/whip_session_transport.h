@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 
 #include <boost/asio.hpp>
@@ -75,10 +76,12 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         rtp_published,
         rtp_bytes,
         rtcp_received,
+        rtcp_parse_failed,
+        rtcp_unsupported,
         published_targets,
         dropped_unselected,
         srtp_ignored,
-        srtp_failed,
+        srtp_unprotect_failed,
         other_received,
         count,
     };
@@ -87,6 +90,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     {
         session_transport_log_interval summary_interval;
         session_transport_log_counters<media_log_event> counters;
+        std::atomic<bool> rtcp_parse_failure_logged{false};
         std::array<std::atomic<uint32_t>, 16> logged_source_ssrcs{};
     };
 
@@ -95,6 +99,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     void schedule_ice_restart_timeout(uint64_t generation);
     void handle_ice_restart_timeout(uint64_t generation);
     void record_media_log_event(media_log_event event, uint64_t value = 1);
+    void handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp);
     [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
         const boost::asio::ip::udp::endpoint& remote_endpoint);
 

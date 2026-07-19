@@ -112,8 +112,10 @@ void whep_session_transport::record_media_log_event(media_log_event event, uint6
     const uint64_t rtcp_keyframe_feedback_forwarded =
         media_log_stats_.counters.take(media_log_event::rtcp_keyframe_feedback_forwarded);
     const uint64_t rtcp_nack_received = media_log_stats_.counters.take(media_log_event::rtcp_nack_received);
+    const uint64_t rtcp_parse_failed = media_log_stats_.counters.take(media_log_event::rtcp_parse_failed);
+    const uint64_t rtcp_unsupported = media_log_stats_.counters.take(media_log_event::rtcp_unsupported);
     const uint64_t srtp_inbound_ignored = media_log_stats_.counters.take(media_log_event::srtp_inbound_ignored);
-    const uint64_t srtp_inbound_failed = media_log_stats_.counters.take(media_log_event::srtp_inbound_failed);
+    const uint64_t srtp_unprotect_failed = media_log_stats_.counters.take(media_log_event::srtp_unprotect_failed);
     const uint64_t udp_received = media_log_stats_.counters.take(media_log_event::udp_received);
     const uint64_t stun_received = media_log_stats_.counters.take(media_log_event::stun_received);
     const uint64_t dtls_received = media_log_stats_.counters.take(media_log_event::dtls_received);
@@ -124,8 +126,8 @@ void whep_session_transport::record_media_log_event(media_log_event event, uint6
         "WHEP media summary stream={} session={} interval_ms={} source_rtp={} rewritten={} send_enqueued={} send_bytes={} "
         "dropped_no_endpoint={} dropped_stale_generation={} rewrite_failed={} rewrite_dropped={} protect_failed={} "
         "protect_ignored={} keyframe_request_submitted={} keyframe_completed={} rtcp_received={} rtcp_keyframe_feedback_received={} "
-        "rtcp_keyframe_feedback_forwarded={} rtcp_nack_received={} srtp_inbound_ignored={} srtp_inbound_failed={} "
-        "udp_received={} stun={} dtls={} dropped_unselected={} other_received={}",
+        "rtcp_keyframe_feedback_forwarded={} rtcp_nack_received={} rtcp_parse_failed={} rtcp_unsupported={} "
+        "srtp_inbound_ignored={} srtp_unprotect_failed={} udp_received={} stun={} dtls={} dropped_unselected={} other_received={}",
         stream_id_,
         session_id_,
         interval_ms,
@@ -145,8 +147,10 @@ void whep_session_transport::record_media_log_event(media_log_event event, uint6
         rtcp_keyframe_feedback_received,
         rtcp_keyframe_feedback_forwarded,
         rtcp_nack_received,
+        rtcp_parse_failed,
+        rtcp_unsupported,
         srtp_inbound_ignored,
-        srtp_inbound_failed,
+        srtp_unprotect_failed,
         udp_received,
         stun_received,
         dtls_received,
@@ -726,11 +730,13 @@ void whep_session_transport::complete_keyframe_request(const keyframe_request_co
 
 void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp)
 {
+    record_media_log_event(media_log_event::rtcp_received);
+
     auto compound = parse_rtcp_compound_packet(plain_rtcp);
 
     if (!compound)
     {
-        record_media_log_event(media_log_event::srtp_inbound_failed);
+        record_media_log_event(media_log_event::rtcp_parse_failed);
 
         if (!media_log_stats_.rtcp_parse_failure_logged.exchange(true, std::memory_order_relaxed))
         {
@@ -747,23 +753,41 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
         return;
     }
 
-    record_media_log_event(media_log_event::rtcp_received);
-
     if (compound->nack_count != 0)
     {
         record_media_log_event(media_log_event::rtcp_nack_received, compound->nack_count);
     }
 
+    std::size_t unsupported_block_count = compound->unknown_block_count;
+
+    for (const auto& block : compound->blocks)
+    {
+        if (block.has_generic_nack || block.has_transport_cc || block.has_remb)
+        {
+            unsupported_block_count += 1;
+        }
+    }
+
+    if (unsupported_block_count != 0)
+    {
+        record_media_log_event(media_log_event::rtcp_unsupported, unsupported_block_count);
+    }
+
     if (compound->keyframe_request_media_ssrcs.empty())
     {
         WEBRTC_LOG_TRACE(
-            "WHEP inbound RTCP stream={} session={} blocks={} reports={} feedback={} nack={} summary={}",
+            "WHEP inbound RTCP stream={} session={} blocks={} reports={} report_blocks={} sdes_chunks={} bye_packets={} "
+            "feedback={} nack={} unsupported={} summary={}",
             stream_id_,
             session_id_,
             compound->blocks.size(),
             compound->report_packet_count,
+            compound->report_block_count,
+            compound->sdes_chunks.size(),
+            compound->bye_packets.size(),
             compound->feedback_block_count,
             compound->nack_count,
+            unsupported_block_count,
             rtcp_compound_feedback_summary_to_string(*compound));
         return;
     }
@@ -1115,7 +1139,7 @@ session_udp_outbound_packet_list whep_session_transport::handle_udp_packet(const
 
     if (!inbound)
     {
-        record_media_log_event(media_log_event::srtp_inbound_failed);
+        record_media_log_event(media_log_event::srtp_unprotect_failed);
         WEBRTC_LOG_WARN("WHEP inbound SRTP packet failed stream={} session={} remote={} error={}",
                         stream_id_,
                         session_id_,

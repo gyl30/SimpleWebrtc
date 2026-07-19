@@ -486,7 +486,8 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
         return json_error_response(
             request, 400, make_prefixed_error("failed to build runtime publisher offer summary: ", runtime_offer.error()));
     }
-    auto restart_compatibility = sdp::validate_ice_restart_offer_compatibility(session->remote_offer_summary(), *runtime_offer);
+    auto restart_compatibility = sdp::validate_ice_restart_offer_compatibility_ignoring_header_extensions(
+        session->remote_offer_summary(), *runtime_offer);
     if (!restart_compatibility)
     {
         WEBRTC_LOG_WARN("WHIP SDP ICE restart incompatible offer session={} error={}", session_id, restart_compatibility.error());

@@ -11,6 +11,12 @@
 
 namespace webrtc
 {
+struct rtcp_fir_entry
+{
+    uint32_t media_ssrc = 0;
+    uint8_t sequence_number = 0;
+};
+
 struct rtcp_feedback_packet
 {
     uint8_t format = 0;
@@ -27,6 +33,7 @@ struct rtcp_feedback_packet
     bool has_transport_cc = false;
 
     std::vector<uint32_t> keyframe_request_media_ssrcs;
+    std::vector<rtcp_fir_entry> fir_entries;
     std::optional<uint64_t> remb_bitrate_bps;
 };
 

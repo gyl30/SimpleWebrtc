@@ -316,14 +316,18 @@ std::expected<void, std::string> parse_fir(std::span<const uint8_t> data,
     packet.has_keyframe_request = true;
     packet.fir_count = fci_size / 8;
     packet.keyframe_request_media_ssrcs.reserve(packet.fir_count);
+    packet.fir_entries.reserve(packet.fir_count);
 
     for (std::size_t current = offset; current < end; current += 8)
     {
-        const uint32_t media_ssrc = read_u32(data, current);
+        rtcp_fir_entry entry;
+        entry.media_ssrc = read_u32(data, current);
+        entry.sequence_number = data[current + 4];
+        packet.fir_entries.push_back(entry);
 
-        if (media_ssrc != 0)
+        if (entry.media_ssrc != 0)
         {
-            packet.keyframe_request_media_ssrcs.push_back(media_ssrc);
+            packet.keyframe_request_media_ssrcs.push_back(entry.media_ssrc);
         }
     }
 

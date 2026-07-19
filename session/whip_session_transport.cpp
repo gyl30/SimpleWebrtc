@@ -17,6 +17,7 @@
 #include "ice/session_ice_udp_server.h"
 #include "log/log.h"
 #include "net/socket.h"
+#include "rtp/rtcp_compound_packet.h"
 #include "rtp/rtcp_feedback.h"
 #include "session/session_stun_binding.h"
 #include "session/session_transport_peer_rebind.h"
@@ -87,15 +88,18 @@ void whip_session_transport::record_media_log_event(media_log_event event, uint6
     const uint64_t rtp_published = media_log_stats_.counters.take(media_log_event::rtp_published);
     const uint64_t rtp_bytes = media_log_stats_.counters.take(media_log_event::rtp_bytes);
     const uint64_t rtcp_received = media_log_stats_.counters.take(media_log_event::rtcp_received);
+    const uint64_t rtcp_parse_failed = media_log_stats_.counters.take(media_log_event::rtcp_parse_failed);
+    const uint64_t rtcp_unsupported = media_log_stats_.counters.take(media_log_event::rtcp_unsupported);
     const uint64_t published_targets = media_log_stats_.counters.take(media_log_event::published_targets);
     const uint64_t dropped_unselected = media_log_stats_.counters.take(media_log_event::dropped_unselected);
     const uint64_t srtp_ignored = media_log_stats_.counters.take(media_log_event::srtp_ignored);
-    const uint64_t srtp_failed = media_log_stats_.counters.take(media_log_event::srtp_failed);
+    const uint64_t srtp_unprotect_failed = media_log_stats_.counters.take(media_log_event::srtp_unprotect_failed);
     const uint64_t other_received = media_log_stats_.counters.take(media_log_event::other_received);
 
     WEBRTC_LOG_DEBUG(
         "WHIP media summary stream={} session={} interval_ms={} udp_received={} stun={} dtls={} rtp_published={} rtp_bytes={} "
-        "rtcp_received={} published_targets={} dropped_unselected={} srtp_ignored={} srtp_failed={} other_received={}",
+        "rtcp_received={} rtcp_parse_failed={} rtcp_unsupported={} published_targets={} dropped_unselected={} "
+        "srtp_ignored={} srtp_unprotect_failed={} other_received={}",
         stream_id_,
         session_id_,
         interval_ms,
@@ -105,11 +109,60 @@ void whip_session_transport::record_media_log_event(media_log_event event, uint6
         rtp_published,
         rtp_bytes,
         rtcp_received,
+        rtcp_parse_failed,
+        rtcp_unsupported,
         published_targets,
         dropped_unselected,
         srtp_ignored,
-        srtp_failed,
+        srtp_unprotect_failed,
         other_received);
+}
+
+void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp)
+{
+    record_media_log_event(media_log_event::rtcp_received);
+
+    auto compound = parse_rtcp_compound_packet(plain_rtcp);
+
+    if (!compound)
+    {
+        record_media_log_event(media_log_event::rtcp_parse_failed);
+
+        if (!media_log_stats_.rtcp_parse_failure_logged.exchange(true, std::memory_order_relaxed))
+        {
+            WEBRTC_LOG_WARN("WHIP first inbound RTCP parse failure stream={} session={} error={}",
+                            stream_id_,
+                            session_id_,
+                            compound.error());
+        }
+
+        WEBRTC_LOG_TRACE("WHIP inbound RTCP parse failed stream={} session={} error={}",
+                         stream_id_,
+                         session_id_,
+                         compound.error());
+        return;
+    }
+
+    const std::size_t unsupported_block_count = compound->feedback_block_count + compound->unknown_block_count;
+
+    if (unsupported_block_count != 0)
+    {
+        record_media_log_event(media_log_event::rtcp_unsupported, unsupported_block_count);
+    }
+
+    WEBRTC_LOG_TRACE(
+        "WHIP inbound RTCP stream={} session={} blocks={} reports={} report_blocks={} sdes_chunks={} bye_packets={} "
+        "feedback={} unknown={} summary={}",
+        stream_id_,
+        session_id_,
+        compound->blocks.size(),
+        compound->report_packet_count,
+        compound->report_block_count,
+        compound->sdes_chunks.size(),
+        compound->bye_packets.size(),
+        compound->feedback_block_count,
+        compound->unknown_block_count,
+        rtcp_compound_feedback_summary_to_string(*compound));
 }
 
 void whip_session_transport::set_peer_context(std::string local_ice_pwd, dtls_peer_identity identity)
@@ -473,7 +526,7 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
 
     if (!srtp_packet)
     {
-        record_media_log_event(media_log_event::srtp_failed);
+        record_media_log_event(media_log_event::srtp_unprotect_failed);
         WEBRTC_LOG_WARN("WHIP session transport srtp unprotect failed stream={} session={} remote={} error={}",
                         stream_id_,
                         session_id_,
@@ -519,7 +572,8 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
 
     if (srtp_packet->state == srtp_packet_process_state::unprotected && srtp_packet->kind == srtp_packet_kind::rtcp)
     {
-        record_media_log_event(media_log_event::rtcp_received);
+        handle_inbound_rtcp(srtp_packet->plain_packet);
+        return {};
     }
     else if (srtp_packet->state == srtp_packet_process_state::ignored)
     {

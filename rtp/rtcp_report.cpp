@@ -46,12 +46,27 @@ bool is_report_packet_type(uint8_t packet_type)
     return packet_type == k_rtcp_packet_type_sender_report || packet_type == k_rtcp_packet_type_receiver_report;
 }
 
+rtcp_sender_info parse_sender_info(std::span<const uint8_t> data, std::size_t offset)
+{
+    rtcp_sender_info info;
+    info.ntp_timestamp_msw = read_u32(data, offset);
+    info.ntp_timestamp_lsw = read_u32(data, offset + 4);
+    info.rtp_timestamp = read_u32(data, offset + 8);
+    info.sender_packet_count = read_u32(data, offset + 12);
+    info.sender_octet_count = read_u32(data, offset + 16);
+    return info;
+}
+
 rtcp_report_block parse_report_block(std::span<const uint8_t> data, std::size_t offset)
 {
     rtcp_report_block block;
+    block.source_ssrc = read_u32(data, offset);
     block.fraction_lost = data[offset + 4];
     block.cumulative_lost = read_i24(data, offset + 5);
+    block.extended_highest_sequence_number = read_u32(data, offset + 8);
     block.jitter = read_u32(data, offset + 12);
+    block.last_sender_report = read_u32(data, offset + 16);
+    block.delay_since_last_sender_report = read_u32(data, offset + 20);
     return block;
 }
 
@@ -130,6 +145,10 @@ rtcp_report_packet_result parse_rtcp_report_packet(std::span<const uint8_t> data
         return make_error("rtcp report packet is too short");
     }
 
+    rtcp_report_packet packet;
+    packet.packet_type = header->packet_type;
+    packet.sender_ssrc = read_u32(data, k_rtcp_common_header_size);
+
     std::size_t report_block_offset = k_rtcp_common_header_size + k_rtcp_sender_ssrc_size;
 
     if (header->packet_type == k_rtcp_packet_type_sender_report)
@@ -139,6 +158,7 @@ rtcp_report_packet_result parse_rtcp_report_packet(std::span<const uint8_t> data
             return make_error("rtcp sender report sender info is truncated");
         }
 
+        packet.sender_info = parse_sender_info(data, report_block_offset);
         report_block_offset += k_rtcp_sender_info_size;
     }
 
@@ -151,7 +171,11 @@ rtcp_report_packet_result parse_rtcp_report_packet(std::span<const uint8_t> data
         return make_error("rtcp report block list is truncated");
     }
 
-    rtcp_report_packet packet;
+    if (report_block_end != *payload_end)
+    {
+        return make_error("rtcp report packet has trailing payload bytes");
+    }
+
     packet.report_blocks.reserve(report_count);
 
     for (std::size_t i = 0; i < report_count; ++i)

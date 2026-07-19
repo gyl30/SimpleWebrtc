@@ -540,49 +540,14 @@ std::string normalize_rtcp_feedback_value(std::string_view feedback)
 
 bool rtcp_feedback_is_supported_for_answer_media(std::string_view media_kind, std::string_view feedback)
 {
-    const std::string normalized_feedback = normalize_rtcp_feedback_value(feedback);
-
-    if (normalized_feedback.empty())
-    {
-        return false;
-    }
-
-    if (media_kind == "audio")
-    {
-        return normalized_feedback == "transport-cc";
-    }
-
     if (media_kind != "video")
     {
         return false;
     }
 
-    if (normalized_feedback == "nack")
-    {
-        return true;
-    }
+    const std::string normalized_feedback = normalize_rtcp_feedback_value(feedback);
 
-    if (normalized_feedback == "nack pli")
-    {
-        return true;
-    }
-
-    if (normalized_feedback == "ccm fir")
-    {
-        return true;
-    }
-
-    if (normalized_feedback == "transport-cc")
-    {
-        return true;
-    }
-
-    if (normalized_feedback == "goog-remb")
-    {
-        return true;
-    }
-
-    return false;
+    return normalized_feedback == "nack pli" || normalized_feedback == "ccm fir";
 }
 
 std::string make_rtcp_feedback_deduplication_key(const codec_info& codec, std::string_view normalized_feedback)
@@ -610,21 +575,6 @@ bool is_supported_answer_header_extension_uri(std::string_view kind, std::string
     if (uri == k_rtp_stream_id_extension_uri)
     {
         return kind == "video";
-    }
-
-    if (uri == k_repaired_rtp_stream_id_extension_uri)
-    {
-        return kind == "video";
-    }
-
-    if (uri == k_transport_wide_cc_extension_uri || uri == k_transport_wide_cc_extension_uri_02)
-    {
-        return kind == "audio" || kind == "video";
-    }
-
-    if (uri == k_absolute_send_time_extension_uri)
-    {
-        return kind == "audio" || kind == "video";
     }
 
     if (uri == k_audio_level_extension_uri)
@@ -1057,6 +1007,11 @@ bool codec_name_equals_ignore_case(std::string_view value, std::string_view expe
     return true;
 }
 
+void remove_unimplemented_answer_codecs(std::vector<codec_info>& codecs)
+{
+    std::erase_if(codecs, [](const codec_info& codec) { return codec_name_equals_ignore_case(codec.name, "rtx"); });
+}
+
 std::string_view trim_fmtp_token(std::string_view value)
 {
     const auto begin = value.find_first_not_of(" \t");
@@ -1336,6 +1291,12 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
         }
 
         codecs = std::move(*codec_result);
+        remove_unimplemented_answer_codecs(codecs);
+
+        if (codecs.empty())
+        {
+            return make_rejected_answer_media(media);
+        }
     }
     else
     {
@@ -1347,6 +1308,12 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
         }
 
         codecs = std::move(*codec_result);
+        remove_unimplemented_answer_codecs(codecs);
+
+        if (codecs.empty())
+        {
+            return make_rejected_answer_media(media);
+        }
     }
 
     media_description answer_media;

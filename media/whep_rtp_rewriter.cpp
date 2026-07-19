@@ -839,7 +839,6 @@ whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(
         media_mapping.payload_types.reserve(codec_mappings->size());
 
         bool has_primary_payload_type = false;
-        bool has_rtx_payload_type = false;
 
         for (const auto& codec_mapping : *codec_mappings)
         {
@@ -852,6 +851,11 @@ whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(
             payload_mapping.source_payload_type = static_cast<uint8_t>(codec_mapping.publisher_payload_type);
             payload_mapping.target_payload_type = static_cast<uint8_t>(codec_mapping.subscriber_payload_type);
             payload_mapping.rtx = codec_mapping.publisher_associated_payload_type.has_value();
+
+            if (payload_mapping.rtx && media_mapping.target_rtx_ssrc == 0)
+            {
+                continue;
+            }
 
             uint16_t clock_rate_payload_type = codec_mapping.subscriber_payload_type;
 
@@ -872,7 +876,6 @@ whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(
                 payload_mapping.target_associated_payload_type =
                     static_cast<uint8_t>(*codec_mapping.subscriber_associated_payload_type);
                 clock_rate_payload_type = *codec_mapping.subscriber_associated_payload_type;
-                has_rtx_payload_type = true;
             }
             else
             {
@@ -898,11 +901,6 @@ whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(
         if (!has_primary_payload_type)
         {
             return make_media_error(subscriber_media.mid, "primary payload type mapping is missing");
-        }
-
-        if (has_rtx_payload_type && media_mapping.target_rtx_ssrc == 0)
-        {
-            return make_media_error(subscriber_media.mid, "target rtx ssrc is missing");
         }
 
         const auto selected_extensions = sdp::select_whep_answer_header_extensions(subscriber_media, *publisher_media);

@@ -238,11 +238,6 @@ std::vector<sdp::sdp_answer_media_source> make_whep_outbound_media_sources(const
         source.mid = media.mid;
         source.kind = media.kind;
         source.ssrc = make_whep_outbound_ssrc(used_ssrcs);
-        if (media.kind == "video" && sdp::media_has_rtx_codec(media))
-        {
-            source.rtx_repair_ssrc = make_whep_outbound_ssrc(used_ssrcs);
-        }
-
         source.cname = cname;
         sources.push_back(std::move(source));
     }
