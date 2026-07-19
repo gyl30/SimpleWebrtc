@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <expected>
 #include <memory>
 #include <mutex>
@@ -23,6 +24,7 @@
 #include "media/media_fanout_router.h"
 #include "media/video_keyframe_detector.h"
 #include "media/whep_rtp_rewriter.h"
+#include "rtp/rtcp_report.h"
 #include "session/session_transport_media_log.h"
 #include "srtp/srtp_transport.h"
 
@@ -97,6 +99,13 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         bool operator==(const outbound_rtcp_sender_timing&) const = default;
     };
 
+    struct sent_rtcp_sender_report
+    {
+        uint32_t compact_ntp = 0;
+        uint64_t source_generation = 0;
+        std::chrono::steady_clock::time_point sent_at;
+    };
+
     struct outbound_rtcp_sender_state
     {
         std::string kind;
@@ -111,6 +120,23 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         std::optional<uint32_t> last_target_rtp_timestamp;
         std::optional<outbound_rtcp_sender_timing> sender_timing;
         bool sender_timing_logged = false;
+
+        uint64_t sender_report_count = 0;
+        uint64_t sender_report_bytes = 0;
+        uint64_t last_sender_report_source_generation = 0;
+        uint64_t last_sender_report_ntp_timestamp = 0;
+        uint32_t last_sender_report_rtp_timestamp = 0;
+        std::deque<sent_rtcp_sender_report> sent_sender_reports;
+        bool sender_report_logged = false;
+
+        uint64_t receiver_report_count = 0;
+        uint32_t last_receiver_report_lsr = 0;
+        uint32_t last_receiver_report_dlsr = 0;
+        uint8_t last_fraction_lost = 0;
+        int32_t last_cumulative_lost = 0;
+        uint32_t last_jitter = 0;
+        std::optional<uint64_t> last_round_trip_time_ms;
+        bool receiver_report_match_logged = false;
     };
 
     using peer_nomination_result = std::expected<peer_nomination_state, std::string>;
@@ -148,6 +174,13 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         rtcp_other_feedback_ignored,
         rtcp_unknown_block_ignored,
         rtcp_parse_failed,
+        rtcp_sender_report_sent,
+        rtcp_sdes_sent,
+        rtcp_send_bytes,
+        rtcp_build_failed,
+        rtcp_protect_failed,
+        rtcp_protect_ignored,
+        rtcp_receiver_report_lsr_matched,
         srtp_inbound_ignored,
         srtp_unprotect_failed,
         udp_received,
@@ -199,6 +232,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
 
     void complete_keyframe_request(const keyframe_request_context& context);
     void handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp);
+    void record_receiver_reports_locked(std::span<const rtcp_report_packet> reports);
 
     void clear_peer_state();
     void clear_peer_state_locked();
@@ -206,7 +240,10 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void handle_ice_restart_timeout(uint64_t generation);
     void record_media_log_event(media_log_event event, uint64_t value = 1);
     void schedule_media_log_summary();
+    void schedule_rtcp_sender_reports();
     void handle_media_log_summary(const boost::system::error_code& error);
+    void handle_rtcp_sender_reports(const boost::system::error_code& error);
+    void send_rtcp_sender_reports();
     void log_media_summary(int64_t interval_ms);
     void log_outbound_rtcp_sender_state_snapshot();
     [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
@@ -218,6 +255,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     session_ice_udp_server udp_server_;
     boost::asio::steady_timer ice_restart_timer_;
     boost::asio::steady_timer media_log_timer_;
+    boost::asio::steady_timer rtcp_sender_report_timer_;
     std::chrono::steady_clock::time_point media_log_interval_started_at_;
 
     std::shared_ptr<dtls_transport> dtls_transport_;
