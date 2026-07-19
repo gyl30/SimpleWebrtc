@@ -1,6 +1,8 @@
 #ifndef SIMPLE_WEBRTC_SESSION_WHEP_SESSION_TRANSPORT_H
 #define SIMPLE_WEBRTC_SESSION_WHEP_SESSION_TRANSPORT_H
 
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -18,6 +20,7 @@
 #include "ice/session_ice_udp_server.h"
 #include "media/media_fanout_router.h"
 #include "media/whep_rtp_rewriter.h"
+#include "session/session_transport_media_log.h"
 #include "srtp/srtp_transport.h"
 
 namespace webrtc
@@ -72,6 +75,36 @@ class whep_session_transport : public session_ice_udp_packet_handler,
 
     using peer_nomination_result = std::expected<peer_nomination_state, std::string>;
 
+    enum class media_log_event
+    {
+        source_rtp_received,
+        rewritten,
+        send_enqueued,
+        send_bytes,
+        dropped_no_endpoint,
+        dropped_stale_generation,
+        rewrite_failed,
+        rewrite_dropped,
+        protect_failed,
+        protect_ignored,
+        keyframe_requested,
+        udp_received,
+        stun_received,
+        dtls_received,
+        dropped_unselected,
+        other_received,
+        count,
+    };
+
+    struct media_log_stats
+    {
+        session_transport_log_interval summary_interval;
+        session_transport_log_counters<media_log_event> counters;
+        std::atomic<bool> rewrite_drop_logged{false};
+        std::atomic<bool> protect_ignore_logged{false};
+        std::array<std::atomic<uint32_t>, 16> logged_target_ssrcs{};
+    };
+
     void subscribe_media();
     void unsubscribe_media();
     void handle_publisher_source(media_publisher_source_update update);
@@ -81,6 +114,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void clear_peer_state_locked();
     void schedule_ice_restart_timeout(uint64_t generation);
     void handle_ice_restart_timeout(uint64_t generation);
+    void record_media_log_event(media_log_event event, uint64_t value = 1);
     [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
         const boost::asio::ip::udp::endpoint& remote_endpoint);
 
@@ -113,6 +147,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     std::size_t received_packet_count_ = 0;
     std::size_t rewritten_rtp_packet_count_ = 0;
     std::size_t dropped_rtp_packet_count_ = 0;
+
+    media_log_stats media_log_stats_;
 
     // 仅由当前 ICE generation 中携带 USE-CANDIDATE 的完整 STUN 校验结果更新。
     std::optional<boost::asio::ip::udp::endpoint> selected_remote_endpoint_;

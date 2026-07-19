@@ -222,13 +222,24 @@ session_stun_binding_result handle_session_stun_binding(std::span<const uint8_t>
     {
         result.nominated = message->has_use_candidate;
 
-        WEBRTC_LOG_DEBUG("{} stun binding accepted stream={} session={} username={} remote={} nominated={}",
-                         context.log_prefix,
-                         context.stream_id,
-                         context.session_id,
-                         *message->username,
-                         remote_address,
-                         result.nominated ? 1 : 0);
+        if (result.nominated)
+        {
+            WEBRTC_LOG_DEBUG("{} stun binding accepted stream={} session={} username={} remote={} nominated=1",
+                             context.log_prefix,
+                             context.stream_id,
+                             context.session_id,
+                             *message->username,
+                             remote_address);
+        }
+        else
+        {
+            WEBRTC_LOG_TRACE("{} stun binding accepted stream={} session={} username={} remote={} nominated=0",
+                             context.log_prefix,
+                             context.stream_id,
+                             context.session_id,
+                             *message->username,
+                             remote_address);
+        }
     }
 
     return result;

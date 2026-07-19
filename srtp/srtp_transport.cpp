@@ -75,7 +75,7 @@ void log_unprotected_rtp_packet(std::string_view remote_endpoint,
                                   const rtp_packet_header& header,
                                   uint64_t packet_count)
 {
-    WEBRTC_LOG_DEBUG(
+    WEBRTC_LOG_TRACE(
         "srtp inbound rtp unprotected remote={} size={} plain_size={} ssrc={} payload_type={} marker={} sequence={} timestamp={} packets={}",
         remote_endpoint,
         protected_size,
@@ -122,7 +122,7 @@ void log_unprotected_rtcp_packet(std::string_view remote_endpoint,
             break;
         }
 
-        WEBRTC_LOG_DEBUG(
+        WEBRTC_LOG_TRACE(
             "srtp inbound rtcp compound feedback unprotected remote={} size={} plain_size={} blocks={} feedback_blocks={} reports={} "
             "report_blocks={} ssrc={} first_packet_type={} feedback={} sender_ssrc={} media_ssrc={} nack_count={} fir_count={} "
             "keyframe_request={} generic_nack={} transport_cc={} remb={} remb_bitrate={} packets={}",
@@ -157,7 +157,7 @@ void log_unprotected_rtcp_packet(std::string_view remote_endpoint,
     const int32_t cumulative_lost = compound.last_report_block.has_value() ? compound.last_report_block->cumulative_lost : 0;
     const uint32_t jitter = compound.last_report_block.has_value() ? compound.last_report_block->jitter : 0;
 
-    WEBRTC_LOG_DEBUG(
+    WEBRTC_LOG_TRACE(
         "srtp inbound rtcp compound unprotected remote={} size={} plain_size={} blocks={} reports={} report_blocks={} ssrc={} "
         "packet_type={} packet_type_name={} count={} length={} fraction_lost={} cumulative_lost={} jitter={} packets={}",
         remote_endpoint,
@@ -520,7 +520,7 @@ struct srtp_transport::impl
         packet.resize(*protect_result);
 
         peer.outbound_packet_count += 1;
-        WEBRTC_LOG_DEBUG("srtp outbound packet protected remote={} kind={} plain_size={} protected_size={} packets={}",
+        WEBRTC_LOG_TRACE("srtp outbound packet protected remote={} kind={} plain_size={} protected_size={} packets={}",
                          remote_endpoint,
                          srtp_packet_kind_to_string(kind),
                          plain_packet.size(),

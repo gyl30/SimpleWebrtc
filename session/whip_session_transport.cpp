@@ -28,6 +28,7 @@ namespace
 {
 using namespace std::chrono_literals;
 constexpr auto k_ice_restart_timeout = 30s;
+constexpr auto k_media_log_interval = 5s;
 
 uint32_t make_rtcp_sender_ssrc(std::string_view session_id)
 {
@@ -63,6 +64,53 @@ whip_session_transport::~whip_session_transport()
 }
 
 whip_session_transport_result whip_session_transport::start(uint16_t local_port) { return udp_server_.start(local_port, *this); }
+
+void whip_session_transport::record_media_log_event(media_log_event event, uint64_t value)
+{
+    media_log_stats_.counters.add(event, value);
+
+    if (event != media_log_event::udp_received)
+    {
+        return;
+    }
+
+    int64_t interval_ms = 0;
+
+    if (!media_log_stats_.summary_interval.try_begin(k_media_log_interval, interval_ms))
+    {
+        return;
+    }
+
+    const uint64_t udp_received = media_log_stats_.counters.take(media_log_event::udp_received);
+    const uint64_t stun_received = media_log_stats_.counters.take(media_log_event::stun_received);
+    const uint64_t dtls_received = media_log_stats_.counters.take(media_log_event::dtls_received);
+    const uint64_t rtp_published = media_log_stats_.counters.take(media_log_event::rtp_published);
+    const uint64_t rtp_bytes = media_log_stats_.counters.take(media_log_event::rtp_bytes);
+    const uint64_t rtcp_received = media_log_stats_.counters.take(media_log_event::rtcp_received);
+    const uint64_t published_targets = media_log_stats_.counters.take(media_log_event::published_targets);
+    const uint64_t dropped_unselected = media_log_stats_.counters.take(media_log_event::dropped_unselected);
+    const uint64_t srtp_ignored = media_log_stats_.counters.take(media_log_event::srtp_ignored);
+    const uint64_t srtp_failed = media_log_stats_.counters.take(media_log_event::srtp_failed);
+    const uint64_t other_received = media_log_stats_.counters.take(media_log_event::other_received);
+
+    WEBRTC_LOG_DEBUG(
+        "WHIP media summary stream={} session={} interval_ms={} udp_received={} stun={} dtls={} rtp_published={} rtp_bytes={} "
+        "rtcp_received={} published_targets={} dropped_unselected={} srtp_ignored={} srtp_failed={} other_received={}",
+        stream_id_,
+        session_id_,
+        interval_ms,
+        udp_received,
+        stun_received,
+        dtls_received,
+        rtp_published,
+        rtp_bytes,
+        rtcp_received,
+        published_targets,
+        dropped_unselected,
+        srtp_ignored,
+        srtp_failed,
+        other_received);
+}
 
 void whip_session_transport::set_peer_context(std::string local_ice_pwd, dtls_peer_identity identity)
 {
@@ -314,6 +362,7 @@ whip_session_transport::peer_nomination_result whip_session_transport::nominate_
 session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const session_udp_packet& packet)
 {
     ++received_packet_count_;
+    record_media_log_event(media_log_event::udp_received);
 
     std::string local_ice_ufrag;
     std::string local_ice_pwd;
@@ -343,6 +392,7 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
 
     if (stun_result.handled)
     {
+        record_media_log_event(media_log_event::stun_received);
         session_udp_outbound_packet_list result;
 
         if (stun_result.response.has_value())
@@ -371,7 +421,8 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
 
     if (!selected_remote_endpoint_.has_value() || *selected_remote_endpoint_ != packet.remote_endpoint)
     {
-        WEBRTC_LOG_DEBUG("WHIP session transport ignored packet from unselected endpoint stream={} session={} remote={} size={}",
+        record_media_log_event(media_log_event::dropped_unselected);
+        WEBRTC_LOG_TRACE("WHIP session transport ignored packet from unselected endpoint stream={} session={} remote={} size={}",
                          stream_id_,
                          session_id_,
                          format_udp_endpoint(packet.remote_endpoint),
@@ -381,6 +432,7 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
 
     if (is_dtls_packet(packet.data))
     {
+        record_media_log_event(media_log_event::dtls_received);
         session_udp_outbound_packet_list result;
 
         if (!dtls_identity_.has_value())
@@ -421,6 +473,7 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
 
     if (!srtp_packet)
     {
+        record_media_log_event(media_log_event::srtp_failed);
         WEBRTC_LOG_WARN("WHIP session transport srtp unprotect failed stream={} session={} remote={} error={}",
                         stream_id_,
                         session_id_,
@@ -433,8 +486,25 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
     {
         const std::span<const uint8_t> plain_packet(srtp_packet->plain_packet.data(), srtp_packet->plain_packet.size());
         const std::size_t target_count = media_fanout_router_->publish_rtp(stream_id_, session_id_, plain_packet);
+        record_media_log_event(media_log_event::rtp_published);
+        record_media_log_event(media_log_event::rtp_bytes, srtp_packet->plain_packet.size());
+        record_media_log_event(media_log_event::published_targets, target_count);
 
-        WEBRTC_LOG_DEBUG("WHIP RTP published stream={} session={} remote={} ssrc={} pt={} seq={} timestamp={} size={} targets={}",
+        if (mark_session_transport_value_once(media_log_stats_.logged_source_ssrcs, srtp_packet->ssrc))
+        {
+            WEBRTC_LOG_DEBUG("WHIP first RTP published stream={} session={} remote={} ssrc={} pt={} seq={} timestamp={} size={} targets={}",
+                             stream_id_,
+                             session_id_,
+                             remote_address,
+                             srtp_packet->ssrc,
+                             srtp_packet->payload_type,
+                             srtp_packet->sequence_number,
+                             srtp_packet->timestamp,
+                             srtp_packet->plain_packet.size(),
+                             target_count);
+        }
+
+        WEBRTC_LOG_TRACE("WHIP RTP published stream={} session={} remote={} ssrc={} pt={} seq={} timestamp={} size={} targets={}",
                          stream_id_,
                          session_id_,
                          remote_address,
@@ -447,7 +517,20 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
         return {};
     }
 
-    WEBRTC_LOG_DEBUG("WHIP session transport received udp packet remote={} size={} count={}",
+    if (srtp_packet->state == srtp_packet_process_state::unprotected && srtp_packet->kind == srtp_packet_kind::rtcp)
+    {
+        record_media_log_event(media_log_event::rtcp_received);
+    }
+    else if (srtp_packet->state == srtp_packet_process_state::ignored)
+    {
+        record_media_log_event(media_log_event::srtp_ignored);
+    }
+    else
+    {
+        record_media_log_event(media_log_event::other_received);
+    }
+
+    WEBRTC_LOG_TRACE("WHIP session transport received udp packet remote={} size={} count={}",
                      packet.remote_endpoint.address().to_string(),
                      packet.data.size(),
                      received_packet_count_);

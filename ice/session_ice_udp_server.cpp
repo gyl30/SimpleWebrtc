@@ -150,7 +150,7 @@ void session_ice_udp_server::send(std::vector<uint8_t> packet, const boost::asio
                                   return;
                               }
 
-                              WEBRTC_LOG_DEBUG("session ice udp send success remote={} bytes={}",
+                              WEBRTC_LOG_TRACE("session ice udp send success remote={} bytes={}",
                                                endpoint_to_string(remote_endpoint),
                                                bytes_transferred);
                           });
