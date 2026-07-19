@@ -1,6 +1,7 @@
 #ifndef SIMPLE_WEBRTC_MEDIA_WHEP_RTP_REWRITER_H
 #define SIMPLE_WEBRTC_MEDIA_WHEP_RTP_REWRITER_H
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -100,9 +101,16 @@ struct whep_rtp_rewrite_result
 
     uint32_t source_timestamp = 0;
     uint32_t target_timestamp = 0;
+    std::size_t payload_size = 0;
 };
 
 using whep_rtp_rewrite_packet_result = std::expected<whep_rtp_rewrite_result, std::string>;
+
+struct whep_rtp_timestamp_mapping
+{
+    uint32_t target_ssrc = 0;
+    uint32_t target_timestamp = 0;
+};
 
 class whep_rtp_rewriter
 {
@@ -124,6 +132,10 @@ class whep_rtp_rewriter
     [[nodiscard]] whep_rtp_rewrite_packet_result rewrite(std::span<const uint8_t> packet);
 
     [[nodiscard]] std::optional<uint32_t> source_ssrc_for_target_ssrc(uint32_t target_ssrc) const;
+
+    [[nodiscard]] std::optional<whep_rtp_timestamp_mapping> map_source_timestamp(
+        uint32_t source_ssrc,
+        uint32_t source_timestamp) const;
 
    private:
     struct impl;

@@ -206,6 +206,7 @@ set(WEBRTC_SOURCES
     rtp/rtp_packet.cpp
     rtp/rtcp_feedback.cpp
     rtp/rtcp_report.cpp
+    rtp/rtcp_packet_builder.cpp
     rtp/rtcp_compound_packet.cpp
     srtp/srtp_session.cpp
     srtp/srtp_transport.cpp

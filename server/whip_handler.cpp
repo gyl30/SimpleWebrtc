@@ -361,7 +361,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
                                     std::move(*local_udp_port),
                                     std::move(transport));
 
-    media_fanout_router_->set_publisher_source(
+    const uint64_t source_generation = media_fanout_router_->set_publisher_source(
         session->stream_id(),
         session->session_id(),
         session->remote_offer_summary(),
@@ -372,6 +372,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
                 current_session->request_keyframe(media_ssrc);
             }
         });
+    session->set_publisher_source_generation(source_generation);
 
     WEBRTC_LOG_INFO(
         "WHIP create publisher stream={} session={} republish={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={} "
@@ -503,7 +504,7 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
                                       answer->sdp_session_id,
                                       answer->sdp_session_version);
 
-    media_fanout_router_->set_publisher_source(
+    const uint64_t source_generation = media_fanout_router_->set_publisher_source(
         session->stream_id(),
         session->session_id(),
         session->remote_offer_summary(),
@@ -514,6 +515,7 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
                 current_session->request_keyframe(media_ssrc);
             }
         });
+    session->set_publisher_source_generation(source_generation);
 
     WEBRTC_LOG_INFO("WHIP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={}",
                     session->stream_id(),

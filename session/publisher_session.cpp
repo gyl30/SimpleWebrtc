@@ -90,6 +90,14 @@ void publisher_session::request_keyframe(uint32_t media_ssrc)
     }
 }
 
+void publisher_session::set_publisher_source_generation(uint64_t source_generation)
+{
+    if (transport_ != nullptr)
+    {
+        transport_->set_publisher_source_generation(source_generation);
+    }
+}
+
 void publisher_session::apply_remote_ice_restart(sdp::webrtc_offer_summary remote_offer_summary,
                                                  std::vector<int> accepted_remote_media_mline_indexes,
                                                  ice_credentials local_ice,

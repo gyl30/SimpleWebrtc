@@ -49,6 +49,8 @@ class whip_session_transport : public session_ice_udp_packet_handler,
 
     void restart_peer_context(std::string local_ice_pwd, dtls_peer_identity identity);
 
+    void set_publisher_source_generation(uint64_t source_generation);
+
     void send_keyframe_request(uint32_t media_ssrc);
 
    private:
@@ -77,6 +79,8 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         rtp_bytes,
         rtcp_received,
         rtcp_sender_report_received,
+        rtcp_sender_timing_published,
+        rtcp_sender_timing_rejected,
         rtcp_receiver_report_received,
         rtcp_report_block_received,
         rtcp_sdes_received,
@@ -110,6 +114,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         std::atomic<bool> other_feedback_ignored_logged{false};
         std::atomic<bool> unknown_rtcp_block_ignored_logged{false};
         std::array<std::atomic<uint32_t>, 16> logged_source_ssrcs{};
+        std::array<std::atomic<uint32_t>, 16> logged_sender_timing_ssrcs{};
     };
 
     void clear_peer_state();
@@ -137,6 +142,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     std::string local_ice_pwd_;
     std::optional<dtls_peer_identity> dtls_identity_;
     uint64_t ice_generation_ = 0;
+    uint64_t publisher_source_generation_ = 0;
     std::optional<pending_ice_restart> pending_ice_restart_;
 
     std::size_t received_packet_count_ = 0;

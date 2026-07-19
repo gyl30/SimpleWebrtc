@@ -37,8 +37,21 @@ struct media_publisher_source_update
     media_publisher_source_ptr source;
 };
 
+struct media_publisher_sender_timing
+{
+    std::string publisher_session_id;
+    uint64_t source_generation = 0;
+    uint32_t source_ssrc = 0;
+    uint64_t ntp_timestamp = 0;
+    uint32_t source_rtp_timestamp = 0;
+    uint32_t sender_packet_count = 0;
+    uint32_t sender_octet_count = 0;
+};
+
 using media_rtp_handler = std::function<void(uint64_t source_generation, std::span<const uint8_t> packet)>;
 using media_publisher_source_handler = std::function<void(media_publisher_source_update update)>;
+using media_publisher_sender_timing_handler =
+    std::function<void(media_publisher_sender_timing timing)>;
 
 class media_fanout_router : public std::enable_shared_from_this<media_fanout_router>
 {
@@ -56,14 +69,16 @@ class media_fanout_router : public std::enable_shared_from_this<media_fanout_rou
     void subscribe(std::string stream_id,
                    std::string subscriber_session_id,
                    media_rtp_handler rtp_handler,
-                   media_publisher_source_handler source_handler);
+                   media_publisher_source_handler source_handler,
+                   media_publisher_sender_timing_handler sender_timing_handler);
 
     void unsubscribe(std::string_view subscriber_session_id);
 
-    void set_publisher_source(std::string stream_id,
-                              std::string publisher_session_id,
-                              sdp::webrtc_offer_summary publisher_offer,
-                              media_keyframe_request_handler keyframe_request_handler);
+    [[nodiscard]] uint64_t set_publisher_source(
+        std::string stream_id,
+        std::string publisher_session_id,
+        sdp::webrtc_offer_summary publisher_offer,
+        media_keyframe_request_handler keyframe_request_handler);
 
     void clear_publisher_source(std::string_view stream_id, std::string_view publisher_session_id);
 
@@ -86,12 +101,22 @@ class media_fanout_router : public std::enable_shared_from_this<media_fanout_rou
                             std::string_view publisher_session_id,
                             std::span<const uint8_t> packet);
 
+    [[nodiscard]] bool publish_sender_timing(std::string_view stream_id,
+                                             std::string_view publisher_session_id,
+                                             uint64_t source_generation,
+                                             uint32_t source_ssrc,
+                                             uint64_t ntp_timestamp,
+                                             uint32_t source_rtp_timestamp,
+                                             uint32_t sender_packet_count,
+                                             uint32_t sender_octet_count);
+
    private:
     struct subscription
     {
         std::string stream_id;
         media_rtp_handler rtp_handler;
         media_publisher_source_handler source_handler;
+        media_publisher_sender_timing_handler sender_timing_handler;
     };
 
     struct keyframe_request_key
@@ -136,6 +161,8 @@ class media_fanout_router : public std::enable_shared_from_this<media_fanout_rou
     std::unordered_map<std::string, subscription> subscriptions_by_session_id_;
     std::unordered_map<std::string, media_publisher_source_ptr> publisher_sources_by_stream_id_;
     std::unordered_map<std::string, uint64_t> publisher_source_generations_by_stream_id_;
+    std::unordered_map<std::string, std::unordered_map<uint32_t, media_publisher_sender_timing>>
+        publisher_sender_timings_by_stream_id_;
     std::unordered_map<keyframe_request_key, keyframe_request_state, keyframe_request_key_hash>
         keyframe_requests_;
 };

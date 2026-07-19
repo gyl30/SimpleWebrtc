@@ -36,6 +36,20 @@ using namespace std::chrono_literals;
 constexpr auto k_ice_restart_timeout = 30s;
 constexpr auto k_media_log_interval = 5s;
 
+const sdp::media_summary* find_subscriber_media(const whep_rtp_rewriter_target& target,
+                                                std::string_view mid)
+{
+    for (const auto& media : target.subscriber_offer.media)
+    {
+        if (media.mid == mid)
+        {
+            return &media;
+        }
+    }
+
+    return nullptr;
+}
+
 std::string_view srtp_packet_kind_name(srtp_packet_kind kind)
 {
     switch (kind)
@@ -96,6 +110,8 @@ void whep_session_transport::record_media_log_event(media_log_event event, uint6
     const uint64_t rewritten = media_log_stats_.counters.take(media_log_event::rewritten);
     const uint64_t send_enqueued = media_log_stats_.counters.take(media_log_event::send_enqueued);
     const uint64_t send_bytes = media_log_stats_.counters.take(media_log_event::send_bytes);
+    const uint64_t send_payload_bytes = media_log_stats_.counters.take(media_log_event::send_payload_bytes);
+    const uint64_t sender_timing_mapped = media_log_stats_.counters.take(media_log_event::sender_timing_mapped);
     const uint64_t dropped_no_endpoint = media_log_stats_.counters.take(media_log_event::dropped_no_endpoint);
     const uint64_t dropped_stale_generation =
         media_log_stats_.counters.take(media_log_event::dropped_stale_generation);
@@ -141,7 +157,7 @@ void whep_session_transport::record_media_log_event(media_log_event event, uint6
 
     WEBRTC_LOG_DEBUG(
         "WHEP media summary stream={} session={} interval_ms={} source_rtp={} rewritten={} send_enqueued={} send_bytes={} "
-        "dropped_no_endpoint={} dropped_stale_generation={} rewrite_failed={} rewrite_dropped={} protect_failed={} "
+        "send_payload_bytes={} sender_timing_mapped={} dropped_no_endpoint={} dropped_stale_generation={} rewrite_failed={} rewrite_dropped={} protect_failed={} "
         "protect_ignored={} keyframe_request_submitted={} keyframe_completed={} rtcp_received={} rtcp_sr={} rtcp_rr={} "
         "rtcp_report_blocks={} rtcp_sdes={} rtcp_bye={} rtcp_pli={} rtcp_fir={} rtcp_keyframe_feedback_received={} "
         "rtcp_keyframe_feedback_forwarded={} rtcp_generic_nack_ignored={} rtcp_transport_cc_ignored={} rtcp_remb_ignored={} "
@@ -154,6 +170,8 @@ void whep_session_transport::record_media_log_event(media_log_event event, uint6
         rewritten,
         send_enqueued,
         send_bytes,
+        send_payload_bytes,
+        sender_timing_mapped,
         dropped_no_endpoint,
         dropped_stale_generation,
         rewrite_failed,
@@ -205,9 +223,11 @@ void whep_session_transport::set_peer_context(std::string local_ice_pwd,
 
     {
         std::lock_guard lock(rtp_rewriter_mutex_);
+        configure_outbound_rtcp_senders_locked(target, false);
         rtp_rewriter_target_ = std::move(target);
         publisher_source_.reset();
         publisher_source_generation_ = 0;
+        clear_publisher_sender_timings_locked();
         reset_keyframe_recovery_locked();
         rebuild_rtp_rewriter_locked();
     }
@@ -268,6 +288,7 @@ void whep_session_transport::restart_peer_context(std::string local_ice_pwd,
 
     std::lock_guard lock(rtp_rewriter_mutex_);
     cancel_keyframe_recovery_locked();
+    configure_outbound_rtcp_senders_locked(target, true);
     rtp_rewriter_target_ = std::move(target);
     rebuild_rtp_rewriter_locked();
 }
@@ -445,9 +466,22 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
         rewritten->target_timestamp,
         rewritten_rtp_packet_count_);
 
+    {
+        std::lock_guard lock(rtp_rewriter_mutex_);
+
+        if (source_generation != publisher_source_generation_)
+        {
+            record_media_log_event(media_log_event::dropped_stale_generation);
+            return;
+        }
+
+        record_outbound_rtp_sent_locked(*rewritten);
+    }
+
     const std::size_t protected_size = protected_packet->protected_packet.size();
     record_media_log_event(media_log_event::send_enqueued);
     record_media_log_event(media_log_event::send_bytes, protected_size);
+    record_media_log_event(media_log_event::send_payload_bytes, rewritten->payload_size);
     udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
     peer_lock.unlock();
 
@@ -564,6 +598,13 @@ void whep_session_transport::subscribe_media()
             {
                 transport->handle_publisher_source(std::move(update));
             }
+        },
+        [weak_transport](media_publisher_sender_timing timing)
+        {
+            if (const auto transport = weak_transport.lock())
+            {
+                transport->handle_publisher_sender_timing(std::move(timing));
+            }
         });
 }
 
@@ -590,9 +631,184 @@ void whep_session_transport::handle_publisher_source(media_publisher_source_upda
     }
 
     cancel_keyframe_recovery_locked();
+
+    if (update.generation != publisher_source_generation_)
+    {
+        clear_publisher_sender_timings_locked();
+    }
+
     publisher_source_generation_ = update.generation;
     publisher_source_ = std::move(update.source);
     rebuild_rtp_rewriter_locked();
+}
+
+void whep_session_transport::handle_publisher_sender_timing(media_publisher_sender_timing timing)
+{
+    std::lock_guard lock(rtp_rewriter_mutex_);
+
+    if (publisher_source_ == nullptr ||
+        timing.source_generation != publisher_source_generation_ ||
+        timing.publisher_session_id != publisher_source_->session_id)
+    {
+        WEBRTC_LOG_TRACE(
+            "WHEP ignored stale publisher sender timing stream={} session={} publisher_session={} generation={} source_ssrc={} "
+            "current_publisher_session={} current_generation={}",
+            stream_id_,
+            session_id_,
+            timing.publisher_session_id,
+            timing.source_generation,
+            timing.source_ssrc,
+            publisher_source_ != nullptr ? publisher_source_->session_id : std::string{},
+            publisher_source_generation_);
+        return;
+    }
+
+    const uint32_t source_ssrc = timing.source_ssrc;
+    publisher_sender_timings_.insert_or_assign(source_ssrc, std::move(timing));
+    refresh_sender_timing_locked(source_ssrc);
+}
+
+void whep_session_transport::configure_outbound_rtcp_senders_locked(
+    const whep_rtp_rewriter_target& target,
+    bool preserve_runtime_state)
+{
+    std::unordered_map<uint32_t, outbound_rtcp_sender_state> previous_states =
+        preserve_runtime_state ? std::move(outbound_rtcp_senders_)
+                               : std::unordered_map<uint32_t, outbound_rtcp_sender_state>{};
+
+    outbound_rtcp_senders_.clear();
+    outbound_rtcp_senders_.reserve(target.accepted_media_sources.size());
+
+    for (const auto& source : target.accepted_media_sources)
+    {
+        if (source.ssrc == 0)
+        {
+            continue;
+        }
+
+        outbound_rtcp_sender_state state;
+        state.kind = source.kind;
+        state.mid = source.mid;
+        state.cname = source.cname;
+        state.target_ssrc = source.ssrc;
+
+        if (const auto* media = find_subscriber_media(target, source.mid); media != nullptr)
+        {
+            state.rtcp_mux = true;
+            state.rtcp_rsize = media->rtcp_rsize;
+        }
+
+        const auto previous = previous_states.find(source.ssrc);
+
+        if (previous != previous_states.end() && previous->second.cname == source.cname)
+        {
+            state.packet_count = previous->second.packet_count;
+            state.octet_count = previous->second.octet_count;
+            state.last_target_rtp_timestamp = previous->second.last_target_rtp_timestamp;
+            state.sender_timing = previous->second.sender_timing;
+            state.sender_timing_logged = previous->second.sender_timing_logged;
+        }
+
+        outbound_rtcp_senders_.insert_or_assign(source.ssrc, std::move(state));
+    }
+}
+
+void whep_session_transport::clear_publisher_sender_timings_locked()
+{
+    publisher_sender_timings_.clear();
+
+    for (auto& [target_ssrc, state] : outbound_rtcp_senders_)
+    {
+        (void)target_ssrc;
+        state.sender_timing.reset();
+        state.sender_timing_logged = false;
+    }
+}
+
+void whep_session_transport::refresh_sender_timing_locked(uint32_t source_ssrc)
+{
+    const auto timing_iterator = publisher_sender_timings_.find(source_ssrc);
+
+    if (timing_iterator == publisher_sender_timings_.end())
+    {
+        return;
+    }
+
+    const auto mapped = rtp_rewriter_.map_source_timestamp(
+        source_ssrc,
+        timing_iterator->second.source_rtp_timestamp);
+
+    if (!mapped.has_value())
+    {
+        return;
+    }
+
+    const auto sender_iterator = outbound_rtcp_senders_.find(mapped->target_ssrc);
+
+    if (sender_iterator == outbound_rtcp_senders_.end())
+    {
+        return;
+    }
+
+    auto& sender = sender_iterator->second;
+    outbound_rtcp_sender_timing next_timing{
+        .publisher_session_id = timing_iterator->second.publisher_session_id,
+        .source_generation = timing_iterator->second.source_generation,
+        .source_ssrc = timing_iterator->second.source_ssrc,
+        .ntp_timestamp = timing_iterator->second.ntp_timestamp,
+        .target_rtp_timestamp = mapped->target_timestamp,
+        .source_sender_packet_count = timing_iterator->second.sender_packet_count,
+        .source_sender_octet_count = timing_iterator->second.sender_octet_count,
+    };
+
+    if (sender.sender_timing.has_value() && *sender.sender_timing == next_timing)
+    {
+        return;
+    }
+
+    sender.sender_timing = std::move(next_timing);
+    record_media_log_event(media_log_event::sender_timing_mapped);
+
+    if (!sender.sender_timing_logged)
+    {
+        sender.sender_timing_logged = true;
+        WEBRTC_LOG_DEBUG(
+            "WHEP sender timing mapped stream={} session={} kind={} mid={} publisher_session={} generation={} "
+            "source_ssrc={} target_ssrc={} ntp_timestamp={} target_rtp_timestamp={} rtcp_mux={} rtcp_rsize={}",
+            stream_id_,
+            session_id_,
+            sender.kind,
+            sender.mid,
+            sender.sender_timing->publisher_session_id,
+            sender.sender_timing->source_generation,
+            sender.sender_timing->source_ssrc,
+            sender.target_ssrc,
+            sender.sender_timing->ntp_timestamp,
+            sender.sender_timing->target_rtp_timestamp,
+            sender.rtcp_mux ? 1 : 0,
+            sender.rtcp_rsize ? 1 : 0);
+    }
+}
+
+void whep_session_transport::record_outbound_rtp_sent_locked(
+    const whep_rtp_rewrite_result& rewritten)
+{
+    const auto sender_iterator = outbound_rtcp_senders_.find(rewritten.target_ssrc);
+
+    if (sender_iterator == outbound_rtcp_senders_.end())
+    {
+        return;
+    }
+
+    auto& sender = sender_iterator->second;
+    sender.packet_count += 1;
+    sender.octet_count += rewritten.payload_size;
+    sender.last_target_rtp_timestamp = rewritten.target_timestamp;
+
+    if (!sender.sender_timing.has_value() && publisher_sender_timings_.contains(rewritten.source_ssrc))
+    {
+        refresh_sender_timing_locked(rewritten.source_ssrc);
+    }
 }
 
 void whep_session_transport::rebuild_rtp_rewriter_locked()

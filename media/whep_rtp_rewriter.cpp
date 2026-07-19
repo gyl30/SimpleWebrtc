@@ -1219,6 +1219,7 @@ struct whep_rtp_rewriter::impl
         result.target_sequence_number = target_sequence_number;
         result.source_timestamp = parsed->header.timestamp;
         result.target_timestamp = target_timestamp;
+        result.payload_size = parsed->payload_data_size;
 
         return result;
     }
@@ -1246,6 +1247,35 @@ struct whep_rtp_rewriter::impl
         return std::nullopt;
     }
 
+    [[nodiscard]] std::optional<whep_rtp_timestamp_mapping> map_source_timestamp(
+        uint32_t source_ssrc,
+        uint32_t source_timestamp) const
+    {
+        if (source_ssrc == 0)
+        {
+            return std::nullopt;
+        }
+
+        for (const auto& current : media)
+        {
+            if (!current.source_primary_ssrc.has_value() ||
+                *current.source_primary_ssrc != source_ssrc ||
+                !current.source_timestamp_anchor.has_value() ||
+                !current.timestamp_initialized)
+            {
+                continue;
+            }
+
+            return whep_rtp_timestamp_mapping{
+                .target_ssrc = current.mapping.target_ssrc,
+                .target_timestamp = current.target_timestamp_anchor +
+                                    (source_timestamp - *current.source_timestamp_anchor),
+            };
+        }
+
+        return std::nullopt;
+    }
+
     bool source_available = false;
     std::string source_session_id;
     std::vector<media_runtime_state> media;
@@ -1265,6 +1295,13 @@ whep_rtp_rewrite_packet_result whep_rtp_rewriter::rewrite(std::span<const uint8_
 std::optional<uint32_t> whep_rtp_rewriter::source_ssrc_for_target_ssrc(uint32_t target_ssrc) const
 {
     return impl_->source_ssrc_for_target_ssrc(target_ssrc);
+}
+
+std::optional<whep_rtp_timestamp_mapping> whep_rtp_rewriter::map_source_timestamp(
+    uint32_t source_ssrc,
+    uint32_t source_timestamp) const
+{
+    return impl_->map_source_timestamp(source_ssrc, source_timestamp);
 }
 
 std::string_view whep_rtp_rewrite_state_to_string(whep_rtp_rewrite_state state)

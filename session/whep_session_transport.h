@@ -11,6 +11,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <boost/asio.hpp>
@@ -82,6 +83,35 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         uint32_t target_ssrc = 0;
     };
 
+    struct outbound_rtcp_sender_timing
+    {
+        std::string publisher_session_id;
+        uint64_t source_generation = 0;
+        uint32_t source_ssrc = 0;
+        uint64_t ntp_timestamp = 0;
+        uint32_t target_rtp_timestamp = 0;
+        uint32_t source_sender_packet_count = 0;
+        uint32_t source_sender_octet_count = 0;
+
+        bool operator==(const outbound_rtcp_sender_timing&) const = default;
+    };
+
+    struct outbound_rtcp_sender_state
+    {
+        std::string kind;
+        std::string mid;
+        std::string cname;
+        uint32_t target_ssrc = 0;
+        bool rtcp_mux = false;
+        bool rtcp_rsize = false;
+
+        uint64_t packet_count = 0;
+        uint64_t octet_count = 0;
+        std::optional<uint32_t> last_target_rtp_timestamp;
+        std::optional<outbound_rtcp_sender_timing> sender_timing;
+        bool sender_timing_logged = false;
+    };
+
     using peer_nomination_result = std::expected<peer_nomination_state, std::string>;
 
     enum class media_log_event
@@ -90,6 +120,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         rewritten,
         send_enqueued,
         send_bytes,
+        send_payload_bytes,
+        sender_timing_mapped,
         dropped_no_endpoint,
         dropped_stale_generation,
         rewrite_failed,
@@ -144,6 +176,12 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void subscribe_media();
     void unsubscribe_media();
     void handle_publisher_source(media_publisher_source_update update);
+    void handle_publisher_sender_timing(media_publisher_sender_timing timing);
+    void configure_outbound_rtcp_senders_locked(const whep_rtp_rewriter_target& target,
+                                                 bool preserve_runtime_state);
+    void clear_publisher_sender_timings_locked();
+    void refresh_sender_timing_locked(uint32_t source_ssrc);
+    void record_outbound_rtp_sent_locked(const whep_rtp_rewrite_result& rewritten);
     void rebuild_rtp_rewriter_locked();
     void cancel_keyframe_recovery_locked();
     void reset_keyframe_recovery_locked();
@@ -190,6 +228,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     whep_rtp_rewriter_target rtp_rewriter_target_;
     media_publisher_source_ptr publisher_source_;
     uint64_t publisher_source_generation_ = 0;
+    std::unordered_map<uint32_t, media_publisher_sender_timing> publisher_sender_timings_;
+    std::unordered_map<uint32_t, outbound_rtcp_sender_state> outbound_rtcp_senders_;
     whep_rtp_rewriter rtp_rewriter_;
     video_keyframe_tracker keyframe_tracker_;
     std::unordered_set<uint32_t> keyframe_waiting_source_ssrcs_;
