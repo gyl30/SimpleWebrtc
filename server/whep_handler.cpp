@@ -192,44 +192,70 @@ uint32_t make_whep_outbound_ssrc(std::unordered_set<uint32_t>& used_ssrcs)
     return 1;
 }
 
-std::string make_whep_outbound_source_cname()
+std::string make_whep_outbound_source_cname(const std::unordered_set<std::string>& excluded_cnames)
 {
     thread_local std::mt19937 generator(std::random_device{}());
 
     std::uniform_int_distribution<uint32_t> distribution(0U, 15U);
 
-    std::string cname;
-
-    cname.reserve(19);
-
-    cname.append("sw-");
-
-    for (std::size_t index = 0; index < 16; ++index)
+    for (;;)
     {
-        const uint32_t value = distribution(generator);
+        std::string cname;
 
-        if (value < 10)
+        cname.reserve(19);
+        cname.append("sw-");
+
+        for (std::size_t index = 0; index < 16; ++index)
         {
-            cname.push_back(static_cast<char>('0' + value));
+            const uint32_t value = distribution(generator);
+
+            if (value < 10)
+            {
+                cname.push_back(static_cast<char>('0' + value));
+            }
+            else
+            {
+                cname.push_back(static_cast<char>('a' + (value - 10)));
+            }
         }
-        else
+
+        if (!excluded_cnames.contains(cname))
         {
-            cname.push_back(static_cast<char>('a' + (value - 10)));
+            return cname;
         }
     }
-
-    return cname;
 }
 
-std::vector<sdp::sdp_answer_media_source> make_whep_outbound_media_sources(const sdp::webrtc_offer_summary& offer)
+std::vector<sdp::sdp_answer_media_source> make_whep_outbound_media_sources(
+    const sdp::webrtc_offer_summary& offer,
+    std::span<const sdp::sdp_answer_media_source> excluded_sources = {})
 {
     std::vector<sdp::sdp_answer_media_source> sources;
 
     sources.reserve(offer.media.size());
 
     std::unordered_set<uint32_t> used_ssrcs;
+    std::unordered_set<std::string> excluded_cnames;
 
-    const std::string cname = make_whep_outbound_source_cname();
+    for (const auto& source : excluded_sources)
+    {
+        if (source.ssrc != 0)
+        {
+            used_ssrcs.insert(source.ssrc);
+        }
+
+        if (source.rtx_repair_ssrc != 0)
+        {
+            used_ssrcs.insert(source.rtx_repair_ssrc);
+        }
+
+        if (!source.cname.empty())
+        {
+            excluded_cnames.insert(source.cname);
+        }
+    }
+
+    const std::string cname = make_whep_outbound_source_cname(excluded_cnames);
 
     for (const auto& media : offer.media)
     {
@@ -260,129 +286,6 @@ std::vector<sdp::sdp_answer_media_source> filter_whep_outbound_media_sources(
     return filtered_sources;
 }
 
-std::size_t count_whep_outbound_media_sources_by_kind(const std::vector<sdp::sdp_answer_media_source>& sources, std::string_view kind)
-{
-    std::size_t count = 0;
-
-    for (const auto& source : sources)
-    {
-        if (source.kind != kind)
-        {
-            continue;
-        }
-
-        count += 1;
-    }
-
-    return count;
-}
-
-const sdp::sdp_answer_media_source* find_previous_whep_outbound_media_source_by_mid(const std::vector<sdp::sdp_answer_media_source>& previous_sources,
-                                                                                    std::string_view mid,
-                                                                                    std::string_view kind)
-{
-    if (mid.empty())
-    {
-        return nullptr;
-    }
-
-    for (const auto& source : previous_sources)
-    {
-        if (source.mid != mid)
-        {
-            continue;
-        }
-
-        if (source.kind != kind)
-        {
-            continue;
-        }
-
-        return &source;
-    }
-
-    return nullptr;
-}
-
-const sdp::sdp_answer_media_source* find_previous_whep_outbound_media_source_by_kind(
-    const std::vector<sdp::sdp_answer_media_source>& previous_sources, std::string_view kind)
-{
-    for (const auto& source : previous_sources)
-    {
-        if (source.kind != kind)
-        {
-            continue;
-        }
-
-        return &source;
-    }
-
-    return nullptr;
-}
-
-const sdp::sdp_answer_media_source* find_previous_whep_outbound_media_source(const std::vector<sdp::sdp_answer_media_source>& previous_sources,
-                                                                             const std::vector<sdp::sdp_answer_media_source>& fresh_sources,
-                                                                             const sdp::sdp_answer_media_source& fresh_source)
-{
-    const auto* matched_by_mid = find_previous_whep_outbound_media_source_by_mid(previous_sources, fresh_source.mid, fresh_source.kind);
-
-    if (matched_by_mid != nullptr)
-    {
-        return matched_by_mid;
-    }
-
-    if (count_whep_outbound_media_sources_by_kind(previous_sources, fresh_source.kind) != 1)
-    {
-        return nullptr;
-    }
-
-    if (count_whep_outbound_media_sources_by_kind(fresh_sources, fresh_source.kind) != 1)
-    {
-        return nullptr;
-    }
-
-    return find_previous_whep_outbound_media_source_by_kind(previous_sources, fresh_source.kind);
-}
-
-std::vector<sdp::sdp_answer_media_source> make_reconnected_whep_outbound_media_sources(
-    const std::vector<sdp::sdp_answer_media_source>& previous_sources, const sdp::webrtc_offer_summary& offer)
-{
-    auto fresh_sources = make_whep_outbound_media_sources(offer);
-
-    std::vector<sdp::sdp_answer_media_source> reconnected_sources;
-
-    reconnected_sources.reserve(fresh_sources.size());
-
-    for (const auto& fresh_source : fresh_sources)
-    {
-        const auto* previous_source = find_previous_whep_outbound_media_source(previous_sources, fresh_sources, fresh_source);
-
-        if (previous_source == nullptr)
-        {
-            reconnected_sources.push_back(fresh_source);
-
-            continue;
-        }
-
-        auto reconnected_source = *previous_source;
-
-        reconnected_source.mid = fresh_source.mid;
-
-        reconnected_source.kind = fresh_source.kind;
-
-        if (fresh_source.rtx_repair_ssrc == 0)
-        {
-            reconnected_source.rtx_repair_ssrc = 0;
-        }
-        else if (reconnected_source.rtx_repair_ssrc == 0)
-        {
-            reconnected_source.rtx_repair_ssrc = fresh_source.rtx_repair_ssrc;
-        }
-        reconnected_sources.push_back(std::move(reconnected_source));
-    }
-
-    return reconnected_sources;
-}
 
 }    // namespace
 
@@ -495,10 +398,13 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         }
     }
 
-    auto outbound_media_sources =
+    // Reconnect 会创建新的 PeerConnection、ICE/DTLS/SRTP 关联和 RTP Session。
+    // 仅保留逻辑订阅关系，不继承旧会话的 SSRC、CNAME 或后续 RTCP sender 状态。
+    auto outbound_media_sources = make_whep_outbound_media_sources(
+        *offer_summary,
         reconnect_previous_session != nullptr
-            ? make_reconnected_whep_outbound_media_sources(reconnect_previous_session->outbound_media_sources(), *offer_summary)
-            : make_whep_outbound_media_sources(*offer_summary);
+            ? std::span<const sdp::sdp_answer_media_source>(reconnect_previous_session->outbound_media_sources())
+            : std::span<const sdp::sdp_answer_media_source>{});
 
     auto local_udp_port = reserve_udp_port(udp_port_allocator_);
 
@@ -629,8 +535,8 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                                     std::move(transport));
 
     WEBRTC_LOG_INFO(
-        "WHEP create subscriber stream={} session={} reconnect={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={} "
-        "previous_outbound_media_source_count={} outbound_media_source_count={}",
+        "WHEP create subscriber stream={} session={} reconnect={} previous_session={} rtp_session=new sdp_size={} offer_media_count={} "
+        "accepted_media_count={} previous_outbound_media_source_count={} outbound_media_source_count={}",
         session->stream_id(),
         session->session_id(),
         reconnect_session_id.has_value() ? 1 : 0,
@@ -793,8 +699,8 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
                                       std::move(rewriter_target));
 
     WEBRTC_LOG_INFO(
-        "WHEP SDP ICE restart accepted stream={} session={} offer_size={} answer_size={} accepted_media_count={} accepted_mline_count={} "
-        "outbound_media_source_count={}",
+        "WHEP SDP ICE restart accepted stream={} session={} rtp_session=preserved offer_size={} answer_size={} accepted_media_count={} "
+        "accepted_mline_count={} outbound_media_source_count={}",
         session->stream_id(),
         session->session_id(),
         offer.size(),

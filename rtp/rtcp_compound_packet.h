@@ -71,8 +71,14 @@ struct rtcp_compound_packet
     std::vector<rtcp_compound_block> blocks;
 
     std::size_t feedback_block_count = 0;
+    std::size_t pli_count = 0;
+    std::size_t fir_block_count = 0;
     std::size_t nack_count = 0;
     std::size_t fir_count = 0;
+    std::size_t generic_nack_block_count = 0;
+    std::size_t transport_cc_block_count = 0;
+    std::size_t remb_block_count = 0;
+    std::size_t other_feedback_block_count = 0;
 
     bool has_feedback = false;
     bool has_generic_nack = false;
@@ -85,9 +91,12 @@ struct rtcp_compound_packet
     uint64_t remb_bitrate_bps = 0;
 
     std::size_t report_packet_count = 0;
+    std::size_t sender_report_count = 0;
+    std::size_t receiver_report_count = 0;
     std::size_t report_block_count = 0;
     std::vector<rtcp_report_packet> report_packets;
 
+    std::size_t sdes_packet_count = 0;
     std::vector<rtcp_sdes_chunk> sdes_chunks;
     std::vector<rtcp_bye_packet> bye_packets;
 

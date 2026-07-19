@@ -88,8 +88,26 @@ void whip_session_transport::record_media_log_event(media_log_event event, uint6
     const uint64_t rtp_published = media_log_stats_.counters.take(media_log_event::rtp_published);
     const uint64_t rtp_bytes = media_log_stats_.counters.take(media_log_event::rtp_bytes);
     const uint64_t rtcp_received = media_log_stats_.counters.take(media_log_event::rtcp_received);
+    const uint64_t rtcp_sender_report_received =
+        media_log_stats_.counters.take(media_log_event::rtcp_sender_report_received);
+    const uint64_t rtcp_receiver_report_received =
+        media_log_stats_.counters.take(media_log_event::rtcp_receiver_report_received);
+    const uint64_t rtcp_report_block_received =
+        media_log_stats_.counters.take(media_log_event::rtcp_report_block_received);
+    const uint64_t rtcp_sdes_received = media_log_stats_.counters.take(media_log_event::rtcp_sdes_received);
+    const uint64_t rtcp_bye_received = media_log_stats_.counters.take(media_log_event::rtcp_bye_received);
+    const uint64_t rtcp_pli_ignored = media_log_stats_.counters.take(media_log_event::rtcp_pli_ignored);
+    const uint64_t rtcp_fir_ignored = media_log_stats_.counters.take(media_log_event::rtcp_fir_ignored);
+    const uint64_t rtcp_generic_nack_ignored =
+        media_log_stats_.counters.take(media_log_event::rtcp_generic_nack_ignored);
+    const uint64_t rtcp_transport_cc_ignored =
+        media_log_stats_.counters.take(media_log_event::rtcp_transport_cc_ignored);
+    const uint64_t rtcp_remb_ignored = media_log_stats_.counters.take(media_log_event::rtcp_remb_ignored);
+    const uint64_t rtcp_other_feedback_ignored =
+        media_log_stats_.counters.take(media_log_event::rtcp_other_feedback_ignored);
+    const uint64_t rtcp_unknown_block_ignored =
+        media_log_stats_.counters.take(media_log_event::rtcp_unknown_block_ignored);
     const uint64_t rtcp_parse_failed = media_log_stats_.counters.take(media_log_event::rtcp_parse_failed);
-    const uint64_t rtcp_unsupported = media_log_stats_.counters.take(media_log_event::rtcp_unsupported);
     const uint64_t published_targets = media_log_stats_.counters.take(media_log_event::published_targets);
     const uint64_t dropped_unselected = media_log_stats_.counters.take(media_log_event::dropped_unselected);
     const uint64_t srtp_ignored = media_log_stats_.counters.take(media_log_event::srtp_ignored);
@@ -98,8 +116,10 @@ void whip_session_transport::record_media_log_event(media_log_event event, uint6
 
     WEBRTC_LOG_DEBUG(
         "WHIP media summary stream={} session={} interval_ms={} udp_received={} stun={} dtls={} rtp_published={} rtp_bytes={} "
-        "rtcp_received={} rtcp_parse_failed={} rtcp_unsupported={} published_targets={} dropped_unselected={} "
-        "srtp_ignored={} srtp_unprotect_failed={} other_received={}",
+        "rtcp_received={} rtcp_sr={} rtcp_rr={} rtcp_report_blocks={} rtcp_sdes={} rtcp_bye={} rtcp_pli_ignored={} "
+        "rtcp_fir_ignored={} rtcp_generic_nack_ignored={} rtcp_transport_cc_ignored={} rtcp_remb_ignored={} "
+        "rtcp_other_feedback_ignored={} rtcp_unknown_block_ignored={} rtcp_parse_failed={} published_targets={} "
+        "dropped_unselected={} srtp_ignored={} srtp_unprotect_failed={} other_received={}",
         stream_id_,
         session_id_,
         interval_ms,
@@ -109,8 +129,19 @@ void whip_session_transport::record_media_log_event(media_log_event event, uint6
         rtp_published,
         rtp_bytes,
         rtcp_received,
+        rtcp_sender_report_received,
+        rtcp_receiver_report_received,
+        rtcp_report_block_received,
+        rtcp_sdes_received,
+        rtcp_bye_received,
+        rtcp_pli_ignored,
+        rtcp_fir_ignored,
+        rtcp_generic_nack_ignored,
+        rtcp_transport_cc_ignored,
+        rtcp_remb_ignored,
+        rtcp_other_feedback_ignored,
+        rtcp_unknown_block_ignored,
         rtcp_parse_failed,
-        rtcp_unsupported,
         published_targets,
         dropped_unselected,
         srtp_ignored,
@@ -143,24 +174,125 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
         return;
     }
 
-    const std::size_t unsupported_block_count = compound->feedback_block_count + compound->unknown_block_count;
+    record_media_log_event(media_log_event::rtcp_sender_report_received, compound->sender_report_count);
+    record_media_log_event(media_log_event::rtcp_receiver_report_received, compound->receiver_report_count);
+    record_media_log_event(media_log_event::rtcp_report_block_received, compound->report_block_count);
+    record_media_log_event(media_log_event::rtcp_sdes_received, compound->sdes_packet_count);
+    record_media_log_event(media_log_event::rtcp_bye_received, compound->bye_packets.size());
+    record_media_log_event(media_log_event::rtcp_pli_ignored, compound->pli_count);
+    record_media_log_event(media_log_event::rtcp_fir_ignored, compound->fir_block_count);
+    record_media_log_event(media_log_event::rtcp_generic_nack_ignored, compound->generic_nack_block_count);
+    record_media_log_event(media_log_event::rtcp_transport_cc_ignored, compound->transport_cc_block_count);
+    record_media_log_event(media_log_event::rtcp_remb_ignored, compound->remb_block_count);
+    record_media_log_event(media_log_event::rtcp_other_feedback_ignored, compound->other_feedback_block_count);
+    record_media_log_event(media_log_event::rtcp_unknown_block_ignored, compound->unknown_block_count);
 
-    if (unsupported_block_count != 0)
+    for (const auto& block : compound->blocks)
     {
-        record_media_log_event(media_log_event::rtcp_unsupported, unsupported_block_count);
+        if (block.feedback_name == "pli" &&
+            !media_log_stats_.pli_ignored_logged.exchange(true, std::memory_order_relaxed))
+        {
+            WEBRTC_LOG_DEBUG(
+                "WHIP first inbound PLI ignored stream={} session={} sender_ssrc={} media_ssrc={} action=ignored",
+                stream_id_,
+                session_id_,
+                block.feedback_sender_ssrc,
+                block.feedback_media_ssrc);
+        }
+
+        if (block.feedback_name == "fir" &&
+            !media_log_stats_.fir_ignored_logged.exchange(true, std::memory_order_relaxed))
+        {
+            WEBRTC_LOG_DEBUG(
+                "WHIP first inbound FIR ignored stream={} session={} sender_ssrc={} media_ssrc={} fir_entries={} action=ignored",
+                stream_id_,
+                session_id_,
+                block.feedback_sender_ssrc,
+                block.feedback_media_ssrc,
+                block.fir_count);
+        }
+
+        if (block.has_generic_nack &&
+            !media_log_stats_.generic_nack_ignored_logged.exchange(true, std::memory_order_relaxed))
+        {
+            WEBRTC_LOG_DEBUG(
+                "WHIP first Generic NACK ignored stream={} session={} sender_ssrc={} media_ssrc={} fci_entries={} action=ignored",
+                stream_id_,
+                session_id_,
+                block.feedback_sender_ssrc,
+                block.feedback_media_ssrc,
+                block.nack_count);
+        }
+
+        if (block.has_transport_cc &&
+            !media_log_stats_.transport_cc_ignored_logged.exchange(true, std::memory_order_relaxed))
+        {
+            WEBRTC_LOG_DEBUG(
+                "WHIP first transport-cc feedback ignored stream={} session={} sender_ssrc={} media_ssrc={} action=ignored",
+                stream_id_,
+                session_id_,
+                block.feedback_sender_ssrc,
+                block.feedback_media_ssrc);
+        }
+
+        if (block.has_remb &&
+            !media_log_stats_.remb_ignored_logged.exchange(true, std::memory_order_relaxed))
+        {
+            WEBRTC_LOG_DEBUG(
+                "WHIP first REMB ignored stream={} session={} sender_ssrc={} media_ssrc={} bitrate_bps={} action=ignored",
+                stream_id_,
+                session_id_,
+                block.feedback_sender_ssrc,
+                block.feedback_media_ssrc,
+                block.remb_bitrate_bps);
+        }
+
+        const bool other_feedback = block.is_feedback && block.feedback_name != "pli" &&
+                                    block.feedback_name != "fir" && !block.has_generic_nack &&
+                                    !block.has_transport_cc && !block.has_remb;
+
+        if (other_feedback &&
+            !media_log_stats_.other_feedback_ignored_logged.exchange(true, std::memory_order_relaxed))
+        {
+            WEBRTC_LOG_DEBUG(
+                "WHIP first other RTCP feedback ignored stream={} session={} type={} sender_ssrc={} media_ssrc={} action=ignored",
+                stream_id_,
+                session_id_,
+                block.feedback_name,
+                block.feedback_sender_ssrc,
+                block.feedback_media_ssrc);
+        }
+
+        if (block.is_unknown &&
+            !media_log_stats_.unknown_rtcp_block_ignored_logged.exchange(true, std::memory_order_relaxed))
+        {
+            WEBRTC_LOG_DEBUG(
+                "WHIP first unknown RTCP block ignored stream={} session={} packet_type={} packet_type_name={} count={} action=ignored",
+                stream_id_,
+                session_id_,
+                block.packet_type,
+                block.packet_type_name,
+                block.count);
+        }
     }
 
     WEBRTC_LOG_TRACE(
-        "WHIP inbound RTCP stream={} session={} blocks={} reports={} report_blocks={} sdes_chunks={} bye_packets={} "
-        "feedback={} unknown={} summary={}",
+        "WHIP inbound RTCP stream={} session={} blocks={} sr={} rr={} report_blocks={} sdes={} bye={} pli_ignored={} fir_ignored={} "
+        "generic_nack_ignored={} transport_cc_ignored={} remb_ignored={} other_feedback_ignored={} unknown_ignored={} summary={}",
         stream_id_,
         session_id_,
         compound->blocks.size(),
-        compound->report_packet_count,
+        compound->sender_report_count,
+        compound->receiver_report_count,
         compound->report_block_count,
-        compound->sdes_chunks.size(),
+        compound->sdes_packet_count,
         compound->bye_packets.size(),
-        compound->feedback_block_count,
+        compound->pli_count,
+        compound->fir_block_count,
+        compound->generic_nack_block_count,
+        compound->transport_cc_block_count,
+        compound->remb_block_count,
+        compound->other_feedback_block_count,
         compound->unknown_block_count,
         rtcp_compound_feedback_summary_to_string(*compound));
 }

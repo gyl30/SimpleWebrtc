@@ -76,8 +76,19 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         rtp_published,
         rtp_bytes,
         rtcp_received,
+        rtcp_sender_report_received,
+        rtcp_receiver_report_received,
+        rtcp_report_block_received,
+        rtcp_sdes_received,
+        rtcp_bye_received,
+        rtcp_pli_ignored,
+        rtcp_fir_ignored,
+        rtcp_generic_nack_ignored,
+        rtcp_transport_cc_ignored,
+        rtcp_remb_ignored,
+        rtcp_other_feedback_ignored,
+        rtcp_unknown_block_ignored,
         rtcp_parse_failed,
-        rtcp_unsupported,
         published_targets,
         dropped_unselected,
         srtp_ignored,
@@ -91,6 +102,13 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         session_transport_log_interval summary_interval;
         session_transport_log_counters<media_log_event> counters;
         std::atomic<bool> rtcp_parse_failure_logged{false};
+        std::atomic<bool> pli_ignored_logged{false};
+        std::atomic<bool> fir_ignored_logged{false};
+        std::atomic<bool> generic_nack_ignored_logged{false};
+        std::atomic<bool> transport_cc_ignored_logged{false};
+        std::atomic<bool> remb_ignored_logged{false};
+        std::atomic<bool> other_feedback_ignored_logged{false};
+        std::atomic<bool> unknown_rtcp_block_ignored_logged{false};
         std::array<std::atomic<uint32_t>, 16> logged_source_ssrcs{};
     };
 

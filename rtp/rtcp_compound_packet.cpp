@@ -137,8 +137,41 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
     packet.has_feedback = true;
     packet.feedback_block_count += 1;
 
+    if (block.feedback_name == "pli")
+    {
+        packet.pli_count += 1;
+    }
+    else if (block.feedback_name == "fir")
+    {
+        packet.fir_block_count += 1;
+    }
+
     packet.nack_count += block.nack_count;
     packet.fir_count += block.fir_count;
+
+    if (block.has_generic_nack)
+    {
+        packet.generic_nack_block_count += 1;
+    }
+
+    if (block.has_transport_cc)
+    {
+        packet.transport_cc_block_count += 1;
+    }
+
+    if (block.has_remb)
+    {
+        packet.remb_block_count += 1;
+    }
+
+    const bool feedback_is_classified =
+        block.feedback_name == "pli" || block.feedback_name == "fir" || block.has_generic_nack ||
+        block.has_transport_cc || block.has_remb;
+
+    if (!feedback_is_classified)
+    {
+        packet.other_feedback_block_count += 1;
+    }
 
     packet.has_generic_nack = packet.has_generic_nack || block.has_generic_nack;
     packet.has_keyframe_request = packet.has_keyframe_request || block.has_keyframe_request;
@@ -163,6 +196,16 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
 void aggregate_report_packet(rtcp_report_packet report, rtcp_compound_packet& packet)
 {
     packet.report_packet_count += 1;
+
+    if (report.sender_info.has_value())
+    {
+        packet.sender_report_count += 1;
+    }
+    else
+    {
+        packet.receiver_report_count += 1;
+    }
+
     packet.report_block_count += report.report_blocks.size();
     packet.report_packets.push_back(std::move(report));
 }
@@ -435,6 +478,7 @@ rtcp_compound_packet_result parse_rtcp_compound_packet(std::span<const uint8_t> 
             }
 
             block.is_sdes = true;
+            packet.sdes_packet_count += 1;
             packet.sdes_chunks.insert(packet.sdes_chunks.end(),
                                       std::make_move_iterator(chunks->begin()),
                                       std::make_move_iterator(chunks->end()));
