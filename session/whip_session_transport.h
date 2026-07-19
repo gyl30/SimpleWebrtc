@@ -20,6 +20,7 @@
 #include "dtls/dtls_transport.h"
 #include "ice/session_ice_udp_server.h"
 #include "media/media_fanout_router.h"
+#include "rtp/rtcp_compound_packet.h"
 #include "rtp/rtp_receive_statistics.h"
 #include "session/session_transport_media_log.h"
 #include "srtp/srtp_transport.h"
@@ -61,6 +62,8 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     void set_publisher_source_generation(uint64_t source_generation);
 
     void send_keyframe_request(uint32_t media_ssrc);
+
+    void close(std::string_view reason);
 
    private:
     enum class peer_nomination_state
@@ -127,6 +130,12 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         rtcp_report_block_received,
         rtcp_sdes_received,
         rtcp_bye_received,
+        rtcp_bye_source_ended,
+        rtcp_bye_unknown_ssrc,
+        rtcp_bye_source_notified,
+        rtcp_bye_sent,
+        rtcp_bye_ssrc_sent,
+        rtcp_bye_send_bytes,
         rtcp_pli_ignored,
         rtcp_fir_ignored,
         rtcp_generic_nack_ignored,
@@ -181,6 +190,8 @@ class whip_session_transport : public session_ice_udp_packet_handler,
                             uint16_t sequence_number,
                             uint32_t rtp_timestamp,
                             std::chrono::steady_clock::time_point arrival_time);
+    void handle_inbound_byes(std::span<const rtcp_bye_packet> bye_packets);
+    void send_rtcp_bye_locked(std::string_view reason);
     void update_receiver_sender_report(uint32_t source_ssrc,
                                        uint64_t ntp_timestamp,
                                        std::chrono::steady_clock::time_point received_at);
@@ -229,6 +240,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     bool rtcp_mux_enabled_ = false;
 
     media_log_stats media_log_stats_;
+    bool closed_ = false;
 
     // 仅由当前 ICE generation 中携带 USE-CANDIDATE 的完整 STUN 校验结果更新。
     std::optional<boost::asio::ip::udp::endpoint> selected_remote_endpoint_;

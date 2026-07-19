@@ -525,6 +525,11 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
 
     const auto& session = *session_result;
 
+    if (reconnect_previous_session != nullptr)
+    {
+        reconnect_previous_session->close("whep_reconnect");
+    }
+
     session->complete_initial_setup(std::move(generated_answer->local_ice),
                                     generated_answer->sdp_session_id,
                                     generated_answer->sdp_session_version,
@@ -808,6 +813,8 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
         WEBRTC_LOG_ERROR("WHEP delete subscriber failed session={} error={}", session_id, stream_registry_error_to_string(result.error()));
         return json_error_response(request, 500, k_whep_delete_session_failed_error, "delete subscriber session failed");
     }
+
+    session->close("whep_delete");
     auto response = create_response(request, 204, "");
 
     add_http_common_headers(response);

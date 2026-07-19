@@ -93,6 +93,14 @@ void publisher_session::request_keyframe(uint32_t media_ssrc)
     }
 }
 
+void publisher_session::close(std::string_view reason)
+{
+    if (transport_ != nullptr)
+    {
+        transport_->close(reason);
+    }
+}
+
 void publisher_session::set_publisher_source_generation(uint64_t source_generation)
 {
     if (transport_ != nullptr)

@@ -54,10 +54,11 @@ void media_fanout_router::subscribe(std::string stream_id,
                                     std::string subscriber_session_id,
                                     media_rtp_handler rtp_handler,
                                     media_publisher_source_handler source_handler,
-                                    media_publisher_sender_timing_handler sender_timing_handler)
+                                    media_publisher_sender_timing_handler sender_timing_handler,
+                                    media_publisher_source_bye_handler source_bye_handler)
 {
     if (stream_id.empty() || subscriber_session_id.empty() || !rtp_handler || !source_handler ||
-        !sender_timing_handler)
+        !sender_timing_handler || !source_bye_handler)
     {
         return;
     }
@@ -78,6 +79,7 @@ void media_fanout_router::subscribe(std::string stream_id,
                                                           .rtp_handler = std::move(rtp_handler),
                                                           .source_handler = std::move(source_handler),
                                                           .sender_timing_handler = std::move(sender_timing_handler),
+                                                          .source_bye_handler = std::move(source_bye_handler),
                                                       });
 
         const auto generation_iterator = publisher_source_generations_by_stream_id_.find(log_stream_id);
@@ -448,6 +450,95 @@ std::size_t media_fanout_router::publish_rtp(std::string_view stream_id,
     }
 
     return handlers.size();
+}
+
+bool media_fanout_router::publish_source_bye(std::string_view stream_id,
+                                               std::string_view publisher_session_id,
+                                               uint64_t source_generation,
+                                               uint32_t source_ssrc,
+                                               std::string reason)
+{
+    if (stream_id.empty() || publisher_session_id.empty() || source_generation == 0 ||
+        source_ssrc == 0)
+    {
+        return false;
+    }
+
+    media_publisher_source_bye bye;
+    std::vector<media_publisher_source_bye_handler> handlers;
+
+    {
+        std::lock_guard lock(mutex_);
+        const auto source_iterator = publisher_sources_by_stream_id_.find(std::string(stream_id));
+
+        if (source_iterator == publisher_sources_by_stream_id_.end() ||
+            source_iterator->second->session_id != publisher_session_id ||
+            source_iterator->second->generation != source_generation)
+        {
+            return false;
+        }
+
+        bye = media_publisher_source_bye{
+            .publisher_session_id = source_iterator->second->session_id,
+            .source_generation = source_iterator->second->generation,
+            .source_ssrc = source_ssrc,
+            .reason = std::move(reason),
+        };
+
+        const auto timing_iterator = publisher_sender_timings_by_stream_id_.find(std::string(stream_id));
+
+        if (timing_iterator != publisher_sender_timings_by_stream_id_.end())
+        {
+            timing_iterator->second.erase(source_ssrc);
+
+            if (timing_iterator->second.empty())
+            {
+                publisher_sender_timings_by_stream_id_.erase(timing_iterator);
+            }
+        }
+
+        const keyframe_request_key key{
+            .stream_id = std::string(stream_id),
+            .publisher_session_id = std::string(publisher_session_id),
+            .source_generation = source_generation,
+            .media_ssrc = source_ssrc,
+        };
+        const auto request_iterator = keyframe_requests_.find(key);
+
+        if (request_iterator != keyframe_requests_.end())
+        {
+            cancel_keyframe_request_state_locked(request_iterator->second);
+            keyframe_requests_.erase(request_iterator);
+        }
+
+        handlers.reserve(subscriptions_by_session_id_.size());
+
+        for (const auto& [subscriber_session_id, current] : subscriptions_by_session_id_)
+        {
+            (void)subscriber_session_id;
+
+            if (current.stream_id == stream_id)
+            {
+                handlers.push_back(current.source_bye_handler);
+            }
+        }
+    }
+
+    WEBRTC_LOG_INFO(
+        "media fanout publisher source BYE stream={} publisher_session={} source_generation={} source_ssrc={} reason={} subscribers={}",
+        stream_id,
+        publisher_session_id,
+        source_generation,
+        source_ssrc,
+        bye.reason,
+        handlers.size());
+
+    for (const auto& handler : handlers)
+    {
+        handler(bye);
+    }
+
+    return true;
 }
 
 bool media_fanout_router::publish_sender_timing(std::string_view stream_id,

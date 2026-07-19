@@ -458,6 +458,7 @@ http_response_ptr router::handle_session(http_request_t& request, std::string_vi
 
     if (snapshot->kind == stream_session_kind::publisher)
     {
+        auto publisher = registry_->find_publisher_by_session_id(snapshot->session_id);
         auto result = registry_->remove_publisher_session(snapshot->session_id);
 
         if (!result)
@@ -470,6 +471,11 @@ http_response_ptr router::handle_session(http_request_t& request, std::string_vi
             return make_json_http_response(request, 500, json_error_body("delete publisher session failed"));
         }
 
+        if (publisher != nullptr)
+        {
+            publisher->close("admin_session_delete");
+        }
+
         media_fanout_router_->clear_publisher_source(snapshot->stream_id, snapshot->session_id);
 
         return make_text_http_response(request, 204, "");
@@ -477,6 +483,7 @@ http_response_ptr router::handle_session(http_request_t& request, std::string_vi
 
     if (snapshot->kind == stream_session_kind::subscriber)
     {
+        auto subscriber = registry_->find_subscriber_by_session_id(snapshot->session_id);
         auto result = registry_->remove_subscriber_session(snapshot->session_id);
 
         if (!result)
@@ -487,6 +494,11 @@ http_response_ptr router::handle_session(http_request_t& request, std::string_vi
             }
 
             return make_json_http_response(request, 500, json_error_body("delete subscriber session failed"));
+        }
+
+        if (subscriber != nullptr)
+        {
+            subscriber->close("admin_session_delete");
         }
 
         return make_text_http_response(request, 204, "");
@@ -565,6 +577,7 @@ http_response_ptr router::handle_stream(http_request_t& request, std::string_vie
             return make_json_http_response(request, 500, json_error_body("delete stream failed"));
         }
 
+        publisher->close("admin_stream_delete");
         media_fanout_router_->clear_publisher_source(stream_id, publisher_session_id);
 
         return make_text_http_response(request, 204, "");

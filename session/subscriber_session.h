@@ -71,6 +71,8 @@ class subscriber_session
                                 udp_port_reservation_ptr local_udp_port,
                                 std::shared_ptr<whep_session_transport> transport);
 
+    void close(std::string_view reason);
+
     void apply_remote_ice_restart(sdp::webrtc_offer_summary remote_offer_summary,
                                   std::vector<int> accepted_remote_media_mline_indexes,
                                   ice_credentials local_ice,

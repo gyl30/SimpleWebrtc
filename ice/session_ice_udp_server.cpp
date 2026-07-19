@@ -143,6 +143,13 @@ void session_ice_udp_server::send(std::vector<uint8_t> packet, const boost::asio
                           {
                               if (ec)
                               {
+                                  if (ec == boost::asio::error::operation_aborted)
+                                  {
+                                      WEBRTC_LOG_TRACE("session ice udp send canceled remote={}",
+                                                       endpoint_to_string(remote_endpoint));
+                                      return;
+                                  }
+
                                   WEBRTC_LOG_WARN("session ice udp send failed remote={} error={}",
                                                   endpoint_to_string(remote_endpoint),
                                                   ec.message());

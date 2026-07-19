@@ -118,8 +118,33 @@ whep_session_transport::whep_session_transport(boost::asio::io_context& io_conte
 
 whep_session_transport::~whep_session_transport()
 {
-    media_log_timer_.cancel();
-    rtcp_sender_report_timer_.cancel();
+    close("transport_destroyed");
+}
+
+void whep_session_transport::close(std::string_view reason)
+{
+    {
+        std::unique_lock peer_lock(peer_mutex_);
+
+        if (closed_)
+        {
+            return;
+        }
+
+        closed_ = true;
+        media_log_timer_.cancel();
+        rtcp_sender_report_timer_.cancel();
+        ice_restart_timer_.cancel();
+        send_rtcp_bye_locked(reason);
+    }
+
+    if (media_log_interval_started_at_ != std::chrono::steady_clock::time_point{})
+    {
+        const auto interval = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - media_log_interval_started_at_);
+        log_media_summary(interval.count());
+    }
+
     unsubscribe_media();
     clear_peer_state();
     udp_server_.stop();
@@ -206,7 +231,7 @@ void whep_session_transport::send_rtcp_sender_reports()
 {
     std::unique_lock peer_lock(peer_mutex_);
 
-    if (!selected_remote_endpoint_.has_value())
+    if (closed_ || !selected_remote_endpoint_.has_value())
     {
         return;
     }
@@ -419,6 +444,17 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         media_log_stats_.counters.take(media_log_event::rtcp_report_block_received);
     const uint64_t rtcp_sdes_received = media_log_stats_.counters.take(media_log_event::rtcp_sdes_received);
     const uint64_t rtcp_bye_received = media_log_stats_.counters.take(media_log_event::rtcp_bye_received);
+    const uint64_t rtcp_bye_participant_ended =
+        media_log_stats_.counters.take(media_log_event::rtcp_bye_participant_ended);
+    const uint64_t rtcp_bye_unknown_ssrc =
+        media_log_stats_.counters.take(media_log_event::rtcp_bye_unknown_ssrc);
+    const uint64_t rtcp_bye_sent = media_log_stats_.counters.take(media_log_event::rtcp_bye_sent);
+    const uint64_t rtcp_bye_ssrc_sent =
+        media_log_stats_.counters.take(media_log_event::rtcp_bye_ssrc_sent);
+    const uint64_t rtcp_bye_send_bytes =
+        media_log_stats_.counters.take(media_log_event::rtcp_bye_send_bytes);
+    const uint64_t publisher_source_bye_received =
+        media_log_stats_.counters.take(media_log_event::publisher_source_bye_received);
     const uint64_t rtcp_pli_received = media_log_stats_.counters.take(media_log_event::rtcp_pli_received);
     const uint64_t rtcp_fir_received = media_log_stats_.counters.take(media_log_event::rtcp_fir_received);
     const uint64_t rtcp_keyframe_feedback_received =
@@ -466,7 +502,9 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         keyframe_request_submitted != 0 || keyframe_completed != 0 || rtcp_received != 0 ||
         rtcp_sender_report_received != 0 || rtcp_receiver_report_received != 0 ||
         rtcp_report_block_received != 0 || rtcp_sdes_received != 0 || rtcp_bye_received != 0 ||
-        rtcp_pli_received != 0 || rtcp_fir_received != 0 || rtcp_keyframe_feedback_received != 0 ||
+        rtcp_bye_participant_ended != 0 || rtcp_bye_unknown_ssrc != 0 || rtcp_bye_sent != 0 ||
+        rtcp_bye_ssrc_sent != 0 || rtcp_bye_send_bytes != 0 ||
+        publisher_source_bye_received != 0 || rtcp_pli_received != 0 || rtcp_fir_received != 0 || rtcp_keyframe_feedback_received != 0 ||
         rtcp_keyframe_feedback_forwarded != 0 || rtcp_keyframe_feedback_coalesced != 0 ||
         rtcp_keyframe_feedback_target_ignored != 0 || rtcp_fir_duplicate_ignored != 0 ||
         rtcp_generic_nack_ignored != 0 ||
@@ -488,7 +526,9 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         "WHEP media summary stream={} session={} interval_ms={} source_rtp={} rewritten={} send_enqueued={} send_bytes={} "
         "send_payload_bytes={} sender_timing_mapped={} dropped_no_endpoint={} dropped_stale_source_generation={} rewrite_failed={} rewrite_dropped={} protect_failed={} "
         "dropped_srtp_not_ready={} protect_ignored={} keyframe_request_submitted={} keyframe_completed={} rtcp_received={} rtcp_sr={} rtcp_rr={} "
-        "rtcp_report_blocks={} rtcp_sdes={} rtcp_bye={} rtcp_pli={} rtcp_fir={} rtcp_keyframe_feedback_received={} "
+        "rtcp_report_blocks={} rtcp_sdes={} rtcp_bye={} rtcp_bye_participant_ended={} rtcp_bye_unknown_ssrc={} "
+        "rtcp_bye_sent={} rtcp_bye_ssrcs_sent={} rtcp_bye_send_bytes={} publisher_source_bye={} "
+        "rtcp_pli={} rtcp_fir={} rtcp_keyframe_feedback_received={} "
         "rtcp_keyframe_feedback_forwarded={} rtcp_keyframe_feedback_coalesced={} rtcp_keyframe_feedback_target_ignored={} "
         "rtcp_fir_duplicate_ignored={} rtcp_generic_nack_ignored={} rtcp_transport_cc_ignored={} rtcp_remb_ignored={} "
         "rtcp_other_feedback_ignored={} rtcp_unknown_block_ignored={} rtcp_parse_failed={} rtcp_sr_sent={} rtcp_sdes_sent={} "
@@ -518,6 +558,12 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         rtcp_report_block_received,
         rtcp_sdes_received,
         rtcp_bye_received,
+        rtcp_bye_participant_ended,
+        rtcp_bye_unknown_ssrc,
+        rtcp_bye_sent,
+        rtcp_bye_ssrc_sent,
+        rtcp_bye_send_bytes,
+        publisher_source_bye_received,
         rtcp_pli_received,
         rtcp_fir_received,
         rtcp_keyframe_feedback_received,
@@ -657,6 +703,7 @@ void whep_session_transport::set_peer_context(std::string local_ice_pwd,
         publisher_source_generation_ = 0;
         clear_publisher_sender_timings_locked();
         clear_keyframe_feedback_state_locked();
+        remote_rtcp_participant_ssrcs_.clear();
         reset_keyframe_recovery_locked();
         rebuild_rtp_rewriter_locked();
     }
@@ -731,6 +778,11 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
 
     record_media_log_event(media_log_event::source_rtp_received);
     std::unique_lock peer_lock(peer_mutex_);
+
+    if (closed_)
+    {
+        return;
+    }
 
     if (!selected_remote_endpoint_.has_value())
     {
@@ -1035,6 +1087,13 @@ void whep_session_transport::subscribe_media()
             if (const auto transport = weak_transport.lock())
             {
                 transport->handle_publisher_sender_timing(std::move(timing));
+            }
+        },
+        [weak_transport](media_publisher_source_bye bye)
+        {
+            if (const auto transport = weak_transport.lock())
+            {
+                transport->handle_publisher_source_bye(std::move(bye));
             }
         });
 }
@@ -1416,6 +1475,226 @@ void whep_session_transport::complete_keyframe_request(const keyframe_request_co
         context.target_ssrc);
 }
 
+void whep_session_transport::handle_publisher_source_bye(media_publisher_source_bye bye)
+{
+    std::lock_guard lock(rtp_rewriter_mutex_);
+
+    if (publisher_source_ == nullptr || bye.publisher_session_id != publisher_source_->session_id ||
+        bye.source_generation != publisher_source_generation_ || bye.source_ssrc == 0)
+    {
+        return;
+    }
+
+    publisher_sender_timings_.erase(bye.source_ssrc);
+    keyframe_waiting_source_ssrcs_.erase(bye.source_ssrc);
+    keyframe_ready_source_ssrcs_.erase(bye.source_ssrc);
+    std::size_t affected_senders = 0;
+
+    for (auto& [target_ssrc, sender] : outbound_rtcp_senders_)
+    {
+        const auto source_ssrc = rtp_rewriter_.source_ssrc_for_target_ssrc(target_ssrc);
+
+        if (!source_ssrc.has_value() || *source_ssrc != bye.source_ssrc)
+        {
+            continue;
+        }
+
+        sender.sender_timing.reset();
+        keyframe_tracker_.reset(target_ssrc);
+        ++affected_senders;
+    }
+
+    record_media_log_event(media_log_event::publisher_source_bye_received);
+    WEBRTC_LOG_INFO(
+        "WHEP publisher source BYE applied stream={} session={} publisher_session={} source_generation={} source_ssrc={} reason={} affected_senders={}",
+        stream_id_,
+        session_id_,
+        bye.publisher_session_id,
+        bye.source_generation,
+        bye.source_ssrc,
+        bye.reason,
+        affected_senders);
+}
+
+void whep_session_transport::record_receiver_byes_locked(
+    std::span<const rtcp_bye_packet> bye_packets)
+{
+    for (const auto& bye : bye_packets)
+    {
+        for (const uint32_t ssrc : bye.ssrcs)
+        {
+            if (ssrc != 0 && remote_rtcp_participant_ssrcs_.erase(ssrc) != 0)
+            {
+                record_media_log_event(media_log_event::rtcp_bye_participant_ended);
+                WEBRTC_LOG_INFO(
+                    "WHEP remote RTCP participant BYE stream={} session={} participant_ssrc={} reason={}",
+                    stream_id_,
+                    session_id_,
+                    ssrc,
+                    bye.reason);
+            }
+            else
+            {
+                record_media_log_event(media_log_event::rtcp_bye_unknown_ssrc);
+                WEBRTC_LOG_DEBUG(
+                    "WHEP remote RTCP BYE unknown SSRC stream={} session={} participant_ssrc={} reason={}",
+                    stream_id_,
+                    session_id_,
+                    ssrc,
+                    bye.reason);
+            }
+        }
+    }
+}
+
+void whep_session_transport::send_rtcp_bye_locked(std::string_view reason)
+{
+    if (!selected_remote_endpoint_.has_value())
+    {
+        return;
+    }
+
+    const boost::asio::ip::udp::endpoint remote_endpoint = *selected_remote_endpoint_;
+    const std::string remote_address = format_udp_endpoint(remote_endpoint);
+    auto peer_ready = srtp_transport_->peer_ready(remote_address);
+
+    if (!peer_ready || !*peer_ready)
+    {
+        if (!peer_ready)
+        {
+            record_media_log_event(media_log_event::rtcp_protect_failed);
+            WEBRTC_LOG_WARN("WHEP RTCP BYE readiness check failed stream={} session={} remote={} error={}",
+                            stream_id_,
+                            session_id_,
+                            remote_address,
+                            peer_ready.error());
+        }
+        return;
+    }
+
+    std::lock_guard rtp_lock(rtp_rewriter_mutex_);
+
+    for (auto& [target_ssrc, sender] : outbound_rtcp_senders_)
+    {
+        (void)target_ssrc;
+
+        if (!sender.rtcp_mux || sender.cname.empty() || sender.packet_count == 0)
+        {
+            continue;
+        }
+
+        rtcp_packet_build_result report_packet = build_rtcp_receiver_report(rtcp_receiver_report_data{
+            .sender_ssrc = sender.target_ssrc,
+            .report_blocks = {},
+        });
+        bool sender_report = false;
+
+        if (sender.sender_timing.has_value() &&
+            sender.sender_timing->source_generation == publisher_source_generation_)
+        {
+            report_packet = build_rtcp_sender_report(rtcp_sender_report_data{
+                .sender_ssrc = sender.target_ssrc,
+                .ntp_timestamp = sender.sender_timing->ntp_timestamp,
+                .rtp_timestamp = sender.sender_timing->target_rtp_timestamp,
+                .sender_packet_count = static_cast<uint32_t>(sender.packet_count),
+                .sender_octet_count = static_cast<uint32_t>(sender.octet_count),
+                .report_blocks = {},
+            });
+            sender_report = true;
+        }
+
+        if (!report_packet)
+        {
+            record_media_log_event(media_log_event::rtcp_build_failed);
+            WEBRTC_LOG_WARN("WHEP RTCP BYE report build failed stream={} session={} kind={} target_ssrc={} error={}",
+                            stream_id_,
+                            session_id_,
+                            sender.kind,
+                            sender.target_ssrc,
+                            report_packet.error());
+            continue;
+        }
+
+        const std::array<uint32_t, 1> bye_ssrcs{sender.target_ssrc};
+        auto compound = build_rtcp_bye_datagram(
+            *report_packet, sender.target_ssrc, sender.cname, bye_ssrcs, reason);
+
+        if (!compound)
+        {
+            record_media_log_event(media_log_event::rtcp_build_failed);
+            WEBRTC_LOG_WARN("WHEP RTCP BYE compound build failed stream={} session={} kind={} target_ssrc={} error={}",
+                            stream_id_,
+                            session_id_,
+                            sender.kind,
+                            sender.target_ssrc,
+                            compound.error());
+            continue;
+        }
+
+        auto protected_packet =
+            srtp_transport_->protect_outbound_packet(*compound, remote_address, srtp_packet_kind::rtcp);
+
+        if (!protected_packet)
+        {
+            record_media_log_event(media_log_event::rtcp_protect_failed);
+            WEBRTC_LOG_WARN("WHEP RTCP BYE protect failed stream={} session={} kind={} target_ssrc={} remote={} error={}",
+                            stream_id_,
+                            session_id_,
+                            sender.kind,
+                            sender.target_ssrc,
+                            remote_address,
+                            protected_packet.error());
+            continue;
+        }
+
+        if (protected_packet->state != srtp_packet_process_state::protected_packet ||
+            protected_packet->protected_packet.empty())
+        {
+            record_media_log_event(media_log_event::rtcp_protect_ignored);
+            WEBRTC_LOG_DEBUG(
+                "WHEP RTCP BYE protect ignored stream={} session={} kind={} target_ssrc={} remote={} state={} reason={}",
+                stream_id_,
+                session_id_,
+                sender.kind,
+                sender.target_ssrc,
+                remote_address,
+                srtp_packet_process_state_to_string(protected_packet->state),
+                protected_packet->reason);
+            continue;
+        }
+
+        const std::size_t protected_size = protected_packet->protected_packet.size();
+        udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
+
+        record_media_log_event(media_log_event::rtcp_bye_sent);
+        record_media_log_event(media_log_event::rtcp_bye_ssrc_sent);
+        record_media_log_event(media_log_event::rtcp_bye_send_bytes, protected_size);
+        record_media_log_event(media_log_event::rtcp_sdes_sent);
+        record_media_log_event(media_log_event::rtcp_send_bytes, protected_size);
+
+        if (sender_report)
+        {
+            record_media_log_event(media_log_event::rtcp_sender_report_sent);
+            sender.sender_report_count += 1;
+            sender.sender_report_bytes += protected_size;
+            sender.last_sender_report_source_generation = sender.sender_timing->source_generation;
+            sender.last_sender_report_ntp_timestamp = sender.sender_timing->ntp_timestamp;
+            sender.last_sender_report_rtp_timestamp = sender.sender_timing->target_rtp_timestamp;
+        }
+
+        WEBRTC_LOG_INFO(
+            "WHEP RTCP BYE sent stream={} session={} kind={} target_ssrc={} report={} reason={} plain_bytes={} protected_bytes={}",
+            stream_id_,
+            session_id_,
+            sender.kind,
+            sender.target_ssrc,
+            sender_report ? "sr" : "rr",
+            reason,
+            compound->size(),
+            protected_size);
+    }
+}
+
 void whep_session_transport::record_receiver_reports_locked(
     std::span<const rtcp_report_packet> reports)
 {
@@ -1423,6 +1702,11 @@ void whep_session_transport::record_receiver_reports_locked(
 
     for (const auto& report : reports)
     {
+        if (report.sender_ssrc != 0)
+        {
+            remote_rtcp_participant_ssrcs_.insert(report.sender_ssrc);
+        }
+
         for (const auto& block : report.report_blocks)
         {
             const auto sender_iterator = outbound_rtcp_senders_.find(block.source_ssrc);
@@ -1537,7 +1821,17 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
 
     {
         std::lock_guard lock(rtp_rewriter_mutex_);
+
+        for (const auto& chunk : compound->sdes_chunks)
+        {
+            if (chunk.ssrc != 0)
+            {
+                remote_rtcp_participant_ssrcs_.insert(chunk.ssrc);
+            }
+        }
+
         record_receiver_reports_locked(compound->report_packets);
+        record_receiver_byes_locked(compound->bye_packets);
     }
 
     for (const auto& block : compound->blocks)

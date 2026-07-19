@@ -354,6 +354,11 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
     const auto& session = *session_result;
 
+    if (replace_previous_session != nullptr)
+    {
+        replace_previous_session->close("whip_republish");
+    }
+
     session->complete_initial_setup(std::move(answer->local_ice),
                                     answer->sdp_session_id,
                                     answer->sdp_session_version,
@@ -630,6 +635,7 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
         return json_error_response(request, 500, k_whip_delete_session_failed_error, "delete publisher session failed");
     }
 
+    session->close("whip_delete");
     media_fanout_router_->clear_publisher_source(stream_id, publisher_session_id);
 
     auto response = create_response(request, 204, "");

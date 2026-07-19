@@ -64,6 +64,14 @@ using rtcp_packet_build_result = std::expected<std::vector<uint8_t>, std::string
 [[nodiscard]] rtcp_packet_build_result build_rtcp_bye(std::span<const uint32_t> ssrcs,
                                                        std::string_view reason = {});
 
+[[nodiscard]] rtcp_packet_build_result build_rtcp_bye_datagram(
+    std::span<const uint8_t> report_packet,
+    uint32_t participant_ssrc,
+    std::string_view cname,
+    std::span<const uint32_t> bye_ssrcs,
+    std::string_view reason = {},
+    std::size_t maximum_size = k_default_rtcp_datagram_mtu);
+
 [[nodiscard]] rtcp_packet_build_result build_rtcp_compound_packet(
     std::span<const std::vector<uint8_t>> packets,
     std::size_t maximum_size = k_default_rtcp_datagram_mtu);

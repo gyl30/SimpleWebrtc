@@ -476,6 +476,59 @@ rtcp_packet_build_result build_rtcp_bye(std::span<const uint32_t> ssrcs,
     return packet;
 }
 
+rtcp_packet_build_result build_rtcp_bye_datagram(
+    std::span<const uint8_t> report_packet,
+    uint32_t participant_ssrc,
+    std::string_view cname,
+    std::span<const uint32_t> bye_ssrcs,
+    std::string_view reason,
+    std::size_t maximum_size)
+{
+    if (participant_ssrc == 0)
+    {
+        return make_error("rtcp bye participant ssrc is zero");
+    }
+
+    if (cname.empty())
+    {
+        return make_error("rtcp bye cname is empty");
+    }
+
+    const auto packet_type = validate_rtcp_packet(report_packet);
+
+    if (!packet_type)
+    {
+        return std::unexpected(packet_type.error());
+    }
+
+    if ((*packet_type != k_rtcp_packet_type_sender_report &&
+         *packet_type != k_rtcp_packet_type_receiver_report) ||
+        report_packet.size() < 8U || read_u32(report_packet, 4) != participant_ssrc)
+    {
+        return make_error("rtcp bye report sender does not match participant");
+    }
+
+    auto sdes = build_rtcp_sdes_cname(participant_ssrc, cname);
+    auto bye = build_rtcp_bye(bye_ssrcs, reason);
+
+    if (!sdes)
+    {
+        return std::unexpected(sdes.error());
+    }
+
+    if (!bye)
+    {
+        return std::unexpected(bye.error());
+    }
+
+    std::array<std::vector<uint8_t>, 3> members{
+        std::vector<uint8_t>(report_packet.begin(), report_packet.end()),
+        std::move(*sdes),
+        std::move(*bye),
+    };
+    return build_rtcp_compound_packet(members, maximum_size);
+}
+
 rtcp_packet_build_result build_rtcp_compound_packet(std::span<const std::vector<uint8_t>> packets,
                                                      std::size_t maximum_size)
 {

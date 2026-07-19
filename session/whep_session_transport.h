@@ -25,6 +25,7 @@
 #include "media/video_keyframe_detector.h"
 #include "media/whep_rtp_rewriter.h"
 #include "rtp/rtcp_fir_sequence_tracker.h"
+#include "rtp/rtcp_compound_packet.h"
 #include "rtp/rtcp_report.h"
 #include "session/session_transport_media_log.h"
 #include "srtp/srtp_transport.h"
@@ -63,6 +64,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
                               whep_rtp_rewriter_target target);
 
     void send_rtp(uint64_t source_generation, std::span<const uint8_t> plain_rtp);
+
+    void close(std::string_view reason);
 
    private:
     enum class peer_nomination_state
@@ -165,6 +168,12 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         rtcp_report_block_received,
         rtcp_sdes_received,
         rtcp_bye_received,
+        rtcp_bye_participant_ended,
+        rtcp_bye_unknown_ssrc,
+        rtcp_bye_sent,
+        rtcp_bye_ssrc_sent,
+        rtcp_bye_send_bytes,
+        publisher_source_bye_received,
         rtcp_pli_received,
         rtcp_fir_received,
         rtcp_keyframe_feedback_received,
@@ -217,6 +226,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void unsubscribe_media();
     void handle_publisher_source(media_publisher_source_update update);
     void handle_publisher_sender_timing(media_publisher_sender_timing timing);
+    void handle_publisher_source_bye(media_publisher_source_bye bye);
     void configure_outbound_rtcp_senders_locked(const whep_rtp_rewriter_target& target,
                                                  bool preserve_runtime_state);
     void clear_publisher_sender_timings_locked();
@@ -240,6 +250,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void complete_keyframe_request(const keyframe_request_context& context);
     void handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp);
     void record_receiver_reports_locked(std::span<const rtcp_report_packet> reports);
+    void record_receiver_byes_locked(std::span<const rtcp_bye_packet> bye_packets);
+    void send_rtcp_bye_locked(std::string_view reason);
 
     void clear_peer_state();
     void clear_peer_state_locked();
@@ -288,6 +300,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     std::unordered_set<uint32_t> keyframe_waiting_source_ssrcs_;
     std::unordered_set<uint32_t> keyframe_ready_source_ssrcs_;
     std::unordered_set<uint32_t> unsupported_keyframe_detection_target_ssrcs_;
+    std::unordered_set<uint32_t> remote_rtcp_participant_ssrcs_;
     rtcp_fir_sequence_tracker fir_sequence_tracker_;
 
     std::size_t received_packet_count_ = 0;
@@ -295,6 +308,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     std::size_t dropped_rtp_packet_count_ = 0;
 
     media_log_stats media_log_stats_;
+    bool closed_ = false;
 
     // 仅由当前 ICE generation 中携带 USE-CANDIDATE 的完整 STUN 校验结果更新。
     std::optional<boost::asio::ip::udp::endpoint> selected_remote_endpoint_;

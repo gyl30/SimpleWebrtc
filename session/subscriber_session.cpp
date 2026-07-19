@@ -88,6 +88,14 @@ void subscriber_session::complete_initial_setup(ice_credentials local_ice,
     updated_at_milliseconds_ = now_milliseconds();
 }
 
+void subscriber_session::close(std::string_view reason)
+{
+    if (transport_ != nullptr)
+    {
+        transport_->close(reason);
+    }
+}
+
 void subscriber_session::apply_remote_ice_restart(sdp::webrtc_offer_summary remote_offer_summary,
                                                   std::vector<int> accepted_remote_media_mline_indexes,
                                                   ice_credentials local_ice,

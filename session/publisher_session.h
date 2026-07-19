@@ -70,6 +70,8 @@ class publisher_session
 
     void set_publisher_source_generation(uint64_t source_generation);
 
+    void close(std::string_view reason);
+
     void apply_remote_ice_restart(sdp::webrtc_offer_summary remote_offer_summary,
                                   std::vector<int> accepted_remote_media_mline_indexes,
                                   ice_credentials local_ice,
