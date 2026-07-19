@@ -218,6 +218,7 @@ void whip_session_transport::configure_remote_media_locked(
             const inbound_payload_type_context context{
                 .kind = media.kind,
                 .clock_rate = codec.clock_rate,
+                .rtcp_rsize = media.rtcp_rsize,
             };
 
             if (ambiguous_payload_types.contains(payload_type))
@@ -286,6 +287,7 @@ void whip_session_transport::record_inbound_rtp(
         inbound_rtcp_receiver_state receiver;
         receiver.kind = payload_iterator->second.kind;
         receiver.clock_rate = payload_iterator->second.clock_rate;
+        receiver.rtcp_rsize = payload_iterator->second.rtcp_rsize;
         receiver_iterator = inbound_rtcp_receivers_.emplace(source_ssrc, std::move(receiver)).first;
     }
 
@@ -307,6 +309,7 @@ void whip_session_transport::record_inbound_rtp(
 
     receiver.kind = payload_iterator->second.kind;
     receiver.clock_rate = payload_iterator->second.clock_rate;
+    receiver.rtcp_rsize = payload_iterator->second.rtcp_rsize;
 
     if (!receiver.receive_statistics.observe(sequence_number,
                                               rtp_timestamp,
@@ -585,6 +588,14 @@ void whip_session_transport::log_media_summary(int64_t interval_ms)
     const uint64_t rtcp_build_failed = media_log_stats_.counters.take(media_log_event::rtcp_build_failed);
     const uint64_t rtcp_protect_failed = media_log_stats_.counters.take(media_log_event::rtcp_protect_failed);
     const uint64_t rtcp_protect_ignored = media_log_stats_.counters.take(media_log_event::rtcp_protect_ignored);
+    const uint64_t rtcp_keyframe_feedback_sent =
+        media_log_stats_.counters.take(media_log_event::rtcp_keyframe_feedback_sent);
+    const uint64_t rtcp_keyframe_feedback_reduced_size_sent =
+        media_log_stats_.counters.take(media_log_event::rtcp_keyframe_feedback_reduced_size_sent);
+    const uint64_t rtcp_keyframe_feedback_compound_sent =
+        media_log_stats_.counters.take(media_log_event::rtcp_keyframe_feedback_compound_sent);
+    const uint64_t rtcp_keyframe_feedback_send_bytes =
+        media_log_stats_.counters.take(media_log_event::rtcp_keyframe_feedback_send_bytes);
     const uint64_t published_targets = media_log_stats_.counters.take(media_log_event::published_targets);
     const uint64_t dropped_unselected = media_log_stats_.counters.take(media_log_event::dropped_unselected);
     const uint64_t srtp_ignored = media_log_stats_.counters.take(media_log_event::srtp_ignored);
@@ -603,7 +614,10 @@ void whip_session_transport::log_media_summary(int64_t interval_ms)
         rtcp_unknown_block_ignored != 0 || rtcp_parse_failed != 0 ||
         rtcp_receiver_report_sent != 0 || rtcp_report_block_sent != 0 || rtcp_sdes_sent != 0 ||
         rtcp_send_bytes != 0 || rtcp_build_failed != 0 || rtcp_protect_failed != 0 ||
-        rtcp_protect_ignored != 0 || published_targets != 0 || dropped_unselected != 0 ||
+        rtcp_protect_ignored != 0 || rtcp_keyframe_feedback_sent != 0 ||
+        rtcp_keyframe_feedback_reduced_size_sent != 0 ||
+        rtcp_keyframe_feedback_compound_sent != 0 || rtcp_keyframe_feedback_send_bytes != 0 ||
+        published_targets != 0 || dropped_unselected != 0 ||
         srtp_ignored != 0 || srtp_unprotect_failed != 0 || other_received != 0;
 
     if (!has_activity)
@@ -618,7 +632,9 @@ void whip_session_transport::log_media_summary(int64_t interval_ms)
         "rtcp_bye={} rtcp_pli_ignored={} rtcp_fir_ignored={} rtcp_generic_nack_ignored={} rtcp_transport_cc_ignored={} "
         "rtcp_remb_ignored={} rtcp_other_feedback_ignored={} rtcp_unknown_block_ignored={} rtcp_parse_failed={} "
         "rtcp_rr_sent={} rtcp_report_blocks_sent={} rtcp_sdes_sent={} rtcp_send_bytes={} rtcp_build_failed={} "
-        "rtcp_protect_failed={} rtcp_protect_ignored={} published_targets={} dropped_unselected={} srtp_ignored={} "
+        "rtcp_protect_failed={} rtcp_protect_ignored={} rtcp_keyframe_feedback_sent={} "
+        "rtcp_keyframe_feedback_reduced_size_sent={} rtcp_keyframe_feedback_compound_sent={} "
+        "rtcp_keyframe_feedback_send_bytes={} published_targets={} dropped_unselected={} srtp_ignored={} "
         "srtp_unprotect_failed={} other_received={}",
         stream_id_,
         session_id_,
@@ -653,6 +669,10 @@ void whip_session_transport::log_media_summary(int64_t interval_ms)
         rtcp_build_failed,
         rtcp_protect_failed,
         rtcp_protect_ignored,
+        rtcp_keyframe_feedback_sent,
+        rtcp_keyframe_feedback_reduced_size_sent,
+        rtcp_keyframe_feedback_compound_sent,
+        rtcp_keyframe_feedback_send_bytes,
         published_targets,
         dropped_unselected,
         srtp_ignored,
@@ -688,7 +708,7 @@ void whip_session_transport::log_receiver_states()
             "received_packets={} current_cumulative_lost={} current_extended_highest_sequence={} current_jitter={} sr_received={} "
             "last_sr_lsr={} last_sr_dlsr={} rr_sent={} last_fraction_lost={} last_cumulative_lost={} "
             "last_extended_highest_sequence={} last_jitter={} last_rr_expected_packets={} last_rr_received_packets={} "
-            "rtcp_sender_ssrc={} cname={} rtcp_mux={}",
+            "rtcp_sender_ssrc={} cname={} rtcp_mux={} rtcp_rsize={}",
             stream_id_,
             session_id_,
             publisher_source_generation_,
@@ -712,7 +732,8 @@ void whip_session_transport::log_receiver_states()
             receiver.last_received_packet_count,
             rtcp_sender_ssrc_,
             rtcp_cname_,
-            rtcp_mux_enabled_ ? 1 : 0);
+            rtcp_mux_enabled_ ? 1 : 0,
+            receiver.rtcp_rsize ? 1 : 0);
     }
 }
 
@@ -1001,41 +1022,117 @@ void whip_session_transport::send_keyframe_request(uint32_t media_ssrc)
 {
     std::lock_guard lock(peer_mutex_);
 
-    if (media_ssrc == 0 || rtcp_sender_ssrc_ == 0 || !selected_remote_endpoint_.has_value())
+    if (media_ssrc == 0 || rtcp_sender_ssrc_ == 0 || rtcp_cname_.empty() ||
+        !rtcp_mux_enabled_ || !selected_remote_endpoint_.has_value())
     {
+        return;
+    }
+
+    const auto receiver = inbound_rtcp_receivers_.find(media_ssrc);
+    const bool source_state_known = receiver != inbound_rtcp_receivers_.end();
+    const bool reduced_size = source_state_known && receiver->second.rtcp_rsize;
+    auto pli = build_rtcp_picture_loss_indication(rtcp_sender_ssrc_, media_ssrc);
+
+    if (!pli)
+    {
+        record_media_log_event(media_log_event::rtcp_build_failed);
+        WEBRTC_LOG_WARN("WHIP keyframe request PLI build failed stream={} session={} media_ssrc={} error={}",
+                        stream_id_,
+                        session_id_,
+                        media_ssrc,
+                        pli.error());
+        return;
+    }
+
+    auto feedback_packet = build_rtcp_feedback_datagram(
+        *pli, rtcp_sender_ssrc_, rtcp_cname_, reduced_size);
+
+    if (!feedback_packet)
+    {
+        record_media_log_event(media_log_event::rtcp_build_failed);
+        WEBRTC_LOG_WARN(
+            "WHIP keyframe request datagram build failed stream={} session={} media_ssrc={} format={} error={}",
+            stream_id_,
+            session_id_,
+            media_ssrc,
+            reduced_size ? "reduced_size" : "compound",
+            feedback_packet.error());
         return;
     }
 
     const boost::asio::ip::udp::endpoint remote_endpoint = *selected_remote_endpoint_;
     const std::string remote_address = format_udp_endpoint(remote_endpoint);
-    const auto plain_packet = make_rtcp_pli_packet(rtcp_sender_ssrc_, media_ssrc);
-
+    const std::size_t plain_size = feedback_packet->size();
     auto protected_packet =
-        srtp_transport_->protect_outbound_packet(plain_packet, remote_address, srtp_packet_kind::rtcp);
+        srtp_transport_->protect_outbound_packet(*feedback_packet, remote_address, srtp_packet_kind::rtcp);
 
     if (!protected_packet)
     {
-        WEBRTC_LOG_WARN("WHIP keyframe request protect failed remote={} media_ssrc={} error={}",
-                        remote_address,
-                        media_ssrc,
-                        protected_packet.error());
+        record_media_log_event(media_log_event::rtcp_protect_failed);
+        WEBRTC_LOG_WARN(
+            "WHIP keyframe request protect failed stream={} session={} remote={} media_ssrc={} format={} error={}",
+            stream_id_,
+            session_id_,
+            remote_address,
+            media_ssrc,
+            reduced_size ? "reduced_size" : "compound",
+            protected_packet.error());
         return;
     }
 
     if (protected_packet->state != srtp_packet_process_state::protected_packet ||
         protected_packet->protected_packet.empty())
     {
-        WEBRTC_LOG_DEBUG("WHIP keyframe request ignored remote={} media_ssrc={} state={} reason={}",
-                         remote_address,
-                         media_ssrc,
-                         srtp_packet_process_state_to_string(protected_packet->state),
-                         protected_packet->reason);
+        record_media_log_event(media_log_event::rtcp_protect_ignored);
+        WEBRTC_LOG_DEBUG(
+            "WHIP keyframe request protect ignored stream={} session={} remote={} media_ssrc={} format={} state={} reason={}",
+            stream_id_,
+            session_id_,
+            remote_address,
+            media_ssrc,
+            reduced_size ? "reduced_size" : "compound",
+            srtp_packet_process_state_to_string(protected_packet->state),
+            protected_packet->reason);
         return;
     }
 
+    const std::size_t protected_size = protected_packet->protected_packet.size();
+    record_media_log_event(media_log_event::rtcp_keyframe_feedback_sent);
+    record_media_log_event(reduced_size
+                               ? media_log_event::rtcp_keyframe_feedback_reduced_size_sent
+                               : media_log_event::rtcp_keyframe_feedback_compound_sent);
+    record_media_log_event(media_log_event::rtcp_keyframe_feedback_send_bytes, protected_size);
     udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
 
-    WEBRTC_LOG_INFO("WHIP keyframe request sent remote={} media_ssrc={}", remote_address, media_ssrc);
+    if (!media_log_stats_.keyframe_feedback_sent_logged.exchange(true, std::memory_order_relaxed))
+    {
+        WEBRTC_LOG_INFO(
+            "WHIP first keyframe request sent stream={} session={} remote={} media_ssrc={} format={} rtcp_rsize={} "
+            "source_state_known={} plain_bytes={} protected_bytes={}",
+            stream_id_,
+            session_id_,
+            remote_address,
+            media_ssrc,
+            reduced_size ? "reduced_size" : "compound",
+            reduced_size ? 1 : 0,
+            source_state_known ? 1 : 0,
+            plain_size,
+            protected_size);
+    }
+    else
+    {
+        WEBRTC_LOG_INFO(
+            "WHIP keyframe request sent stream={} session={} remote={} media_ssrc={} format={} rtcp_rsize={} "
+            "plain_bytes={} protected_bytes={}",
+            stream_id_,
+            session_id_,
+            remote_address,
+            media_ssrc,
+            reduced_size ? "reduced_size" : "compound",
+            reduced_size ? 1 : 0,
+            plain_size,
+            protected_size);
+    }
 }
 
 void whip_session_transport::clear_peer_state()

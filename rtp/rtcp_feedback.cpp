@@ -568,26 +568,4 @@ std::string rtcp_feedback_format_to_string(uint8_t packet_type, uint8_t format)
     return "unknown";
 }
 
-std::vector<uint8_t> make_rtcp_pli_packet(uint32_t sender_ssrc, uint32_t media_ssrc)
-{
-    std::vector<uint8_t> packet(k_rtcp_feedback_header_size);
-
-    packet[0] = static_cast<uint8_t>(0x80U | k_rtcp_payload_feedback_pli);
-    packet[1] = k_rtcp_packet_type_payload_feedback;
-    packet[2] = 0;
-    packet[3] = 2;
-
-    packet[4] = static_cast<uint8_t>(sender_ssrc >> 24U);
-    packet[5] = static_cast<uint8_t>((sender_ssrc >> 16U) & 0xFFU);
-    packet[6] = static_cast<uint8_t>((sender_ssrc >> 8U) & 0xFFU);
-    packet[7] = static_cast<uint8_t>(sender_ssrc & 0xFFU);
-
-    packet[8] = static_cast<uint8_t>(media_ssrc >> 24U);
-    packet[9] = static_cast<uint8_t>((media_ssrc >> 16U) & 0xFFU);
-    packet[10] = static_cast<uint8_t>((media_ssrc >> 8U) & 0xFFU);
-    packet[11] = static_cast<uint8_t>(media_ssrc & 0xFFU);
-
-    return packet;
-}
-
 }    // namespace webrtc

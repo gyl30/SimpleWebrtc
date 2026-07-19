@@ -31,6 +31,12 @@ struct rtcp_receiver_report_data
     std::vector<rtcp_report_block> report_blocks;
 };
 
+struct rtcp_fir_request
+{
+    uint32_t media_ssrc = 0;
+    uint8_t sequence_number = 0;
+};
+
 using rtcp_packet_build_result = std::expected<std::vector<uint8_t>, std::string>;
 
 [[nodiscard]] rtcp_packet_build_result build_rtcp_sender_report(
@@ -41,6 +47,19 @@ using rtcp_packet_build_result = std::expected<std::vector<uint8_t>, std::string
 
 [[nodiscard]] rtcp_packet_build_result build_rtcp_sdes_cname(uint32_t ssrc,
                                                               std::string_view cname);
+
+[[nodiscard]] rtcp_packet_build_result build_rtcp_picture_loss_indication(
+    uint32_t sender_ssrc, uint32_t media_ssrc);
+
+[[nodiscard]] rtcp_packet_build_result build_rtcp_full_intra_request(
+    uint32_t sender_ssrc, std::span<const rtcp_fir_request> requests);
+
+[[nodiscard]] rtcp_packet_build_result build_rtcp_feedback_datagram(
+    std::span<const uint8_t> feedback_packet,
+    uint32_t sender_ssrc,
+    std::string_view cname,
+    bool reduced_size,
+    std::size_t maximum_size = k_default_rtcp_datagram_mtu);
 
 [[nodiscard]] rtcp_packet_build_result build_rtcp_bye(std::span<const uint32_t> ssrcs,
                                                        std::string_view reason = {});

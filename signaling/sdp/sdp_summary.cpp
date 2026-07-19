@@ -217,6 +217,11 @@ std::expected<void, std::string> validate_media_restart_compatibility(const medi
         return make_media_restart_error(previous_media, "rtcp mux changed");
     }
 
+    if (previous_media.rtcp_rsize != next_media.rtcp_rsize)
+    {
+        return make_media_restart_error(previous_media, "rtcp rsize changed");
+    }
+
     if (previous_media.ptime != next_media.ptime)
     {
         return make_media_restart_error(previous_media, "ptime changed");

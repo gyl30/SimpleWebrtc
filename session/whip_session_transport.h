@@ -81,6 +81,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     {
         std::string kind;
         uint32_t clock_rate = 0;
+        bool rtcp_rsize = false;
 
         bool operator==(const inbound_payload_type_context&) const = default;
     };
@@ -89,6 +90,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     {
         std::string kind;
         uint32_t clock_rate = 0;
+        bool rtcp_rsize = false;
         rtp_receive_statistics receive_statistics;
 
         uint64_t sender_report_count = 0;
@@ -140,6 +142,10 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         rtcp_build_failed,
         rtcp_protect_failed,
         rtcp_protect_ignored,
+        rtcp_keyframe_feedback_sent,
+        rtcp_keyframe_feedback_reduced_size_sent,
+        rtcp_keyframe_feedback_compound_sent,
+        rtcp_keyframe_feedback_send_bytes,
         published_targets,
         dropped_unselected,
         srtp_ignored,
@@ -159,6 +165,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         std::atomic<bool> remb_ignored_logged{false};
         std::atomic<bool> other_feedback_ignored_logged{false};
         std::atomic<bool> unknown_rtcp_block_ignored_logged{false};
+        std::atomic<bool> keyframe_feedback_sent_logged{false};
         std::array<std::atomic<bool>, 128> unmapped_payload_type_logged{};
         std::array<std::atomic<uint32_t>, 16> logged_source_ssrcs{};
         std::array<std::atomic<uint32_t>, 16> logged_sender_timing_ssrcs{};
