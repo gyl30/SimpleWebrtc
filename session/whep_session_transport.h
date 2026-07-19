@@ -28,6 +28,7 @@
 #include "rtp/rtcp_interval_scheduler.h"
 #include "rtp/rtcp_compound_packet.h"
 #include "rtp/rtcp_report.h"
+#include "rtp/rtp_retransmission_cache.h"
 #include "session/session_transport_media_log.h"
 #include "srtp/srtp_transport.h"
 
@@ -117,6 +118,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         std::string mid;
         std::string cname;
         uint32_t target_ssrc = 0;
+        bool rtx = false;
+        uint32_t associated_primary_ssrc = 0;
         bool rtcp_mux = false;
         bool rtcp_rsize = false;
 
@@ -182,7 +185,22 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         rtcp_keyframe_feedback_coalesced,
         rtcp_keyframe_feedback_target_ignored,
         rtcp_fir_duplicate_ignored,
-        rtcp_generic_nack_ignored,
+        rtcp_generic_nack_received,
+        rtcp_nack_sequence_requested,
+        rtcp_nack_sequence_unique,
+        rtcp_nack_target_ignored,
+        rtp_retransmission_cache_hit,
+        rtp_retransmission_cache_miss,
+        rtp_retransmission_suppressed,
+        rtp_retransmission_limited,
+        rtp_retransmission_original_sent,
+        rtp_retransmission_rtx_sent,
+        rtp_retransmission_send_bytes,
+        rtp_retransmission_payload_bytes,
+        rtp_retransmission_build_failed,
+        rtp_retransmission_protect_failed,
+        rtp_retransmission_srtp_not_ready,
+        rtp_retransmission_protect_ignored,
         rtcp_transport_cc_ignored,
         rtcp_remb_ignored,
         rtcp_other_feedback_ignored,
@@ -212,7 +230,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         std::atomic<bool> srtp_not_ready_logged{false};
         std::atomic<bool> protect_ignore_logged{false};
         std::atomic<bool> rtcp_parse_failure_logged{false};
-        std::atomic<bool> generic_nack_ignored_logged{false};
+        std::atomic<bool> generic_nack_logged{false};
+        std::atomic<bool> retransmission_logged{false};
         std::atomic<bool> transport_cc_ignored_logged{false};
         std::atomic<bool> remb_ignored_logged{false};
         std::atomic<bool> other_feedback_ignored_logged{false};
@@ -233,6 +252,13 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void clear_publisher_sender_timings_locked();
     void refresh_sender_timing_locked(uint32_t source_ssrc);
     void record_outbound_rtp_sent_locked(const whep_rtp_rewrite_result& rewritten);
+    void record_outbound_rtp_sent_locked(uint32_t target_ssrc,
+                                         std::size_t payload_size,
+                                         uint32_t target_timestamp);
+    void cache_rewritten_rtp_locked(uint64_t source_generation,
+                                    const whep_rtp_rewrite_result& rewritten);
+    void handle_generic_nacks(const rtcp_compound_packet& compound);
+    void send_retransmission(rtp_retransmission_cache_packet cached);
     void rebuild_rtp_rewriter_locked();
     void cancel_keyframe_recovery_locked();
     void reset_keyframe_recovery_locked();
@@ -267,6 +293,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     [[nodiscard]] rtcp_interval_input make_rtcp_interval_input();
     void log_media_summary(int64_t interval_ms);
     void log_outbound_rtcp_sender_state_snapshot();
+    void log_retransmission_cache_state();
     void log_rtcp_interval_state();
     [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
         const boost::asio::ip::udp::endpoint& remote_endpoint);
@@ -302,6 +329,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     std::unordered_map<uint32_t, media_publisher_sender_timing> publisher_sender_timings_;
     std::unordered_map<uint32_t, outbound_rtcp_sender_state> outbound_rtcp_senders_;
     whep_rtp_rewriter rtp_rewriter_;
+    rtp_retransmission_cache retransmission_cache_;
     video_keyframe_tracker keyframe_tracker_;
     std::unordered_set<uint32_t> keyframe_waiting_source_ssrcs_;
     std::unordered_set<uint32_t> keyframe_ready_source_ssrcs_;

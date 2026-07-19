@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -92,6 +93,44 @@ bool header_extension_requires_regeneration(std::string_view uri)
 {
     return is_transport_wide_cc_uri(uri) || uri == k_absolute_send_time_extension_uri ||
            uri == k_rid_extension_uri || uri == k_repaired_rid_extension_uri;
+}
+
+bool feedback_equals_ignore_case(std::string_view value, std::string_view expected)
+{
+    const auto begin = value.find_first_not_of(" \t");
+
+    if (begin == std::string_view::npos)
+    {
+        return expected.empty();
+    }
+
+    const auto end = value.find_last_not_of(" \t");
+    value = value.substr(begin, end - begin + 1U);
+
+    if (value.size() != expected.size())
+    {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < value.size(); ++index)
+    {
+        const auto left = static_cast<unsigned char>(value[index]);
+        const auto right = static_cast<unsigned char>(expected[index]);
+
+        if (std::tolower(left) != std::tolower(right))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool codec_supports_generic_nack(const sdp::codec_info& codec)
+{
+    return std::any_of(codec.rtcp_feedback.begin(),
+                       codec.rtcp_feedback.end(),
+                       [](const std::string& feedback) { return feedback_equals_ignore_case(feedback, "nack"); });
 }
 
 bool header_extension_uris_are_compatible(std::string_view left, std::string_view right)
@@ -895,6 +934,7 @@ whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(
 
             payload_mapping.clock_rate = target_codec->clock_rate;
             payload_mapping.codec_name = target_codec->name;
+            payload_mapping.nack = !payload_mapping.rtx && codec_supports_generic_nack(*target_codec);
             media_mapping.payload_types.push_back(std::move(payload_mapping));
         }
 
@@ -1224,6 +1264,105 @@ struct whep_rtp_rewriter::impl
         return result;
     }
 
+    [[nodiscard]] bool nack_enabled(uint32_t target_ssrc, uint8_t target_payload_type) const
+    {
+        const auto media_iterator = std::find_if(
+            media.begin(),
+            media.end(),
+            [target_ssrc](const media_runtime_state& current) { return current.mapping.target_ssrc == target_ssrc; });
+
+        if (media_iterator == media.end())
+        {
+            return false;
+        }
+
+        const auto payload_iterator = std::find_if(
+            media_iterator->mapping.payload_types.begin(),
+            media_iterator->mapping.payload_types.end(),
+            [target_payload_type](const whep_rtp_payload_type_mapping& mapping)
+            { return !mapping.rtx && mapping.target_payload_type == target_payload_type; });
+
+        return payload_iterator != media_iterator->mapping.payload_types.end() && payload_iterator->nack;
+    }
+
+    [[nodiscard]] whep_rtp_retransmission_result_type build_retransmission(
+        std::span<const uint8_t> primary_packet)
+    {
+        auto parsed = parse_rewriteable_rtp_packet(primary_packet);
+
+        if (!parsed)
+        {
+            return std::unexpected(parsed.error());
+        }
+
+        auto media_iterator = std::find_if(
+            media.begin(),
+            media.end(),
+            [&parsed](const media_runtime_state& current) { return current.mapping.target_ssrc == parsed->header.ssrc; });
+
+        if (media_iterator == media.end())
+        {
+            return make_error("whep retransmission target ssrc is unknown");
+        }
+
+        auto& current = *media_iterator;
+        const auto primary_mapping = std::find_if(
+            current.mapping.payload_types.begin(),
+            current.mapping.payload_types.end(),
+            [&parsed](const whep_rtp_payload_type_mapping& mapping)
+            { return !mapping.rtx && mapping.target_payload_type == parsed->header.payload_type; });
+
+        if (primary_mapping == current.mapping.payload_types.end() || !primary_mapping->nack)
+        {
+            return make_error("whep retransmission target payload type has no generic nack");
+        }
+
+        const auto rtx_mapping = std::find_if(
+            current.mapping.payload_types.begin(),
+            current.mapping.payload_types.end(),
+            [&parsed](const whep_rtp_payload_type_mapping& mapping)
+            { return mapping.rtx && mapping.target_associated_payload_type == parsed->header.payload_type; });
+
+        whep_rtp_retransmission_result result;
+        result.kind = current.mapping.kind;
+        result.codec_name = primary_mapping->codec_name;
+        result.original_target_ssrc = parsed->header.ssrc;
+        result.original_target_payload_type = parsed->header.payload_type;
+        result.original_target_sequence_number = parsed->header.sequence_number;
+        result.target_timestamp = parsed->header.timestamp;
+
+        if (rtx_mapping == current.mapping.payload_types.end() || current.mapping.target_rtx_ssrc == 0)
+        {
+            result.packet.assign(primary_packet.begin(), primary_packet.end());
+            result.target_ssrc = parsed->header.ssrc;
+            result.target_payload_type = parsed->header.payload_type;
+            result.target_sequence_number = parsed->header.sequence_number;
+            result.payload_size = parsed->payload_data_size;
+            return result;
+        }
+
+        result.rtx = true;
+        result.packet.reserve(primary_packet.size() + k_rtx_original_sequence_size);
+        result.packet.insert(result.packet.end(),
+                             primary_packet.begin(),
+                             primary_packet.begin() + static_cast<std::ptrdiff_t>(parsed->payload_offset));
+        result.packet.push_back(static_cast<uint8_t>(parsed->header.sequence_number >> 8U));
+        result.packet.push_back(static_cast<uint8_t>(parsed->header.sequence_number & 0xFFU));
+        result.packet.insert(result.packet.end(),
+                             primary_packet.begin() + static_cast<std::ptrdiff_t>(parsed->payload_offset),
+                             primary_packet.end());
+
+        result.target_ssrc = current.mapping.target_rtx_ssrc;
+        result.target_payload_type = rtx_mapping->target_payload_type;
+        result.target_sequence_number = current.allocate_sequence_number(true);
+        result.payload_size = parsed->payload_data_size + k_rtx_original_sequence_size;
+
+        result.packet[1] = static_cast<uint8_t>((result.packet[1] & 0x80U) | result.target_payload_type);
+        write_u16(result.packet, 2, result.target_sequence_number);
+        write_u32(result.packet, 8, result.target_ssrc);
+        return result;
+    }
+
     [[nodiscard]] std::optional<uint32_t> source_ssrc_for_target_ssrc(uint32_t target_ssrc) const
     {
         if (target_ssrc == 0)
@@ -1291,6 +1430,17 @@ void whep_rtp_rewriter::set_config(whep_rtp_rewriter_config config) { impl_->set
 void whep_rtp_rewriter::clear_source() { impl_->clear_source(); }
 
 whep_rtp_rewrite_packet_result whep_rtp_rewriter::rewrite(std::span<const uint8_t> packet) { return impl_->rewrite(packet); }
+
+bool whep_rtp_rewriter::nack_enabled(uint32_t target_ssrc, uint8_t target_payload_type) const
+{
+    return impl_->nack_enabled(target_ssrc, target_payload_type);
+}
+
+whep_rtp_retransmission_result_type whep_rtp_rewriter::build_retransmission(
+    std::span<const uint8_t> primary_packet)
+{
+    return impl_->build_retransmission(primary_packet);
+}
 
 std::optional<uint32_t> whep_rtp_rewriter::source_ssrc_for_target_ssrc(uint32_t target_ssrc) const
 {

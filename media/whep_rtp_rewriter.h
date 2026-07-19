@@ -24,6 +24,7 @@ struct whep_rtp_payload_type_mapping
     std::string codec_name;
 
     bool rtx = false;
+    bool nack = false;
 
     uint8_t source_associated_payload_type = 0;
     uint8_t target_associated_payload_type = 0;
@@ -106,6 +107,29 @@ struct whep_rtp_rewrite_result
 
 using whep_rtp_rewrite_packet_result = std::expected<whep_rtp_rewrite_result, std::string>;
 
+struct whep_rtp_retransmission_result
+{
+    std::vector<uint8_t> packet;
+    std::string kind;
+    std::string codec_name;
+
+    bool rtx = false;
+
+    uint32_t original_target_ssrc = 0;
+    uint32_t target_ssrc = 0;
+
+    uint8_t original_target_payload_type = 0;
+    uint8_t target_payload_type = 0;
+
+    uint16_t original_target_sequence_number = 0;
+    uint16_t target_sequence_number = 0;
+
+    uint32_t target_timestamp = 0;
+    std::size_t payload_size = 0;
+};
+
+using whep_rtp_retransmission_result_type = std::expected<whep_rtp_retransmission_result, std::string>;
+
 struct whep_rtp_timestamp_mapping
 {
     uint32_t target_ssrc = 0;
@@ -130,6 +154,11 @@ class whep_rtp_rewriter
     void clear_source();
 
     [[nodiscard]] whep_rtp_rewrite_packet_result rewrite(std::span<const uint8_t> packet);
+
+    [[nodiscard]] bool nack_enabled(uint32_t target_ssrc, uint8_t target_payload_type) const;
+
+    [[nodiscard]] whep_rtp_retransmission_result_type build_retransmission(
+        std::span<const uint8_t> primary_packet);
 
     [[nodiscard]] std::optional<uint32_t> source_ssrc_for_target_ssrc(uint32_t target_ssrc) const;
 

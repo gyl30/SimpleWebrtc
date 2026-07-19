@@ -120,6 +120,8 @@ void fill_feedback_block(const rtcp_feedback_packet& feedback, rtcp_compound_blo
     block.has_generic_nack = feedback.has_generic_nack;
     block.has_keyframe_request = feedback.has_keyframe_request;
     block.has_transport_cc = feedback.has_transport_cc;
+    block.nack_entries = feedback.nack_entries;
+    block.nack_sequence_numbers = feedback.nack_sequence_numbers;
     block.keyframe_request_media_ssrcs = feedback.keyframe_request_media_ssrcs;
     block.fir_entries = feedback.fir_entries;
 
@@ -176,6 +178,10 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
     packet.has_generic_nack = packet.has_generic_nack || block.has_generic_nack;
     packet.has_keyframe_request = packet.has_keyframe_request || block.has_keyframe_request;
     packet.has_transport_cc = packet.has_transport_cc || block.has_transport_cc;
+    packet.nack_entries.insert(packet.nack_entries.end(), block.nack_entries.begin(), block.nack_entries.end());
+    packet.nack_sequence_numbers.insert(packet.nack_sequence_numbers.end(),
+                                        block.nack_sequence_numbers.begin(),
+                                        block.nack_sequence_numbers.end());
 
     for (const uint32_t media_ssrc : block.keyframe_request_media_ssrcs)
     {

@@ -11,6 +11,12 @@
 
 namespace webrtc
 {
+struct rtcp_nack_entry
+{
+    uint16_t packet_id = 0;
+    uint16_t bitmask = 0;
+};
+
 struct rtcp_fir_entry
 {
     uint32_t media_ssrc = 0;
@@ -32,6 +38,8 @@ struct rtcp_feedback_packet
     bool has_keyframe_request = false;
     bool has_transport_cc = false;
 
+    std::vector<rtcp_nack_entry> nack_entries;
+    std::vector<uint16_t> nack_sequence_numbers;
     std::vector<uint32_t> keyframe_request_media_ssrcs;
     std::vector<rtcp_fir_entry> fir_entries;
     std::optional<uint64_t> remb_bitrate_bps;

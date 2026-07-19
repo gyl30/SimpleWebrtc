@@ -59,6 +59,8 @@ struct rtcp_compound_block
     bool has_generic_nack = false;
     bool has_keyframe_request = false;
     bool has_transport_cc = false;
+    std::vector<rtcp_nack_entry> nack_entries;
+    std::vector<uint16_t> nack_sequence_numbers;
     std::vector<uint32_t> keyframe_request_media_ssrcs;
     std::vector<rtcp_fir_entry> fir_entries;
 
@@ -84,6 +86,8 @@ struct rtcp_compound_packet
     bool has_generic_nack = false;
     bool has_keyframe_request = false;
     bool has_transport_cc = false;
+    std::vector<rtcp_nack_entry> nack_entries;
+    std::vector<uint16_t> nack_sequence_numbers;
     std::vector<uint32_t> keyframe_request_media_ssrcs;
     std::vector<rtcp_fir_entry> fir_entries;
 

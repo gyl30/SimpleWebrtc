@@ -538,7 +538,9 @@ std::string normalize_rtcp_feedback_value(std::string_view feedback)
     return normalized;
 }
 
-bool rtcp_feedback_is_supported_for_answer_media(std::string_view media_kind, std::string_view feedback)
+bool rtcp_feedback_is_supported_for_answer_media(std::string_view media_kind,
+                                                 std::string_view feedback,
+                                                 bool generic_nack_enabled)
 {
     if (media_kind != "video")
     {
@@ -547,7 +549,8 @@ bool rtcp_feedback_is_supported_for_answer_media(std::string_view media_kind, st
 
     const std::string normalized_feedback = normalize_rtcp_feedback_value(feedback);
 
-    return normalized_feedback == "nack pli" || normalized_feedback == "ccm fir";
+    return (generic_nack_enabled && normalized_feedback == "nack") ||
+           normalized_feedback == "nack pli" || normalized_feedback == "ccm fir";
 }
 
 std::string make_rtcp_feedback_deduplication_key(const codec_info& codec, std::string_view normalized_feedback)
@@ -1162,7 +1165,10 @@ std::string make_candidate_value(std::string_view address, uint16_t port, std::s
     return value;
 }
 
-void append_codec_attributes(media_description& answer_media, std::string_view media_kind, const std::vector<codec_info>& codecs)
+void append_codec_attributes(media_description& answer_media,
+                             std::string_view media_kind,
+                             const std::vector<codec_info>& codecs,
+                             bool generic_nack_enabled)
 {
     std::set<std::string> emitted_rtcp_feedback;
 
@@ -1177,7 +1183,7 @@ void append_codec_attributes(media_description& answer_media, std::string_view m
 
         for (const auto& feedback : codec.rtcp_feedback)
         {
-            if (!rtcp_feedback_is_supported_for_answer_media(media_kind, feedback))
+            if (!rtcp_feedback_is_supported_for_answer_media(media_kind, feedback, generic_nack_enabled))
             {
                 continue;
             }
@@ -1291,7 +1297,6 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
         }
 
         codecs = std::move(*codec_result);
-        remove_unimplemented_answer_codecs(codecs);
 
         if (codecs.empty())
         {
@@ -1349,7 +1354,7 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
         append_whep_simulcast_send_attributes(answer_media, media, forwarded_publisher_media);
     }
 
-    append_codec_attributes(answer_media, media.kind, codecs);
+    append_codec_attributes(answer_media, media.kind, codecs, is_whep);
 
     append_media_timing_attributes(answer_media, media);
 

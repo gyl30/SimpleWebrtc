@@ -269,7 +269,10 @@ bool is_remb_fci(std::span<const uint8_t> data, std::size_t offset, std::size_t 
            data[offset + 2] == static_cast<uint8_t>('M') && data[offset + 3] == static_cast<uint8_t>('B');
 }
 
-std::expected<void, std::string> parse_generic_nack(std::size_t offset, std::size_t end, rtcp_feedback_packet& packet)
+std::expected<void, std::string> parse_generic_nack(std::span<const uint8_t> data,
+                                                    std::size_t offset,
+                                                    std::size_t end,
+                                                    rtcp_feedback_packet& packet)
 {
     const std::size_t fci_size = end - offset;
 
@@ -280,6 +283,27 @@ std::expected<void, std::string> parse_generic_nack(std::size_t offset, std::siz
 
     packet.has_generic_nack = true;
     packet.nack_count = fci_size / 4;
+    packet.nack_entries.reserve(packet.nack_count);
+    packet.nack_sequence_numbers.reserve(packet.nack_count * 17U);
+
+    for (std::size_t current = offset; current < end; current += 4)
+    {
+        const uint16_t packet_id = read_u16(data, current);
+        const uint16_t bitmask = read_u16(data, current + 2);
+        packet.nack_entries.push_back(rtcp_nack_entry{.packet_id = packet_id, .bitmask = bitmask});
+        packet.nack_sequence_numbers.push_back(packet_id);
+
+        for (uint16_t bit = 0; bit < 16; ++bit)
+        {
+            if ((bitmask & static_cast<uint16_t>(1U << bit)) == 0)
+            {
+                continue;
+            }
+
+            packet.nack_sequence_numbers.push_back(
+                static_cast<uint16_t>(packet_id + static_cast<uint16_t>(bit + 1U)));
+        }
+    }
 
     return {};
 }
@@ -372,7 +396,7 @@ std::expected<void, std::string> parse_transport_feedback(std::span<const uint8_
     switch (packet.format)
     {
         case k_rtcp_transport_feedback_generic_nack:
-            return parse_generic_nack(offset, end, packet);
+            return parse_generic_nack(data, offset, end, packet);
 
         case k_rtcp_transport_feedback_transport_cc:
         {
