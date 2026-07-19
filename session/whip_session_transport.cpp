@@ -52,6 +52,7 @@ whip_session_transport::whip_session_transport(boost::asio::io_context& io_conte
                                                std::shared_ptr<media_fanout_router> media_fanout_router)
     : udp_server_(io_context, std::move(bind_host)),
       ice_restart_timer_(io_context),
+      media_log_timer_(io_context),
       dtls_transport_(std::make_shared<dtls_transport>(std::move(dtls_context), dtls_ip_mtu)),
       srtp_transport_(std::make_shared<srtp_transport>(dtls_transport_)),
       media_fanout_router_(std::move(media_fanout_router))
@@ -60,28 +61,63 @@ whip_session_transport::whip_session_transport(boost::asio::io_context& io_conte
 
 whip_session_transport::~whip_session_transport()
 {
+    media_log_timer_.cancel();
     clear_peer_state();
     udp_server_.stop();
 }
 
-whip_session_transport_result whip_session_transport::start(uint16_t local_port) { return udp_server_.start(local_port, *this); }
+whip_session_transport_result whip_session_transport::start(uint16_t local_port)
+{
+    auto result = udp_server_.start(local_port, *this);
+
+    if (!result)
+    {
+        return result;
+    }
+
+    media_log_interval_started_at_ = std::chrono::steady_clock::now();
+    schedule_media_log_summary();
+    return {};
+}
 
 void whip_session_transport::record_media_log_event(media_log_event event, uint64_t value)
 {
     media_log_stats_.counters.add(event, value);
+}
 
-    if (event != media_log_event::udp_received)
+void whip_session_transport::schedule_media_log_summary()
+{
+    media_log_timer_.expires_after(k_media_log_interval);
+    const std::weak_ptr<whip_session_transport> weak_transport = weak_from_this();
+
+    media_log_timer_.async_wait(
+        [weak_transport](const boost::system::error_code& error)
+        {
+            if (const auto transport = weak_transport.lock())
+            {
+                transport->handle_media_log_summary(error);
+            }
+        });
+}
+
+void whip_session_transport::handle_media_log_summary(const boost::system::error_code& error)
+{
+    if (error)
     {
         return;
     }
 
-    int64_t interval_ms = 0;
+    const auto now = std::chrono::steady_clock::now();
+    const int64_t interval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    now - media_log_interval_started_at_)
+                                    .count();
+    media_log_interval_started_at_ = now;
+    log_media_summary(interval_ms);
+    schedule_media_log_summary();
+}
 
-    if (!media_log_stats_.summary_interval.try_begin(k_media_log_interval, interval_ms))
-    {
-        return;
-    }
-
+void whip_session_transport::log_media_summary(int64_t interval_ms)
+{
     const uint64_t udp_received = media_log_stats_.counters.take(media_log_event::udp_received);
     const uint64_t stun_received = media_log_stats_.counters.take(media_log_event::stun_received);
     const uint64_t dtls_received = media_log_stats_.counters.take(media_log_event::dtls_received);
@@ -117,6 +153,23 @@ void whip_session_transport::record_media_log_event(media_log_event event, uint6
     const uint64_t srtp_ignored = media_log_stats_.counters.take(media_log_event::srtp_ignored);
     const uint64_t srtp_unprotect_failed = media_log_stats_.counters.take(media_log_event::srtp_unprotect_failed);
     const uint64_t other_received = media_log_stats_.counters.take(media_log_event::other_received);
+
+    const bool has_activity =
+        udp_received != 0 || stun_received != 0 || dtls_received != 0 || rtp_published != 0 ||
+        rtp_bytes != 0 || rtcp_received != 0 || rtcp_sender_report_received != 0 ||
+        rtcp_sender_timing_published != 0 || rtcp_sender_timing_rejected != 0 ||
+        rtcp_receiver_report_received != 0 || rtcp_report_block_received != 0 ||
+        rtcp_sdes_received != 0 || rtcp_bye_received != 0 || rtcp_pli_ignored != 0 ||
+        rtcp_fir_ignored != 0 || rtcp_generic_nack_ignored != 0 || rtcp_transport_cc_ignored != 0 ||
+        rtcp_remb_ignored != 0 || rtcp_other_feedback_ignored != 0 ||
+        rtcp_unknown_block_ignored != 0 || rtcp_parse_failed != 0 || published_targets != 0 ||
+        dropped_unselected != 0 || srtp_ignored != 0 || srtp_unprotect_failed != 0 ||
+        other_received != 0;
+
+    if (!has_activity)
+    {
+        return;
+    }
 
     WEBRTC_LOG_DEBUG(
         "WHIP media summary stream={} session={} interval_ms={} udp_received={} stun={} dtls={} rtp_published={} rtp_bytes={} "
@@ -229,10 +282,11 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
                                               report.sender_ssrc))
         {
             WEBRTC_LOG_DEBUG(
-                "WHIP first sender timing published stream={} session={} source_ssrc={} ntp_timestamp={} rtp_timestamp={} "
+                "WHIP first sender timing published stream={} session={} source_generation={} source_ssrc={} ntp_timestamp={} rtp_timestamp={} "
                 "sender_packets={} sender_octets={}",
                 stream_id_,
                 session_id_,
+                publisher_source_generation,
                 report.sender_ssrc,
                 ntp_timestamp,
                 sender_info.rtp_timestamp,
@@ -532,7 +586,7 @@ void whip_session_transport::handle_ice_restart_timeout(uint64_t generation)
     dtls_transport_->forget_peer(remote_address);
     pending_ice_restart_.reset();
 
-    WEBRTC_LOG_WARN("WHIP ICE restart timed out stream={} session={} generation={} association_remote={}",
+    WEBRTC_LOG_WARN("WHIP ICE restart timed out stream={} session={} ice_generation={} association_remote={}",
                     stream_id_,
                     session_id_,
                     generation,
@@ -595,7 +649,7 @@ whip_session_transport::peer_nomination_result whip_session_transport::nominate_
     pending_ice_restart_.reset();
     ice_restart_timer_.cancel();
 
-    WEBRTC_LOG_INFO("WHIP ICE endpoint nominated stream={} session={} generation={} remote={} association_reused={}",
+    WEBRTC_LOG_INFO("WHIP ICE endpoint nominated stream={} session={} ice_generation={} remote={} association_reused={}",
                     stream_id_,
                     session_id_,
                     ice_generation_,

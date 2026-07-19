@@ -189,7 +189,7 @@ uint64_t media_fanout_router::set_publisher_source(
         }
     }
 
-    WEBRTC_LOG_INFO("media fanout publisher source set stream={} session={} generation={} subscribers={}",
+    WEBRTC_LOG_INFO("media fanout publisher source set stream={} session={} source_generation={} subscribers={}",
                     source->stream_id,
                     source->session_id,
                     source->generation,
@@ -242,7 +242,7 @@ void media_fanout_router::clear_publisher_source(std::string_view stream_id, std
         }
     }
 
-    WEBRTC_LOG_INFO("media fanout publisher source cleared stream={} session={} generation={} subscribers={}",
+    WEBRTC_LOG_INFO("media fanout publisher source cleared stream={} session={} source_generation={} subscribers={}",
                     stream_id,
                     publisher_session_id,
                     generation,
@@ -318,7 +318,7 @@ bool media_fanout_router::request_keyframe(std::string_view stream_id,
     {
         handler(media_ssrc);
         WEBRTC_LOG_DEBUG(
-            "media keyframe request dispatched stream={} publisher_session={} generation={} media_ssrc={} attempt=1 waiters={}",
+            "media keyframe request dispatched stream={} publisher_session={} source_generation={} media_ssrc={} attempt=1 waiters={}",
             stream_id,
             publisher_session_id,
             source_generation,
@@ -328,7 +328,7 @@ bool media_fanout_router::request_keyframe(std::string_view stream_id,
     else
     {
         WEBRTC_LOG_TRACE(
-            "media keyframe request coalesced stream={} publisher_session={} generation={} media_ssrc={} subscriber_session={} waiters={}",
+            "media keyframe request coalesced stream={} publisher_session={} source_generation={} media_ssrc={} subscriber_session={} waiters={}",
             stream_id,
             publisher_session_id,
             source_generation,
@@ -384,7 +384,7 @@ void media_fanout_router::complete_keyframe_request(std::string_view stream_id,
     if (completed)
     {
         WEBRTC_LOG_DEBUG(
-            "media keyframe subscriber ready stream={} publisher_session={} generation={} media_ssrc={} subscriber_session={} remaining={}",
+            "media keyframe subscriber ready stream={} publisher_session={} source_generation={} media_ssrc={} subscriber_session={} remaining={}",
             stream_id,
             publisher_session_id,
             source_generation,
@@ -582,7 +582,7 @@ void media_fanout_router::handle_keyframe_retry(keyframe_request_key key, uint64
 
     handler(key.media_ssrc);
     WEBRTC_LOG_DEBUG(
-        "media keyframe request retry stream={} publisher_session={} generation={} media_ssrc={} attempt={} waiters={}",
+        "media keyframe request retry stream={} publisher_session={} source_generation={} media_ssrc={} attempt={} waiters={}",
         key.stream_id,
         key.publisher_session_id,
         key.source_generation,

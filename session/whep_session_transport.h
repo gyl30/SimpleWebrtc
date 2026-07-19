@@ -3,6 +3,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -127,6 +128,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         rewrite_failed,
         rewrite_dropped,
         protect_failed,
+        dropped_srtp_not_ready,
         protect_ignored,
         keyframe_request_submitted,
         keyframe_completed,
@@ -158,9 +160,9 @@ class whep_session_transport : public session_ice_udp_packet_handler,
 
     struct media_log_stats
     {
-        session_transport_log_interval summary_interval;
         session_transport_log_counters<media_log_event> counters;
         std::atomic<bool> rewrite_drop_logged{false};
+        std::atomic<bool> srtp_not_ready_logged{false};
         std::atomic<bool> protect_ignore_logged{false};
         std::atomic<bool> rtcp_parse_failure_logged{false};
         std::atomic<bool> generic_nack_ignored_logged{false};
@@ -203,6 +205,10 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void schedule_ice_restart_timeout(uint64_t generation);
     void handle_ice_restart_timeout(uint64_t generation);
     void record_media_log_event(media_log_event event, uint64_t value = 1);
+    void schedule_media_log_summary();
+    void handle_media_log_summary(const boost::system::error_code& error);
+    void log_media_summary(int64_t interval_ms);
+    void log_outbound_rtcp_sender_state_snapshot();
     [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
         const boost::asio::ip::udp::endpoint& remote_endpoint);
 
@@ -211,6 +217,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
    private:
     session_ice_udp_server udp_server_;
     boost::asio::steady_timer ice_restart_timer_;
+    boost::asio::steady_timer media_log_timer_;
+    std::chrono::steady_clock::time_point media_log_interval_started_at_;
 
     std::shared_ptr<dtls_transport> dtls_transport_;
     std::shared_ptr<srtp_transport> srtp_transport_;

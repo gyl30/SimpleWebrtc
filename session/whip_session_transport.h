@@ -3,6 +3,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -103,7 +104,6 @@ class whip_session_transport : public session_ice_udp_packet_handler,
 
     struct media_log_stats
     {
-        session_transport_log_interval summary_interval;
         session_transport_log_counters<media_log_event> counters;
         std::atomic<bool> rtcp_parse_failure_logged{false};
         std::atomic<bool> pli_ignored_logged{false};
@@ -122,6 +122,9 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     void schedule_ice_restart_timeout(uint64_t generation);
     void handle_ice_restart_timeout(uint64_t generation);
     void record_media_log_event(media_log_event event, uint64_t value = 1);
+    void schedule_media_log_summary();
+    void handle_media_log_summary(const boost::system::error_code& error);
+    void log_media_summary(int64_t interval_ms);
     void handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp);
     [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
         const boost::asio::ip::udp::endpoint& remote_endpoint);
@@ -131,6 +134,8 @@ class whip_session_transport : public session_ice_udp_packet_handler,
    private:
     session_ice_udp_server udp_server_;
     boost::asio::steady_timer ice_restart_timer_;
+    boost::asio::steady_timer media_log_timer_;
+    std::chrono::steady_clock::time_point media_log_interval_started_at_;
 
     std::shared_ptr<dtls_transport> dtls_transport_;
     std::shared_ptr<srtp_transport> srtp_transport_;
