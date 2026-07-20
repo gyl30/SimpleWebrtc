@@ -208,6 +208,72 @@ std::expected<void, std::string> validate_rtp_padding(std::span<const uint8_t> p
 
 }    // namespace
 
+rtp_packet_layout_result inspect_rtp_packet_layout(std::span<const uint8_t> data)
+{
+    if (data.size() < k_rtp_fixed_header_size)
+    {
+        return make_error("rtp packet is shorter than fixed header");
+    }
+
+    if (!has_rtp_version(data))
+    {
+        return make_error("rtp version is invalid");
+    }
+
+    if (is_rtcp_packet(data))
+    {
+        return make_error("packet is rtcp not rtp");
+    }
+
+    const bool padding = (data[0] & 0x20U) != 0;
+    const bool extension = (data[0] & 0x10U) != 0;
+    const uint8_t csrc_count = static_cast<uint8_t>(data[0] & 0x0FU);
+
+    std::size_t header_size =
+        k_rtp_fixed_header_size +
+        static_cast<std::size_t>(csrc_count) * k_rtp_csrc_size;
+
+    if (header_size > data.size())
+    {
+        return make_error("rtp csrc list is truncated");
+    }
+
+    if (extension)
+    {
+        auto extension_result = validate_header_extensions(data, header_size);
+
+        if (!extension_result)
+        {
+            return std::unexpected(extension_result.error());
+        }
+
+        header_size += *extension_result;
+    }
+
+    if (header_size > data.size())
+    {
+        return make_error("rtp header exceeds packet size");
+    }
+
+    const std::size_t wire_payload_size = data.size() - header_size;
+    auto padding_result = validate_rtp_padding(data, padding, wire_payload_size);
+
+    if (!padding_result)
+    {
+        return std::unexpected(padding_result.error());
+    }
+
+    const std::size_t padding_size =
+        padding ? static_cast<std::size_t>(data.back()) : 0U;
+
+    return rtp_packet_layout{
+        .header_size = header_size,
+        .media_payload_size = wire_payload_size - padding_size,
+        .padding_size = padding_size,
+        .padding = padding,
+    };
+}
+
 bool is_rtp_or_rtcp_packet(std::span<const uint8_t> data)
 {
     if (data.empty())
@@ -235,54 +301,11 @@ bool is_rtcp_packet(std::span<const uint8_t> data)
 
 rtp_packet_header_result parse_rtp_packet_header(std::span<const uint8_t> data)
 {
-    if (data.size() < k_rtp_fixed_header_size)
+    auto layout = inspect_rtp_packet_layout(data);
+
+    if (!layout)
     {
-        return make_error("rtp packet is shorter than fixed header");
-    }
-
-    if (!has_rtp_version(data))
-    {
-        return make_error("rtp version is invalid");
-    }
-
-    if (is_rtcp_packet(data))
-    {
-        return make_error("packet is rtcp not rtp");
-    }
-
-    const bool padding = (data[0] & 0x20U) != 0;
-    const bool extension = (data[0] & 0x10U) != 0;
-    const uint8_t csrc_count = static_cast<uint8_t>(data[0] & 0x0FU);
-
-    std::size_t header_size = k_rtp_fixed_header_size + static_cast<std::size_t>(csrc_count) * k_rtp_csrc_size;
-
-    if (header_size > data.size())
-    {
-        return make_error("rtp csrc list is truncated");
-    }
-
-    if (extension)
-    {
-        auto extension_result = validate_header_extensions(data, header_size);
-
-        if (!extension_result)
-        {
-            return std::unexpected(extension_result.error());
-        }
-
-        header_size += *extension_result;
-    }
-
-    if (header_size > data.size())
-    {
-        return make_error("rtp header exceeds packet size");
-    }
-
-    auto padding_result = validate_rtp_padding(data, padding, data.size() - header_size);
-
-    if (!padding_result)
-    {
-        return std::unexpected(padding_result.error());
+        return std::unexpected(layout.error());
     }
 
     return rtp_packet_header{

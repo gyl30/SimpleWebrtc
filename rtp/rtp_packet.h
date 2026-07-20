@@ -9,6 +9,19 @@
 
 namespace webrtc
 {
+struct rtp_packet_layout
+{
+    std::size_t header_size = 0;
+    std::size_t media_payload_size = 0;
+    std::size_t padding_size = 0;
+    bool padding = false;
+
+    [[nodiscard]] bool padding_only() const
+    {
+        return padding && media_payload_size == 0;
+    }
+};
+
 struct rtp_packet_header
 {
     bool marker = false;
@@ -33,9 +46,14 @@ struct rtcp_packet_header
     uint32_t ssrc = 0;
 };
 
+using rtp_packet_layout_result = std::expected<rtp_packet_layout, std::string>;
+
 using rtp_packet_header_result = std::expected<rtp_packet_header, std::string>;
 
 using rtcp_packet_header_result = std::expected<rtcp_packet_header, std::string>;
+
+[[nodiscard]]
+rtp_packet_layout_result inspect_rtp_packet_layout(std::span<const uint8_t> data);
 
 [[nodiscard]]
 bool is_rtp_or_rtcp_packet(std::span<const uint8_t> data);

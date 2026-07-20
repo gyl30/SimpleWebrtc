@@ -152,6 +152,9 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     enum class media_log_event
     {
         source_rtp_received,
+        source_padding_dropped,
+        source_empty_payload_dropped,
+        source_layout_invalid,
         rewritten,
         send_enqueued,
         send_bytes,
@@ -226,6 +229,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     struct media_log_stats
     {
         session_transport_log_counters<media_log_event> counters;
+        std::atomic<bool> source_layout_invalid_logged{false};
+        std::atomic<bool> source_empty_payload_logged{false};
         std::atomic<bool> rewrite_drop_logged{false};
         std::atomic<bool> srtp_not_ready_logged{false};
         std::atomic<bool> protect_ignore_logged{false};

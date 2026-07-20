@@ -126,6 +126,11 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         rtp_bytes,
         rtp_receive_stats_unmapped,
         rtp_receive_stats_ignored,
+        rtp_padding_received,
+        rtp_padding_bytes,
+        rtp_padding_not_published,
+        rtp_empty_payload_dropped,
+        rtp_layout_invalid,
         rtp_transport_cc_observed,
         rtp_transport_cc_missing,
         rtp_transport_cc_invalid,
@@ -193,9 +198,32 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         std::atomic<bool> keyframe_feedback_sent_logged{false};
         std::atomic<bool> transport_cc_feedback_sent_logged{false};
         std::atomic<bool> transport_cc_invalid_logged{false};
+        std::atomic<bool> rtp_layout_invalid_logged{false};
+        std::atomic<bool> rtp_empty_payload_logged{false};
         std::array<std::atomic<bool>, 128> unmapped_payload_type_logged{};
         std::array<std::atomic<uint32_t>, 16> logged_source_ssrcs{};
         std::array<std::atomic<uint32_t>, 16> logged_sender_timing_ssrcs{};
+    };
+
+    struct transport_feedback_lifetime_stats
+    {
+        std::atomic<uint64_t> transport_cc_observed{0};
+        std::atomic<uint64_t> transport_cc_missing{0};
+        std::atomic<uint64_t> transport_cc_invalid{0};
+        std::atomic<uint64_t> transport_cc_duplicate{0};
+        std::atomic<uint64_t> transport_cc_discontinuity{0};
+        std::atomic<uint64_t> feedback_sent{0};
+        std::atomic<uint64_t> status_sent{0};
+        std::atomic<uint64_t> received_reported{0};
+        std::atomic<uint64_t> lost_reported{0};
+        std::atomic<uint64_t> reduced_size_sent{0};
+        std::atomic<uint64_t> compound_sent{0};
+        std::atomic<uint64_t> send_bytes{0};
+        std::atomic<uint64_t> padding_received{0};
+        std::atomic<uint64_t> padding_bytes{0};
+        std::atomic<uint64_t> padding_not_published{0};
+        std::atomic<uint64_t> empty_payload_dropped{0};
+        std::atomic<uint64_t> layout_invalid{0};
     };
 
     void clear_peer_state();
@@ -223,6 +251,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     void log_receiver_states();
     void log_rtcp_interval_state();
     void log_transport_feedback_state();
+    void log_transport_feedback_final_summary(std::string_view reason);
     void schedule_rtcp_receiver_reports(bool initial, bool packet_sent);
     void schedule_transport_feedback(bool initial);
     void handle_transport_feedback_timer(const boost::system::error_code& error);
@@ -276,6 +305,8 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     bool rtcp_mux_enabled_ = false;
 
     media_log_stats media_log_stats_;
+    transport_feedback_lifetime_stats transport_feedback_lifetime_stats_;
+    std::atomic<bool> transport_feedback_final_summary_logged_{false};
     bool closed_ = false;
 
     // 仅由当前 ICE generation 中携带 USE-CANDIDATE 的完整 STUN 校验结果更新。

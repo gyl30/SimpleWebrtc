@@ -27,6 +27,7 @@
 #include "rtp/rtcp_feedback.h"
 #include "rtp/rtcp_packet_builder.h"
 #include "rtp/rtp_header_extension.h"
+#include "rtp/rtp_packet.h"
 #include "session/session_stun_binding.h"
 #include "session/session_transport_peer_rebind.h"
 #include "srtp/srtp_transport.h"
@@ -213,6 +214,7 @@ void whip_session_transport::close(std::string_view reason)
         log_media_summary(interval.count());
     }
 
+    log_transport_feedback_final_summary(reason);
     clear_peer_state();
     udp_server_.stop();
 }
@@ -247,7 +249,80 @@ whip_session_transport_result whip_session_transport::start(uint16_t local_port)
 
 void whip_session_transport::record_media_log_event(media_log_event event, uint64_t value)
 {
-    media_log_stats_.counters.add(event, value);
+    std::atomic<uint64_t>* lifetime_counter = nullptr;
+    bool interval_event = true;
+
+    switch (event)
+    {
+        case media_log_event::rtp_transport_cc_observed:
+            lifetime_counter = &transport_feedback_lifetime_stats_.transport_cc_observed;
+            break;
+        case media_log_event::rtp_transport_cc_missing:
+            lifetime_counter = &transport_feedback_lifetime_stats_.transport_cc_missing;
+            break;
+        case media_log_event::rtp_transport_cc_invalid:
+            lifetime_counter = &transport_feedback_lifetime_stats_.transport_cc_invalid;
+            break;
+        case media_log_event::rtp_transport_cc_duplicate:
+            lifetime_counter = &transport_feedback_lifetime_stats_.transport_cc_duplicate;
+            break;
+        case media_log_event::rtp_transport_cc_discontinuity:
+            lifetime_counter = &transport_feedback_lifetime_stats_.transport_cc_discontinuity;
+            break;
+        case media_log_event::rtcp_transport_cc_feedback_sent:
+            lifetime_counter = &transport_feedback_lifetime_stats_.feedback_sent;
+            break;
+        case media_log_event::rtcp_transport_cc_status_sent:
+            lifetime_counter = &transport_feedback_lifetime_stats_.status_sent;
+            break;
+        case media_log_event::rtcp_transport_cc_received_reported:
+            lifetime_counter = &transport_feedback_lifetime_stats_.received_reported;
+            break;
+        case media_log_event::rtcp_transport_cc_lost_reported:
+            lifetime_counter = &transport_feedback_lifetime_stats_.lost_reported;
+            break;
+        case media_log_event::rtcp_transport_cc_reduced_size_sent:
+            lifetime_counter = &transport_feedback_lifetime_stats_.reduced_size_sent;
+            break;
+        case media_log_event::rtcp_transport_cc_compound_sent:
+            lifetime_counter = &transport_feedback_lifetime_stats_.compound_sent;
+            break;
+        case media_log_event::rtcp_transport_cc_send_bytes:
+            lifetime_counter = &transport_feedback_lifetime_stats_.send_bytes;
+            break;
+        case media_log_event::rtp_padding_received:
+            interval_event = false;
+            lifetime_counter = &transport_feedback_lifetime_stats_.padding_received;
+            break;
+        case media_log_event::rtp_padding_bytes:
+            interval_event = false;
+            lifetime_counter = &transport_feedback_lifetime_stats_.padding_bytes;
+            break;
+        case media_log_event::rtp_padding_not_published:
+            interval_event = false;
+            lifetime_counter = &transport_feedback_lifetime_stats_.padding_not_published;
+            break;
+        case media_log_event::rtp_empty_payload_dropped:
+            interval_event = false;
+            lifetime_counter = &transport_feedback_lifetime_stats_.empty_payload_dropped;
+            break;
+        case media_log_event::rtp_layout_invalid:
+            interval_event = false;
+            lifetime_counter = &transport_feedback_lifetime_stats_.layout_invalid;
+            break;
+        default:
+            break;
+    }
+
+    if (interval_event)
+    {
+        media_log_stats_.counters.add(event, value);
+    }
+
+    if (lifetime_counter != nullptr)
+    {
+        lifetime_counter->fetch_add(value, std::memory_order_relaxed);
+    }
 }
 
 void whip_session_transport::schedule_media_log_summary()
@@ -1484,6 +1559,76 @@ void whip_session_transport::log_transport_feedback_state()
         snapshot.packet_statuses_built);
 }
 
+void whip_session_transport::log_transport_feedback_final_summary(
+    std::string_view reason)
+{
+    if (transport_feedback_final_summary_logged_.exchange(
+            true, std::memory_order_relaxed))
+    {
+        return;
+    }
+
+    transport_feedback_generator_snapshot snapshot;
+    bool enabled = false;
+
+    {
+        std::lock_guard lock(peer_mutex_);
+        transport_feedback_generator_.expire(std::chrono::steady_clock::now());
+        snapshot = transport_feedback_generator_.snapshot();
+        enabled = transport_feedback_enabled_;
+    }
+
+    WEBRTC_LOG_INFO(
+        "WHIP transport feedback final summary stream={} session={} reason={} enabled={} "
+        "transport_cc_observed={} transport_cc_missing={} transport_cc_invalid={} "
+        "transport_cc_duplicate={} transport_cc_discontinuity={} feedback_sent={} "
+        "status_sent={} received_reported={} lost_reported={} reduced_size_sent={} "
+        "compound_sent={} send_bytes={} feedback_packets_built={} history_packets={} "
+        "pending_packets={} padding_received={} padding_bytes={} padding_not_published={} "
+        "empty_payload_dropped={} layout_invalid={}",
+        stream_id_,
+        session_id_,
+        reason,
+        enabled ? 1 : 0,
+        transport_feedback_lifetime_stats_.transport_cc_observed.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.transport_cc_missing.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.transport_cc_invalid.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.transport_cc_duplicate.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.transport_cc_discontinuity.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.feedback_sent.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.status_sent.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.received_reported.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.lost_reported.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.reduced_size_sent.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.compound_sent.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.send_bytes.load(
+            std::memory_order_relaxed),
+        snapshot.feedback_packets_built,
+        snapshot.history_packets,
+        snapshot.pending_packets,
+        transport_feedback_lifetime_stats_.padding_received.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.padding_bytes.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.padding_not_published.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.empty_payload_dropped.load(
+            std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.layout_invalid.load(
+            std::memory_order_relaxed));
+}
+
 void whip_session_transport::log_rtcp_interval_state()
 {
     rtcp_interval_snapshot snapshot;
@@ -2252,6 +2397,48 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
                            srtp_packet->timestamp,
                            std::chrono::steady_clock::now(),
                            plain_packet);
+
+        auto layout = inspect_rtp_packet_layout(plain_packet);
+
+        if (!layout)
+        {
+            record_media_log_event(media_log_event::rtp_layout_invalid);
+
+            if (!media_log_stats_.rtp_layout_invalid_logged.exchange(
+                    true, std::memory_order_relaxed))
+            {
+                WEBRTC_LOG_WARN(
+                    "WHIP RTP layout invalid stream={} session={} remote={} ssrc={} pt={} error={}",
+                    stream_id_, session_id_, remote_address, srtp_packet->ssrc,
+                    srtp_packet->payload_type, layout.error());
+            }
+            return {};
+        }
+
+        if (layout->padding_only())
+        {
+            record_media_log_event(media_log_event::rtp_padding_received);
+            record_media_log_event(media_log_event::rtp_padding_bytes,
+                                   layout->padding_size);
+            record_media_log_event(media_log_event::rtp_padding_not_published);
+            return {};
+        }
+
+        if (layout->media_payload_size == 0)
+        {
+            record_media_log_event(media_log_event::rtp_empty_payload_dropped);
+
+            if (!media_log_stats_.rtp_empty_payload_logged.exchange(
+                    true, std::memory_order_relaxed))
+            {
+                WEBRTC_LOG_WARN(
+                    "WHIP RTP empty media payload dropped stream={} session={} remote={} ssrc={} pt={}",
+                    stream_id_, session_id_, remote_address, srtp_packet->ssrc,
+                    srtp_packet->payload_type);
+            }
+            return {};
+        }
+
         const std::size_t target_count = media_fanout_router_->publish_rtp(stream_id_, session_id_, plain_packet);
         record_media_log_event(media_log_event::rtp_published);
         record_media_log_event(media_log_event::rtp_bytes, srtp_packet->plain_packet.size());

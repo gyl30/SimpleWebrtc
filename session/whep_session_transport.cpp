@@ -27,6 +27,7 @@
 #include "net/socket.h"
 #include "rtp/rtcp_compound_packet.h"
 #include "rtp/rtcp_packet_builder.h"
+#include "rtp/rtp_packet.h"
 #include "session/session_stun_binding.h"
 #include "session/session_transport_peer_rebind.h"
 #include "srtp/srtp_transport.h"
@@ -498,6 +499,12 @@ std::size_t whep_session_transport::send_rtcp_sender_reports()
 void whep_session_transport::log_media_summary(int64_t interval_ms)
 {
     const uint64_t source_rtp_received = media_log_stats_.counters.take(media_log_event::source_rtp_received);
+    const uint64_t source_padding_dropped =
+        media_log_stats_.counters.take(media_log_event::source_padding_dropped);
+    const uint64_t source_empty_payload_dropped =
+        media_log_stats_.counters.take(media_log_event::source_empty_payload_dropped);
+    const uint64_t source_layout_invalid =
+        media_log_stats_.counters.take(media_log_event::source_layout_invalid);
     const uint64_t rewritten = media_log_stats_.counters.take(media_log_event::rewritten);
     const uint64_t send_enqueued = media_log_stats_.counters.take(media_log_event::send_enqueued);
     const uint64_t send_bytes = media_log_stats_.counters.take(media_log_event::send_bytes);
@@ -605,7 +612,9 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
     const uint64_t other_received = media_log_stats_.counters.take(media_log_event::other_received);
 
     const bool has_activity =
-        source_rtp_received != 0 || rewritten != 0 || send_enqueued != 0 || send_bytes != 0 ||
+        source_rtp_received != 0 || source_padding_dropped != 0 ||
+        source_empty_payload_dropped != 0 || source_layout_invalid != 0 ||
+        rewritten != 0 || send_enqueued != 0 || send_bytes != 0 ||
         send_payload_bytes != 0 || sender_timing_mapped != 0 || dropped_no_endpoint != 0 ||
         dropped_stale_generation != 0 || rewrite_failed != 0 || rewrite_dropped != 0 ||
         protect_failed != 0 || dropped_srtp_not_ready != 0 || protect_ignored != 0 ||
@@ -640,7 +649,8 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
     }
 
     WEBRTC_LOG_DEBUG(
-        "WHEP media summary stream={} session={} interval_ms={} source_rtp={} rewritten={} send_enqueued={} send_bytes={} "
+        "WHEP media summary stream={} session={} interval_ms={} source_rtp={} source_padding_dropped={} "
+        "source_empty_payload_dropped={} source_layout_invalid={} rewritten={} send_enqueued={} send_bytes={} "
         "send_payload_bytes={} sender_timing_mapped={} dropped_no_endpoint={} dropped_stale_source_generation={} rewrite_failed={} rewrite_dropped={} protect_failed={} "
         "dropped_srtp_not_ready={} protect_ignored={} keyframe_request_submitted={} keyframe_completed={} rtcp_received={} rtcp_sr={} rtcp_rr={} "
         "rtcp_report_blocks={} rtcp_sdes={} rtcp_bye={} rtcp_bye_participant_ended={} rtcp_bye_unknown_ssrc={} "
@@ -660,6 +670,9 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         session_id_,
         interval_ms,
         source_rtp_received,
+        source_padding_dropped,
+        source_empty_payload_dropped,
+        source_layout_invalid,
         rewritten,
         send_enqueued,
         send_bytes,
@@ -958,6 +971,47 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
 {
     if (plain_rtp.empty())
     {
+        return;
+    }
+
+    auto layout = inspect_rtp_packet_layout(plain_rtp);
+
+    if (!layout)
+    {
+        record_media_log_event(media_log_event::source_layout_invalid);
+
+        if (!media_log_stats_.source_layout_invalid_logged.exchange(
+                true, std::memory_order_relaxed))
+        {
+            WEBRTC_LOG_WARN(
+                "WHEP source RTP layout invalid stream={} session={} error={}",
+                stream_id_,
+                session_id_,
+                layout.error());
+        }
+
+        return;
+    }
+
+    if (layout->padding_only())
+    {
+        record_media_log_event(media_log_event::source_padding_dropped);
+        return;
+    }
+
+    if (layout->media_payload_size == 0)
+    {
+        record_media_log_event(media_log_event::source_empty_payload_dropped);
+
+        if (!media_log_stats_.source_empty_payload_logged.exchange(
+                true, std::memory_order_relaxed))
+        {
+            WEBRTC_LOG_WARN(
+                "WHEP source RTP empty media payload dropped stream={} session={}",
+                stream_id_,
+                session_id_);
+        }
+
         return;
     }
 
