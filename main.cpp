@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -6,6 +5,7 @@
 #include <limits>
 #include <memory>
 #include <print>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -72,47 +72,30 @@ static uint16_t get_env_uint16_or_default(const char* name, uint16_t default_val
 
     return static_cast<uint16_t>(parsed);
 }
-static void append_unique_string(std::vector<std::string>& values, std::string_view value)
-{
-    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t\r\n"));
-
-    if (value.empty())
-    {
-        return;
-    }
-
-    if (std::ranges::find(values, value) != values.end())
-    {
-        return;
-    }
-
-    values.emplace_back(value);
-}
-
-static std::vector<std::string> split_csv_unique(std::string_view value)
-{
-    std::vector<std::string> result;
-    std::vector<std::string_view> items;
-    boost::algorithm::split(items, value, boost::algorithm::is_any_of(","));
-
-    for (const auto item : items)
-    {
-        append_unique_string(result, item);
-    }
-
-    return result;
-}
 
 static std::vector<std::string> make_ice_public_ip_list(std::string_view configured_public_ips)
 {
-    std::vector<std::string> addresses = split_csv_unique(configured_public_ips);
+    std::vector<std::string> items;
+    boost::algorithm::split(items, configured_public_ips, boost::algorithm::is_any_of(","));
+
+    std::set<std::string> addresses;
+
+    for (auto& item : items)
+    {
+        boost::algorithm::trim(item);
+
+        if (!item.empty())
+        {
+            addresses.insert(std::move(item));
+        }
+    }
 
     if (addresses.empty())
     {
-        addresses.emplace_back("127.0.0.1");
+        addresses.emplace("127.0.0.1");
     }
 
-    return addresses;
+    return {addresses.begin(), addresses.end()};
 }
 
 static bool load_server_certificate(boost::asio::ssl::context& ctx, const std::string& cert_file, const std::string& key_file)
