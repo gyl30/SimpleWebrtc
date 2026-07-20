@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <expected>
 #include <map>
 #include <optional>
@@ -33,6 +34,87 @@ struct parsed_rtcp_transport_feedback
     uint32_t reference_time = 0;
     uint8_t feedback_packet_count = 0;
     std::vector<rtcp_transport_feedback_status> statuses;
+};
+
+struct transport_feedback_sent_packet
+{
+    std::size_t packet_size = 0;
+    bool retransmission = false;
+    std::chrono::steady_clock::time_point sent_at;
+};
+
+struct transport_feedback_send_observation
+{
+    std::size_t packet_status_count = 0;
+    std::size_t lookup_hit = 0;
+    std::size_t lookup_miss = 0;
+    std::size_t received = 0;
+    std::size_t not_received = 0;
+    std::size_t received_bytes = 0;
+    std::size_t not_received_bytes = 0;
+    std::size_t received_retransmissions = 0;
+    std::size_t not_received_retransmissions = 0;
+    uint64_t maximum_feedback_delay_ms = 0;
+};
+
+struct transport_feedback_send_history_snapshot
+{
+    std::size_t history_packets = 0;
+    uint64_t sent_packets = 0;
+    uint64_t sent_bytes = 0;
+    uint64_t sent_retransmissions = 0;
+    uint64_t sent_retransmission_bytes = 0;
+    uint64_t feedback_packets = 0;
+    uint64_t feedback_statuses = 0;
+    uint64_t lookup_hit = 0;
+    uint64_t lookup_miss = 0;
+    uint64_t received = 0;
+    uint64_t not_received = 0;
+    uint64_t received_bytes = 0;
+    uint64_t not_received_bytes = 0;
+    uint64_t received_retransmissions = 0;
+    uint64_t not_received_retransmissions = 0;
+    uint64_t feedback_duplicates = 0;
+    uint64_t feedback_gaps = 0;
+    uint64_t feedback_reordered = 0;
+    uint64_t evicted_age = 0;
+    uint64_t evicted_capacity = 0;
+    uint64_t maximum_feedback_delay_ms = 0;
+};
+
+class transport_feedback_send_history
+{
+   public:
+    transport_feedback_send_history(
+        std::chrono::milliseconds maximum_history_age = k_default_transport_feedback_history_age,
+        std::size_t maximum_history_packets = k_default_transport_feedback_history_packets);
+
+    [[nodiscard]] uint16_t next_sequence_number() const;
+    void remember_sent(transport_feedback_sent_packet packet);
+    [[nodiscard]] transport_feedback_send_observation observe(
+        const parsed_rtcp_transport_feedback& feedback,
+        std::chrono::steady_clock::time_point now);
+    void expire(std::chrono::steady_clock::time_point now);
+    [[nodiscard]] transport_feedback_send_history_snapshot snapshot() const;
+    void reset();
+
+   private:
+    struct sent_record
+    {
+        uint64_t extended_sequence_number = 0;
+        transport_feedback_sent_packet packet;
+    };
+
+    [[nodiscard]] std::optional<uint64_t> find_extended_sequence(uint16_t sequence_number) const;
+    void observe_feedback_packet_count(uint8_t feedback_packet_count);
+    void evict_old(std::chrono::steady_clock::time_point now);
+
+    std::chrono::milliseconds maximum_history_age_;
+    std::size_t maximum_history_packets_ = 0;
+    uint64_t next_extended_sequence_ = 0;
+    std::deque<sent_record> history_;
+    std::optional<uint8_t> last_feedback_packet_count_;
+    transport_feedback_send_history_snapshot stats_;
 };
 
 using rtcp_transport_feedback_parse_result =

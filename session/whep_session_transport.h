@@ -28,6 +28,7 @@
 #include "rtp/rtcp_interval_scheduler.h"
 #include "rtp/rtcp_compound_packet.h"
 #include "rtp/rtcp_report.h"
+#include "rtp/rtcp_transport_feedback.h"
 #include "rtp/rtp_retransmission_cache.h"
 #include "session/session_transport_media_log.h"
 #include "srtp/srtp_transport.h"
@@ -193,7 +194,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         rtp_retransmission_protect_failed,
         rtp_retransmission_srtp_not_ready,
         rtp_retransmission_protect_ignored,
-        rtcp_transport_cc_ignored,
+        rtcp_transport_feedback_received,
         rtcp_remb_ignored,
         rtcp_other_feedback_ignored,
         rtcp_unknown_block_ignored,
@@ -226,7 +227,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         std::atomic<bool> rtcp_parse_failure_logged{false};
         std::atomic<bool> generic_nack_logged{false};
         std::atomic<bool> retransmission_logged{false};
-        std::atomic<bool> transport_cc_ignored_logged{false};
+        std::atomic<bool> transport_feedback_logged{false};
         std::atomic<bool> remb_ignored_logged{false};
         std::atomic<bool> other_feedback_ignored_logged{false};
         std::atomic<bool> unknown_rtcp_block_ignored_logged{false};
@@ -251,6 +252,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void cache_rewritten_rtp_locked(uint64_t source_generation,
                                     const whep_rtp_rewrite_result& rewritten);
     void handle_generic_nacks(const rtcp_compound_packet& compound);
+    void handle_transport_feedback(const rtcp_compound_packet& compound);
     void send_retransmission(rtp_retransmission_cache_packet cached);
     void rebuild_rtp_rewriter_locked();
     void cancel_keyframe_recovery_locked();
@@ -285,6 +287,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void log_media_summary(int64_t interval_ms);
     void log_outbound_rtcp_sender_state_snapshot();
     void log_retransmission_cache_state();
+    void log_transport_feedback_state();
+    void log_transport_feedback_final_summary(std::string_view reason);
     void log_rtcp_interval_state();
     [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
         const boost::asio::ip::udp::endpoint& remote_endpoint);
@@ -318,6 +322,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     std::unordered_map<uint32_t, outbound_rtcp_sender_state> outbound_rtcp_senders_;
     whep_rtp_rewriter rtp_rewriter_;
     rtp_retransmission_cache retransmission_cache_;
+    transport_feedback_send_history transport_feedback_history_;
     video_keyframe_tracker keyframe_tracker_;
     std::unordered_set<uint32_t> keyframe_waiting_source_ssrcs_;
     std::unordered_set<uint32_t> keyframe_ready_source_ssrcs_;

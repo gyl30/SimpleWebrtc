@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "rtp/rtcp_transport_feedback.h"
+
 namespace webrtc
 {
 struct rtcp_nack_entry
@@ -36,7 +38,7 @@ struct rtcp_feedback_packet
 
     bool has_generic_nack = false;
     bool has_keyframe_request = false;
-    bool has_transport_cc = false;
+    std::optional<parsed_rtcp_transport_feedback> transport_feedback;
 
     std::vector<rtcp_nack_entry> nack_entries;
     std::vector<uint16_t> nack_sequence_numbers;

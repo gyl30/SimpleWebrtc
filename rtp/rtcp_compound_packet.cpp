@@ -119,7 +119,7 @@ void fill_feedback_block(const rtcp_feedback_packet& feedback, rtcp_compound_blo
 
     block.has_generic_nack = feedback.has_generic_nack;
     block.has_keyframe_request = feedback.has_keyframe_request;
-    block.has_transport_cc = feedback.has_transport_cc;
+    block.transport_feedback = feedback.transport_feedback;
     block.nack_entries = feedback.nack_entries;
     block.nack_sequence_numbers = feedback.nack_sequence_numbers;
     block.keyframe_request_media_ssrcs = feedback.keyframe_request_media_ssrcs;
@@ -156,7 +156,7 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
         packet.generic_nack_block_count += 1;
     }
 
-    if (block.has_transport_cc)
+    if (block.transport_feedback.has_value())
     {
         packet.transport_cc_block_count += 1;
     }
@@ -168,7 +168,7 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
 
     const bool feedback_is_classified =
         block.feedback_name == "pli" || block.feedback_name == "fir" || block.has_generic_nack ||
-        block.has_transport_cc || block.has_remb;
+        block.transport_feedback.has_value() || block.has_remb;
 
     if (!feedback_is_classified)
     {
@@ -177,7 +177,6 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
 
     packet.has_generic_nack = packet.has_generic_nack || block.has_generic_nack;
     packet.has_keyframe_request = packet.has_keyframe_request || block.has_keyframe_request;
-    packet.has_transport_cc = packet.has_transport_cc || block.has_transport_cc;
     packet.nack_entries.insert(packet.nack_entries.end(), block.nack_entries.begin(), block.nack_entries.end());
     packet.nack_sequence_numbers.insert(packet.nack_sequence_numbers.end(),
                                         block.nack_sequence_numbers.begin(),
@@ -549,7 +548,7 @@ std::string rtcp_compound_feedback_summary_to_string(const rtcp_compound_packet&
         return "generic_nack";
     }
 
-    if (packet.has_transport_cc)
+    if (packet.transport_cc_block_count != 0)
     {
         return "transport_cc";
     }

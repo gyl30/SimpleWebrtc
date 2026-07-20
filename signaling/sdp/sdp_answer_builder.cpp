@@ -316,8 +316,6 @@ constexpr std::string_view k_repaired_rtp_stream_id_extension_uri = "urn:ietf:pa
 
 constexpr std::string_view k_transport_wide_cc_extension_uri = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
 
-constexpr std::string_view k_transport_wide_cc_extension_uri_02 = "http://www.webrtc.org/experiments/rtp-hdrext/transport-wide-cc-02";
-
 constexpr std::string_view k_absolute_send_time_extension_uri = "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
 
 constexpr std::string_view k_audio_level_extension_uri = "urn:ietf:params:rtp-hdrext:ssrc-audio-level";
@@ -334,27 +332,6 @@ bool media_has_header_extension_uri(const media_summary& media, std::string_view
 
     return false;
 }
-bool media_has_compatible_header_extension_uri(const media_summary& media, std::string_view uri)
-{
-    if (uri == k_transport_wide_cc_extension_uri || uri == k_transport_wide_cc_extension_uri_02)
-    {
-        return media_has_header_extension_uri(media, k_transport_wide_cc_extension_uri) ||
-               media_has_header_extension_uri(media, k_transport_wide_cc_extension_uri_02);
-    }
-
-    return media_has_header_extension_uri(media, uri);
-}
-
-bool forwarded_publisher_can_supply_header_extension(const media_summary* forwarded_publisher_media, std::string_view uri)
-{
-    if (forwarded_publisher_media == nullptr)
-    {
-        return true;
-    }
-
-    return media_has_compatible_header_extension_uri(*forwarded_publisher_media, uri);
-}
-
 bool media_has_answerable_send_rid(const media_summary& media, std::string_view rid)
 {
     if (rid.empty())
@@ -577,7 +554,9 @@ std::vector<rtp_header_extension> select_answer_header_extensions_impl(
             continue;
         }
 
-        if (!forwarded_publisher_can_supply_header_extension(forwarded_publisher_media, extension.uri))
+        if (forwarded_publisher_media != nullptr &&
+            extension.uri != k_transport_wide_cc_extension_uri &&
+            !media_has_header_extension_uri(*forwarded_publisher_media, extension.uri))
         {
             continue;
         }
@@ -638,8 +617,8 @@ std::vector<std::string> collect_answerable_whep_simulcast_rids(const media_summ
         return rids;
     }
 
-    if (!media_has_compatible_header_extension_uri(subscriber_media, k_rtp_stream_id_extension_uri) ||
-        !media_has_compatible_header_extension_uri(publisher_media, k_rtp_stream_id_extension_uri))
+    if (!media_has_header_extension_uri(subscriber_media, k_rtp_stream_id_extension_uri) ||
+        !media_has_header_extension_uri(publisher_media, k_rtp_stream_id_extension_uri))
     {
         return rids;
     }
@@ -1165,17 +1144,19 @@ media_description make_rejected_answer_media(const media_summary& media)
 
     return answer_media;
 }
-bool media_offers_transport_cc(const media_summary& media)
+bool media_offers_transport_cc(const media_summary& media,
+                               const std::vector<codec_info>& codecs,
+                               bool remote_sends_rtp)
 {
     const bool has_extension = std::ranges::any_of(
         media.header_extensions,
-        [](const rtp_header_extension& extension)
+        [remote_sends_rtp](const rtp_header_extension& extension)
         {
-            const bool remote_can_send =
+            const bool direction_matches =
                 extension.direction == media_direction::unknown ||
                 extension.direction == media_direction::send_recv ||
-                extension.direction == media_direction::send_only;
-            return remote_can_send &&
+                extension.direction == (remote_sends_rtp ? media_direction::send_only : media_direction::recv_only);
+            return direction_matches &&
                    extension.uri == k_transport_wide_cc_extension_uri;
         });
 
@@ -1184,18 +1165,15 @@ bool media_offers_transport_cc(const media_summary& media)
         return false;
     }
 
-    for (const auto& codec : media.codecs)
-    {
-        for (const auto& feedback : codec.rtcp_feedback)
+    return std::ranges::any_of(
+        codecs,
+        [](const codec_info& codec)
         {
-            if (normalize_rtcp_feedback_value(feedback) == "transport-cc")
-            {
-                return true;
-            }
-        }
-    }
-
-    return false;
+            return std::ranges::any_of(
+                codec.rtcp_feedback,
+                [](const std::string& feedback)
+                { return normalize_rtcp_feedback_value(feedback) == "transport-cc"; });
+        });
 }
 
 std::expected<media_description, std::string> make_answer_media(const sdp_answer_options& options,
@@ -1204,7 +1182,6 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
                                                                 const webrtc_offer_summary* whep_publisher_offer)
 {
     const bool is_whep = whep_publisher_offer != nullptr;
-    const bool transport_cc_enabled = !is_whep && media_offers_transport_cc(media);
     const media_direction answer_direction = make_answer_direction(is_whep, media);
 
     if (answer_direction == media_direction::inactive)
@@ -1252,6 +1229,8 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
             return make_rejected_answer_media(media);
         }
     }
+
+    const bool transport_cc_enabled = media_offers_transport_cc(media, codecs, !is_whep);
 
     media_description answer_media;
 
@@ -1422,8 +1401,17 @@ const media_summary* find_whep_forwarded_publisher_media(const media_summary& su
 std::vector<rtp_header_extension> select_whep_answer_header_extensions(const media_summary& subscriber_media,
                                                                        const media_summary& publisher_media)
 {
+    auto codecs = negotiate_codecs(subscriber_media, publisher_media);
+
+    if (!codecs)
+    {
+        return {};
+    }
+
     return select_answer_header_extensions_impl(
-        subscriber_media, &publisher_media, false);
+        subscriber_media,
+        &publisher_media,
+        media_offers_transport_cc(subscriber_media, *codecs, false));
 }
 
 sdp_answer_text_result build_whip_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options)

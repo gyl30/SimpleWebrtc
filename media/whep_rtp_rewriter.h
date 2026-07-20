@@ -47,6 +47,7 @@ struct whep_rtp_media_mapping
     uint32_t target_rtx_ssrc = 0;
 
     bool target_extmap_allow_mixed = false;
+    uint8_t target_transport_cc_extension_id = 0;
 
     std::vector<whep_rtp_payload_type_mapping> payload_types;
     std::vector<whep_rtp_header_extension_mapping> header_extensions;
@@ -103,6 +104,7 @@ struct whep_rtp_rewrite_result
     uint32_t source_timestamp = 0;
     uint32_t target_timestamp = 0;
     std::size_t payload_size = 0;
+    std::optional<uint16_t> transport_sequence_number;
 };
 
 using whep_rtp_rewrite_packet_result = std::expected<whep_rtp_rewrite_result, std::string>;
@@ -126,6 +128,7 @@ struct whep_rtp_retransmission_result
 
     uint32_t target_timestamp = 0;
     std::size_t payload_size = 0;
+    std::optional<uint16_t> transport_sequence_number;
 };
 
 using whep_rtp_retransmission_result_type = std::expected<whep_rtp_retransmission_result, std::string>;
@@ -153,12 +156,15 @@ class whep_rtp_rewriter
 
     void clear_source();
 
-    [[nodiscard]] whep_rtp_rewrite_packet_result rewrite(std::span<const uint8_t> packet);
+    [[nodiscard]] whep_rtp_rewrite_packet_result rewrite(
+        std::span<const uint8_t> packet,
+        uint16_t transport_sequence_number);
 
     [[nodiscard]] bool nack_enabled(uint32_t target_ssrc, uint8_t target_payload_type) const;
 
     [[nodiscard]] whep_rtp_retransmission_result_type build_retransmission(
-        std::span<const uint8_t> primary_packet);
+        std::span<const uint8_t> primary_packet,
+        uint16_t transport_sequence_number);
 
     [[nodiscard]] std::optional<uint32_t> source_ssrc_for_target_ssrc(uint32_t target_ssrc) const;
 

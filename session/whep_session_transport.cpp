@@ -148,6 +148,8 @@ void whep_session_transport::close(std::string_view reason)
         log_media_summary(interval.count());
     }
 
+    log_transport_feedback_final_summary(reason);
+
     unsubscribe_media();
     clear_peer_state();
     udp_server_.stop();
@@ -583,8 +585,8 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         media_log_stats_.counters.take(media_log_event::rtp_retransmission_srtp_not_ready);
     const uint64_t rtp_retransmission_protect_ignored =
         media_log_stats_.counters.take(media_log_event::rtp_retransmission_protect_ignored);
-    const uint64_t rtcp_transport_cc_ignored =
-        media_log_stats_.counters.take(media_log_event::rtcp_transport_cc_ignored);
+    const uint64_t rtcp_transport_feedback_received =
+        media_log_stats_.counters.take(media_log_event::rtcp_transport_feedback_received);
     const uint64_t rtcp_remb_ignored = media_log_stats_.counters.take(media_log_event::rtcp_remb_ignored);
     const uint64_t rtcp_other_feedback_ignored =
         media_log_stats_.counters.take(media_log_event::rtcp_other_feedback_ignored);
@@ -631,7 +633,7 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         rtp_retransmission_rtx_sent != 0 || rtp_retransmission_send_bytes != 0 ||
         rtp_retransmission_payload_bytes != 0 || rtp_retransmission_build_failed != 0 ||
         rtp_retransmission_protect_failed != 0 || rtp_retransmission_srtp_not_ready != 0 ||
-        rtp_retransmission_protect_ignored != 0 || rtcp_transport_cc_ignored != 0 || rtcp_remb_ignored != 0 ||
+        rtp_retransmission_protect_ignored != 0 || rtcp_transport_feedback_received != 0 || rtcp_remb_ignored != 0 ||
         rtcp_other_feedback_ignored != 0 || rtcp_unknown_block_ignored != 0 ||
         rtcp_parse_failed != 0 || rtcp_sender_report_sent != 0 || rtcp_sdes_sent != 0 ||
         rtcp_send_bytes != 0 || rtcp_build_failed != 0 || rtcp_protect_failed != 0 ||
@@ -659,7 +661,7 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         "retransmission_limited={} retransmission_original_sent={} retransmission_rtx_sent={} retransmission_send_bytes={} "
         "retransmission_payload_bytes={} "
         "retransmission_build_failed={} retransmission_protect_failed={} retransmission_srtp_not_ready={} retransmission_protect_ignored={} "
-        "rtcp_transport_cc_ignored={} rtcp_remb_ignored={} rtcp_other_feedback_ignored={} rtcp_unknown_block_ignored={} "
+        "rtcp_transport_feedback={} rtcp_remb_ignored={} rtcp_other_feedback_ignored={} rtcp_unknown_block_ignored={} "
         "rtcp_parse_failed={} rtcp_sr_sent={} rtcp_sdes_sent={} "
         "rtcp_send_bytes={} rtcp_build_failed={} rtcp_protect_failed={} rtcp_protect_ignored={} rtcp_rr_lsr_matched={} "
         "srtp_inbound_ignored={} srtp_unprotect_failed={} udp_received={} stun={} dtls={} dropped_unselected={} other_received={}",
@@ -719,7 +721,7 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
         rtp_retransmission_protect_failed,
         rtp_retransmission_srtp_not_ready,
         rtp_retransmission_protect_ignored,
-        rtcp_transport_cc_ignored,
+        rtcp_transport_feedback_received,
         rtcp_remb_ignored,
         rtcp_other_feedback_ignored,
         rtcp_unknown_block_ignored,
@@ -741,6 +743,7 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
 
     log_outbound_rtcp_sender_state_snapshot();
     log_retransmission_cache_state();
+    log_transport_feedback_state();
     log_rtcp_interval_state();
 }
 
@@ -764,6 +767,79 @@ void whep_session_transport::log_retransmission_cache_state()
         snapshot.replaced,
         snapshot.evicted_age,
         snapshot.evicted_capacity);
+}
+
+void whep_session_transport::log_transport_feedback_state()
+{
+    transport_feedback_history_.expire(std::chrono::steady_clock::now());
+    const auto snapshot = transport_feedback_history_.snapshot();
+
+    WEBRTC_LOG_DEBUG(
+        "WHEP transport-cc shadow state stream={} session={} history_packets={} sent_packets={} sent_bytes={} "
+        "sent_retransmissions={} sent_retransmission_bytes={} feedback_packets={} feedback_statuses={} "
+        "lookup_hit={} lookup_miss={} received={} not_received={} received_bytes={} not_received_bytes={} "
+        "received_retransmissions={} not_received_retransmissions={} feedback_duplicates={} feedback_gaps={} "
+        "feedback_reordered={} evicted_age={} evicted_capacity={} maximum_feedback_delay_ms={}",
+        stream_id_,
+        session_id_,
+        snapshot.history_packets,
+        snapshot.sent_packets,
+        snapshot.sent_bytes,
+        snapshot.sent_retransmissions,
+        snapshot.sent_retransmission_bytes,
+        snapshot.feedback_packets,
+        snapshot.feedback_statuses,
+        snapshot.lookup_hit,
+        snapshot.lookup_miss,
+        snapshot.received,
+        snapshot.not_received,
+        snapshot.received_bytes,
+        snapshot.not_received_bytes,
+        snapshot.received_retransmissions,
+        snapshot.not_received_retransmissions,
+        snapshot.feedback_duplicates,
+        snapshot.feedback_gaps,
+        snapshot.feedback_reordered,
+        snapshot.evicted_age,
+        snapshot.evicted_capacity,
+        snapshot.maximum_feedback_delay_ms);
+}
+
+void whep_session_transport::log_transport_feedback_final_summary(std::string_view reason)
+{
+    transport_feedback_history_.expire(std::chrono::steady_clock::now());
+    const auto snapshot = transport_feedback_history_.snapshot();
+
+    WEBRTC_LOG_INFO(
+        "WHEP transport-cc shadow final stream={} session={} reason={} history_packets={} sent_packets={} sent_bytes={} "
+        "sent_retransmissions={} sent_retransmission_bytes={} feedback_packets={} feedback_statuses={} "
+        "lookup_hit={} lookup_miss={} received={} not_received={} received_bytes={} not_received_bytes={} "
+        "received_retransmissions={} not_received_retransmissions={} feedback_duplicates={} feedback_gaps={} "
+        "feedback_reordered={} evicted_age={} evicted_capacity={} maximum_feedback_delay_ms={}",
+        stream_id_,
+        session_id_,
+        reason,
+        snapshot.history_packets,
+        snapshot.sent_packets,
+        snapshot.sent_bytes,
+        snapshot.sent_retransmissions,
+        snapshot.sent_retransmission_bytes,
+        snapshot.feedback_packets,
+        snapshot.feedback_statuses,
+        snapshot.lookup_hit,
+        snapshot.lookup_miss,
+        snapshot.received,
+        snapshot.not_received,
+        snapshot.received_bytes,
+        snapshot.not_received_bytes,
+        snapshot.received_retransmissions,
+        snapshot.not_received_retransmissions,
+        snapshot.feedback_duplicates,
+        snapshot.feedback_gaps,
+        snapshot.feedback_reordered,
+        snapshot.evicted_age,
+        snapshot.evicted_capacity,
+        snapshot.maximum_feedback_delay_ms);
 }
 
 void whep_session_transport::log_rtcp_interval_state()
@@ -897,6 +973,7 @@ void whep_session_transport::set_peer_context(std::string local_ice_pwd,
         clear_publisher_sender_timings_locked();
         clear_keyframe_feedback_state_locked();
         retransmission_cache_.clear();
+        transport_feedback_history_.reset();
         remote_rtcp_participant_ssrcs_.clear();
         reset_keyframe_recovery_locked();
         rebuild_rtp_rewriter_locked();
@@ -1008,7 +1085,9 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
             return;
         }
 
-        rewritten = rtp_rewriter_.rewrite(plain_rtp);
+        rewritten = rtp_rewriter_.rewrite(
+            plain_rtp,
+            transport_feedback_history_.next_sequence_number());
     }
 
     if (!rewritten)
@@ -1132,16 +1211,29 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
             record_media_log_event(media_log_event::dropped_stale_generation);
             return;
         }
+    }
 
+    const std::size_t protected_size = protected_packet->protected_packet.size();
+    udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
+
+    if (rewritten->transport_sequence_number.has_value())
+    {
+        transport_feedback_history_.remember_sent(transport_feedback_sent_packet{
+            .packet_size = protected_size,
+            .retransmission = rewritten->rtx,
+            .sent_at = std::chrono::steady_clock::now(),
+        });
+    }
+
+    {
+        std::lock_guard lock(rtp_rewriter_mutex_);
         cache_rewritten_rtp_locked(source_generation, *rewritten);
         record_outbound_rtp_sent_locked(*rewritten);
     }
 
-    const std::size_t protected_size = protected_packet->protected_packet.size();
     record_media_log_event(media_log_event::send_enqueued);
     record_media_log_event(media_log_event::send_bytes, protected_size);
     record_media_log_event(media_log_event::send_payload_bytes, rewritten->payload_size);
-    udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
     peer_lock.unlock();
 
     std::optional<keyframe_request_context> request_context;
@@ -2127,7 +2219,9 @@ void whep_session_transport::send_retransmission(rtp_retransmission_cache_packet
 
     {
         std::lock_guard lock(rtp_rewriter_mutex_);
-        retransmission = rtp_rewriter_.build_retransmission(cached.packet);
+        retransmission = rtp_rewriter_.build_retransmission(
+            cached.packet,
+            transport_feedback_history_.next_sequence_number());
     }
 
     if (!retransmission)
@@ -2184,6 +2278,18 @@ void whep_session_transport::send_retransmission(rtp_retransmission_cache_packet
         return;
     }
 
+    const std::size_t protected_size = protected_packet->protected_packet.size();
+    udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
+
+    if (retransmission->transport_sequence_number.has_value())
+    {
+        transport_feedback_history_.remember_sent(transport_feedback_sent_packet{
+            .packet_size = protected_size,
+            .retransmission = true,
+            .sent_at = std::chrono::steady_clock::now(),
+        });
+    }
+
     {
         std::lock_guard lock(rtp_rewriter_mutex_);
         record_outbound_rtp_sent_locked(
@@ -2192,7 +2298,6 @@ void whep_session_transport::send_retransmission(rtp_retransmission_cache_packet
             retransmission->target_timestamp);
     }
 
-    const std::size_t protected_size = protected_packet->protected_packet.size();
     record_media_log_event(retransmission->rtx
                                ? media_log_event::rtp_retransmission_rtx_sent
                                : media_log_event::rtp_retransmission_original_sent);
@@ -2219,8 +2324,55 @@ void whep_session_transport::send_retransmission(rtp_retransmission_cache_packet
             retransmission->packet.size(),
             protected_size);
     }
+}
 
-    udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
+void whep_session_transport::handle_transport_feedback(const rtcp_compound_packet& compound)
+{
+    for (const auto& block : compound.blocks)
+    {
+        if (!block.transport_feedback.has_value())
+        {
+            continue;
+        }
+
+        const auto observation = transport_feedback_history_.observe(
+            *block.transport_feedback,
+            std::chrono::steady_clock::now());
+        record_media_log_event(media_log_event::rtcp_transport_feedback_received);
+
+        if (!media_log_stats_.transport_feedback_logged.exchange(true, std::memory_order_relaxed))
+        {
+            WEBRTC_LOG_DEBUG(
+                "WHEP first transport-cc feedback observed stream={} session={} sender_ssrc={} media_ssrc={} "
+                "feedback_count={} base_sequence={} statuses={} lookup_hit={} lookup_miss={} received={} "
+                "not_received={} maximum_feedback_delay_ms={} action=shadow",
+                stream_id_,
+                session_id_,
+                block.transport_feedback->sender_ssrc,
+                block.transport_feedback->media_ssrc,
+                block.transport_feedback->feedback_packet_count,
+                block.transport_feedback->base_sequence_number,
+                observation.packet_status_count,
+                observation.lookup_hit,
+                observation.lookup_miss,
+                observation.received,
+                observation.not_received,
+                observation.maximum_feedback_delay_ms);
+        }
+
+        WEBRTC_LOG_TRACE(
+            "WHEP transport-cc feedback observed stream={} session={} feedback_count={} base_sequence={} statuses={} "
+            "lookup_hit={} lookup_miss={} received={} not_received={} action=shadow",
+            stream_id_,
+            session_id_,
+            block.transport_feedback->feedback_packet_count,
+            block.transport_feedback->base_sequence_number,
+            observation.packet_status_count,
+            observation.lookup_hit,
+            observation.lookup_miss,
+            observation.received,
+            observation.not_received);
+    }
 }
 
 void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp)
@@ -2255,7 +2407,6 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
     record_media_log_event(media_log_event::rtcp_bye_received, compound->bye_packets.size());
     record_media_log_event(media_log_event::rtcp_pli_received, compound->pli_count);
     record_media_log_event(media_log_event::rtcp_fir_received, compound->fir_block_count);
-    record_media_log_event(media_log_event::rtcp_transport_cc_ignored, compound->transport_cc_block_count);
     record_media_log_event(media_log_event::rtcp_remb_ignored, compound->remb_block_count);
     record_media_log_event(media_log_event::rtcp_other_feedback_ignored, compound->other_feedback_block_count);
     record_media_log_event(media_log_event::rtcp_unknown_block_ignored, compound->unknown_block_count);
@@ -2276,20 +2427,10 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
     }
 
     handle_generic_nacks(*compound);
+    handle_transport_feedback(*compound);
 
     for (const auto& block : compound->blocks)
     {
-        if (block.has_transport_cc &&
-            !media_log_stats_.transport_cc_ignored_logged.exchange(true, std::memory_order_relaxed))
-        {
-            WEBRTC_LOG_DEBUG(
-                "WHEP first transport-cc feedback ignored stream={} session={} sender_ssrc={} media_ssrc={} action=ignored",
-                stream_id_,
-                session_id_,
-                block.feedback_sender_ssrc,
-                block.feedback_media_ssrc);
-        }
-
         if (block.has_remb &&
             !media_log_stats_.remb_ignored_logged.exchange(true, std::memory_order_relaxed))
         {
@@ -2304,7 +2445,7 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
 
         const bool other_feedback = block.is_feedback && block.feedback_name != "pli" &&
                                     block.feedback_name != "fir" && !block.has_generic_nack &&
-                                    !block.has_transport_cc && !block.has_remb;
+                                    !block.transport_feedback.has_value() && !block.has_remb;
 
         if (other_feedback &&
             !media_log_stats_.other_feedback_ignored_logged.exchange(true, std::memory_order_relaxed))
@@ -2365,7 +2506,7 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
     {
         WEBRTC_LOG_TRACE(
             "WHEP inbound RTCP stream={} session={} blocks={} sr={} rr={} report_blocks={} sdes={} bye={} pli={} fir={} "
-            "generic_nack_blocks={} transport_cc_ignored={} remb_ignored={} other_feedback_ignored={} unknown_ignored={} summary={}",
+            "generic_nack_blocks={} transport_feedback={} remb_ignored={} other_feedback_ignored={} unknown_ignored={} summary={}",
             stream_id_,
             session_id_,
             compound->blocks.size(),

@@ -1788,7 +1788,7 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
                 block.nack_count);
         }
 
-        if (block.has_transport_cc &&
+        if (block.transport_feedback.has_value() &&
             !media_log_stats_.transport_cc_ignored_logged.exchange(true, std::memory_order_relaxed))
         {
             WEBRTC_LOG_DEBUG(
@@ -1813,7 +1813,7 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
 
         const bool other_feedback = block.is_feedback && block.feedback_name != "pli" &&
                                     block.feedback_name != "fir" && !block.has_generic_nack &&
-                                    !block.has_transport_cc && !block.has_remb;
+                                    !block.transport_feedback.has_value() && !block.has_remb;
 
         if (other_feedback &&
             !media_log_stats_.other_feedback_ignored_logged.exchange(true, std::memory_order_relaxed))
