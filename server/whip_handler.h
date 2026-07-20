@@ -1,9 +1,7 @@
 #ifndef SIMPLE_WEBRTC_SERVER_WHIP_HANDLER_H
 #define SIMPLE_WEBRTC_SERVER_WHIP_HANDLER_H
 
-#include <cstdint>
 #include <memory>
-#include <string>
 #include <string_view>
 
 #include <boost/asio.hpp>
@@ -17,6 +15,8 @@
 
 namespace webrtc
 {
+struct webrtc_config;
+
 class whip_handler
 {
    public:
@@ -24,9 +24,8 @@ class whip_handler
                  std::shared_ptr<webrtc_answer_factory> answer_factory,
                  std::shared_ptr<udp_port_allocator> udp_port_allocator,
                  boost::asio::io_context& io_context,
-                 std::string udp_bind_host,
+                 const webrtc_config& config,
                  std::shared_ptr<dtls_context> dtls_context,
-                 std::uint16_t dtls_ip_mtu,
                  std::shared_ptr<media_fanout_router> media_fanout_router);
 
    public:
@@ -47,9 +46,8 @@ class whip_handler
     std::shared_ptr<udp_port_allocator> udp_port_allocator_;
     std::shared_ptr<media_fanout_router> media_fanout_router_;
     boost::asio::io_context& io_context_;
-    std::string udp_bind_host_;
+    const webrtc_config& config_;
     std::shared_ptr<dtls_context> dtls_context_;
-    std::uint16_t dtls_ip_mtu_;
 };
 }    // namespace webrtc
 

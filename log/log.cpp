@@ -2,10 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
-#include <cstdlib>
 #include <expected>
-#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -16,119 +13,65 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include "util/number_parse.h"
+#include "webrtc_config.h"
 
 namespace webrtc
 {
 namespace
 {
-inline constexpr char k_log_level_environment[] = "WEBRTC_LOG_LEVEL";
-inline constexpr char k_log_file_size_environment[] = "WEBRTC_LOG_FILE_SIZE_BYTES";
-inline constexpr char k_log_file_count_environment[] = "WEBRTC_LOG_FILE_COUNT";
-
-inline constexpr uint64_t k_default_log_file_size_bytes = 50ULL * 1024ULL * 1024ULL;
-inline constexpr uint64_t k_minimum_log_file_size_bytes = 1ULL * 1024ULL * 1024ULL;
-inline constexpr uint64_t k_maximum_log_file_size_bytes = 4ULL * 1024ULL * 1024ULL * 1024ULL;
-
-inline constexpr uint32_t k_default_log_file_count = 5U;
-inline constexpr uint32_t k_minimum_log_file_count = 1U;
-inline constexpr uint32_t k_maximum_log_file_count = 100U;
-
-std::expected<spdlog::level::level_enum, std::string> parse_log_level(std::string_view value)
-{
-    if (value == "trace")
-    {
-        return spdlog::level::trace;
-    }
-
-    if (value == "debug")
-    {
-        return spdlog::level::debug;
-    }
-
-    if (value == "info")
-    {
-        return spdlog::level::info;
-    }
-
-    if (value == "warn" || value == "warning")
-    {
-        return spdlog::level::warn;
-    }
-
-    if (value == "error" || value == "err")
-    {
-        return spdlog::level::err;
-    }
-
-    if (value == "critical")
-    {
-        return spdlog::level::critical;
-    }
-
-    if (value == "off")
-    {
-        return spdlog::level::off;
-    }
-
-    std::string error = k_log_level_environment;
-
-    error.append(": unsupported log level: ");
-    error.append(value);
-    error.append("; expected trace, debug, info, warn, error, critical, or off");
-
-    return std::unexpected(std::move(error));
-}
-
-std::string_view log_level_to_string(spdlog::level::level_enum level)
+spdlog::level::level_enum to_spdlog_level(webrtc_log_level level)
 {
     switch (level)
     {
-        case spdlog::level::trace:
+        case webrtc_log_level::trace:
+            return spdlog::level::trace;
+        case webrtc_log_level::debug:
+            return spdlog::level::debug;
+        case webrtc_log_level::info:
+            return spdlog::level::info;
+        case webrtc_log_level::warn:
+            return spdlog::level::warn;
+        case webrtc_log_level::error:
+            return spdlog::level::err;
+        case webrtc_log_level::critical:
+            return spdlog::level::critical;
+        case webrtc_log_level::off:
+            return spdlog::level::off;
+    }
+
+    return spdlog::level::info;
+}
+
+std::string_view log_level_to_string(webrtc_log_level level)
+{
+    switch (level)
+    {
+        case webrtc_log_level::trace:
             return "trace";
 
-        case spdlog::level::debug:
+        case webrtc_log_level::debug:
             return "debug";
 
-        case spdlog::level::info:
+        case webrtc_log_level::info:
             return "info";
 
-        case spdlog::level::warn:
+        case webrtc_log_level::warn:
             return "warn";
 
-        case spdlog::level::err:
+        case webrtc_log_level::error:
             return "error";
 
-        case spdlog::level::critical:
+        case webrtc_log_level::critical:
             return "critical";
 
-        case spdlog::level::off:
+        case webrtc_log_level::off:
             return "off";
-
-        case spdlog::level::n_levels:
-            return "unknown";
     }
 
     return "unknown";
 }
 
-template <std::integral Integer>
-std::expected<Integer, std::string> load_integer_environment(const char* environment_name, Integer default_value, Integer minimum, Integer maximum)
-{
-    const char* environment_value = std::getenv(environment_name);
-
-    if (environment_value == nullptr)
-    {
-        return default_value;
-    }
-
-    return parse_integer<Integer>(environment_value, minimum, maximum, environment_name);
-}
-
-void initialize_default_logger(const std::string& filename,
-                               spdlog::level::level_enum level,
-                               std::size_t file_size_bytes,
-                               std::size_t file_count)
+void initialize_default_logger(const std::string& filename, spdlog::level::level_enum level, std::size_t file_size_bytes, std::size_t file_count)
 {
     std::vector<spdlog::sink_ptr> sinks;
 
@@ -154,51 +97,13 @@ void initialize_default_logger(const std::string& filename,
 }
 }    // namespace
 
-log_init_result init_log(const std::string& filename)
+log_init_result init_log(const std::string& filename, const webrtc_log_config& config)
 {
-    spdlog::level::level_enum level = spdlog::level::info;
-
-    const char* level_value = std::getenv(k_log_level_environment);
-
-    if (level_value != nullptr)
-    {
-        auto parsed_level = parse_log_level(level_value);
-
-        if (!parsed_level)
-        {
-            return std::unexpected(parsed_level.error());
-        }
-
-        level = *parsed_level;
-    }
-
-    auto file_size = load_integer_environment<uint64_t>(
-        k_log_file_size_environment, k_default_log_file_size_bytes, k_minimum_log_file_size_bytes, k_maximum_log_file_size_bytes);
-
-    if (!file_size)
-    {
-        return std::unexpected(file_size.error());
-    }
-
-    if (*file_size > static_cast<uint64_t>(std::numeric_limits<std::size_t>::max()))
-    {
-        return std::unexpected(std::string(k_log_file_size_environment) + ": value cannot be represented by std::size_t");
-    }
-
-    auto file_count = load_integer_environment<uint32_t>(
-        k_log_file_count_environment, k_default_log_file_count, k_minimum_log_file_count, k_maximum_log_file_count);
-
-    if (!file_count)
-    {
-        return std::unexpected(file_count.error());
-    }
-
-    const std::size_t file_size_bytes = static_cast<std::size_t>(*file_size);
-    const std::size_t file_count_value = static_cast<std::size_t>(*file_count);
+    const spdlog::level::level_enum level = to_spdlog_level(config.level);
 
     try
     {
-        initialize_default_logger(filename, level, file_size_bytes, file_count_value);
+        initialize_default_logger(filename, level, config.file_size_bytes, config.file_count);
     }
     catch (const spdlog::spdlog_ex& error)
     {
@@ -212,10 +117,10 @@ log_init_result init_log(const std::string& filename)
     }
 
     WEBRTC_LOG_INFO("log configuration level={} file={} file_size_bytes={} file_count={}",
-                    log_level_to_string(level),
+                    log_level_to_string(config.level),
                     filename,
-                    file_size_bytes,
-                    file_count_value);
+                    config.file_size_bytes,
+                    config.file_count);
 
     return {};
 }

@@ -23,6 +23,7 @@
 #include "signaling/sdp/sdp_parser.h"
 #include "signaling/sdp/sdp_summary.h"
 #include "signaling/webrtc_answer_factory.h"
+#include "webrtc_config.h"
 
 namespace webrtc
 {
@@ -77,18 +78,16 @@ whip_handler::whip_handler(std::shared_ptr<stream_registry> registry,
                            std::shared_ptr<webrtc_answer_factory> answer_factory,
                            std::shared_ptr<udp_port_allocator> udp_port_allocator,
                            boost::asio::io_context& io_context,
-                           std::string udp_bind_host,
+                           const webrtc_config& config,
                            std::shared_ptr<dtls_context> dtls_context,
-                           std::uint16_t dtls_ip_mtu,
                            std::shared_ptr<media_fanout_router> media_fanout_router)
     : registry_(std::move(registry)),
       answer_factory_(std::move(answer_factory)),
       udp_port_allocator_(std::move(udp_port_allocator)),
       media_fanout_router_(std::move(media_fanout_router)),
       io_context_(io_context),
-      udp_bind_host_(std::move(udp_bind_host)),
-      dtls_context_(std::move(dtls_context)),
-      dtls_ip_mtu_(dtls_ip_mtu)
+      config_(config),
+      dtls_context_(std::move(dtls_context))
 {
 }
 
@@ -182,7 +181,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
     }
 
     auto transport =
-        std::make_shared<whip_session_transport>(io_context_, udp_bind_host_, dtls_context_, dtls_ip_mtu_, media_fanout_router_);
+        std::make_shared<whip_session_transport>(io_context_, config_.ice_bind_host, dtls_context_, config_.dtls_ip_mtu, media_fanout_router_);
 
     auto transport_start = transport->start((*local_udp_port)->port());
 
@@ -219,8 +218,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
     {
         if (replace_session_id.has_value())
         {
-            return registry_->replace_publisher_session(
-                *replace_session_id, std::string(stream_id), std::move(*runtime_offer));
+            return registry_->replace_publisher_session(*replace_session_id, std::string(stream_id), std::move(*runtime_offer));
         }
 
         return registry_->create_publisher_session(std::string(stream_id), std::move(*runtime_offer));
@@ -274,22 +272,20 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         replace_previous_session->close("whip_republish");
     }
 
-    session->complete_initial_setup(std::move(answer->local_ice),
-                                    std::move(answer->accepted_mline_indexes),
-                                    std::move(*local_udp_port),
-                                    std::move(transport));
+    session->complete_initial_setup(
+        std::move(answer->local_ice), std::move(answer->accepted_mline_indexes), std::move(*local_udp_port), std::move(transport));
 
-    const uint64_t source_generation = media_fanout_router_->set_publisher_source(
-        session->stream_id(),
-        session->session_id(),
-        session->remote_offer_summary(),
-        [weak_session = std::weak_ptr<publisher_session>(session)](uint32_t media_ssrc)
-        {
-            if (const auto current_session = weak_session.lock())
-            {
-                current_session->request_keyframe(media_ssrc);
-            }
-        });
+    const uint64_t source_generation =
+        media_fanout_router_->set_publisher_source(session->stream_id(),
+                                                   session->session_id(),
+                                                   session->remote_offer_summary(),
+                                                   [weak_session = std::weak_ptr<publisher_session>(session)](uint32_t media_ssrc)
+                                                   {
+                                                       if (const auto current_session = weak_session.lock())
+                                                       {
+                                                           current_session->request_keyframe(media_ssrc);
+                                                       }
+                                                   });
     session->set_publisher_source_generation(source_generation);
 
     WEBRTC_LOG_INFO(
@@ -310,7 +306,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 
     response->set(http::field::location, session_location_path);
 
-    set_session_resource_headers(response, *session);
+    set_session_resource_headers(response, *session, config_.ice_server_link_header);
 
     return response;
 }

@@ -19,6 +19,7 @@
 #include "server/http_error_response.h"
 #include "server/trickle_ice_metrics.h"
 #include "signaling/webrtc_answer_factory.h"
+#include "webrtc_config.h"
 
 namespace webrtc
 {
@@ -218,21 +219,18 @@ router::router(std::shared_ptr<stream_registry> registry,
                std::shared_ptr<webrtc_answer_factory> answer_factory,
                std::shared_ptr<udp_port_allocator> udp_port_allocator,
                boost::asio::io_context& io_context,
-               std::string udp_bind_host,
-               std::shared_ptr<dtls_context> dtls_context,
-               std::uint16_t dtls_ip_mtu,
-               std::string admin_token)
+               const webrtc_config& config,
+               std::shared_ptr<dtls_context> dtls_context)
     : registry_(registry),
       media_fanout_router_(std::make_shared<media_fanout_router>(io_context)),
-      admin_token_(std::move(admin_token)),
-      whip_(registry, answer_factory, udp_port_allocator, io_context, udp_bind_host, dtls_context, dtls_ip_mtu, media_fanout_router_),
+      config_(config),
+      whip_(registry, answer_factory, udp_port_allocator, io_context, config, dtls_context, media_fanout_router_),
       whep_(std::move(registry),
             std::move(answer_factory),
             std::move(udp_port_allocator),
             io_context,
-            std::move(udp_bind_host),
+            config,
             std::move(dtls_context),
-            dtls_ip_mtu,
             media_fanout_router_)
 {
 }
@@ -326,7 +324,7 @@ http_response_ptr router::handle(http_request_t& request)
 
 bool router::admin_auth_required(std::string_view path) const
 {
-    if (admin_token_.empty())
+    if (config_.admin_token.empty())
     {
         return false;
     }
@@ -351,7 +349,7 @@ bool router::admin_auth_required(std::string_view path) const
 
 bool router::is_admin_authorized(const http_request_t& request) const
 {
-    if (admin_token_.empty())
+    if (config_.admin_token.empty())
     {
         return true;
     }
@@ -367,7 +365,7 @@ bool router::is_admin_authorized(const http_request_t& request) const
         return false;
     }
 
-    return constant_time_equals(*token, admin_token_);
+    return constant_time_equals(*token, config_.admin_token);
 }
 
 http_response_ptr router::admin_unauthorized(http_request_t& request)
@@ -742,7 +740,6 @@ http_response_ptr router::prometheus_response(http_request_t& request, int code,
 
     return response;
 }
-
 
 std::string_view router::request_path(http_request_t& request)
 {

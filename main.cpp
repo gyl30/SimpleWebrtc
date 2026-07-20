@@ -1,23 +1,14 @@
-#include <cerrno>
 #include <cstdio>
-#include <cstdlib>
-#include <cstdint>
-#include <limits>
 #include <memory>
 #include <print>
-#include <set>
 #include <string>
-#include <string_view>
 #include <utility>
-#include <vector>
 
-#include <boost/algorithm/string.hpp>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/version.hpp>
 #include <openssl/opensslv.h>
 
-#include "ice/session_transport_environment_config.h"
 #include "log/log.h"
 #include "net/detect_ssl_session.h"
 #include "net/http.h"
@@ -32,71 +23,7 @@
 #include "util/scoped_exit.h"
 #include "dtls/dtls_certificate.h"
 #include "dtls/dtls_context.h"
-
-static std::string get_env_or_default(const char* name, const std::string& default_value)
-{
-    const char* value = std::getenv(name);
-
-    if (value == nullptr || value[0] == '\0')
-    {
-        return default_value;
-    }
-
-    return value;
-}
-
-static uint16_t get_env_uint16_or_default(const char* name, uint16_t default_value)
-{
-    const char* value = std::getenv(name);
-
-    if (value == nullptr || value[0] == '\0')
-    {
-        return default_value;
-    }
-
-    errno = 0;
-
-    char* end = nullptr;
-
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-
-    if (errno != 0 || end == value || *end != '\0')
-    {
-        return default_value;
-    }
-
-    if (parsed > static_cast<unsigned long>(std::numeric_limits<uint16_t>::max()))
-    {
-        return default_value;
-    }
-
-    return static_cast<uint16_t>(parsed);
-}
-
-static std::vector<std::string> make_ice_public_ip_list(std::string_view configured_public_ips)
-{
-    std::vector<std::string> items;
-    boost::algorithm::split(items, configured_public_ips, boost::algorithm::is_any_of(","));
-
-    std::set<std::string> addresses;
-
-    for (auto& item : items)
-    {
-        boost::algorithm::trim(item);
-
-        if (!item.empty())
-        {
-            addresses.insert(std::move(item));
-        }
-    }
-
-    if (addresses.empty())
-    {
-        addresses.emplace("127.0.0.1");
-    }
-
-    return {addresses.begin(), addresses.end()};
-}
+#include "webrtc_config.h"
 
 static bool load_server_certificate(boost::asio::ssl::context& ctx, const std::string& cert_file, const std::string& key_file)
 {
@@ -179,7 +106,17 @@ int main(int argc, char* argv[])
 
     std::string abs_log_filename = log_dir + "/" + app_name + ".log";
 
-    auto log_init_result = webrtc::init_log(abs_log_filename);
+    auto config_result = webrtc::load_webrtc_config();
+
+    if (!config_result)
+    {
+        std::println(stderr, "load WebRTC config failed: {}", config_result.error());
+        return 1;
+    }
+
+    const webrtc::webrtc_config config = std::move(*config_result);
+
+    auto log_init_result = webrtc::init_log(abs_log_filename, config.log);
 
     if (!log_init_result)
     {
@@ -196,18 +133,9 @@ int main(int argc, char* argv[])
 
     boost::asio::ssl::context ssl_ctx_{boost::asio::ssl::context::tls_server};
 
-    const std::string http_certificate_file = get_env_or_default("WEBRTC_HTTP_CERT_FILE", "");
-    const std::string http_private_key_file = get_env_or_default("WEBRTC_HTTP_KEY_FILE", "");
-    const bool http_tls_enabled = !http_certificate_file.empty();
+    const bool http_tls_enabled = !config.http_certificate_file.empty();
 
-    if (http_tls_enabled != !http_private_key_file.empty())
-    {
-        WEBRTC_LOG_ERROR("WEBRTC_HTTP_CERT_FILE and WEBRTC_HTTP_KEY_FILE must be configured together");
-
-        return 1;
-    }
-
-    if (http_tls_enabled && !load_server_certificate(ssl_ctx_, http_certificate_file, http_private_key_file))
+    if (http_tls_enabled && !load_server_certificate(ssl_ctx_, config.http_certificate_file, config.http_private_key_file))
     {
         WEBRTC_LOG_ERROR("load http tls certificate failed");
 
@@ -225,9 +153,8 @@ int main(int argc, char* argv[])
 
     webrtc::sdp::fingerprint_info local_fingerprint = (*dtls_certificate)->fingerprint;
 
-    WEBRTC_LOG_INFO("flag_webrtc_dtls_certificate_generated fingerprint_algorithm={} fingerprint={}",
-                    local_fingerprint.algorithm,
-                    local_fingerprint.value);
+    WEBRTC_LOG_INFO(
+        "flag_webrtc_dtls_certificate_generated fingerprint_algorithm={} fingerprint={}", local_fingerprint.algorithm, local_fingerprint.value);
 
     auto per_session_dtls_context = webrtc::make_dtls_context(*dtls_certificate);
 
@@ -238,77 +165,45 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    const uint16_t http_port = get_env_uint16_or_default("WEBRTC_HTTP_PORT", 8811);
-    const std::string ice_bind_host = get_env_or_default("WEBRTC_ICE_BIND_HOST", "0.0.0.0");
-    const std::string ice_public_ips_config = get_env_or_default("WEBRTC_ICE_PUBLIC_IPS", "127.0.0.1");
-    std::string admin_token = get_env_or_default("WEBRTC_ADMIN_TOKEN", "");
-    std::vector<std::string> ice_public_ips = make_ice_public_ip_list(ice_public_ips_config);
-
     WEBRTC_LOG_INFO(
         "flag_startup_config_summary app_path={} log_file={} http_tls_enabled={} http_cert_file={} http_key_file={} http_port={} "
-        "session_ice_bind_host={} ice_public_ip_source={} ice_public_ip_count={} admin_token_configured={}",
+        "session_ice_bind_host={} ice_public_ip_count={} ice_server_configured={} admin_token_configured={}",
         app_path,
         abs_log_filename,
         http_tls_enabled ? 1 : 0,
-        http_certificate_file,
-        http_private_key_file,
-        http_port,
-        ice_bind_host,
-        ice_public_ips_config,
-        ice_public_ips.size(),
-        admin_token.empty() ? 0 : 1);
+        config.http_certificate_file,
+        config.http_private_key_file,
+        config.http_port,
+        config.ice_bind_host,
+        config.ice_public_ips.size(),
+        config.ice_server_link_header.empty() ? 0 : 1,
+        config.admin_token.empty() ? 0 : 1);
 
     boost::asio::io_context io_context;
     auto registry = std::make_shared<webrtc::stream_registry>();
-    auto session_udp_port_range_result = webrtc::load_session_udp_port_range();
 
-    if (!session_udp_port_range_result)
-    {
-        WEBRTC_LOG_ERROR("load session transport runtime config failed: {}", session_udp_port_range_result.error());
+    WEBRTC_LOG_INFO(
+        "session transport runtime config loaded dtls_ip_mtu={} ipv4_udp_payload_mtu={} ipv6_udp_payload_mtu={} "
+        "session_udp_port_min={} session_udp_port_max={}",
+        config.dtls_ip_mtu,
+        config.dtls_ip_mtu - webrtc::k_ipv4_udp_overhead,
+        config.dtls_ip_mtu - webrtc::k_ipv6_udp_overhead,
+        config.session_udp_port_range.min_port,
+        config.session_udp_port_range.max_port);
 
-        return 1;
-    }
+    auto session_udp_port_allocator = std::make_shared<webrtc::udp_port_allocator>(config.session_udp_port_range);
 
-    auto dtls_ip_mtu_result = webrtc::load_dtls_ip_mtu();
-
-    if (!dtls_ip_mtu_result)
-    {
-        WEBRTC_LOG_ERROR("load session transport runtime config failed: {}", dtls_ip_mtu_result.error());
-
-        return 1;
-    }
-
-    const webrtc::udp_port_range session_udp_port_range = *session_udp_port_range_result;
-    const std::uint16_t dtls_ip_mtu = *dtls_ip_mtu_result;
-
-    WEBRTC_LOG_INFO("session transport runtime config loaded dtls_ip_mtu={} ipv4_udp_payload_mtu={} ipv6_udp_payload_mtu={} "
-                    "session_udp_port_min={} session_udp_port_max={}",
-                    dtls_ip_mtu,
-                    dtls_ip_mtu - webrtc::k_ipv4_udp_overhead,
-                    dtls_ip_mtu - webrtc::k_ipv6_udp_overhead,
-                    session_udp_port_range.min_port,
-                    session_udp_port_range.max_port);
-
-    auto session_udp_port_allocator = std::make_shared<webrtc::udp_port_allocator>(session_udp_port_range);
-
-    for (const auto& address : ice_public_ips)
+    for (const auto& address : config.ice_public_ips)
     {
         WEBRTC_LOG_INFO("ice host candidate address={} session_port_range={}-{}",
                         address,
-                        session_udp_port_range.min_port,
-                        session_udp_port_range.max_port);
+                        config.session_udp_port_range.min_port,
+                        config.session_udp_port_range.max_port);
     }
 
-    auto answer_factory =
-        std::make_shared<webrtc::webrtc_answer_factory>(std::move(local_fingerprint), std::move(ice_public_ips));
-    auto http_router = std::make_shared<webrtc::router>(registry,
-                                                        answer_factory,
-                                                        session_udp_port_allocator,
-                                                        io_context,
-                                                        std::move(ice_bind_host),
-                                                        *per_session_dtls_context,
-                                                        dtls_ip_mtu,
-                                                        std::move(admin_token));
+    auto answer_factory = std::make_shared<webrtc::webrtc_answer_factory>(std::move(local_fingerprint), config.ice_public_ips);
+    auto http_router =
+        std::make_shared<webrtc::router>(registry, answer_factory, session_udp_port_allocator, io_context, config, *per_session_dtls_context);
 
     WEBRTC_LOG_INFO("Webrtc     version {} {}", "SimpleWebrtc", "0.1");
 
@@ -318,7 +213,7 @@ int main(int argc, char* argv[])
 
     tcp.accept_socket = [&ssl_ctx_, http_router](boost::asio::ip::tcp::socket socket) { on_tcp(std::move(socket), ssl_ctx_, http_router); };
 
-    auto http_server = std::make_shared<webrtc::tcp_server>(http_port, "webrtc", io_context, std::move(tcp));
+    auto http_server = std::make_shared<webrtc::tcp_server>(config.http_port, "webrtc", io_context, std::move(tcp));
 
     http_server->run();
 

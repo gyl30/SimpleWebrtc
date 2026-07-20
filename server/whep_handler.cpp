@@ -27,6 +27,7 @@
 #include "signaling/sdp/sdp_parser.h"
 #include "signaling/sdp/sdp_summary.h"
 #include "signaling/webrtc_answer_factory.h"
+#include "webrtc_config.h"
 
 namespace webrtc
 {
@@ -137,9 +138,8 @@ std::string make_whep_outbound_source_cname(const std::unordered_set<std::string
     }
 }
 
-std::vector<sdp::sdp_answer_media_source> make_whep_outbound_media_sources(
-    const sdp::webrtc_offer_summary& offer,
-    std::span<const sdp::sdp_answer_media_source> excluded_sources = {})
+std::vector<sdp::sdp_answer_media_source> make_whep_outbound_media_sources(const sdp::webrtc_offer_summary& offer,
+                                                                           std::span<const sdp::sdp_answer_media_source> excluded_sources = {})
 {
     std::vector<sdp::sdp_answer_media_source> sources;
 
@@ -188,8 +188,8 @@ std::vector<sdp::sdp_answer_media_source> make_whep_outbound_media_sources(
     return sources;
 }
 
-std::vector<sdp::sdp_answer_media_source> filter_whep_outbound_media_sources(
-    const std::vector<sdp::sdp_answer_media_source>& sources, std::span<const int> accepted_mline_indexes)
+std::vector<sdp::sdp_answer_media_source> filter_whep_outbound_media_sources(const std::vector<sdp::sdp_answer_media_source>& sources,
+                                                                             std::span<const int> accepted_mline_indexes)
 {
     std::vector<sdp::sdp_answer_media_source> filtered_sources;
 
@@ -203,25 +203,22 @@ std::vector<sdp::sdp_answer_media_source> filter_whep_outbound_media_sources(
     return filtered_sources;
 }
 
-
 }    // namespace
 
 whep_handler::whep_handler(std::shared_ptr<stream_registry> registry,
                            std::shared_ptr<webrtc_answer_factory> answer_factory,
                            std::shared_ptr<udp_port_allocator> udp_port_allocator,
                            boost::asio::io_context& io_context,
-                           std::string udp_bind_host,
+                           const webrtc_config& config,
                            std::shared_ptr<dtls_context> dtls_context,
-                           std::uint16_t dtls_ip_mtu,
                            std::shared_ptr<media_fanout_router> media_fanout_router)
     : registry_(std::move(registry)),
       answer_factory_(std::move(answer_factory)),
       udp_port_allocator_(std::move(udp_port_allocator)),
       media_fanout_router_(std::move(media_fanout_router)),
       io_context_(io_context),
-      udp_bind_host_(std::move(udp_bind_host)),
-      dtls_context_(std::move(dtls_context)),
-      dtls_ip_mtu_(dtls_ip_mtu)
+      config_(config),
+      dtls_context_(std::move(dtls_context))
 {
 }
 
@@ -319,9 +316,8 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     // 仅保留逻辑订阅关系，不继承旧会话的 SSRC、CNAME 或后续 RTCP sender 状态。
     auto outbound_media_sources = make_whep_outbound_media_sources(
         *offer_summary,
-        reconnect_previous_session != nullptr
-            ? std::span<const sdp::sdp_answer_media_source>(reconnect_previous_session->outbound_media_sources())
-            : std::span<const sdp::sdp_answer_media_source>{});
+        reconnect_previous_session != nullptr ? std::span<const sdp::sdp_answer_media_source>(reconnect_previous_session->outbound_media_sources())
+                                              : std::span<const sdp::sdp_answer_media_source>{});
 
     auto local_udp_port = reserve_udp_port(udp_port_allocator_);
 
@@ -333,7 +329,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     }
 
     auto transport =
-        std::make_shared<whep_session_transport>(io_context_, udp_bind_host_, dtls_context_, dtls_ip_mtu_, media_fanout_router_);
+        std::make_shared<whep_session_transport>(io_context_, config_.ice_bind_host, dtls_context_, config_.dtls_ip_mtu, media_fanout_router_);
 
     auto transport_start = transport->start((*local_udp_port)->port());
 
@@ -365,8 +361,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                                    make_prefixed_error("failed to filter runtime subscriber offer: ", runtime_offer.error()));
     }
 
-    auto accepted_outbound_media_sources =
-        filter_whep_outbound_media_sources(outbound_media_sources, generated_answer->accepted_mline_indexes);
+    auto accepted_outbound_media_sources = filter_whep_outbound_media_sources(outbound_media_sources, generated_answer->accepted_mline_indexes);
 
     whep_rtp_rewriter_target rewriter_target{
         .subscriber_offer = *offer_summary,
@@ -374,8 +369,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
         .accepted_media_sources = accepted_outbound_media_sources,
     };
 
-    auto rewriter_config =
-        make_whep_rtp_rewriter_config(publisher->session_id(), publisher->remote_offer_summary(), rewriter_target);
+    auto rewriter_config = make_whep_rtp_rewriter_config(publisher->session_id(), publisher->remote_offer_summary(), rewriter_target);
 
     if (!rewriter_config)
     {
@@ -383,18 +377,15 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
                         stream_id,
                         publisher->session_id(),
                         rewriter_config.error());
-        return json_error_response(request,
-                                   400,
-                                   k_whep_sdp_answer_failed_error,
-                                   make_prefixed_error("failed to build rtp rewrite mapping: ", rewriter_config.error()));
+        return json_error_response(
+            request, 400, k_whep_sdp_answer_failed_error, make_prefixed_error("failed to build rtp rewrite mapping: ", rewriter_config.error()));
     }
 
     auto session_result = [&]() -> subscriber_session_result
     {
         if (reconnect_session_id.has_value())
         {
-            return registry_->replace_subscriber_session(
-                *reconnect_session_id, std::string(stream_id), std::move(*runtime_offer));
+            return registry_->replace_subscriber_session(*reconnect_session_id, std::string(stream_id), std::move(*runtime_offer));
         }
 
         return registry_->create_subscriber_session(std::string(stream_id), std::move(*runtime_offer));
@@ -470,7 +461,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     auto response = make_sdp_http_response(request, 201, generated_answer->sdp);
     const std::string session_location_path = "/whep/session/" + session->session_id();
     response->set(http::field::location, session_location_path);
-    set_session_resource_headers(response, *session);
+    set_session_resource_headers(response, *session, config_.ice_server_link_header);
     return response;
 }
 http_response_ptr whep_handler::patch_session(http_request_t& request, std::string_view session_id)
@@ -570,6 +561,5 @@ http_response_ptr whep_handler::json_error_response(http_request_t& request, int
 {
     return make_json_http_error_response(request, code, error_code, message);
 }
-
 
 }    // namespace webrtc

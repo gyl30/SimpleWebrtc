@@ -10,9 +10,11 @@
 
 namespace webrtc
 {
+struct webrtc_log_config;
+
 using log_init_result = std::expected<void, std::string>;
 
-[[nodiscard]] log_init_result init_log(const std::string& filename);
+[[nodiscard]] log_init_result init_log(const std::string& filename, const webrtc_log_config& config);
 
 void shutdown_log();
 }    // namespace webrtc

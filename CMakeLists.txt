@@ -161,6 +161,7 @@ add_subdirectory(third/libsrtp EXCLUDE_FROM_ALL)
 target_compile_options(srtp2 PRIVATE -Wno-conversion)
 
 set(WEBRTC_SOURCES
+    webrtc_config.cpp
     log/log.cpp
     net/http.cpp
     net/socket.cpp
@@ -196,7 +197,6 @@ set(WEBRTC_SOURCES
     ice/stun_message.cpp
     ice/session_ice_udp_server.cpp
     ice/ice_username.cpp
-    ice/session_transport_environment_config.cpp
     dtls/dtls_packet.cpp
     dtls/dtls_context.cpp
     dtls/dtls_certificate.cpp

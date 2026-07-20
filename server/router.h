@@ -1,9 +1,7 @@
 #ifndef SIMPLE_WEBRTC_SERVER_ROUTER_H
 #define SIMPLE_WEBRTC_SERVER_ROUTER_H
 
-#include <cstdint>
 #include <memory>
-#include <string>
 #include <string_view>
 
 #include <boost/asio.hpp>
@@ -19,6 +17,8 @@
 
 namespace webrtc
 {
+struct webrtc_config;
+
 class router
 {
    public:
@@ -26,10 +26,8 @@ class router
            std::shared_ptr<webrtc_answer_factory> answer_factory,
            std::shared_ptr<udp_port_allocator> udp_port_allocator,
            boost::asio::io_context& io_context,
-           std::string udp_bind_host,
-           std::shared_ptr<dtls_context> dtls_context,
-           std::uint16_t dtls_ip_mtu,
-           std::string admin_token);
+           const webrtc_config& config,
+           std::shared_ptr<dtls_context> dtls_context);
 
    public:
     [[nodiscard]]
@@ -92,7 +90,6 @@ class router
     [[nodiscard]]
     http_response_ptr prometheus_response(http_request_t& request, int code, std::string_view body);
 
-
    private:
     [[nodiscard]]
     static std::string_view request_path(http_request_t& request);
@@ -118,7 +115,7 @@ class router
 
     std::shared_ptr<media_fanout_router> media_fanout_router_;
 
-    std::string admin_token_;
+    const webrtc_config& config_;
 
     whip_handler whip_;
 
