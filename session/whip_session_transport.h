@@ -22,6 +22,7 @@
 #include "media/media_fanout_router.h"
 #include "rtp/rtcp_compound_packet.h"
 #include "rtp/rtcp_interval_scheduler.h"
+#include "rtp/rtcp_transport_feedback.h"
 #include "rtp/rtp_receive_statistics.h"
 #include "session/session_transport_media_log.h"
 #include "srtp/srtp_transport.h"
@@ -86,6 +87,8 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         std::string kind;
         uint32_t clock_rate = 0;
         bool rtcp_rsize = false;
+        bool transport_cc_enabled = false;
+        uint8_t transport_cc_extension_id = 0;
 
         bool operator==(const inbound_payload_type_context&) const = default;
     };
@@ -123,6 +126,11 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         rtp_bytes,
         rtp_receive_stats_unmapped,
         rtp_receive_stats_ignored,
+        rtp_transport_cc_observed,
+        rtp_transport_cc_missing,
+        rtp_transport_cc_invalid,
+        rtp_transport_cc_duplicate,
+        rtp_transport_cc_discontinuity,
         rtcp_received,
         rtcp_sender_report_received,
         rtcp_sender_timing_published,
@@ -141,6 +149,13 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         rtcp_fir_ignored,
         rtcp_generic_nack_ignored,
         rtcp_transport_cc_ignored,
+        rtcp_transport_cc_feedback_sent,
+        rtcp_transport_cc_status_sent,
+        rtcp_transport_cc_received_reported,
+        rtcp_transport_cc_lost_reported,
+        rtcp_transport_cc_reduced_size_sent,
+        rtcp_transport_cc_compound_sent,
+        rtcp_transport_cc_send_bytes,
         rtcp_remb_ignored,
         rtcp_other_feedback_ignored,
         rtcp_unknown_block_ignored,
@@ -176,6 +191,8 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         std::atomic<bool> other_feedback_ignored_logged{false};
         std::atomic<bool> unknown_rtcp_block_ignored_logged{false};
         std::atomic<bool> keyframe_feedback_sent_logged{false};
+        std::atomic<bool> transport_cc_feedback_sent_logged{false};
+        std::atomic<bool> transport_cc_invalid_logged{false};
         std::array<std::atomic<bool>, 128> unmapped_payload_type_logged{};
         std::array<std::atomic<uint32_t>, 16> logged_source_ssrcs{};
         std::array<std::atomic<uint32_t>, 16> logged_sender_timing_ssrcs{};
@@ -190,7 +207,8 @@ class whip_session_transport : public session_ice_udp_packet_handler,
                             uint8_t payload_type,
                             uint16_t sequence_number,
                             uint32_t rtp_timestamp,
-                            std::chrono::steady_clock::time_point arrival_time);
+                            std::chrono::steady_clock::time_point arrival_time,
+                            std::span<const uint8_t> plain_packet);
     void handle_inbound_byes(std::span<const rtcp_bye_packet> bye_packets);
     void send_rtcp_bye_locked(std::string_view reason);
     void update_receiver_sender_report(uint32_t source_ssrc,
@@ -204,7 +222,11 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     void log_media_summary(int64_t interval_ms);
     void log_receiver_states();
     void log_rtcp_interval_state();
+    void log_transport_feedback_state();
     void schedule_rtcp_receiver_reports(bool initial, bool packet_sent);
+    void schedule_transport_feedback(bool initial);
+    void handle_transport_feedback_timer(const boost::system::error_code& error);
+    [[nodiscard]] std::size_t send_transport_feedback();
     void handle_rtcp_receiver_reports(const boost::system::error_code& error);
     [[nodiscard]] std::size_t send_rtcp_receiver_reports();
     [[nodiscard]] rtcp_interval_input make_rtcp_interval_input_locked() const;
@@ -221,10 +243,15 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     boost::asio::steady_timer ice_restart_timer_;
     boost::asio::steady_timer media_log_timer_;
     boost::asio::steady_timer rtcp_receiver_report_timer_;
+    boost::asio::steady_timer transport_feedback_timer_;
     std::chrono::steady_clock::time_point media_log_interval_started_at_;
     std::mutex rtcp_interval_mutex_;
     rtcp_interval_scheduler rtcp_interval_scheduler_;
     bool rtcp_interval_logged_ = false;
+    std::chrono::steady_clock::time_point transport_feedback_deadline_;
+    bool transport_feedback_enabled_ = false;
+    bool transport_feedback_timer_started_ = false;
+    bool started_ = false;
 
     std::shared_ptr<dtls_transport> dtls_transport_;
     std::shared_ptr<srtp_transport> srtp_transport_;
@@ -241,6 +268,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
 
     std::unordered_map<uint8_t, inbound_payload_type_context> inbound_payload_types_;
     std::unordered_map<uint32_t, inbound_rtcp_receiver_state> inbound_rtcp_receivers_;
+    transport_feedback_generator transport_feedback_generator_;
 
     std::size_t received_packet_count_ = 0;
     uint32_t rtcp_sender_ssrc_ = 0;

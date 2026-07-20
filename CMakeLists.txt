@@ -204,10 +204,12 @@ set(WEBRTC_SOURCES
     dtls/dtls_srtp_keying_material.cpp
     dtls/dtls_transport.cpp
     rtp/rtp_packet.cpp
+    rtp/rtp_header_extension.cpp
     rtp/rtcp_feedback.cpp
     rtp/rtcp_fir_sequence_tracker.cpp
     rtp/rtcp_interval_scheduler.cpp
     rtp/rtcp_report.cpp
+    rtp/rtcp_transport_feedback.cpp
     rtp/rtcp_packet_builder.cpp
     rtp/rtp_receive_statistics.cpp
     rtp/rtp_retransmission_cache.cpp
