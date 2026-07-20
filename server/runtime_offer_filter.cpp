@@ -1,32 +1,13 @@
 #include "server/runtime_offer_filter.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <span>
 #include <string>
-#include <string_view>
 #include <utility>
-#include <vector>
 
 namespace webrtc
 {
-namespace
-{
-std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
-
-bool media_contains_mid(const std::vector<sdp::media_summary>& media_values, std::string_view mid)
-{
-    for (const auto& media : media_values)
-    {
-        if (media.mid == mid)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-}    // namespace
-
 std::expected<sdp::webrtc_offer_summary, std::string> make_runtime_offer_summary(
     const sdp::webrtc_offer_summary& original_offer, std::span<const int> accepted_mline_indexes)
 {
@@ -43,7 +24,7 @@ std::expected<sdp::webrtc_offer_summary, std::string> make_runtime_offer_summary
 
     for (const auto& mid : original_offer.bundle_mids)
     {
-        if (media_contains_mid(result.media, mid))
+        if (std::ranges::find(result.media, mid, &sdp::media_summary::mid) != result.media.end())
         {
             result.bundle_mids.push_back(mid);
         }
@@ -51,7 +32,7 @@ std::expected<sdp::webrtc_offer_summary, std::string> make_runtime_offer_summary
 
     if (result.bundle_mids.size() != result.media.size())
     {
-        return make_error("runtime offer filter bundle mids and accepted mids size mismatch");
+        return std::unexpected(std::string("runtime offer filter bundle mids and accepted mids size mismatch"));
     }
 
     for (std::size_t index = 0; index < result.media.size(); ++index)
