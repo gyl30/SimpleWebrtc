@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/system/error_code.hpp>
 
@@ -95,69 +96,6 @@ bool contains_control_character(std::string_view value)
     return false;
 }
 
-std::string_view trim_left(std::string_view value)
-{
-    const std::size_t position = value.find_first_not_of(" \t");
-
-    if (position == std::string_view::npos)
-    {
-        return {};
-    }
-
-    return value.substr(position);
-}
-
-std::string_view trim_right(std::string_view value)
-{
-    const std::size_t position = value.find_last_not_of(" \t");
-
-    if (position == std::string_view::npos)
-    {
-        return {};
-    }
-
-    return value.substr(0, position + 1);
-}
-
-std::string_view trim(std::string_view value) { return trim_right(trim_left(value)); }
-
-std::string to_lower_ascii(std::string_view value)
-{
-    std::string result;
-    result.reserve(value.size());
-
-    for (const char ch : value)
-    {
-        const auto value_byte = static_cast<unsigned char>(ch);
-
-        result.push_back(static_cast<char>(std::tolower(value_byte)));
-    }
-
-    return result;
-}
-
-bool equals_ignore_case(std::string_view left, std::string_view right)
-{
-    if (left.size() != right.size())
-    {
-        return false;
-    }
-
-    for (std::size_t index = 0; index < left.size(); ++index)
-    {
-        const auto left_byte = static_cast<unsigned char>(left[index]);
-
-        const auto right_byte = static_cast<unsigned char>(right[index]);
-
-        if (std::tolower(left_byte) != std::tolower(right_byte))
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 bool is_end_of_candidates_text(std::string_view candidate)
 {
     return candidate.empty() || candidate == "end-of-candidates" || candidate == "a=end-of-candidates";
@@ -175,7 +113,7 @@ std::expected<std::string, std::string> normalize_candidate_text(std::string_vie
         return make_error("ice candidate must not contain line breaks");
     }
 
-    candidate = trim(candidate);
+    candidate = boost::algorithm::trim_copy_if(candidate, boost::algorithm::is_any_of(" \t"));
 
     if (is_end_of_candidates_text(candidate))
     {
@@ -342,12 +280,12 @@ std::expected<void, std::string> validate_foundation(std::string_view first_toke
 
 std::expected<ice_candidate_transport, std::string> parse_transport(std::string_view value)
 {
-    if (equals_ignore_case(value, "udp"))
+    if (boost::algorithm::iequals(value, "udp"))
     {
         return ice_candidate_transport::udp;
     }
 
-    if (equals_ignore_case(value, "tcp"))
+    if (boost::algorithm::iequals(value, "tcp"))
     {
         return ice_candidate_transport::tcp;
     }
@@ -357,8 +295,8 @@ std::expected<ice_candidate_transport, std::string> parse_transport(std::string_
 
 std::expected<void, std::string> validate_candidate_type(std::string_view value)
 {
-    if (equals_ignore_case(value, "host") || equals_ignore_case(value, "srflx") || equals_ignore_case(value, "prflx") ||
-        equals_ignore_case(value, "relay"))
+    if (boost::algorithm::iequals(value, "host") || boost::algorithm::iequals(value, "srflx") ||
+        boost::algorithm::iequals(value, "prflx") || boost::algorithm::iequals(value, "relay"))
     {
         return {};
     }
@@ -368,7 +306,8 @@ std::expected<void, std::string> validate_candidate_type(std::string_view value)
 
 std::expected<void, std::string> validate_tcp_candidate_type(std::string_view value)
 {
-    if (equals_ignore_case(value, "active") || equals_ignore_case(value, "passive") || equals_ignore_case(value, "so"))
+    if (boost::algorithm::iequals(value, "active") || boost::algorithm::iequals(value, "passive") ||
+        boost::algorithm::iequals(value, "so"))
     {
         return {};
     }
@@ -525,7 +464,8 @@ bool is_mdns_hostname(std::string_view value)
         return false;
     }
 
-    std::string lowered = to_lower_ascii(value);
+    std::string lowered(value);
+    boost::algorithm::to_lower(lowered);
 
     if (lowered.ends_with(".local"))
     {
@@ -599,7 +539,8 @@ std::expected<void, std::string> parse_candidate_extensions(const std::vector<st
             return std::unexpected(value_validation.error());
         }
 
-        const std::string name = to_lower_ascii(raw_name);
+        std::string name(raw_name);
+        boost::algorithm::to_lower(name);
 
         if (name == "raddr")
         {
@@ -790,7 +731,7 @@ std::expected<void, std::string> parse_candidate_fields(std::string_view candida
         return std::unexpected(port.error());
     }
 
-    if (!equals_ignore_case((*tokens)[6], "typ"))
+    if (!boost::algorithm::iequals((*tokens)[6], "typ"))
     {
         return make_error("ice candidate typ field is missing");
     }

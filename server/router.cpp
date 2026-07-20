@@ -9,8 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/beast/http.hpp>
-#include <boost/algorithm/string/predicate.hpp>
 
 #include "log/log.h"
 #include "net/http.h"

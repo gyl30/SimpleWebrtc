@@ -1,7 +1,6 @@
 #include "signaling/sdp/sdp_codec_negotiator.h"
 
 #include <algorithm>
-#include <cctype>
 #include <charconv>
 #include <cstdint>
 #include <expected>
@@ -10,6 +9,8 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include <boost/algorithm/string.hpp>
 
 #include "signaling/sdp/h264_fmtp_compat.h"
 
@@ -32,48 +33,9 @@ std::unexpected<std::string> make_media_error(const media_summary& media, std::s
     return std::unexpected(std::move(error));
 }
 
-std::string to_lower_ascii(std::string_view value)
-{
-    std::string result;
-    result.reserve(value.size());
-
-    for (const auto ch : value)
-    {
-        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-
-    return result;
-}
-
-std::string_view trim_left(std::string_view value)
-{
-    const auto position = value.find_first_not_of(" \t");
-    if (position == std::string_view::npos)
-    {
-        return {};
-    }
-
-    return value.substr(position);
-}
-
-std::string_view trim_right(std::string_view value)
-{
-    const auto position = value.find_last_not_of(" \t");
-    if (position == std::string_view::npos)
-    {
-        return {};
-    }
-
-    return value.substr(0, position + 1);
-}
-
-std::string_view trim(std::string_view value) { return trim_right(trim_left(value)); }
-
-bool equals_ignore_case(std::string_view left, std::string_view right) { return to_lower_ascii(left) == to_lower_ascii(right); }
-
 bool is_opus_codec(const codec_info& codec)
 {
-    if (!equals_ignore_case(codec.name, "opus"))
+    if (!boost::algorithm::iequals(codec.name, "opus"))
     {
         return false;
     }
@@ -93,7 +55,7 @@ bool is_opus_codec(const codec_info& codec)
 
 bool is_vp8_codec(const codec_info& codec)
 {
-    if (!equals_ignore_case(codec.name, "VP8"))
+    if (!boost::algorithm::iequals(codec.name, "VP8"))
     {
         return false;
     }
@@ -103,7 +65,7 @@ bool is_vp8_codec(const codec_info& codec)
 
 bool is_rtx_codec(const codec_info& codec)
 {
-    if (!equals_ignore_case(codec.name, "rtx"))
+    if (!boost::algorithm::iequals(codec.name, "rtx"))
     {
         return false;
     }
@@ -113,7 +75,7 @@ bool is_rtx_codec(const codec_info& codec)
 
 std::optional<uint16_t> parse_payload_type_text(std::string_view value)
 {
-    value = trim(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t"));
 
     if (value.empty())
     {
@@ -134,35 +96,28 @@ std::optional<uint16_t> parse_payload_type_text(std::string_view value)
 
 std::optional<std::string> find_fmtp_parameter(std::string_view fmtp, std::string_view key)
 {
-    std::size_t start = 0;
+    std::vector<std::string_view> parts;
+    boost::algorithm::split(parts, fmtp, boost::algorithm::is_any_of(";"));
 
-    while (start <= fmtp.size())
+    for (const std::string_view part : parts)
     {
-        const std::size_t separator = fmtp.find(';', start);
-
-        const std::string_view part = separator == std::string_view::npos ? fmtp.substr(start) : fmtp.substr(start, separator - start);
-
-        const std::string_view item = trim(part);
+        const std::string_view item = boost::algorithm::trim_copy_if(part, boost::algorithm::is_any_of(" \t"));
         const std::size_t equal_position = item.find('=');
 
         if (equal_position != std::string_view::npos)
         {
-            const std::string_view item_key = trim(item.substr(0, equal_position));
+            const std::string_view item_key =
+                boost::algorithm::trim_copy_if(item.substr(0, equal_position), boost::algorithm::is_any_of(" \t"));
 
-            const std::string_view item_value = trim(item.substr(equal_position + 1));
+            const std::string_view item_value =
+                boost::algorithm::trim_copy_if(item.substr(equal_position + 1), boost::algorithm::is_any_of(" \t"));
 
-            if (equals_ignore_case(item_key, key))
+            if (boost::algorithm::iequals(item_key, key))
             {
                 return std::string(item_value);
             }
         }
 
-        if (separator == std::string_view::npos)
-        {
-            break;
-        }
-
-        start = separator + 1;
     }
 
     return std::nullopt;
@@ -193,7 +148,7 @@ std::optional<std::string> normalize_h264_answer_fmtp(std::string_view offer_fmt
 
 bool is_h264_codec(const codec_info& codec)
 {
-    if (!equals_ignore_case(codec.name, "H264"))
+    if (!boost::algorithm::iequals(codec.name, "H264"))
     {
         return false;
     }
@@ -259,7 +214,7 @@ struct opus_fmtp_parameter
 
 std::expected<uint32_t, std::string> parse_opus_fmtp_u32(std::string_view value, std::string_view key)
 {
-    value = trim(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t"));
 
     if (value.empty())
     {
@@ -297,16 +252,12 @@ std::expected<uint32_t, std::string> parse_opus_fmtp_u32(std::string_view value,
 std::expected<std::vector<opus_fmtp_parameter>, std::string> parse_opus_fmtp_parameters(std::string_view fmtp)
 {
     std::vector<opus_fmtp_parameter> parameters;
+    std::vector<std::string_view> parts;
+    boost::algorithm::split(parts, fmtp, boost::algorithm::is_any_of(";"));
 
-    std::size_t start = 0;
-
-    while (start <= fmtp.size())
+    for (const std::string_view part : parts)
     {
-        const std::size_t separator = fmtp.find(';', start);
-
-        const std::string_view part = separator == std::string_view::npos ? fmtp.substr(start) : fmtp.substr(start, separator - start);
-
-        const std::string_view item = trim(part);
+        const std::string_view item = boost::algorithm::trim_copy_if(part, boost::algorithm::is_any_of(" \t"));
 
         if (!item.empty())
         {
@@ -317,9 +268,11 @@ std::expected<std::vector<opus_fmtp_parameter>, std::string> parse_opus_fmtp_par
                 return make_error("opus fmtp parameter is missing value");
             }
 
-            const std::string_view key = trim(item.substr(0, equal_position));
+            const std::string_view key =
+                boost::algorithm::trim_copy_if(item.substr(0, equal_position), boost::algorithm::is_any_of(" \t"));
 
-            const std::string_view value = trim(item.substr(equal_position + 1));
+            const std::string_view value =
+                boost::algorithm::trim_copy_if(item.substr(equal_position + 1), boost::algorithm::is_any_of(" \t"));
 
             if (key.empty())
             {
@@ -333,19 +286,13 @@ std::expected<std::vector<opus_fmtp_parameter>, std::string> parse_opus_fmtp_par
 
             opus_fmtp_parameter parameter;
 
-            parameter.key = to_lower_ascii(key);
+            parameter.key = boost::algorithm::to_lower_copy(std::string(key));
 
             parameter.value = std::string(value);
 
             parameters.push_back(std::move(parameter));
         }
 
-        if (separator == std::string_view::npos)
-        {
-            break;
-        }
-
-        start = separator + 1;
     }
 
     return parameters;
@@ -358,7 +305,7 @@ std::expected<std::optional<std::string>, std::string> find_unique_opus_fmtp_par
 
     for (const auto& parameter : parameters)
     {
-        if (!equals_ignore_case(parameter.key, key))
+        if (!boost::algorithm::iequals(parameter.key, key))
         {
             continue;
         }
@@ -657,7 +604,7 @@ bool h264_codecs_are_compatible(const codec_info& publisher_codec, const codec_i
 }
 bool codecs_are_compatible(const codec_info& publisher_codec, const codec_info& subscriber_codec)
 {
-    if (!equals_ignore_case(publisher_codec.name, subscriber_codec.name))
+    if (!boost::algorithm::iequals(publisher_codec.name, subscriber_codec.name))
     {
         return false;
     }

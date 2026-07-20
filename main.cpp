@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -10,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/version.hpp>
@@ -70,43 +72,16 @@ static uint16_t get_env_uint16_or_default(const char* name, uint16_t default_val
 
     return static_cast<uint16_t>(parsed);
 }
-static std::string_view trim_ascii(std::string_view value)
-{
-    const std::size_t begin = value.find_first_not_of(" \t\r\n");
-
-    if (begin == std::string_view::npos)
-    {
-        return {};
-    }
-
-    const std::size_t end = value.find_last_not_of(" \t\r\n");
-
-    return value.substr(begin, end - begin + 1);
-}
-
-static bool contains_string(const std::vector<std::string>& values, std::string_view value)
-{
-    for (const auto& current : values)
-    {
-        if (current == value)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 static void append_unique_string(std::vector<std::string>& values, std::string_view value)
 {
-    value = trim_ascii(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t\r\n"));
 
     if (value.empty())
     {
         return;
     }
 
-    if (contains_string(values, value))
+    if (std::ranges::find(values, value) != values.end())
     {
         return;
     }
@@ -117,23 +92,12 @@ static void append_unique_string(std::vector<std::string>& values, std::string_v
 static std::vector<std::string> split_csv_unique(std::string_view value)
 {
     std::vector<std::string> result;
+    std::vector<std::string_view> items;
+    boost::algorithm::split(items, value, boost::algorithm::is_any_of(","));
 
-    std::size_t offset = 0;
-
-    while (offset <= value.size())
+    for (const auto item : items)
     {
-        const std::size_t comma = value.find(',', offset);
-
-        if (comma == std::string_view::npos)
-        {
-            append_unique_string(result, value.substr(offset));
-
-            break;
-        }
-
-        append_unique_string(result, value.substr(offset, comma - offset));
-
-        offset = comma + 1;
+        append_unique_string(result, item);
     }
 
     return result;

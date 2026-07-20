@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include <boost/algorithm/string.hpp>
+
 #include "signaling/sdp/sdp_lexer.h"
 
 namespace webrtc::sdp
@@ -17,84 +19,9 @@ namespace
 {
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
-std::string_view trim_left(std::string_view value)
-{
-    const auto position = value.find_first_not_of(" \t");
-    if (position == std::string_view::npos)
-    {
-        return {};
-    }
-
-    return value.substr(position);
-}
-
-std::string_view trim_right(std::string_view value)
-{
-    const auto position = value.find_last_not_of(" \t");
-    if (position == std::string_view::npos)
-    {
-        return {};
-    }
-
-    return value.substr(0, position + 1);
-}
-
-std::string_view trim(std::string_view value) { return trim_right(trim_left(value)); }
-
-std::vector<std::string_view> split_whitespace(std::string_view value)
-{
-    std::vector<std::string_view> result;
-
-    std::size_t position = 0;
-    while (position < value.size())
-    {
-        while (position < value.size() && is_whitespace(value[position]))
-        {
-            ++position;
-        }
-
-        if (position >= value.size())
-        {
-            break;
-        }
-
-        const std::size_t start = position;
-
-        while (position < value.size() && !is_whitespace(value[position]))
-        {
-            ++position;
-        }
-
-        result.push_back(value.substr(start, position - start));
-    }
-
-    return result;
-}
-
-std::vector<std::string_view> split_by_char(std::string_view value, char separator)
-{
-    std::vector<std::string_view> result;
-
-    std::size_t start = 0;
-    while (start <= value.size())
-    {
-        const std::size_t position = value.find(separator, start);
-        if (position == std::string_view::npos)
-        {
-            result.push_back(value.substr(start));
-            break;
-        }
-
-        result.push_back(value.substr(start, position - start));
-        start = position + 1;
-    }
-
-    return result;
-}
-
 std::expected<uint64_t, std::string> parse_uint64_text(std::string_view value, std::string_view field_name)
 {
-    value = trim(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t"));
     if (value.empty())
     {
         std::string error(field_name);
@@ -116,7 +43,7 @@ std::expected<uint64_t, std::string> parse_uint64_text(std::string_view value, s
 
 std::expected<int32_t, std::string> parse_int32_text(std::string_view value, std::string_view field_name)
 {
-    value = trim(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t"));
     if (value.empty())
     {
         std::string error(field_name);
@@ -138,7 +65,7 @@ std::expected<int32_t, std::string> parse_int32_text(std::string_view value, std
 
 std::expected<sdp_attribute, std::string> parse_attribute_line(std::string_view value)
 {
-    value = trim(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t"));
     if (value.empty())
     {
         return make_error("empty attribute");
@@ -155,7 +82,12 @@ std::expected<sdp_attribute, std::string> parse_attribute_line(std::string_view 
 
 std::expected<void, std::string> validate_connection_information_line(std::string_view value)
 {
-    const auto fields = split_whitespace(value);
+    std::vector<std::string_view> fields;
+    boost::algorithm::split(fields,
+                            value,
+                            boost::algorithm::is_any_of(" \t"),
+                            boost::algorithm::token_compress_on);
+    std::erase(fields, std::string_view{});
 
     if (fields.size() < 2)
     {
@@ -177,7 +109,7 @@ std::expected<void, std::string> validate_connection_information_line(std::strin
 
 std::expected<void, std::string> validate_bandwidth_line(std::string_view value)
 {
-    value = trim(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t"));
 
     const auto colon_position = value.find(':');
     if (colon_position == std::string_view::npos || colon_position == 0 || colon_position + 1 >= value.size())
@@ -208,7 +140,12 @@ std::expected<void, std::string> validate_bandwidth_line(std::string_view value)
 
 std::expected<void, std::string> validate_timing_line(std::string_view value)
 {
-    const auto fields = split_whitespace(value);
+    std::vector<std::string_view> fields;
+    boost::algorithm::split(fields,
+                            value,
+                            boost::algorithm::is_any_of(" \t"),
+                            boost::algorithm::token_compress_on);
+    std::erase(fields, std::string_view{});
     if (fields.size() != 2)
     {
         return make_error("invalid timing line");
@@ -231,7 +168,12 @@ std::expected<void, std::string> validate_timing_line(std::string_view value)
 
 std::expected<void, std::string> validate_repeat_time_line(std::string_view value)
 {
-    const auto fields = split_whitespace(value);
+    std::vector<std::string_view> fields;
+    boost::algorithm::split(fields,
+                            value,
+                            boost::algorithm::is_any_of(" \t"),
+                            boost::algorithm::token_compress_on);
+    std::erase(fields, std::string_view{});
     if (fields.size() < 2)
     {
         return make_error("invalid repeat time line");
@@ -263,7 +205,12 @@ std::expected<void, std::string> validate_repeat_time_line(std::string_view valu
 
 std::expected<void, std::string> validate_time_zone_line(std::string_view value)
 {
-    const auto fields = split_whitespace(value);
+    std::vector<std::string_view> fields;
+    boost::algorithm::split(fields,
+                            value,
+                            boost::algorithm::is_any_of(" \t"),
+                            boost::algorithm::token_compress_on);
+    std::erase(fields, std::string_view{});
     if (fields.empty() || fields.size() % 2 != 0)
     {
         return make_error("invalid time zone line");
@@ -318,7 +265,12 @@ std::expected<int32_t, std::string> parse_ranged_port(std::string_view value)
 
 std::expected<media_name_line, std::string> parse_media_name_line(std::string_view value)
 {
-    const auto fields = split_whitespace(value);
+    std::vector<std::string_view> fields;
+    boost::algorithm::split(fields,
+                            value,
+                            boost::algorithm::is_any_of(" \t"),
+                            boost::algorithm::token_compress_on);
+    std::erase(fields, std::string_view{});
 
     if (fields.size() < 4)
     {
@@ -340,7 +292,8 @@ std::expected<media_name_line, std::string> parse_media_name_line(std::string_vi
     media_name.media = std::string(fields[0]);
     media_name.port = *port;
 
-    const auto protocols = split_by_char(fields[2], '/');
+    std::vector<std::string_view> protocols;
+    boost::algorithm::split(protocols, fields[2], boost::algorithm::is_any_of("/"));
     if (protocols.empty())
     {
         return make_error("empty media protocol");
@@ -371,7 +324,12 @@ std::expected<media_name_line, std::string> parse_media_name_line(std::string_vi
 
 std::expected<void, std::string> validate_origin_line(std::string_view value)
 {
-    const auto fields = split_whitespace(value);
+    std::vector<std::string_view> fields;
+    boost::algorithm::split(fields,
+                            value,
+                            boost::algorithm::is_any_of(" \t"),
+                            boost::algorithm::token_compress_on);
+    std::erase(fields, std::string_view{});
 
     if (fields.size() != 6)
     {
@@ -450,7 +408,7 @@ std::expected<void, std::string> parse_session_level_line(session_description& d
             return {};
 
         case 'u':
-            if (trim(value).empty())
+            if (boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t")).empty())
             {
                 return make_error("empty uri line");
             }

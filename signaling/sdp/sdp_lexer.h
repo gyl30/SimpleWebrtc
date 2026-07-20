@@ -30,7 +30,6 @@ class sdp_lexer
     std::size_t position_ = 0;
 };
 
-[[nodiscard]] bool is_whitespace(char ch);
 [[nodiscard]] bool is_any_of(std::string_view value, std::initializer_list<std::string_view> candidates);
 
 [[nodiscard]] std::expected<int64_t, std::string> parse_time_units(std::string_view value);

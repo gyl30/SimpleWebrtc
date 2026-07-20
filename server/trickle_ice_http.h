@@ -1,7 +1,6 @@
 #ifndef SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_HTTP_H
 #define SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_HTTP_H
 
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -10,6 +9,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <boost/algorithm/string.hpp>
 
 #include "net/http.h"
 
@@ -49,33 +50,10 @@ inline uint64_t fnv1a_append_separator(uint64_t hash) { return fnv1a_append(hash
 
 inline uint64_t fnv1a_append_uint64(uint64_t hash, uint64_t value) { return fnv1a_append(hash, std::to_string(value)); }
 
-inline std::string_view trim_ascii(std::string_view value)
+inline bool content_type_matches(std::string_view content_type, std::string_view expected)
 {
-    while (!value.empty())
-    {
-        const auto item = static_cast<unsigned char>(value.front());
-
-        if (std::isspace(item) == 0)
-        {
-            break;
-        }
-
-        value.remove_prefix(1);
-    }
-
-    while (!value.empty())
-    {
-        const auto item = static_cast<unsigned char>(value.back());
-
-        if (std::isspace(item) == 0)
-        {
-            break;
-        }
-
-        value.remove_suffix(1);
-    }
-
-    return value;
+    return boost::algorithm::istarts_with(content_type, expected) &&
+           (content_type.size() == expected.size() || content_type[expected.size()] == ';');
 }
 
 inline std::string get_env_string(const char* name)
@@ -111,29 +89,15 @@ inline bool is_configured_ice_server_url(std::string_view url)
 inline std::vector<std::string> split_configured_ice_server_urls(std::string_view value)
 {
     std::vector<std::string> urls;
+    std::vector<std::string_view> items;
+    boost::algorithm::split(items,
+                            value,
+                            boost::algorithm::is_any_of(", \t\r\n"),
+                            boost::algorithm::token_compress_on);
 
-    std::size_t offset = 0;
-
-    while (offset <= value.size())
+    for (std::string_view item : items)
     {
-        const std::size_t separator = value.find_first_of(", \t\r\n", offset);
-
-        std::string_view item;
-
-        if (separator == std::string_view::npos)
-        {
-            item = value.substr(offset);
-
-            offset = value.size() + 1;
-        }
-        else
-        {
-            item = value.substr(offset, separator - offset);
-
-            offset = separator + 1;
-        }
-
-        item = trim_ascii(item);
+        item = boost::algorithm::trim_copy(item);
 
         if (item.empty())
         {
@@ -237,28 +201,12 @@ inline const std::string k_configured_ice_server_link_header = make_configured_i
 
 inline bool etag_list_contains(std::string_view if_match, std::string_view current_etag)
 {
-    std::size_t offset = 0;
+    std::vector<std::string_view> tokens;
+    boost::algorithm::split(tokens, if_match, boost::algorithm::is_any_of(","));
 
-    while (offset <= if_match.size())
+    for (std::string_view token : tokens)
     {
-        const std::size_t comma = if_match.find(',', offset);
-
-        std::string_view token;
-
-        if (comma == std::string_view::npos)
-        {
-            token = if_match.substr(offset);
-
-            offset = if_match.size() + 1;
-        }
-        else
-        {
-            token = if_match.substr(offset, comma - offset);
-
-            offset = comma + 1;
-        }
-
-        token = trim_ascii(token);
+        token = boost::algorithm::trim_copy(token);
 
         if (token == "*")
         {

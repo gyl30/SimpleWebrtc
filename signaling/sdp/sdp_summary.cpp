@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <charconv>
-#include <cctype>
 #include <expected>
 #include <optional>
 #include <set>
@@ -11,6 +10,8 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include <boost/algorithm/string.hpp>
 
 namespace webrtc::sdp
 {
@@ -269,86 +270,9 @@ std::expected<void, std::string> validate_media_restart_compatibility(const medi
 
     return {};
 }
-bool is_space(char value) { return value == ' ' || value == '\t'; }
-
-std::string_view trim_left(std::string_view value)
-{
-    const auto position = value.find_first_not_of(" \t");
-    if (position == std::string_view::npos)
-    {
-        return {};
-    }
-
-    return value.substr(position);
-}
-
-std::string_view trim_right(std::string_view value)
-{
-    const auto position = value.find_last_not_of(" \t");
-    if (position == std::string_view::npos)
-    {
-        return {};
-    }
-
-    return value.substr(0, position + 1);
-}
-
-std::string_view trim(std::string_view value) { return trim_right(trim_left(value)); }
-
-std::vector<std::string_view> split_whitespace(std::string_view value)
-{
-    std::vector<std::string_view> result;
-
-    std::size_t position = 0;
-    while (position < value.size())
-    {
-        while (position < value.size() && is_space(value[position]))
-        {
-            ++position;
-        }
-
-        if (position >= value.size())
-        {
-            break;
-        }
-
-        const std::size_t start = position;
-
-        while (position < value.size() && !is_space(value[position]))
-        {
-            ++position;
-        }
-
-        result.push_back(value.substr(start, position - start));
-    }
-
-    return result;
-}
-
-std::vector<std::string_view> split_by_char(std::string_view value, char separator)
-{
-    std::vector<std::string_view> result;
-
-    std::size_t start = 0;
-    while (start <= value.size())
-    {
-        const std::size_t position = value.find(separator, start);
-        if (position == std::string_view::npos)
-        {
-            result.push_back(value.substr(start));
-            break;
-        }
-
-        result.push_back(value.substr(start, position - start));
-        start = position + 1;
-    }
-
-    return result;
-}
-
 std::expected<uint16_t, std::string> parse_payload_type(std::string_view value)
 {
-    value = trim(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t"));
     if (value.empty())
     {
         return make_error("empty payload type");
@@ -371,7 +295,7 @@ std::expected<uint16_t, std::string> parse_payload_type(std::string_view value)
 
 std::expected<uint32_t, std::string> parse_clock_rate(std::string_view value)
 {
-    value = trim(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t"));
     if (value.empty())
     {
         return make_error("empty codec clock rate");
@@ -451,7 +375,12 @@ std::vector<std::string> parse_bundle_mids(const session_description& descriptio
     const auto group_attributes = description.find_attributes(k_attribute_group);
     for (const auto* attribute : group_attributes)
     {
-        const auto fields = split_whitespace(attribute->value);
+        std::vector<std::string_view> fields;
+        boost::algorithm::split(fields,
+                                attribute->value,
+                                boost::algorithm::is_any_of(" \t"),
+                                boost::algorithm::token_compress_on);
+        std::erase(fields, std::string_view{});
         if (fields.empty())
         {
             continue;
@@ -476,7 +405,12 @@ std::vector<std::string> parse_bundle_mids(const session_description& descriptio
 
 std::expected<fingerprint_info, std::string> parse_fingerprint(std::string_view value)
 {
-    const auto fields = split_whitespace(value);
+    std::vector<std::string_view> fields;
+    boost::algorithm::split(fields,
+                            value,
+                            boost::algorithm::is_any_of(" \t"),
+                            boost::algorithm::token_compress_on);
+    std::erase(fields, std::string_view{});
     if (fields.size() != 2)
     {
         return make_error("invalid fingerprint attribute");
@@ -491,7 +425,8 @@ std::expected<fingerprint_info, std::string> parse_fingerprint(std::string_view 
 
 std::expected<dtls_connection_role, std::string> parse_setup(std::string_view value)
 {
-    auto role = parse_dtls_connection_role(trim(value));
+    auto role = parse_dtls_connection_role(
+        boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t")));
     if (!role.has_value() || role.value() == dtls_connection_role::unknown)
     {
         return make_error("invalid setup attribute");
@@ -534,7 +469,12 @@ std::expected<media_direction, std::string> parse_media_direction_from_attribute
 
 std::expected<codec_info, std::string> parse_rtp_map_attribute(std::string_view value)
 {
-    const auto fields = split_whitespace(value);
+    std::vector<std::string_view> fields;
+    boost::algorithm::split(fields,
+                            value,
+                            boost::algorithm::is_any_of(" \t"),
+                            boost::algorithm::token_compress_on);
+    std::erase(fields, std::string_view{});
     if (fields.size() != 2)
     {
         return make_error("invalid rtpmap attribute");
@@ -546,7 +486,8 @@ std::expected<codec_info, std::string> parse_rtp_map_attribute(std::string_view 
         return make_error(payload_type.error());
     }
 
-    const auto codec_parts = split_by_char(fields[1], '/');
+    std::vector<std::string_view> codec_parts;
+    boost::algorithm::split(codec_parts, fields[1], boost::algorithm::is_any_of("/"));
     if (codec_parts.size() < 2 || codec_parts[0].empty() || codec_parts[1].empty())
     {
         return make_error("invalid rtpmap codec description");
@@ -642,7 +583,12 @@ std::expected<void, std::string> parse_codecs(media_summary& summary, const medi
     for (const auto* attribute : fmtp_attributes)
     {
         const std::string_view value = attribute->value;
-        const auto fields = split_whitespace(value);
+        std::vector<std::string_view> fields;
+        boost::algorithm::split(fields,
+                                value,
+                                boost::algorithm::is_any_of(" \t"),
+                                boost::algorithm::token_compress_on);
+        std::erase(fields, std::string_view{});
         if (fields.size() < 2)
         {
             return make_error("invalid fmtp attribute");
@@ -663,7 +609,8 @@ std::expected<void, std::string> parse_codecs(media_summary& summary, const medi
         const auto first_space = value.find_first_of(" \t");
         if (first_space != std::string_view::npos)
         {
-            codec->fmtp = std::string(trim(value.substr(first_space + 1)));
+            codec->fmtp = std::string(
+                boost::algorithm::trim_copy_if(value.substr(first_space + 1), boost::algorithm::is_any_of(" \t")));
         }
     }
 
@@ -671,7 +618,12 @@ std::expected<void, std::string> parse_codecs(media_summary& summary, const medi
     for (const auto* attribute : rtcp_feedback_attributes)
     {
         const std::string_view value = attribute->value;
-        const auto fields = split_whitespace(value);
+        std::vector<std::string_view> fields;
+        boost::algorithm::split(fields,
+                                value,
+                                boost::algorithm::is_any_of(" \t"),
+                                boost::algorithm::token_compress_on);
+        std::erase(fields, std::string_view{});
         if (fields.size() < 2)
         {
             return make_error("invalid rtcp-fb attribute");
@@ -683,7 +635,8 @@ std::expected<void, std::string> parse_codecs(media_summary& summary, const medi
             return make_error("invalid rtcp-fb attribute");
         }
 
-        const std::string feedback(trim(value.substr(feedback_start + 1)));
+        const std::string feedback(
+            boost::algorithm::trim_copy_if(value.substr(feedback_start + 1), boost::algorithm::is_any_of(" \t")));
 
         if (fields[0] == "*")
         {
@@ -718,7 +671,7 @@ std::expected<void, std::string> parse_codecs(media_summary& summary, const medi
 
 std::optional<uint32_t> parse_u32_text(std::string_view value)
 {
-    value = trim(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t"));
 
     if (value.empty())
     {
@@ -737,28 +690,6 @@ std::optional<uint32_t> parse_u32_text(std::string_view value)
     return result;
 }
 
-bool equals_ignore_case_ascii(std::string_view left, std::string_view right)
-{
-    if (left.size() != right.size())
-    {
-        return false;
-    }
-
-    for (std::size_t index = 0; index < left.size(); ++index)
-    {
-        const char left_char = static_cast<char>(std::tolower(static_cast<unsigned char>(left[index])));
-
-        const char right_char = static_cast<char>(std::tolower(static_cast<unsigned char>(right[index])));
-
-        if (left_char != right_char)
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 std::expected<void, std::string> parse_ssrc_groups(media_summary& summary, const media_description& media)
 {
     const auto attributes = media.find_attributes("ssrc-group");
@@ -767,7 +698,12 @@ std::expected<void, std::string> parse_ssrc_groups(media_summary& summary, const
     {
         const std::string_view value = attribute->value;
 
-        const auto fields = split_whitespace(value);
+        std::vector<std::string_view> fields;
+        boost::algorithm::split(fields,
+                                value,
+                                boost::algorithm::is_any_of(" \t"),
+                                boost::algorithm::token_compress_on);
+        std::erase(fields, std::string_view{});
 
         if (fields.size() < 2)
         {
@@ -863,54 +799,14 @@ std::expected<void, std::string> parse_media_timing_attributes(media_summary& su
     return {};
 }
 
-std::string lower_ascii_copy(std::string_view value)
-{
-    std::string result;
-
-    result.reserve(value.size());
-
-    for (char ch : value)
-    {
-        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-
-    return result;
-}
-
-std::vector<std::string> split_sdp_tokens(std::string_view value)
-{
-    std::vector<std::string> tokens;
-
-    std::size_t offset = 0;
-
-    while (offset < value.size())
-    {
-        while (offset < value.size() && std::isspace(static_cast<unsigned char>(value[offset])) != 0)
-        {
-            offset += 1;
-        }
-
-        if (offset >= value.size())
-        {
-            break;
-        }
-
-        const std::size_t begin = offset;
-
-        while (offset < value.size() && std::isspace(static_cast<unsigned char>(value[offset])) == 0)
-        {
-            offset += 1;
-        }
-
-        tokens.push_back(std::string(value.substr(begin, offset - begin)));
-    }
-
-    return tokens;
-}
-
 std::expected<rid_summary, std::string> parse_rid_summary(std::string_view value)
 {
-    const std::vector<std::string> tokens = split_sdp_tokens(value);
+    std::vector<std::string> tokens;
+    boost::algorithm::split(tokens,
+                            value,
+                            boost::algorithm::is_space(),
+                            boost::algorithm::token_compress_on);
+    std::erase(tokens, std::string{});
 
     if (tokens.size() < 2)
     {
@@ -921,7 +817,7 @@ std::expected<rid_summary, std::string> parse_rid_summary(std::string_view value
 
     result.id = tokens[0];
 
-    result.direction = lower_ascii_copy(tokens[1]);
+    result.direction = boost::algorithm::to_lower_copy(tokens[1]);
 
     if (result.id.empty())
     {
@@ -1019,7 +915,12 @@ std::expected<std::optional<simulcast_summary>, std::string> parse_simulcast_sum
             return make_error("simulcast attribute is duplicated");
         }
 
-        const std::vector<std::string> tokens = split_sdp_tokens(attribute.value);
+        std::vector<std::string> tokens;
+        boost::algorithm::split(tokens,
+                                attribute.value,
+                                boost::algorithm::is_space(),
+                                boost::algorithm::token_compress_on);
+        std::erase(tokens, std::string{});
 
         if (tokens.size() < 2 || (tokens.size() % 2U) != 0)
         {
@@ -1030,7 +931,7 @@ std::expected<std::optional<simulcast_summary>, std::string> parse_simulcast_sum
 
         for (std::size_t index = 0; index < tokens.size(); index += 2)
         {
-            const std::string direction = lower_ascii_copy(tokens[index]);
+            const std::string direction = boost::algorithm::to_lower_copy(tokens[index]);
 
             const std::vector<std::string> rids = parse_simulcast_rid_list(tokens[index + 1]);
 
@@ -1059,7 +960,12 @@ std::expected<std::optional<simulcast_summary>, std::string> parse_simulcast_sum
 
 std::expected<msid_summary, std::string> parse_msid_summary(std::string_view value)
 {
-    const std::vector<std::string> tokens = split_sdp_tokens(value);
+    std::vector<std::string> tokens;
+    boost::algorithm::split(tokens,
+                            value,
+                            boost::algorithm::is_space(),
+                            boost::algorithm::token_compress_on);
+    std::erase(tokens, std::string{});
 
     if (tokens.empty())
     {
@@ -1475,7 +1381,7 @@ bool media_has_rtx_codec(const media_summary& media)
 {
     for (const auto& codec : media.codecs)
     {
-        if (equals_ignore_case_ascii(codec.name, "rtx"))
+        if (boost::algorithm::iequals(codec.name, "rtx"))
         {
             return true;
         }

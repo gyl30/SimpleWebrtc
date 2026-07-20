@@ -11,6 +11,8 @@
 #include <string_view>
 #include <vector>
 
+#include <boost/algorithm/string.hpp>
+
 namespace webrtc::sdp
 {
 namespace
@@ -49,67 +51,9 @@ struct h264_fmtp_parameters
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
-std::string lower_copy(std::string_view value)
-{
-    std::string result;
-
-    result.reserve(value.size());
-
-    for (const char ch : value)
-    {
-        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-
-    return result;
-}
-
-std::string trim_copy(std::string_view value)
-{
-    std::size_t begin = 0;
-
-    while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin])) != 0)
-    {
-        begin += 1;
-    }
-
-    std::size_t end = value.size();
-
-    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0)
-    {
-        end -= 1;
-    }
-
-    return std::string(value.substr(begin, end - begin));
-}
-
-std::vector<std::string_view> split_semicolon(std::string_view value)
-{
-    std::vector<std::string_view> result;
-
-    std::size_t begin = 0;
-
-    while (begin <= value.size())
-    {
-        const std::size_t end = value.find(';', begin);
-
-        if (end == std::string_view::npos)
-        {
-            result.push_back(value.substr(begin));
-
-            break;
-        }
-
-        result.push_back(value.substr(begin, end - begin));
-
-        begin = end + 1;
-    }
-
-    return result;
-}
-
 std::expected<uint8_t, std::string> parse_u8_decimal(std::string_view value)
 {
-    const std::string normalized = trim_copy(value);
+    const std::string normalized = boost::algorithm::trim_copy(std::string(value));
 
     if (normalized.empty())
     {
@@ -134,7 +78,8 @@ std::expected<uint8_t, std::string> parse_u8_decimal(std::string_view value)
 
 std::expected<bool, std::string> parse_boolean_01(std::string_view value)
 {
-    const std::string normalized = lower_copy(trim_copy(value));
+    const std::string normalized =
+        boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(std::string(value)));
 
     if (normalized == "1" || normalized == "true" || normalized == "yes")
     {
@@ -217,7 +162,8 @@ h264_profile_kind classify_h264_profile(uint8_t profile_idc, uint8_t profile_iop
 
 std::expected<h264_profile_level_id, std::string> parse_profile_level_id(std::string_view value)
 {
-    const std::string normalized = lower_copy(trim_copy(value));
+    const std::string normalized =
+        boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(std::string(value)));
 
     if (normalized.size() != 6)
     {
@@ -477,10 +423,12 @@ bool h264_level_asymmetry_allowed_effective_value(const h264_fmtp_parameters& pa
 std::expected<h264_fmtp_parameters, std::string> parse_h264_fmtp(std::string_view fmtp)
 {
     h264_fmtp_parameters parameters;
+    std::vector<std::string_view> parts;
+    boost::algorithm::split(parts, fmtp, boost::algorithm::is_any_of(";"));
 
-    for (std::string_view raw_part : split_semicolon(fmtp))
+    for (std::string_view raw_part : parts)
     {
-        const std::string part = trim_copy(raw_part);
+        const std::string part = boost::algorithm::trim_copy(std::string(raw_part));
 
         if (part.empty())
         {
@@ -494,9 +442,10 @@ std::expected<h264_fmtp_parameters, std::string> parse_h264_fmtp(std::string_vie
             continue;
         }
 
-        const std::string key = lower_copy(trim_copy(std::string_view(part.data(), equal_position)));
+        const std::string key = boost::algorithm::to_lower_copy(
+            boost::algorithm::trim_copy(part.substr(0, equal_position)));
 
-        const std::string value = trim_copy(std::string_view(part.data() + equal_position + 1, part.size() - equal_position - 1));
+        const std::string value = boost::algorithm::trim_copy(part.substr(equal_position + 1));
 
         if (key == "packetization-mode")
         {

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cctype>
 #include <expected>
 #include <limits>
 #include <optional>
@@ -11,6 +10,8 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include <boost/algorithm/string.hpp>
 
 #include "signaling/sdp/sdp_formatter.h"
 #include "signaling/sdp/sdp_codec_negotiator.h"
@@ -321,37 +322,6 @@ constexpr std::string_view k_absolute_send_time_extension_uri = "http://www.webr
 
 constexpr std::string_view k_audio_level_extension_uri = "urn:ietf:params:rtp-hdrext:ssrc-audio-level";
 
-std::vector<std::string> split_sdp_tokens(std::string_view value)
-{
-    std::vector<std::string> tokens;
-
-    std::size_t offset = 0;
-
-    while (offset < value.size())
-    {
-        while (offset < value.size() && std::isspace(static_cast<unsigned char>(value[offset])) != 0)
-        {
-            offset += 1;
-        }
-
-        if (offset >= value.size())
-        {
-            break;
-        }
-
-        const std::size_t begin = offset;
-
-        while (offset < value.size() && std::isspace(static_cast<unsigned char>(value[offset])) == 0)
-        {
-            offset += 1;
-        }
-
-        tokens.push_back(std::string(value.substr(begin, offset - begin)));
-    }
-
-    return tokens;
-}
-
 bool media_has_header_extension_uri(const media_summary& media, std::string_view uri)
 {
     for (const auto& extension : media.header_extensions)
@@ -424,18 +394,6 @@ bool media_has_answerable_recv_rid(const media_summary& media, std::string_view 
     return false;
 }
 
-bool string_vector_contains_value(const std::vector<std::string>& values, std::string_view value)
-{
-    for (const auto& current : values)
-    {
-        if (current == value)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
 void push_attribute(std::vector<sdp_attribute>& attributes, std::string_view key, std::string_view value)
 {
     attributes.push_back(make_attribute(std::string(key), std::string(value)));
@@ -501,42 +459,21 @@ std::string make_rtcp_feedback_value(const codec_info& codec, std::string_view f
 
     return value;
 }
-std::string lower_rtcp_feedback_ascii(std::string_view value)
-{
-    std::string result;
-
-    result.reserve(value.size());
-
-    for (const char ch : value)
-    {
-        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-
-    return result;
-}
-
 std::string normalize_rtcp_feedback_value(std::string_view feedback)
 {
-    const std::vector<std::string> tokens = split_sdp_tokens(feedback);
+    std::vector<std::string> tokens;
+    boost::algorithm::split(tokens,
+                            feedback,
+                            boost::algorithm::is_space(),
+                            boost::algorithm::token_compress_on);
+    std::erase(tokens, std::string{});
 
-    std::string normalized;
-
-    for (const auto& token : tokens)
+    for (auto& token : tokens)
     {
-        if (token.empty())
-        {
-            continue;
-        }
-
-        if (!normalized.empty())
-        {
-            normalized.push_back(' ');
-        }
-
-        normalized.append(lower_rtcp_feedback_ascii(token));
+        boost::algorithm::to_lower(token);
     }
 
-    return normalized;
+    return boost::algorithm::join(tokens, " ");
 }
 
 bool rtcp_feedback_is_supported_for_answer_media(std::string_view media_kind,
@@ -719,12 +656,12 @@ std::vector<std::string> collect_answerable_whep_simulcast_rids(const media_summ
             continue;
         }
 
-        if (!string_vector_contains_value(publisher_media.simulcast->send_rids, rid))
+        if (std::ranges::find(publisher_media.simulcast->send_rids, rid) == publisher_media.simulcast->send_rids.end())
         {
             continue;
         }
 
-        if (string_vector_contains_value(rids, rid))
+        if (std::ranges::find(rids, rid) != rids.end())
         {
             continue;
         }
@@ -734,23 +671,6 @@ std::vector<std::string> collect_answerable_whep_simulcast_rids(const media_summ
 
     return rids;
 }
-std::string join_rids_with_semicolon(const std::vector<std::string>& rids)
-{
-    std::string value;
-
-    for (const auto& rid : rids)
-    {
-        if (!value.empty())
-        {
-            value.push_back(';');
-        }
-
-        value.append(rid);
-    }
-
-    return value;
-}
-
 void append_whep_simulcast_send_attributes(media_description& answer_media,
                                            const media_summary& subscriber_media,
                                            const media_summary* forwarded_publisher_media)
@@ -780,13 +700,13 @@ void append_whep_simulcast_send_attributes(media_description& answer_media,
         push_attribute(answer_media.attributes, "rid", rid_value);
     }
 
+    const std::string joined_rids = boost::algorithm::join(rids, ";");
     std::string simulcast_value;
-
-    simulcast_value.reserve(join_rids_with_semicolon(rids).size() + 8);
+    simulcast_value.reserve(joined_rids.size() + 8);
 
     simulcast_value.append("send ");
 
-    simulcast_value.append(join_rids_with_semicolon(rids));
+    simulcast_value.append(joined_rids);
 
     push_attribute(answer_media.attributes, "simulcast", simulcast_value);
 }
@@ -822,7 +742,7 @@ std::vector<std::string> collect_answerable_whip_simulcast_rids(const media_summ
             continue;
         }
 
-        if (string_vector_contains_value(rids, rid))
+        if (std::ranges::find(rids, rid) != rids.end())
         {
             continue;
         }
@@ -855,13 +775,13 @@ void append_whip_simulcast_receive_attributes(media_description& answer_media, c
         push_attribute(answer_media.attributes, "rid", rid_value);
     }
 
+    const std::string joined_rids = boost::algorithm::join(rids, ";");
     std::string simulcast_value;
-
-    simulcast_value.reserve(join_rids_with_semicolon(rids).size() + 8);
+    simulcast_value.reserve(joined_rids.size() + 8);
 
     simulcast_value.append("recv ");
 
-    simulcast_value.append(join_rids_with_semicolon(rids));
+    simulcast_value.append(joined_rids);
 
     push_attribute(answer_media.attributes, "simulcast", simulcast_value);
 }
@@ -1007,49 +927,14 @@ void append_media_source_attributes(media_description& answer_media,
     push_attribute(answer_media.attributes, "ssrc", std::move(repair_msid_value));
 }
 
-bool codec_name_equals_ignore_case(std::string_view value, std::string_view expected)
-{
-    if (value.size() != expected.size())
-    {
-        return false;
-    }
-
-    for (std::size_t i = 0; i < value.size(); ++i)
-    {
-        const auto left = static_cast<unsigned char>(value[i]);
-        const auto right = static_cast<unsigned char>(expected[i]);
-
-        if (std::tolower(left) != std::tolower(right))
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 void remove_unimplemented_answer_codecs(std::vector<codec_info>& codecs)
 {
-    std::erase_if(codecs, [](const codec_info& codec) { return codec_name_equals_ignore_case(codec.name, "rtx"); });
-}
-
-std::string_view trim_fmtp_token(std::string_view value)
-{
-    const auto begin = value.find_first_not_of(" \t");
-
-    if (begin == std::string_view::npos)
-    {
-        return {};
-    }
-
-    const auto end = value.find_last_not_of(" \t");
-
-    return value.substr(begin, end - begin + 1);
+    std::erase_if(codecs, [](const codec_info& codec) { return boost::algorithm::iequals(codec.name, "rtx"); });
 }
 
 bool parse_fmtp_payload_type(std::string_view value, uint16_t& payload_type)
 {
-    value = trim_fmtp_token(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t"));
 
     if (value.empty())
     {
@@ -1080,34 +965,27 @@ bool parse_fmtp_payload_type(std::string_view value, uint16_t& payload_type)
 
 bool find_rtx_apt_payload_type(const codec_info& codec, uint16_t& apt_payload_type)
 {
-    std::size_t start = 0;
+    std::vector<std::string_view> parts;
+    boost::algorithm::split(parts, codec.fmtp, boost::algorithm::is_any_of(";"));
 
-    while (start <= codec.fmtp.size())
+    for (const std::string_view part : parts)
     {
-        const std::size_t separator = codec.fmtp.find(';', start);
-        const std::string_view part = separator == std::string_view::npos ? std::string_view(codec.fmtp).substr(start)
-                                                                          : std::string_view(codec.fmtp).substr(start, separator - start);
-
-        const std::string_view item = trim_fmtp_token(part);
+        const std::string_view item = boost::algorithm::trim_copy_if(part, boost::algorithm::is_any_of(" \t"));
         const std::size_t equal_position = item.find('=');
 
         if (equal_position != std::string_view::npos)
         {
-            const std::string_view key = trim_fmtp_token(item.substr(0, equal_position));
-            const std::string_view value = trim_fmtp_token(item.substr(equal_position + 1));
+            const std::string_view key =
+                boost::algorithm::trim_copy_if(item.substr(0, equal_position), boost::algorithm::is_any_of(" \t"));
+            const std::string_view value =
+                boost::algorithm::trim_copy_if(item.substr(equal_position + 1), boost::algorithm::is_any_of(" \t"));
 
-            if (codec_name_equals_ignore_case(key, "apt"))
+            if (boost::algorithm::iequals(key, "apt"))
             {
                 return parse_fmtp_payload_type(value, apt_payload_type);
             }
         }
 
-        if (separator == std::string_view::npos)
-        {
-            break;
-        }
-
-        start = separator + 1;
     }
 
     return false;
@@ -1122,7 +1000,7 @@ bool answer_primary_payload_type_exists(const std::vector<codec_info>& codecs, u
             continue;
         }
 
-        if (codec_name_equals_ignore_case(codec.name, "rtx"))
+        if (boost::algorithm::iequals(codec.name, "rtx"))
         {
             continue;
         }
@@ -1137,7 +1015,7 @@ bool answer_codecs_include_usable_rtx(const std::vector<codec_info>& codecs)
 {
     for (const auto& codec : codecs)
     {
-        if (!codec_name_equals_ignore_case(codec.name, "rtx"))
+        if (!boost::algorithm::iequals(codec.name, "rtx"))
         {
             continue;
         }

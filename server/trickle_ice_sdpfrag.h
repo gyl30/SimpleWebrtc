@@ -1,12 +1,13 @@
 #ifndef SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_SDPFRAG_H
 #define SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_SDPFRAG_H
 
-#include <cctype>
 #include <expected>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include <boost/algorithm/string.hpp>
 
 #include "ice/ice_candidate.h"
 
@@ -27,45 +28,6 @@ using trickle_ice_sdpfrag_parse_result_type = std::expected<trickle_ice_sdpfrag_
 
 namespace detail
 {
-inline bool starts_with(std::string_view value, std::string_view prefix)
-{
-    if (value.size() < prefix.size())
-    {
-        return false;
-    }
-
-    return value.substr(0, prefix.size()) == prefix;
-}
-
-inline std::string_view trim_ascii(std::string_view value)
-{
-    while (!value.empty())
-    {
-        const auto item = static_cast<unsigned char>(value.front());
-
-        if (std::isspace(item) == 0)
-        {
-            break;
-        }
-
-        value.remove_prefix(1);
-    }
-
-    while (!value.empty())
-    {
-        const auto item = static_cast<unsigned char>(value.back());
-
-        if (std::isspace(item) == 0)
-        {
-            break;
-        }
-
-        value.remove_suffix(1);
-    }
-
-    return value;
-}
-
 inline std::string make_sdpfrag_error(std::size_t line_number, std::string_view message)
 {
     std::string error;
@@ -86,7 +48,7 @@ inline std::string make_sdpfrag_error(std::size_t line_number, std::string_view 
 inline std::expected<void, std::string> set_sdpfrag_attribute_once(
     std::string& target, bool& has_value, std::string_view value, std::string_view attribute_name, std::size_t line_number)
 {
-    value = trim_ascii(value);
+    value = boost::algorithm::trim_copy(value);
 
     if (value.empty())
     {
@@ -127,7 +89,7 @@ inline std::expected<remote_ice_candidate, std::string> make_candidate_from_sdpf
 
     std::string candidate;
 
-    if (starts_with(candidate_line, "a="))
+    if (candidate_line.starts_with("a="))
     {
         candidate = std::string(candidate_line.substr(2));
     }
@@ -217,14 +179,14 @@ inline trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag_with_attr
 
         line_number += 1;
 
-        line = detail::trim_ascii(line);
+        line = boost::algorithm::trim_copy(line);
 
         if (line.empty())
         {
             continue;
         }
 
-        if (detail::starts_with(line, "m="))
+        if (line.starts_with("m="))
         {
             current_mline_index = next_mline_index;
 
@@ -235,9 +197,9 @@ inline trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag_with_attr
             continue;
         }
 
-        if (detail::starts_with(line, "a=mid:"))
+        if (line.starts_with("a=mid:"))
         {
-            current_mid = std::string(detail::trim_ascii(line.substr(6)));
+            current_mid = std::string(boost::algorithm::trim_copy(line.substr(6)));
 
             if (current_mid.empty())
             {
@@ -247,7 +209,7 @@ inline trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag_with_attr
             continue;
         }
 
-        if (detail::starts_with(line, "a=ice-ufrag:"))
+        if (line.starts_with("a=ice-ufrag:"))
         {
             auto set_result = detail::set_sdpfrag_attribute_once(result.ice_ufrag, result.has_ice_ufrag, line.substr(12), "ice-ufrag", line_number);
 
@@ -259,7 +221,7 @@ inline trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag_with_attr
             continue;
         }
 
-        if (detail::starts_with(line, "a=ice-pwd:"))
+        if (line.starts_with("a=ice-pwd:"))
         {
             auto set_result = detail::set_sdpfrag_attribute_once(result.ice_pwd, result.has_ice_pwd, line.substr(10), "ice-pwd", line_number);
 
@@ -271,7 +233,7 @@ inline trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag_with_attr
             continue;
         }
 
-        if (detail::starts_with(line, "a=candidate:") || detail::starts_with(line, "candidate:"))
+        if (line.starts_with("a=candidate:") || line.starts_with("candidate:"))
         {
             auto candidate = detail::make_candidate_from_sdpfrag_line(line, current_mid, current_mline_index, line_number);
 

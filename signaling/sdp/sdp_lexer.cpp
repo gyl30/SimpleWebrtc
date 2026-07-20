@@ -167,11 +167,6 @@ std::string sdp_lexer::make_syntax_error(std::size_t position) const
     return message;
 }
 
-bool is_whitespace(char ch)
-{
-    return ch == ' ' || ch == '\t';
-}
-
 bool is_any_of(std::string_view value, std::initializer_list<std::string_view> candidates)
 {
     for (const auto candidate : candidates)

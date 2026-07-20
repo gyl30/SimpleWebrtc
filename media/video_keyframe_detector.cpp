@@ -7,6 +7,8 @@
 #include <string>
 #include <string_view>
 
+#include <boost/algorithm/string.hpp>
+
 namespace webrtc
 {
 namespace
@@ -38,37 +40,6 @@ uint32_t read_u32(std::span<const uint8_t> data, std::size_t offset)
            (static_cast<uint32_t>(data[offset + 1]) << 16U) |
            (static_cast<uint32_t>(data[offset + 2]) << 8U) |
            static_cast<uint32_t>(data[offset + 3]);
-}
-
-bool equals_ignore_case_ascii(std::string_view left, std::string_view right)
-{
-    if (left.size() != right.size())
-    {
-        return false;
-    }
-
-    for (std::size_t index = 0; index < left.size(); ++index)
-    {
-        char left_value = left[index];
-        char right_value = right[index];
-
-        if (left_value >= 'A' && left_value <= 'Z')
-        {
-            left_value = static_cast<char>(left_value - 'A' + 'a');
-        }
-
-        if (right_value >= 'A' && right_value <= 'Z')
-        {
-            right_value = static_cast<char>(right_value - 'A' + 'a');
-        }
-
-        if (left_value != right_value)
-        {
-            return false;
-        }
-    }
-
-    return true;
 }
 
 std::expected<rtp_payload_view, std::string> parse_rtp_payload_view(std::span<const uint8_t> packet)
@@ -230,7 +201,7 @@ video_keyframe_observation_result video_keyframe_tracker::observe(std::string_vi
     observation.timestamp = view->timestamp;
     observation.codec = std::string(codec);
 
-    if (!equals_ignore_case_ascii(codec, "VP8"))
+    if (!boost::algorithm::iequals(codec, "VP8"))
     {
         active_frames_by_ssrc_.erase(view->ssrc);
         observation.state = video_keyframe_observation_state::unsupported_codec;

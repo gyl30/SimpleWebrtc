@@ -1,13 +1,14 @@
 #include "security/certificate_fingerprint.h"
 
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <expected>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include <boost/algorithm/string.hpp>
 
 #include <openssl/crypto.h>
 #include <openssl/err.h>
@@ -41,23 +42,9 @@ std::string make_openssl_error(std::string_view prefix)
     return message;
 }
 
-std::string to_lower_ascii(std::string_view value)
-{
-    std::string result;
-
-    result.reserve(value.size());
-
-    for (const char character : value)
-    {
-        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
-    }
-
-    return result;
-}
-
 std::expected<const EVP_MD*, std::string> find_digest_algorithm(std::string_view algorithm)
 {
-    const std::string normalized_algorithm = to_lower_ascii(algorithm);
+    const std::string normalized_algorithm = boost::algorithm::to_lower_copy(std::string(algorithm));
 
     if (normalized_algorithm == "sha-256")
     {
@@ -83,7 +70,7 @@ std::expected<const EVP_MD*, std::string> find_digest_algorithm(std::string_view
 
 std::expected<std::size_t, std::string> get_digest_size(std::string_view algorithm)
 {
-    const std::string normalized_algorithm = to_lower_ascii(algorithm);
+    const std::string normalized_algorithm = boost::algorithm::to_lower_copy(std::string(algorithm));
 
     if (normalized_algorithm == "sha-256")
     {
@@ -260,7 +247,7 @@ certificate_fingerprint_result calculate_certificate_fingerprint(X509* certifica
 
     sdp::fingerprint_info fingerprint;
 
-    fingerprint.algorithm = to_lower_ascii(algorithm);
+    fingerprint.algorithm = boost::algorithm::to_lower_copy(std::string(algorithm));
 
     fingerprint.value = std::move(*value);
 

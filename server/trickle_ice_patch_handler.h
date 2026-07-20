@@ -1,13 +1,14 @@
 #ifndef SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_PATCH_HANDLER_H
 #define SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_PATCH_HANDLER_H
 
-#include <cctype>
 #include <cstddef>
 #include <expected>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
-#include <string_view>
+
+#include <boost/algorithm/string.hpp>
 
 #include "log/log.h"
 #include "net/http.h"
@@ -36,55 +37,6 @@ inline constexpr std::string_view k_application_json = "application/json";
 
 inline constexpr std::string_view k_application_trickle_ice_sdpfrag = "application/trickle-ice-sdpfrag";
 
-inline char ascii_lower(char value) { return static_cast<char>(std::tolower(static_cast<unsigned char>(value))); }
-
-inline std::string_view trim_ascii(std::string_view value)
-{
-    while (!value.empty())
-    {
-        const auto item = static_cast<unsigned char>(value.front());
-
-        if (std::isspace(item) == 0)
-        {
-            break;
-        }
-
-        value.remove_prefix(1);
-    }
-
-    while (!value.empty())
-    {
-        const auto item = static_cast<unsigned char>(value.back());
-
-        if (std::isspace(item) == 0)
-        {
-            break;
-        }
-
-        value.remove_suffix(1);
-    }
-
-    return value;
-}
-
-inline bool ascii_iequals(std::string_view left, std::string_view right)
-{
-    if (left.size() != right.size())
-    {
-        return false;
-    }
-
-    for (std::size_t index = 0; index < left.size(); ++index)
-    {
-        if (ascii_lower(left[index]) != ascii_lower(right[index]))
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 inline std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return {value.data(), value.size()}; }
 
 inline std::string_view request_content_type(http_request_t& request)
@@ -96,21 +48,21 @@ inline std::string_view request_content_type(http_request_t& request)
 
 inline trickle_ice_patch_content_kind content_kind_from_request(http_request_t& request)
 {
-    std::string_view content_type = trim_ascii(request_content_type(request));
+    std::string_view content_type = boost::algorithm::trim_copy(request_content_type(request));
 
     const std::size_t semicolon = content_type.find(';');
 
     if (semicolon != std::string_view::npos)
     {
-        content_type = trim_ascii(content_type.substr(0, semicolon));
+        content_type = boost::algorithm::trim_copy(content_type.substr(0, semicolon));
     }
 
-    if (ascii_iequals(content_type, k_application_json))
+    if (boost::algorithm::iequals(content_type, k_application_json))
     {
         return trickle_ice_patch_content_kind::kJson;
     }
 
-    if (ascii_iequals(content_type, k_application_trickle_ice_sdpfrag))
+    if (boost::algorithm::iequals(content_type, k_application_trickle_ice_sdpfrag))
     {
         return trickle_ice_patch_content_kind::kSdpfrag;
     }

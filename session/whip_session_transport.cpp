@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -16,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/asio.hpp>
 
 #include "dtls/dtls_packet.h"
@@ -46,47 +46,6 @@ constexpr std::size_t k_maximum_rtcp_report_blocks = 31;
 constexpr std::string_view k_transport_wide_cc_extension_uri =
     "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
 
-bool equals_ignore_case_ascii(std::string_view left, std::string_view right)
-{
-    if (left.size() != right.size())
-    {
-        return false;
-    }
-
-    for (std::size_t index = 0; index < left.size(); ++index)
-    {
-        if (std::tolower(static_cast<unsigned char>(left[index])) !=
-            std::tolower(static_cast<unsigned char>(right[index])))
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-bool rtcp_feedback_is_transport_cc(std::string_view feedback)
-{
-    std::size_t begin = 0;
-
-    while (begin < feedback.size() &&
-           std::isspace(static_cast<unsigned char>(feedback[begin])) != 0)
-    {
-        ++begin;
-    }
-
-    std::size_t end = feedback.size();
-
-    while (end > begin &&
-           std::isspace(static_cast<unsigned char>(feedback[end - 1U])) != 0)
-    {
-        --end;
-    }
-
-    return equals_ignore_case_ascii(feedback.substr(begin, end - begin),
-                                    "transport-cc");
-}
-
 std::optional<uint8_t> find_transport_cc_extension_id(
     const sdp::media_summary& media)
 {
@@ -116,7 +75,7 @@ bool codec_offers_transport_cc(const sdp::codec_info& codec)
 {
     for (const auto& feedback : codec.rtcp_feedback)
     {
-        if (rtcp_feedback_is_transport_cc(feedback))
+        if (boost::algorithm::iequals(boost::algorithm::trim_copy(std::string_view(feedback)), "transport-cc"))
         {
             return true;
         }

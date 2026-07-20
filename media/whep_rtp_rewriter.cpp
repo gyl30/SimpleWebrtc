@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -15,6 +14,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <boost/algorithm/string.hpp>
 
 #include "rtp/rtp_packet.h"
 #include "signaling/sdp/sdp_codec_negotiator.h"
@@ -95,42 +96,16 @@ bool header_extension_requires_regeneration(std::string_view uri)
            uri == k_rid_extension_uri || uri == k_repaired_rid_extension_uri;
 }
 
-bool feedback_equals_ignore_case(std::string_view value, std::string_view expected)
-{
-    const auto begin = value.find_first_not_of(" \t");
-
-    if (begin == std::string_view::npos)
-    {
-        return expected.empty();
-    }
-
-    const auto end = value.find_last_not_of(" \t");
-    value = value.substr(begin, end - begin + 1U);
-
-    if (value.size() != expected.size())
-    {
-        return false;
-    }
-
-    for (std::size_t index = 0; index < value.size(); ++index)
-    {
-        const auto left = static_cast<unsigned char>(value[index]);
-        const auto right = static_cast<unsigned char>(expected[index]);
-
-        if (std::tolower(left) != std::tolower(right))
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 bool codec_supports_generic_nack(const sdp::codec_info& codec)
 {
     return std::any_of(codec.rtcp_feedback.begin(),
                        codec.rtcp_feedback.end(),
-                       [](const std::string& feedback) { return feedback_equals_ignore_case(feedback, "nack"); });
+                       [](const std::string& feedback)
+                       {
+                           const std::string_view value =
+                               boost::algorithm::trim_copy_if(std::string_view(feedback), boost::algorithm::is_any_of(" \t"));
+                           return boost::algorithm::iequals(value, "nack");
+                       });
 }
 
 bool header_extension_uris_are_compatible(std::string_view left, std::string_view right)

@@ -1,37 +1,13 @@
 #include <charconv>
 #include <string>
 #include <utility>
+
+#include <boost/algorithm/string.hpp>
+
 #include "signaling/sdp/sdp_types.h"
 
 namespace webrtc::sdp
 {
-namespace
-{
-std::string_view trim_left(std::string_view value)
-{
-    const auto position = value.find_first_not_of(" \t");
-    if (position == std::string_view::npos)
-    {
-        return {};
-    }
-
-    return value.substr(position);
-}
-
-std::string_view trim_right(std::string_view value)
-{
-    const auto position = value.find_last_not_of(" \t");
-    if (position == std::string_view::npos)
-    {
-        return {};
-    }
-
-    return value.substr(0, position + 1);
-}
-
-std::string_view trim(std::string_view value) { return trim_right(trim_left(value)); }
-}    // namespace
-
 sdp_attribute make_property_attribute(std::string key)
 {
     return sdp_attribute{
@@ -169,7 +145,7 @@ std::optional<dtls_connection_role> parse_dtls_connection_role(std::string_view 
 
 bool rtp_header_extension::parse_attribute_value(std::string_view value)
 {
-    value = trim(value);
+    value = boost::algorithm::trim_copy_if(value, boost::algorithm::is_any_of(" \t"));
     if (value.empty())
     {
         return false;
@@ -182,7 +158,7 @@ bool rtp_header_extension::parse_attribute_value(std::string_view value)
     }
 
     const auto id_and_direction = value.substr(0, first_space);
-    auto rest = trim(value.substr(first_space + 1));
+    auto rest = boost::algorithm::trim_copy_if(value.substr(first_space + 1), boost::algorithm::is_any_of(" \t"));
 
     if (rest.empty())
     {
@@ -227,7 +203,7 @@ bool rtp_header_extension::parse_attribute_value(std::string_view value)
 
     uri = std::string(rest.substr(0, second_space));
 
-    auto attributes_text = trim(rest.substr(second_space + 1));
+    auto attributes_text = boost::algorithm::trim_copy_if(rest.substr(second_space + 1), boost::algorithm::is_any_of(" \t"));
     if (!attributes_text.empty())
     {
         extension_attributes = std::string(attributes_text);

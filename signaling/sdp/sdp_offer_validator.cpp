@@ -1,5 +1,6 @@
 #include "signaling/sdp/sdp_offer_validator.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <expected>
@@ -7,6 +8,8 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include <boost/algorithm/string.hpp>
 
 namespace webrtc::sdp
 {
@@ -29,20 +32,6 @@ std::unexpected<std::string> make_media_error(std::string_view prefix, const med
     return std::unexpected(std::move(message));
 }
 
-std::string to_lower_ascii(std::string_view value)
-{
-    std::string result;
-
-    result.reserve(value.size());
-
-    for (const char character : value)
-    {
-        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
-    }
-
-    return result;
-}
-
 bool is_hex_digit(char character)
 {
     const auto value = static_cast<unsigned char>(character);
@@ -52,7 +41,7 @@ bool is_hex_digit(char character)
 
 std::expected<std::size_t, std::string> fingerprint_digest_size(std::string_view algorithm)
 {
-    const std::string normalized_algorithm = to_lower_ascii(algorithm);
+    const std::string normalized_algorithm = boost::algorithm::to_lower_copy(std::string(algorithm));
 
     if (normalized_algorithm == "sha-256")
     {
@@ -127,19 +116,6 @@ offer_validation_result validate_fingerprint(const fingerprint_info& fingerprint
     return {};
 }
 
-bool contains_string(const std::vector<std::string>& values, std::string_view value)
-{
-    for (const auto& current : values)
-    {
-        if (current == value)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 offer_validation_result validate_unique_media_mids(const webrtc_offer_summary& offer)
 {
     for (std::size_t first_index = 0; first_index < offer.media.size(); ++first_index)
@@ -198,7 +174,7 @@ offer_validation_result validate_media_bundle_membership(const webrtc_offer_summ
 {
     for (const auto& media : offer.media)
     {
-        if (!contains_string(offer.bundle_mids, media.mid))
+        if (std::ranges::find(offer.bundle_mids, media.mid) == offer.bundle_mids.end())
         {
             return make_media_error("offer", media, "is not present in bundle group");
         }

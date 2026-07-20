@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/beast/http.hpp>
 
 #include "log/log.h"
@@ -56,31 +57,6 @@ std::string make_prefixed_error(std::string_view prefix, std::string_view error)
 }
 constexpr std::string_view k_restart_application_sdp = "application/sdp";
 
-char to_lower_ascii_char(char ch) { return static_cast<char>(std::tolower(static_cast<unsigned char>(ch))); }
-
-bool restart_content_type_matches(std::string_view content_type, std::string_view expected)
-{
-    if (content_type.size() < expected.size())
-    {
-        return false;
-    }
-
-    for (std::size_t index = 0; index < expected.size(); ++index)
-    {
-        if (to_lower_ascii_char(content_type[index]) != expected[index])
-        {
-            return false;
-        }
-    }
-
-    if (content_type.size() == expected.size())
-    {
-        return true;
-    }
-
-    return content_type[expected.size()] == ';';
-}
-
 bool is_application_sdp_restart_request(http_request_t& request)
 {
     const auto content_type_field = request.req[http::field::content_type];
@@ -92,7 +68,7 @@ bool is_application_sdp_restart_request(http_request_t& request)
         return false;
     }
 
-    return restart_content_type_matches(content_type, k_restart_application_sdp);
+    return trickle_ice_http_detail::content_type_matches(content_type, k_restart_application_sdp);
 }
 
 http_response_ptr validate_sdp_restart_body(http_request_t& request,
@@ -125,28 +101,13 @@ http_response_ptr validate_sdp_restart_body(http_request_t& request,
 }
 constexpr std::string_view k_whip_replace_session_header = "WHIP-Replace-Session";
 
-std::string_view trim_ascii_whitespace(std::string_view value)
-{
-    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0)
-    {
-        value.remove_prefix(1);
-    }
-
-    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())) != 0)
-    {
-        value.remove_suffix(1);
-    }
-
-    return value;
-}
-
 std::optional<std::string> read_whip_replace_session_id(http_request_t& request)
 {
     const auto field = request.req[std::string(k_whip_replace_session_header)];
 
     std::string_view value(field.data(), field.size());
 
-    value = trim_ascii_whitespace(value);
+    value = boost::algorithm::trim_copy(value);
 
     if (value.empty())
     {
