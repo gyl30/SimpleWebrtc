@@ -153,13 +153,12 @@ find_package(Threads REQUIRED)
 find_package(OpenSSL 3.2 REQUIRED)
 find_package(Boost 1.83.0 REQUIRED COMPONENTS filesystem)
 
-set(ENABLE_TESTING
-    OFF
-    CACHE BOOL "disable libsrtp tests" FORCE)
-set(ENABLE_OPENSSL
-    OFF
-    CACHE BOOL "disable libsrtp openssl backend" FORCE)
+set(BUILD_TESTING OFF)
+set(LIBSRTP_TEST_APPS OFF)
+set(ENABLE_WARNINGS_AS_ERRORS OFF)
+set(ENABLE_OPENSSL ON)
 add_subdirectory(third/libsrtp EXCLUDE_FROM_ALL)
+target_compile_options(srtp2 PRIVATE -Wno-conversion)
 
 set(WEBRTC_SOURCES
     log/log.cpp
