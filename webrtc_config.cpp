@@ -28,6 +28,9 @@ namespace
 constexpr std::uint16_t k_default_http_port = 8811;
 constexpr std::uint16_t k_default_session_udp_port_min = 50000;
 constexpr std::uint16_t k_default_session_udp_port_max = 59999;
+constexpr std::uint32_t k_default_session_inactivity_timeout_seconds = 30;
+constexpr std::uint32_t k_default_publisher_recovery_timeout_seconds = 10;
+constexpr std::uint32_t k_maximum_session_timeout_seconds = 3600;
 
 constexpr std::uint64_t k_default_log_file_size_bytes = 50ULL * 1024ULL * 1024ULL;
 constexpr std::uint64_t k_minimum_log_file_size_bytes = 1ULL * 1024ULL * 1024ULL;
@@ -418,6 +421,23 @@ std::expected<void, std::string> load_transport_environment(webrtc_config& confi
     }
 
     config.dtls_ip_mtu = *dtls_ip_mtu;
+
+    auto inactivity_timeout = load_integer_environment<std::uint32_t>(
+        "WEBRTC_SESSION_INACTIVITY_TIMEOUT_SECONDS", k_default_session_inactivity_timeout_seconds, 1, k_maximum_session_timeout_seconds);
+    if (!inactivity_timeout)
+    {
+        return std::unexpected(inactivity_timeout.error());
+    }
+
+    auto publisher_recovery_timeout = load_integer_environment<std::uint32_t>(
+        "WEBRTC_PUBLISHER_RECOVERY_TIMEOUT_SECONDS", k_default_publisher_recovery_timeout_seconds, 1, k_maximum_session_timeout_seconds);
+    if (!publisher_recovery_timeout)
+    {
+        return std::unexpected(publisher_recovery_timeout.error());
+    }
+
+    config.session_inactivity_timeout_seconds = *inactivity_timeout;
+    config.publisher_recovery_timeout_seconds = *publisher_recovery_timeout;
     return {};
 }
 }    // namespace

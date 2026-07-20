@@ -109,6 +109,8 @@ whep_session_transport::whep_session_transport(boost::asio::io_context& io_conte
     : udp_server_(io_context, std::move(bind_host)),
       media_log_timer_(io_context),
       rtcp_sender_report_timer_(io_context),
+      inactivity_timer_(io_context),
+      publisher_recovery_timer_(io_context),
       dtls_transport_(std::make_shared<dtls_transport>(std::move(dtls_context), dtls_ip_mtu)),
       srtp_transport_(std::make_shared<srtp_transport>(dtls_transport_)),
       media_fanout_router_(std::move(media_fanout_router))
@@ -127,6 +129,10 @@ void whep_session_transport::close(std::string_view reason)
     closed_ = true;
     media_log_timer_.cancel();
     rtcp_sender_report_timer_.cancel();
+    inactivity_timer_.cancel();
+    publisher_recovery_timer_.cancel();
+    inactivity_timeout_handler_ = {};
+    publisher_failure_handler_ = {};
     send_rtcp_bye(reason);
 
     if (media_log_interval_started_at_ != std::chrono::steady_clock::time_point{})
@@ -156,6 +162,111 @@ whep_session_transport_result whep_session_transport::start(uint16_t local_port)
     schedule_media_log_summary();
     schedule_rtcp_sender_reports(true, false);
     return {};
+}
+
+void whep_session_transport::start_inactivity_monitor(std::chrono::seconds timeout, std::function<void()> timeout_handler)
+{
+    inactivity_timeout_ = timeout;
+    inactivity_timeout_handler_ = std::move(timeout_handler);
+    last_valid_inbound_activity_ = std::chrono::steady_clock::now();
+    schedule_inactivity_timeout();
+}
+
+void whep_session_transport::set_publisher_recovery_timeout(std::chrono::seconds timeout, std::function<void(std::string_view)> failure_handler)
+{
+    publisher_recovery_timeout_ = timeout;
+    publisher_failure_handler_ = std::move(failure_handler);
+}
+
+void whep_session_transport::record_valid_inbound_activity() { last_valid_inbound_activity_ = std::chrono::steady_clock::now(); }
+
+void whep_session_transport::schedule_inactivity_timeout()
+{
+    inactivity_timer_.expires_at(last_valid_inbound_activity_ + inactivity_timeout_);
+    const std::weak_ptr<whep_session_transport> weak_transport = weak_from_this();
+
+    inactivity_timer_.async_wait(
+        [weak_transport](const boost::system::error_code& error)
+        {
+            if (const auto transport = weak_transport.lock())
+            {
+                transport->handle_inactivity_timeout(error);
+            }
+        });
+}
+
+void whep_session_transport::handle_inactivity_timeout(const boost::system::error_code& error)
+{
+    if (closed_ || error == boost::asio::error::operation_aborted)
+    {
+        return;
+    }
+
+    if (error)
+    {
+        WEBRTC_LOG_WARN("WHEP inactivity timer failed stream={} session={} error={}", stream_id_, session_id_, error.message());
+    }
+
+    const auto deadline = last_valid_inbound_activity_ + inactivity_timeout_;
+    if (std::chrono::steady_clock::now() < deadline)
+    {
+        schedule_inactivity_timeout();
+        return;
+    }
+
+    WEBRTC_LOG_INFO("WHEP session inactivity timeout stream={} session={} timeout_seconds={}", stream_id_, session_id_, inactivity_timeout_.count());
+    auto timeout_handler = std::exchange(inactivity_timeout_handler_, {});
+    if (timeout_handler)
+    {
+        timeout_handler();
+    }
+}
+
+void whep_session_transport::start_publisher_recovery_timer()
+{
+    publisher_recovery_timer_.expires_after(publisher_recovery_timeout_);
+    const std::weak_ptr<whep_session_transport> weak_transport = weak_from_this();
+
+    publisher_recovery_timer_.async_wait(
+        [weak_transport](const boost::system::error_code& error)
+        {
+            if (const auto transport = weak_transport.lock())
+            {
+                transport->handle_publisher_recovery_timeout(error);
+            }
+        });
+}
+
+void whep_session_transport::handle_publisher_recovery_timeout(const boost::system::error_code& error)
+{
+    if (closed_ || error == boost::asio::error::operation_aborted)
+    {
+        return;
+    }
+
+    if (error)
+    {
+        WEBRTC_LOG_WARN("WHEP publisher recovery timer failed stream={} session={} error={}", stream_id_, session_id_, error.message());
+    }
+
+    if (publisher_source_ != nullptr)
+    {
+        return;
+    }
+
+    WEBRTC_LOG_INFO(
+        "WHEP publisher recovery timeout stream={} session={} timeout_seconds={}", stream_id_, session_id_, publisher_recovery_timeout_.count());
+    notify_publisher_failure("publisher_recovery_timeout");
+}
+
+void whep_session_transport::notify_publisher_failure(std::string_view reason)
+{
+    auto failure_handler = std::exchange(publisher_failure_handler_, {});
+
+    if (failure_handler)
+    {
+        failure_handler(reason);
+    }
 }
 
 void whep_session_transport::record_media_log_event(media_log_event event, uint64_t value) { media_log_stats_.counters.add(event, value); }
@@ -857,7 +968,7 @@ void whep_session_transport::set_peer_context(std::string local_ice_pwd, dtls_pe
     transport_feedback_history_.reset();
     remote_rtcp_participant_ssrcs_.clear();
     reset_keyframe_recovery();
-    rebuild_rtp_rewriter();
+    (void)rebuild_rtp_rewriter();
 
     subscribe_media();
 }
@@ -1230,7 +1341,21 @@ void whep_session_transport::handle_publisher_source(media_publisher_source_upda
 
     publisher_source_generation_ = update.generation;
     publisher_source_ = std::move(update.source);
-    rebuild_rtp_rewriter();
+
+    if (publisher_source_ == nullptr)
+    {
+        (void)rebuild_rtp_rewriter();
+        start_publisher_recovery_timer();
+        return;
+    }
+
+    if (!rebuild_rtp_rewriter())
+    {
+        notify_publisher_failure("publisher_sdp_incompatible");
+        return;
+    }
+
+    publisher_recovery_timer_.cancel();
 }
 
 void whep_session_transport::handle_publisher_sender_timing(media_publisher_sender_timing timing)
@@ -1428,7 +1553,7 @@ void whep_session_transport::cache_rewritten_rtp(uint64_t source_generation, con
     });
 }
 
-void whep_session_transport::rebuild_rtp_rewriter()
+bool whep_session_transport::rebuild_rtp_rewriter()
 {
     if (publisher_source_ == nullptr)
     {
@@ -1436,7 +1561,7 @@ void whep_session_transport::rebuild_rtp_rewriter()
         rtp_rewriter_.clear_source();
         WEBRTC_LOG_INFO(
             "WHEP RTP publisher source unavailable stream={} session={} source_generation={}", stream_id_, session_id_, publisher_source_generation_);
-        return;
+        return true;
     }
 
     auto config = make_whep_rtp_rewriter_config(publisher_source_->session_id, publisher_source_->offer, rtp_rewriter_target_);
@@ -1451,7 +1576,7 @@ void whep_session_transport::rebuild_rtp_rewriter()
                         publisher_source_->session_id,
                         publisher_source_generation_,
                         config.error());
-        return;
+        return false;
     }
 
     rtp_rewriter_.set_config(std::move(*config));
@@ -1461,6 +1586,7 @@ void whep_session_transport::rebuild_rtp_rewriter()
                     session_id_,
                     publisher_source_->session_id,
                     publisher_source_generation_);
+    return true;
 }
 
 void whep_session_transport::reset_keyframe_recovery()
@@ -2522,6 +2648,8 @@ session_udp_outbound_packet_list whep_session_transport::handle_udp_packet(const
 
         if (stun_result.response.has_value())
         {
+            record_valid_inbound_activity();
+
             if (stun_result.nominated)
             {
                 auto nomination = nominate_remote_endpoint(packet.remote_endpoint);
@@ -2586,6 +2714,8 @@ session_udp_outbound_packet_list whep_session_transport::handle_udp_packet(const
             return result;
         }
 
+        record_valid_inbound_activity();
+
         for (auto& outbound_packet : *outbound_packets)
         {
             result.push_back({std::move(outbound_packet), packet.remote_endpoint});
@@ -2617,6 +2747,8 @@ session_udp_outbound_packet_list whep_session_transport::handle_udp_packet(const
                          inbound->reason);
         return {};
     }
+
+    record_valid_inbound_activity();
 
     if (inbound->kind == srtp_packet_kind::rtcp)
     {

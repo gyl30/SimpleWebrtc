@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -54,6 +55,8 @@ class whip_session_transport : public session_ice_udp_packet_handler, public std
                           std::span<const int> accepted_remote_media_mline_indexes);
 
     void set_publisher_source_generation(uint64_t source_generation);
+
+    void start_inactivity_monitor(std::chrono::seconds timeout, std::function<void()> timeout_handler);
 
     void send_keyframe_request(uint32_t media_ssrc);
 
@@ -212,6 +215,9 @@ class whip_session_transport : public session_ice_udp_packet_handler, public std
     };
 
     void clear_peer_state();
+    void record_valid_inbound_activity();
+    void schedule_inactivity_timeout();
+    void handle_inactivity_timeout(const boost::system::error_code& error);
     void configure_remote_media(const sdp::webrtc_offer_summary& remote_offer, std::span<const int> accepted_remote_media_mline_indexes);
     void record_inbound_rtp(uint32_t source_ssrc,
                             uint8_t payload_type,
@@ -248,7 +254,11 @@ class whip_session_transport : public session_ice_udp_packet_handler, public std
     boost::asio::steady_timer media_log_timer_;
     boost::asio::steady_timer rtcp_receiver_report_timer_;
     boost::asio::steady_timer transport_feedback_timer_;
+    boost::asio::steady_timer inactivity_timer_;
     std::chrono::steady_clock::time_point media_log_interval_started_at_;
+    std::chrono::steady_clock::time_point last_valid_inbound_activity_;
+    std::chrono::seconds inactivity_timeout_{0};
+    std::function<void()> inactivity_timeout_handler_;
     rtcp_interval_scheduler rtcp_interval_scheduler_;
     bool rtcp_interval_logged_ = false;
     std::chrono::steady_clock::time_point transport_feedback_deadline_;

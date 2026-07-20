@@ -1,5 +1,6 @@
 #include "server/whip_handler.h"
 
+#include <chrono>
 #include <cstddef>
 #include <expected>
 #include <limits>
@@ -163,6 +164,33 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
     }
 
     const auto& session = *session_result;
+    const std::string publisher_session_id = session->session_id();
+    const std::string publisher_stream_id = session->stream_id();
+    const std::weak_ptr<stream_registry> weak_registry = registry_;
+    const std::weak_ptr<media_fanout_router> weak_media_fanout_router = media_fanout_router_;
+
+    transport->start_inactivity_monitor(std::chrono::seconds(config_.session_inactivity_timeout_seconds),
+                                        [weak_registry, weak_media_fanout_router, publisher_session_id, publisher_stream_id]()
+                                        {
+                                            const auto registry = weak_registry.lock();
+                                            const auto media_fanout_router = weak_media_fanout_router.lock();
+
+                                            if (registry == nullptr || media_fanout_router == nullptr)
+                                            {
+                                                return;
+                                            }
+
+                                            const auto session = registry->find_publisher_by_session_id(publisher_session_id);
+                                            auto result = registry->remove_publisher_session(publisher_session_id);
+
+                                            if (session == nullptr || !result)
+                                            {
+                                                return;
+                                            }
+
+                                            session->close("inactivity_timeout");
+                                            media_fanout_router->clear_publisher_source(publisher_stream_id, publisher_session_id);
+                                        });
 
     session->complete_initial_setup(
         std::move(answer->local_ice), std::move(answer->accepted_mline_indexes), std::move(*local_udp_port), std::move(transport));

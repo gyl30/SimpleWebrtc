@@ -1,5 +1,6 @@
 #include "server/whep_handler.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -298,6 +299,47 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     }
 
     const auto& session = *session_result;
+    const std::string subscriber_session_id = session->session_id();
+    const std::string subscriber_stream_id = session->stream_id();
+    const std::weak_ptr<stream_registry> weak_registry = registry_;
+
+    transport->start_inactivity_monitor(std::chrono::seconds(config_.session_inactivity_timeout_seconds),
+                                        [weak_registry, subscriber_session_id]()
+                                        {
+                                            const auto registry = weak_registry.lock();
+
+                                            if (registry == nullptr)
+                                            {
+                                                return;
+                                            }
+
+                                            const auto session = registry->find_subscriber_by_session_id(subscriber_session_id);
+                                            auto result = registry->remove_subscriber_session(subscriber_session_id);
+
+                                            if (session == nullptr || !result)
+                                            {
+                                                return;
+                                            }
+
+                                            session->close("inactivity_timeout");
+                                        });
+    transport->set_publisher_recovery_timeout(std::chrono::seconds(config_.publisher_recovery_timeout_seconds),
+                                              [weak_registry, subscriber_stream_id](std::string_view reason)
+                                              {
+                                                  const auto registry = weak_registry.lock();
+
+                                                  if (registry == nullptr)
+                                                  {
+                                                      return;
+                                                  }
+
+                                                  auto sessions = registry->remove_subscriber_sessions_by_stream_id(subscriber_stream_id);
+
+                                                  for (const auto& current_session : sessions)
+                                                  {
+                                                      current_session->close(reason);
+                                                  }
+                                              });
 
     session->complete_initial_setup(std::move(generated_answer->local_ice),
                                     std::move(generated_answer->accepted_mline_indexes),

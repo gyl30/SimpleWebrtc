@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -56,6 +57,10 @@ class whep_session_transport : public session_ice_udp_packet_handler, public std
     [[nodiscard]] whep_session_transport_result start(uint16_t local_port);
 
     void set_peer_context(std::string local_ice_pwd, dtls_peer_identity identity, whep_rtp_rewriter_target target);
+
+    void start_inactivity_monitor(std::chrono::seconds timeout, std::function<void()> timeout_handler);
+
+    void set_publisher_recovery_timeout(std::chrono::seconds timeout, std::function<void(std::string_view)> failure_handler);
 
     void send_rtp(uint64_t source_generation, std::span<const uint8_t> plain_rtp);
 
@@ -246,7 +251,7 @@ class whep_session_transport : public session_ice_udp_packet_handler, public std
     void handle_generic_nacks(const rtcp_compound_packet& compound);
     void handle_transport_feedback(const rtcp_compound_packet& compound);
     void send_retransmission(rtp_retransmission_cache_packet cached);
-    void rebuild_rtp_rewriter();
+    [[nodiscard]] bool rebuild_rtp_rewriter();
     void cancel_keyframe_recovery();
     void reset_keyframe_recovery();
     void clear_keyframe_feedback_state();
@@ -263,6 +268,12 @@ class whep_session_transport : public session_ice_udp_packet_handler, public std
     void send_rtcp_bye(std::string_view reason);
 
     void clear_peer_state();
+    void record_valid_inbound_activity();
+    void schedule_inactivity_timeout();
+    void handle_inactivity_timeout(const boost::system::error_code& error);
+    void start_publisher_recovery_timer();
+    void handle_publisher_recovery_timeout(const boost::system::error_code& error);
+    void notify_publisher_failure(std::string_view reason);
     void record_media_log_event(media_log_event event, uint64_t value = 1);
     void schedule_media_log_summary();
     void schedule_rtcp_sender_reports(bool initial, bool packet_sent);
@@ -284,7 +295,14 @@ class whep_session_transport : public session_ice_udp_packet_handler, public std
     session_ice_udp_server udp_server_;
     boost::asio::steady_timer media_log_timer_;
     boost::asio::steady_timer rtcp_sender_report_timer_;
+    boost::asio::steady_timer inactivity_timer_;
+    boost::asio::steady_timer publisher_recovery_timer_;
     std::chrono::steady_clock::time_point media_log_interval_started_at_;
+    std::chrono::steady_clock::time_point last_valid_inbound_activity_;
+    std::chrono::seconds inactivity_timeout_{0};
+    std::chrono::seconds publisher_recovery_timeout_{0};
+    std::function<void()> inactivity_timeout_handler_;
+    std::function<void(std::string_view)> publisher_failure_handler_;
     rtcp_interval_scheduler rtcp_interval_scheduler_;
     bool rtcp_interval_logged_ = false;
 

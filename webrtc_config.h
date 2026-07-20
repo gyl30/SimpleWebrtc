@@ -44,6 +44,8 @@ struct webrtc_config
     udp_port_range session_udp_port_range;
 
     std::uint16_t dtls_ip_mtu = 0;
+    std::uint32_t session_inactivity_timeout_seconds = 0;
+    std::uint32_t publisher_recovery_timeout_seconds = 0;
 };
 
 using webrtc_config_result = std::expected<webrtc_config, std::string>;

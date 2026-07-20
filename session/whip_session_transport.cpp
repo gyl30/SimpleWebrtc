@@ -123,6 +123,7 @@ whip_session_transport::whip_session_transport(boost::asio::io_context& io_conte
       media_log_timer_(io_context),
       rtcp_receiver_report_timer_(io_context),
       transport_feedback_timer_(io_context),
+      inactivity_timer_(io_context),
       dtls_transport_(std::make_shared<dtls_transport>(std::move(dtls_context), dtls_ip_mtu)),
       srtp_transport_(std::make_shared<srtp_transport>(dtls_transport_)),
       media_fanout_router_(std::move(media_fanout_router))
@@ -144,6 +145,8 @@ void whip_session_transport::close(std::string_view reason)
     transport_feedback_timer_started_ = false;
     started_ = false;
     transport_feedback_timer_.cancel();
+    inactivity_timer_.cancel();
+    inactivity_timeout_handler_ = {};
     send_rtcp_bye(reason);
 
     if (media_log_interval_started_at_ != std::chrono::steady_clock::time_point{})
@@ -179,6 +182,58 @@ whip_session_transport_result whip_session_transport::start(uint16_t local_port)
         schedule_transport_feedback(true);
     }
     return {};
+}
+
+void whip_session_transport::start_inactivity_monitor(std::chrono::seconds timeout, std::function<void()> timeout_handler)
+{
+    inactivity_timeout_ = timeout;
+    inactivity_timeout_handler_ = std::move(timeout_handler);
+    last_valid_inbound_activity_ = std::chrono::steady_clock::now();
+    schedule_inactivity_timeout();
+}
+
+void whip_session_transport::record_valid_inbound_activity() { last_valid_inbound_activity_ = std::chrono::steady_clock::now(); }
+
+void whip_session_transport::schedule_inactivity_timeout()
+{
+    inactivity_timer_.expires_at(last_valid_inbound_activity_ + inactivity_timeout_);
+    const std::weak_ptr<whip_session_transport> weak_transport = weak_from_this();
+
+    inactivity_timer_.async_wait(
+        [weak_transport](const boost::system::error_code& error)
+        {
+            if (const auto transport = weak_transport.lock())
+            {
+                transport->handle_inactivity_timeout(error);
+            }
+        });
+}
+
+void whip_session_transport::handle_inactivity_timeout(const boost::system::error_code& error)
+{
+    if (closed_ || error == boost::asio::error::operation_aborted)
+    {
+        return;
+    }
+
+    if (error)
+    {
+        WEBRTC_LOG_WARN("WHIP inactivity timer failed stream={} session={} error={}", stream_id_, session_id_, error.message());
+    }
+
+    const auto deadline = last_valid_inbound_activity_ + inactivity_timeout_;
+    if (std::chrono::steady_clock::now() < deadline)
+    {
+        schedule_inactivity_timeout();
+        return;
+    }
+
+    WEBRTC_LOG_INFO("WHIP session inactivity timeout stream={} session={} timeout_seconds={}", stream_id_, session_id_, inactivity_timeout_.count());
+    auto timeout_handler = std::exchange(inactivity_timeout_handler_, {});
+    if (timeout_handler)
+    {
+        timeout_handler();
+    }
 }
 
 void whip_session_transport::record_media_log_event(media_log_event event, uint64_t value)
@@ -1853,6 +1908,8 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
 
         if (stun_result.response.has_value())
         {
+            record_valid_inbound_activity();
+
             if (stun_result.nominated)
             {
                 auto nomination = nominate_remote_endpoint(packet.remote_endpoint);
@@ -1917,6 +1974,8 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
             return result;
         }
 
+        record_valid_inbound_activity();
+
         for (auto& outbound_packet : *outbound_packets)
         {
             result.push_back({std::move(outbound_packet), packet.remote_endpoint});
@@ -1937,6 +1996,11 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
                         remote_address,
                         srtp_packet.error());
         return {};
+    }
+
+    if (srtp_packet->state == srtp_packet_process_state::unprotected && !srtp_packet->plain_packet.empty())
+    {
+        record_valid_inbound_activity();
     }
 
     if (srtp_packet->state == srtp_packet_process_state::unprotected && srtp_packet->kind == srtp_packet_kind::rtp)

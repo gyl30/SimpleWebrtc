@@ -75,6 +75,8 @@ class stream_registry
 
     [[nodiscard]] remove_session_result remove_subscriber_session(std::string_view session_id);
 
+    [[nodiscard]] std::vector<std::shared_ptr<subscriber_session>> remove_subscriber_sessions_by_stream_id(std::string_view stream_id);
+
     [[nodiscard]]
     std::vector<stream_session_lifecycle_snapshot> session_lifecycle_snapshots() const;
 

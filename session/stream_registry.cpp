@@ -157,6 +157,25 @@ remove_session_result stream_registry::remove_subscriber_session(std::string_vie
     return {};
 }
 
+std::vector<std::shared_ptr<subscriber_session>> stream_registry::remove_subscriber_sessions_by_stream_id(std::string_view stream_id)
+{
+    std::vector<std::shared_ptr<subscriber_session>> sessions;
+
+    for (auto iterator = subscribers_by_session_id_.begin(); iterator != subscribers_by_session_id_.end();)
+    {
+        if (iterator->second->stream_id() != stream_id)
+        {
+            ++iterator;
+            continue;
+        }
+
+        sessions.push_back(std::move(iterator->second));
+        iterator = subscribers_by_session_id_.erase(iterator);
+    }
+
+    return sessions;
+}
+
 std::vector<stream_session_lifecycle_snapshot> stream_registry::session_lifecycle_snapshots() const
 {
     std::vector<stream_session_lifecycle_snapshot> snapshots;

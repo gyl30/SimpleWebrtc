@@ -184,12 +184,14 @@ int main(int argc, char* argv[])
 
     WEBRTC_LOG_INFO(
         "session transport runtime config loaded dtls_ip_mtu={} ipv4_udp_payload_mtu={} ipv6_udp_payload_mtu={} "
-        "session_udp_port_min={} session_udp_port_max={}",
+        "session_udp_port_min={} session_udp_port_max={} inactivity_timeout_seconds={} publisher_recovery_timeout_seconds={}",
         config.dtls_ip_mtu,
         config.dtls_ip_mtu - webrtc::k_ipv4_udp_overhead,
         config.dtls_ip_mtu - webrtc::k_ipv6_udp_overhead,
         config.session_udp_port_range.min_port,
-        config.session_udp_port_range.max_port);
+        config.session_udp_port_range.max_port,
+        config.session_inactivity_timeout_seconds,
+        config.publisher_recovery_timeout_seconds);
 
     auto session_udp_port_allocator = std::make_shared<webrtc::udp_port_allocator>(config.session_udp_port_range);
 
