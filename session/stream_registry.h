@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -22,8 +21,6 @@ enum class stream_registry_error : uint8_t
     publisher_not_found,
     publisher_session_not_found,
     subscriber_session_not_found,
-    subscriber_reconnect_stream_mismatch,
-    publisher_republish_stream_mismatch,
 };
 
 enum class stream_session_kind : uint8_t
@@ -66,23 +63,13 @@ class stream_registry
    public:
     [[nodiscard]] publisher_session_result create_publisher_session(std::string stream_id, sdp::webrtc_offer_summary remote_offer_summary);
 
-    [[nodiscard]]
-    publisher_session_result replace_publisher_session(std::string previous_session_id,
-                                                       std::string stream_id,
-                                                       sdp::webrtc_offer_summary remote_offer_summary);
     [[nodiscard]] subscriber_session_result create_subscriber_session(std::string stream_id, sdp::webrtc_offer_summary remote_offer_summary);
-    [[nodiscard]]
-    subscriber_session_result replace_subscriber_session(std::string previous_session_id,
-                                                         std::string stream_id,
-                                                         sdp::webrtc_offer_summary remote_offer_summary);
 
     [[nodiscard]] std::shared_ptr<publisher_session> find_publisher_by_stream_id(std::string_view stream_id) const;
 
     [[nodiscard]] std::shared_ptr<publisher_session> find_publisher_by_session_id(std::string_view session_id) const;
 
     [[nodiscard]] std::shared_ptr<subscriber_session> find_subscriber_by_session_id(std::string_view session_id) const;
-
-    [[nodiscard]] std::optional<stream_session_kind> find_removed_session_kind(std::string_view session_id) const;
 
     [[nodiscard]] remove_session_result remove_publisher_session(std::string_view session_id);
 
@@ -92,19 +79,6 @@ class stream_registry
     std::vector<stream_session_lifecycle_snapshot> session_lifecycle_snapshots() const;
 
    private:
-    struct removed_session_tombstone
-    {
-        stream_session_kind kind = stream_session_kind::publisher;
-        uint64_t removed_at_milliseconds = 0;
-    };
-
-    [[nodiscard]]
-    bool is_removed_session_tombstone_expired(const removed_session_tombstone& tombstone, uint64_t current_time_milliseconds) const;
-
-    void remember_removed_session(stream_session_kind kind, std::string_view session_id);
-
-    void prune_removed_session_tombstones(uint64_t current_time_milliseconds);
-
     [[nodiscard]] std::string make_unique_session_id() const;
     [[nodiscard]] static uint64_t now_milliseconds();
 
@@ -112,7 +86,6 @@ class stream_registry
     std::unordered_map<std::string, std::shared_ptr<publisher_session>> publishers_by_stream_id_;
     std::unordered_map<std::string, std::shared_ptr<publisher_session>> publishers_by_session_id_;
     std::unordered_map<std::string, std::shared_ptr<subscriber_session>> subscribers_by_session_id_;
-    std::unordered_map<std::string, removed_session_tombstone> removed_session_tombstones_by_session_id_;
 };
 }    // namespace webrtc
 

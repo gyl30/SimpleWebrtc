@@ -3,13 +3,11 @@
 #include <cstddef>
 #include <expected>
 #include <limits>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include <boost/algorithm/string.hpp>
 #include <boost/beast/http.hpp>
 
 #include "log/log.h"
@@ -35,8 +33,6 @@ constexpr std::string_view k_whip_invalid_webrtc_offer_error = "whip_invalid_web
 constexpr std::string_view k_whip_invalid_offer_error = "whip_invalid_offer";
 constexpr std::string_view k_whip_sdp_answer_failed_error = "whip_sdp_answer_failed";
 constexpr std::string_view k_whip_runtime_offer_filter_failed_error = "whip_runtime_offer_filter_failed";
-constexpr std::string_view k_whip_previous_publisher_not_found_error = "whip_previous_publisher_not_found";
-constexpr std::string_view k_whip_republish_stream_mismatch_error = "whip_republish_stream_mismatch";
 constexpr std::string_view k_whip_precondition_failed_error = "whip_precondition_failed";
 constexpr std::string_view k_whip_stream_already_has_publisher_error = "whip_stream_already_has_publisher";
 constexpr std::string_view k_whip_create_session_failed_error = "whip_create_session_failed";
@@ -54,24 +50,6 @@ std::string make_prefixed_error(std::string_view prefix, std::string_view error)
 
     return message;
 }
-constexpr std::string_view k_whip_replace_session_header = "WHIP-Replace-Session";
-
-std::optional<std::string> read_whip_replace_session_id(http_request_t& request)
-{
-    const auto field = request.req[std::string(k_whip_replace_session_header)];
-
-    std::string_view value(field.data(), field.size());
-
-    value = boost::algorithm::trim_copy(value);
-
-    if (value.empty())
-    {
-        return std::nullopt;
-    }
-
-    return std::string(value);
-}
-
 }    // namespace
 
 whip_handler::whip_handler(std::shared_ptr<stream_registry> registry,
@@ -125,52 +103,6 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         return json_error_response(request, 400, k_whip_invalid_offer_error, make_prefixed_error("invalid whip offer: ", validation_result.error()));
     }
 
-    const std::optional<std::string> replace_session_id = read_whip_replace_session_id(request);
-
-    std::shared_ptr<publisher_session> replace_previous_session;
-
-    if (replace_session_id.has_value())
-    {
-        replace_previous_session = registry_->find_publisher_by_session_id(*replace_session_id);
-
-        if (replace_previous_session == nullptr)
-        {
-            const auto removed_session_kind = registry_->find_removed_session_kind(*replace_session_id);
-
-            if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::publisher)
-            {
-                WEBRTC_LOG_WARN("WHIP republish failed previous publisher gone stream={} previous_session={}", stream_id, *replace_session_id);
-
-                return json_error_response(request, 410, "whip_session_gone", "previous publisher session already deleted");
-            }
-
-            WEBRTC_LOG_WARN("WHIP republish failed previous publisher not found stream={} previous_session={}", stream_id, *replace_session_id);
-
-            return json_error_response(request, 404, k_whip_previous_publisher_not_found_error, "previous publisher session not found");
-        }
-        if (replace_previous_session->stream_id() != stream_id)
-        {
-            WEBRTC_LOG_WARN("WHIP republish failed stream mismatch stream={} previous_stream={} previous_session={}",
-                            stream_id,
-                            replace_previous_session->stream_id(),
-                            replace_previous_session->session_id());
-
-            return json_error_response(request, 409, "previous publisher session belongs to another stream");
-        }
-
-        auto precondition = validate_session_if_match(request, *replace_previous_session);
-
-        if (!precondition)
-        {
-            WEBRTC_LOG_WARN("WHIP republish precondition failed stream={} previous_session={} error={}",
-                            stream_id,
-                            replace_previous_session->session_id(),
-                            precondition.error());
-
-            return json_error_response(request, 412, k_whip_precondition_failed_error, precondition.error());
-        }
-    }
-
     auto local_udp_port = reserve_udp_port(udp_port_allocator_);
 
     if (!local_udp_port)
@@ -214,15 +146,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
                                    make_prefixed_error("failed to filter runtime publisher offer: ", runtime_offer.error()));
     }
 
-    auto session_result = [&]() -> publisher_session_result
-    {
-        if (replace_session_id.has_value())
-        {
-            return registry_->replace_publisher_session(*replace_session_id, std::string(stream_id), std::move(*runtime_offer));
-        }
-
-        return registry_->create_publisher_session(std::string(stream_id), std::move(*runtime_offer));
-    }();
+    auto session_result = registry_->create_publisher_session(std::string(stream_id), std::move(*runtime_offer));
     if (!session_result)
     {
         const auto error = session_result.error();
@@ -234,43 +158,11 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
             return json_error_response(request, 409, k_whip_stream_already_has_publisher_error, "stream already has publisher");
         }
 
-        if (error == stream_registry_error::publisher_session_not_found)
-        {
-            if (replace_session_id.has_value())
-            {
-                const auto removed_session_kind = registry_->find_removed_session_kind(*replace_session_id);
-
-                if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::publisher)
-                {
-                    WEBRTC_LOG_WARN("WHIP republish failed previous publisher gone stream={} previous_session={}", stream_id, *replace_session_id);
-
-                    return json_error_response(request, 410, "whip_session_gone", "previous publisher session already deleted");
-                }
-            }
-
-            WEBRTC_LOG_WARN(
-                "WHIP republish failed previous publisher not found stream={} previous_session={}", stream_id, replace_session_id.value_or(""));
-
-            return json_error_response(request, 404, k_whip_previous_publisher_not_found_error, "previous publisher session not found");
-        }
-        if (error == stream_registry_error::publisher_republish_stream_mismatch)
-        {
-            WEBRTC_LOG_WARN(
-                "WHIP republish failed previous publisher stream mismatch stream={} previous_session={}", stream_id, replace_session_id.value_or(""));
-
-            return json_error_response(request, 409, k_whip_republish_stream_mismatch_error, "previous publisher session belongs to another stream");
-        }
-
         WEBRTC_LOG_ERROR("WHIP create publisher failed stream={} error={}", stream_id, stream_registry_error_to_string(error));
         return json_error_response(request, 500, k_whip_create_session_failed_error, "create publisher session failed");
     }
 
     const auto& session = *session_result;
-
-    if (replace_previous_session != nullptr)
-    {
-        replace_previous_session->close("whip_republish");
-    }
 
     session->complete_initial_setup(
         std::move(answer->local_ice), std::move(answer->accepted_mline_indexes), std::move(*local_udp_port), std::move(transport));
@@ -288,17 +180,13 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
                                                    });
     session->set_publisher_source_generation(source_generation);
 
-    WEBRTC_LOG_INFO(
-        "WHIP create publisher stream={} session={} republish={} previous_session={} sdp_size={} offer_media_count={} accepted_media_count={} "
-        "accepted_mline_count={}",
-        session->stream_id(),
-        session->session_id(),
-        replace_session_id.has_value() ? 1 : 0,
-        replace_session_id.value_or(""),
-        offer.size(),
-        offer_summary->media.size(),
-        session->remote_offer_summary().media.size(),
-        session->accepted_remote_media_mline_indexes().size());
+    WEBRTC_LOG_INFO("WHIP create publisher stream={} session={} sdp_size={} offer_media_count={} accepted_media_count={} accepted_mline_count={}",
+                    session->stream_id(),
+                    session->session_id(),
+                    offer.size(),
+                    offer_summary->media.size(),
+                    session->remote_offer_summary().media.size(),
+                    session->accepted_remote_media_mline_indexes().size());
 
     auto response = make_sdp_http_response(request, 201, answer->sdp);
 
@@ -314,16 +202,6 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
 http_response_ptr whip_handler::patch_session(http_request_t& request, std::string_view session_id)
 {
     auto session = registry_->find_publisher_by_session_id(session_id);
-
-    if (session == nullptr)
-    {
-        const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
-
-        if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::publisher)
-        {
-            return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
-        }
-    }
 
     return handle_trickle_ice_patch_request(
         request,
@@ -363,13 +241,6 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
 
     if (session == nullptr)
     {
-        const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
-
-        if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::publisher)
-        {
-            return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
-        }
-
         return json_error_response(request, 404, k_whip_session_not_found_error, "publisher session not found");
     }
     const std::string stream_id = session->stream_id();
@@ -381,13 +252,6 @@ http_response_ptr whip_handler::delete_session(http_request_t& request, std::str
     {
         if (result.error() == stream_registry_error::publisher_session_not_found)
         {
-            const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
-
-            if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::publisher)
-            {
-                return json_error_response(request, 410, "whip_session_gone", "publisher session already deleted");
-            }
-
             return json_error_response(request, 404, k_whip_session_not_found_error, "publisher session not found");
         }
 
