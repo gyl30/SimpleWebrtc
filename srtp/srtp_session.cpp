@@ -257,11 +257,10 @@ void srtp_session::reset()
 
 namespace
 {
-std::expected<srtp_t, std::string> make_srtp_native_handle(
-    srtp_direction direction,
-    srtp_profile_id profile,
-    const std::array<uint8_t, k_srtp_aes128_master_key_size>& master_key,
-    const std::array<uint8_t, k_srtp_aes128_master_salt_size>& master_salt)
+std::expected<srtp_t, std::string> make_srtp_native_handle(srtp_direction direction,
+                                                           srtp_profile_id profile,
+                                                           const std::array<uint8_t, k_srtp_aes128_master_key_size>& master_key,
+                                                           const std::array<uint8_t, k_srtp_aes128_master_salt_size>& master_salt)
 {
     const srtp_err_status_t init_status = init_srtp_once();
 
@@ -314,10 +313,8 @@ std::expected<srtp_t, std::string> make_srtp_native_handle(
 
 srtp_session_result make_inbound_srtp_session(const srtp_keying_material& material)
 {
-    auto native_handle = make_srtp_native_handle(srtp_direction::inbound,
-                                                 material.profile,
-                                                 material.client_write_master_key,
-                                                 material.client_write_master_salt);
+    auto native_handle =
+        make_srtp_native_handle(srtp_direction::inbound, material.profile, material.client_write_master_key, material.client_write_master_salt);
 
     if (!native_handle)
     {
@@ -329,10 +326,8 @@ srtp_session_result make_inbound_srtp_session(const srtp_keying_material& materi
 
 srtp_session_result make_outbound_srtp_session(const srtp_keying_material& material)
 {
-    auto native_handle = make_srtp_native_handle(srtp_direction::outbound,
-                                                 material.profile,
-                                                 material.server_write_master_key,
-                                                 material.server_write_master_salt);
+    auto native_handle =
+        make_srtp_native_handle(srtp_direction::outbound, material.profile, material.server_write_master_key, material.server_write_master_salt);
 
     if (!native_handle)
     {

@@ -101,10 +101,7 @@ bool is_remb_fci(std::span<const uint8_t> data, std::size_t offset, std::size_t 
            data[offset + 2] == static_cast<uint8_t>('M') && data[offset + 3] == static_cast<uint8_t>('B');
 }
 
-std::expected<void, std::string> parse_generic_nack(std::span<const uint8_t> data,
-                                                    std::size_t offset,
-                                                    std::size_t end,
-                                                    rtcp_feedback_packet& packet)
+std::expected<void, std::string> parse_generic_nack(std::span<const uint8_t> data, std::size_t offset, std::size_t end, rtcp_feedback_packet& packet)
 {
     const std::size_t fci_size = end - offset;
 
@@ -132,8 +129,7 @@ std::expected<void, std::string> parse_generic_nack(std::span<const uint8_t> dat
                 continue;
             }
 
-            packet.nack_sequence_numbers.push_back(
-                static_cast<uint16_t>(packet_id + static_cast<uint16_t>(bit + 1U)));
+            packet.nack_sequence_numbers.push_back(static_cast<uint16_t>(packet_id + static_cast<uint16_t>(bit + 1U)));
         }
     }
 
@@ -157,10 +153,7 @@ std::expected<void, std::string> parse_pli(std::size_t offset, std::size_t end, 
     return {};
 }
 
-std::expected<void, std::string> parse_fir(std::span<const uint8_t> data,
-                                           std::size_t offset,
-                                           std::size_t end,
-                                           rtcp_feedback_packet& packet)
+std::expected<void, std::string> parse_fir(std::span<const uint8_t> data, std::size_t offset, std::size_t end, rtcp_feedback_packet& packet)
 {
     const std::size_t fci_size = end - offset;
 
@@ -204,8 +197,8 @@ std::expected<void, std::string> parse_remb(std::span<const uint8_t> data, std::
 
     const uint8_t ssrc_count = data[offset + 4];
     const uint8_t bitrate_exponent = static_cast<uint8_t>(data[offset + 5] >> 2U);
-    const uint32_t bitrate_mantissa = (static_cast<uint32_t>(data[offset + 5] & 0x03U) << 16U) |
-                                      (static_cast<uint32_t>(data[offset + 6]) << 8U) | static_cast<uint32_t>(data[offset + 7]);
+    const uint32_t bitrate_mantissa = (static_cast<uint32_t>(data[offset + 5] & 0x03U) << 16U) | (static_cast<uint32_t>(data[offset + 6]) << 8U) |
+                                      static_cast<uint32_t>(data[offset + 7]);
 
     const std::size_t ssrc_offset = offset + 8;
     const std::size_t required_size = ssrc_offset + static_cast<std::size_t>(ssrc_count) * 4;

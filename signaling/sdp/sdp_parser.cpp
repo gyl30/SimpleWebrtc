@@ -83,10 +83,7 @@ std::expected<sdp_attribute, std::string> parse_attribute_line(std::string_view 
 std::expected<void, std::string> validate_connection_information_line(std::string_view value)
 {
     std::vector<std::string_view> fields;
-    boost::algorithm::split(fields,
-                            value,
-                            boost::algorithm::is_any_of(" \t"),
-                            boost::algorithm::token_compress_on);
+    boost::algorithm::split(fields, value, boost::algorithm::is_any_of(" \t"), boost::algorithm::token_compress_on);
     std::erase(fields, std::string_view{});
 
     if (fields.size() < 2)
@@ -141,10 +138,7 @@ std::expected<void, std::string> validate_bandwidth_line(std::string_view value)
 std::expected<void, std::string> validate_timing_line(std::string_view value)
 {
     std::vector<std::string_view> fields;
-    boost::algorithm::split(fields,
-                            value,
-                            boost::algorithm::is_any_of(" \t"),
-                            boost::algorithm::token_compress_on);
+    boost::algorithm::split(fields, value, boost::algorithm::is_any_of(" \t"), boost::algorithm::token_compress_on);
     std::erase(fields, std::string_view{});
     if (fields.size() != 2)
     {
@@ -169,10 +163,7 @@ std::expected<void, std::string> validate_timing_line(std::string_view value)
 std::expected<void, std::string> validate_repeat_time_line(std::string_view value)
 {
     std::vector<std::string_view> fields;
-    boost::algorithm::split(fields,
-                            value,
-                            boost::algorithm::is_any_of(" \t"),
-                            boost::algorithm::token_compress_on);
+    boost::algorithm::split(fields, value, boost::algorithm::is_any_of(" \t"), boost::algorithm::token_compress_on);
     std::erase(fields, std::string_view{});
     if (fields.size() < 2)
     {
@@ -206,10 +197,7 @@ std::expected<void, std::string> validate_repeat_time_line(std::string_view valu
 std::expected<void, std::string> validate_time_zone_line(std::string_view value)
 {
     std::vector<std::string_view> fields;
-    boost::algorithm::split(fields,
-                            value,
-                            boost::algorithm::is_any_of(" \t"),
-                            boost::algorithm::token_compress_on);
+    boost::algorithm::split(fields, value, boost::algorithm::is_any_of(" \t"), boost::algorithm::token_compress_on);
     std::erase(fields, std::string_view{});
     if (fields.empty() || fields.size() % 2 != 0)
     {
@@ -266,10 +254,7 @@ std::expected<int32_t, std::string> parse_ranged_port(std::string_view value)
 std::expected<media_name_line, std::string> parse_media_name_line(std::string_view value)
 {
     std::vector<std::string_view> fields;
-    boost::algorithm::split(fields,
-                            value,
-                            boost::algorithm::is_any_of(" \t"),
-                            boost::algorithm::token_compress_on);
+    boost::algorithm::split(fields, value, boost::algorithm::is_any_of(" \t"), boost::algorithm::token_compress_on);
     std::erase(fields, std::string_view{});
 
     if (fields.size() < 4)
@@ -311,7 +296,6 @@ std::expected<media_name_line, std::string> parse_media_name_line(std::string_vi
         {
             return make_error("unsupported media protocol");
         }
-
     }
 
     for (std::size_t i = 3; i < fields.size(); ++i)
@@ -325,10 +309,7 @@ std::expected<media_name_line, std::string> parse_media_name_line(std::string_vi
 std::expected<void, std::string> validate_origin_line(std::string_view value)
 {
     std::vector<std::string_view> fields;
-    boost::algorithm::split(fields,
-                            value,
-                            boost::algorithm::is_any_of(" \t"),
-                            boost::algorithm::token_compress_on);
+    boost::algorithm::split(fields, value, boost::algorithm::is_any_of(" \t"), boost::algorithm::token_compress_on);
     std::erase(fields, std::string_view{});
 
     if (fields.size() != 6)

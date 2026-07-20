@@ -31,8 +31,7 @@ namespace webrtc
 {
 using whip_session_transport_result = std::expected<void, std::string>;
 
-class whip_session_transport : public session_ice_udp_packet_handler,
-                               public std::enable_shared_from_this<whip_session_transport>
+class whip_session_transport : public session_ice_udp_packet_handler, public std::enable_shared_from_this<whip_session_transport>
 {
    public:
     whip_session_transport(boost::asio::io_context& io_context,
@@ -216,9 +215,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
 
     void clear_peer_state();
     void clear_peer_state_locked();
-    void configure_remote_media_locked(
-        const sdp::webrtc_offer_summary& remote_offer,
-        std::span<const int> accepted_remote_media_mline_indexes);
+    void configure_remote_media_locked(const sdp::webrtc_offer_summary& remote_offer, std::span<const int> accepted_remote_media_mline_indexes);
     void record_inbound_rtp(uint32_t source_ssrc,
                             uint8_t payload_type,
                             uint16_t sequence_number,
@@ -227,9 +224,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
                             std::span<const uint8_t> plain_packet);
     void handle_inbound_byes(std::span<const rtcp_bye_packet> bye_packets);
     void send_rtcp_bye_locked(std::string_view reason);
-    void update_receiver_sender_report(uint32_t source_ssrc,
-                                       uint64_t ntp_timestamp,
-                                       std::chrono::steady_clock::time_point received_at);
+    void update_receiver_sender_report(uint32_t source_ssrc, uint64_t ntp_timestamp, std::chrono::steady_clock::time_point received_at);
     void record_media_log_event(media_log_event event, uint64_t value = 1);
     void schedule_media_log_summary();
     void handle_media_log_summary(const boost::system::error_code& error);
@@ -245,11 +240,9 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     void handle_rtcp_receiver_reports(const boost::system::error_code& error);
     [[nodiscard]] std::size_t send_rtcp_receiver_reports();
     [[nodiscard]] rtcp_interval_input make_rtcp_interval_input_locked() const;
-    void note_rtcp_transmission_locked(std::size_t protected_size,
-                                       const boost::asio::ip::udp::endpoint& remote_endpoint);
+    void note_rtcp_transmission_locked(std::size_t protected_size, const boost::asio::ip::udp::endpoint& remote_endpoint);
     void handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp);
-    [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
-        const boost::asio::ip::udp::endpoint& remote_endpoint);
+    [[nodiscard]] peer_nomination_result nominate_remote_endpoint(const boost::asio::ip::udp::endpoint& remote_endpoint);
 
     session_udp_outbound_packet_list handle_udp_packet(const session_udp_packet& packet) override;
 

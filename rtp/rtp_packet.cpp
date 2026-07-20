@@ -46,10 +46,7 @@ bool has_rtp_version(std::span<const uint8_t> data)
 
 bool is_one_byte_extension_profile(uint16_t profile) { return profile == k_one_byte_extension_profile; }
 
-bool is_two_byte_extension_profile(uint16_t profile)
-{
-    return (profile & k_two_byte_extension_profile_mask) == k_two_byte_extension_profile_value;
-}
+bool is_two_byte_extension_profile(uint16_t profile) { return (profile & k_two_byte_extension_profile_mask) == k_two_byte_extension_profile_value; }
 
 std::expected<void, std::string> validate_one_byte_header_extensions(std::span<const uint8_t> packet,
                                                                      std::size_t extension_payload_offset,
@@ -141,8 +138,7 @@ std::expected<void, std::string> validate_two_byte_header_extensions(std::span<c
     return {};
 }
 
-std::expected<std::size_t, std::string> validate_header_extensions(std::span<const uint8_t> packet,
-                                                                   std::size_t extension_header_offset)
+std::expected<std::size_t, std::string> validate_header_extensions(std::span<const uint8_t> packet, std::size_t extension_header_offset)
 {
     if (extension_header_offset + k_rtp_extension_header_size > packet.size())
     {
@@ -229,9 +225,7 @@ rtp_packet_layout_result inspect_rtp_packet_layout(std::span<const uint8_t> data
     const bool extension = (data[0] & 0x10U) != 0;
     const uint8_t csrc_count = static_cast<uint8_t>(data[0] & 0x0FU);
 
-    std::size_t header_size =
-        k_rtp_fixed_header_size +
-        static_cast<std::size_t>(csrc_count) * k_rtp_csrc_size;
+    std::size_t header_size = k_rtp_fixed_header_size + static_cast<std::size_t>(csrc_count) * k_rtp_csrc_size;
 
     if (header_size > data.size())
     {
@@ -263,8 +257,7 @@ rtp_packet_layout_result inspect_rtp_packet_layout(std::span<const uint8_t> data
         return std::unexpected(padding_result.error());
     }
 
-    const std::size_t padding_size =
-        padding ? static_cast<std::size_t>(data.back()) : 0U;
+    const std::size_t padding_size = padding ? static_cast<std::size_t>(data.back()) : 0U;
 
     return rtp_packet_layout{
         .header_size = header_size,

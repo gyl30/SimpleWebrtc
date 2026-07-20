@@ -194,6 +194,7 @@ class tcp_server : public std::enable_shared_from_this<tcp_server>
 
         do_accept();
     }
+
    private:
     std::string host_ = "0.0.0.0";
     uint16_t port_ = 0;

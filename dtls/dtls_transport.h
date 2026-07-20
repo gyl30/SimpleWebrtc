@@ -74,17 +74,16 @@ class dtls_transport
     void forget_peer(std::string_view remote_endpoint);
 
     [[nodiscard]] dtls_peer_rebind_result rebind_peer(std::string_view previous_remote_endpoint,
-                                                       std::string_view next_remote_endpoint,
-                                                       dtls_peer_identity identity,
-                                                       dtls_network_family network_family);
+                                                      std::string_view next_remote_endpoint,
+                                                      dtls_peer_identity identity,
+                                                      dtls_network_family network_family);
 
     [[nodiscard]] dtls_transport_packet_result handle_udp_packet(std::span<const uint8_t> data,
                                                                  std::string_view remote_endpoint,
                                                                  dtls_network_family network_family);
 
     [[nodiscard]]
-    std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint,
-                                                                  const dtls_peer_identity& expected_identity) const;
+    std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint, const dtls_peer_identity& expected_identity) const;
 
     [[nodiscard]]
     std::optional<dtls_peer_identity> get_peer_identity(std::string_view remote_endpoint) const;

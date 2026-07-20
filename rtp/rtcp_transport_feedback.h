@@ -85,15 +85,13 @@ struct transport_feedback_send_history_snapshot
 class transport_feedback_send_history
 {
    public:
-    transport_feedback_send_history(
-        std::chrono::milliseconds maximum_history_age = k_default_transport_feedback_history_age,
-        std::size_t maximum_history_packets = k_default_transport_feedback_history_packets);
+    transport_feedback_send_history(std::chrono::milliseconds maximum_history_age = k_default_transport_feedback_history_age,
+                                    std::size_t maximum_history_packets = k_default_transport_feedback_history_packets);
 
     [[nodiscard]] uint16_t next_sequence_number() const;
     void remember_sent(transport_feedback_sent_packet packet);
-    [[nodiscard]] transport_feedback_send_observation observe(
-        const parsed_rtcp_transport_feedback& feedback,
-        std::chrono::steady_clock::time_point now);
+    [[nodiscard]] transport_feedback_send_observation observe(const parsed_rtcp_transport_feedback& feedback,
+                                                              std::chrono::steady_clock::time_point now);
     void expire(std::chrono::steady_clock::time_point now);
     [[nodiscard]] transport_feedback_send_history_snapshot snapshot() const;
     void reset();
@@ -117,8 +115,7 @@ class transport_feedback_send_history
     transport_feedback_send_history_snapshot stats_;
 };
 
-using rtcp_transport_feedback_parse_result =
-    std::expected<parsed_rtcp_transport_feedback, std::string>;
+using rtcp_transport_feedback_parse_result = std::expected<parsed_rtcp_transport_feedback, std::string>;
 
 struct built_rtcp_transport_feedback
 {
@@ -155,22 +152,15 @@ struct transport_feedback_generator_snapshot
 class transport_feedback_generator
 {
    public:
-    transport_feedback_generator(
-        std::chrono::milliseconds maximum_history_age =
-            k_default_transport_feedback_history_age,
-        std::size_t maximum_history_packets =
-            k_default_transport_feedback_history_packets);
+    transport_feedback_generator(std::chrono::milliseconds maximum_history_age = k_default_transport_feedback_history_age,
+                                 std::size_t maximum_history_packets = k_default_transport_feedback_history_packets);
 
-    [[nodiscard]] transport_feedback_observe_result observe(
-        uint16_t sequence_number,
-        std::chrono::steady_clock::time_point arrival_time,
-        uint32_t media_ssrc);
+    [[nodiscard]] transport_feedback_observe_result observe(uint16_t sequence_number,
+                                                            std::chrono::steady_clock::time_point arrival_time,
+                                                            uint32_t media_ssrc);
 
-    [[nodiscard]] std::expected<std::optional<built_rtcp_transport_feedback>,
-                                std::string>
-    preview_feedback(uint32_t sender_ssrc,
-                     std::size_t maximum_packet_size =
-                         k_default_transport_feedback_packet_size) const;
+    [[nodiscard]] std::expected<std::optional<built_rtcp_transport_feedback>, std::string> preview_feedback(
+        uint32_t sender_ssrc, std::size_t maximum_packet_size = k_default_transport_feedback_packet_size) const;
 
     void commit_feedback(const built_rtcp_transport_feedback& feedback);
     void expire(std::chrono::steady_clock::time_point now);
@@ -185,8 +175,7 @@ class transport_feedback_generator
         std::chrono::steady_clock::time_point arrival_time;
     };
 
-    [[nodiscard]] int64_t unwrap_sequence(uint16_t sequence_number,
-                                          bool& discontinuity);
+    [[nodiscard]] int64_t unwrap_sequence(uint16_t sequence_number, bool& discontinuity);
     void evict_old(std::chrono::steady_clock::time_point now);
     [[nodiscard]] std::size_t pending_status_count() const;
 
@@ -200,8 +189,7 @@ class transport_feedback_generator
     transport_feedback_generator_snapshot stats_;
 };
 
-[[nodiscard]] rtcp_transport_feedback_parse_result parse_rtcp_transport_feedback(
-    std::span<const uint8_t> packet);
+[[nodiscard]] rtcp_transport_feedback_parse_result parse_rtcp_transport_feedback(std::span<const uint8_t> packet);
 }    // namespace webrtc
 
 #endif

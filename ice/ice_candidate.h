@@ -25,9 +25,7 @@ struct remote_ice_candidate
 
 using remote_ice_candidate_result = std::expected<remote_ice_candidate, std::string>;
 
-[[nodiscard]] remote_ice_candidate_result make_remote_ice_candidate(std::string_view candidate,
-                                                                    std::string_view sdp_mid,
-                                                                    int sdp_mline_index);
+[[nodiscard]] remote_ice_candidate_result make_remote_ice_candidate(std::string_view candidate, std::string_view sdp_mid, int sdp_mline_index);
 }    // namespace webrtc
 
 #endif

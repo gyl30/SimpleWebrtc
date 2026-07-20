@@ -34,10 +34,7 @@ inline constexpr std::size_t k_rtcp_max_count = 31;
 inline constexpr int32_t k_rtcp_min_cumulative_lost = -8388608;
 inline constexpr int32_t k_rtcp_max_cumulative_lost = 8388607;
 
-std::unexpected<std::string> make_error(std::string_view message)
-{
-    return std::unexpected(std::string(message));
-}
+std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 void write_u16(std::span<uint8_t> data, std::size_t offset, uint16_t value)
 {
@@ -62,21 +59,16 @@ void write_u32(std::span<uint8_t> data, std::size_t offset, uint32_t value)
 
 uint16_t read_u16(std::span<const uint8_t> data, std::size_t offset)
 {
-    return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) |
-                                 static_cast<uint16_t>(data[offset + 1]));
+    return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
 }
 
 uint32_t read_u32(std::span<const uint8_t> data, std::size_t offset)
 {
-    return (static_cast<uint32_t>(data[offset]) << 24U) |
-           (static_cast<uint32_t>(data[offset + 1]) << 16U) |
-           (static_cast<uint32_t>(data[offset + 2]) << 8U) |
-           static_cast<uint32_t>(data[offset + 3]);
+    return (static_cast<uint32_t>(data[offset]) << 24U) | (static_cast<uint32_t>(data[offset + 1]) << 16U) |
+           (static_cast<uint32_t>(data[offset + 2]) << 8U) | static_cast<uint32_t>(data[offset + 3]);
 }
 
-std::expected<void, std::string> write_common_header(std::span<uint8_t> packet,
-                                                     uint8_t count,
-                                                     uint8_t packet_type)
+std::expected<void, std::string> write_common_header(std::span<uint8_t> packet, uint8_t count, uint8_t packet_type)
 {
     if (packet.size() < k_rtcp_common_header_size || packet.size() % 4U != 0)
     {
@@ -101,14 +93,11 @@ std::expected<void, std::string> write_common_header(std::span<uint8_t> packet,
     return {};
 }
 
-std::expected<void, std::string> write_report_blocks(std::span<uint8_t> packet,
-                                                     std::size_t offset,
-                                                     std::span<const rtcp_report_block> blocks)
+std::expected<void, std::string> write_report_blocks(std::span<uint8_t> packet, std::size_t offset, std::span<const rtcp_report_block> blocks)
 {
     for (const auto& block : blocks)
     {
-        if (block.cumulative_lost < k_rtcp_min_cumulative_lost ||
-            block.cumulative_lost > k_rtcp_max_cumulative_lost)
+        if (block.cumulative_lost < k_rtcp_min_cumulative_lost || block.cumulative_lost > k_rtcp_max_cumulative_lost)
         {
             return make_error("rtcp cumulative lost exceeds signed 24-bit field");
         }
@@ -131,8 +120,7 @@ std::expected<void, std::string> write_report_blocks(std::span<uint8_t> packet,
     return {};
 }
 
-std::expected<uint8_t, std::string> validate_report(std::size_t report_count,
-                                                    uint32_t sender_ssrc)
+std::expected<uint8_t, std::string> validate_report(std::size_t report_count, uint32_t sender_ssrc)
 {
     if (sender_ssrc == 0)
     {
@@ -179,8 +167,7 @@ rtcp_packet_build_result build_rtcp_sender_report(const rtcp_sender_report_data&
         return std::unexpected(report_count.error());
     }
 
-    const std::size_t packet_size = k_rtcp_common_header_size + 4U + k_rtcp_sender_info_size +
-                                    report.report_blocks.size() * k_rtcp_report_block_size;
+    const std::size_t packet_size = k_rtcp_common_header_size + 4U + k_rtcp_sender_info_size + report.report_blocks.size() * k_rtcp_report_block_size;
     std::vector<uint8_t> packet(packet_size);
     auto header = write_common_header(packet, *report_count, k_rtcp_packet_type_sender_report);
 
@@ -215,8 +202,7 @@ rtcp_packet_build_result build_rtcp_receiver_report(const rtcp_receiver_report_d
         return std::unexpected(report_count.error());
     }
 
-    const std::size_t packet_size = k_rtcp_common_header_size + 4U +
-                                    report.report_blocks.size() * k_rtcp_report_block_size;
+    const std::size_t packet_size = k_rtcp_common_header_size + 4U + report.report_blocks.size() * k_rtcp_report_block_size;
     std::vector<uint8_t> packet(packet_size);
     auto header = write_common_header(packet, *report_count, k_rtcp_packet_type_receiver_report);
 
@@ -271,8 +257,7 @@ rtcp_packet_build_result build_rtcp_sdes_cname(uint32_t ssrc, std::string_view c
     return packet;
 }
 
-rtcp_packet_build_result build_rtcp_picture_loss_indication(uint32_t sender_ssrc,
-                                                             uint32_t media_ssrc)
+rtcp_packet_build_result build_rtcp_picture_loss_indication(uint32_t sender_ssrc, uint32_t media_ssrc)
 {
     if (sender_ssrc == 0)
     {
@@ -285,9 +270,7 @@ rtcp_packet_build_result build_rtcp_picture_loss_indication(uint32_t sender_ssrc
     }
 
     std::vector<uint8_t> packet(k_rtcp_feedback_header_size);
-    auto header = write_common_header(packet,
-                                      k_rtcp_payload_feedback_pli,
-                                      k_rtcp_packet_type_payload_feedback);
+    auto header = write_common_header(packet, k_rtcp_payload_feedback_pli, k_rtcp_packet_type_payload_feedback);
 
     if (!header)
     {
@@ -299,8 +282,7 @@ rtcp_packet_build_result build_rtcp_picture_loss_indication(uint32_t sender_ssrc
     return packet;
 }
 
-rtcp_packet_build_result build_rtcp_full_intra_request(
-    uint32_t sender_ssrc, std::span<const rtcp_fir_request> requests)
+rtcp_packet_build_result build_rtcp_full_intra_request(uint32_t sender_ssrc, std::span<const rtcp_fir_request> requests)
 {
     if (sender_ssrc == 0)
     {
@@ -312,19 +294,14 @@ rtcp_packet_build_result build_rtcp_full_intra_request(
         return make_error("rtcp fir request list is empty");
     }
 
-    if (requests.size() >
-        (std::numeric_limits<std::size_t>::max() - k_rtcp_feedback_header_size) /
-            k_rtcp_fir_entry_size)
+    if (requests.size() > (std::numeric_limits<std::size_t>::max() - k_rtcp_feedback_header_size) / k_rtcp_fir_entry_size)
     {
         return make_error("rtcp fir request list is too large");
     }
 
-    const std::size_t packet_size =
-        k_rtcp_feedback_header_size + requests.size() * k_rtcp_fir_entry_size;
+    const std::size_t packet_size = k_rtcp_feedback_header_size + requests.size() * k_rtcp_fir_entry_size;
     std::vector<uint8_t> packet(packet_size);
-    auto header = write_common_header(packet,
-                                      k_rtcp_payload_feedback_fir,
-                                      k_rtcp_packet_type_payload_feedback);
+    auto header = write_common_header(packet, k_rtcp_payload_feedback_fir, k_rtcp_packet_type_payload_feedback);
 
     if (!header)
     {
@@ -352,11 +329,7 @@ rtcp_packet_build_result build_rtcp_full_intra_request(
 }
 
 rtcp_packet_build_result build_rtcp_feedback_datagram(
-    std::span<const uint8_t> feedback_packet,
-    uint32_t sender_ssrc,
-    std::string_view cname,
-    bool reduced_size,
-    std::size_t maximum_size)
+    std::span<const uint8_t> feedback_packet, uint32_t sender_ssrc, std::string_view cname, bool reduced_size, std::size_t maximum_size)
 {
     if (sender_ssrc == 0)
     {
@@ -370,14 +343,12 @@ rtcp_packet_build_result build_rtcp_feedback_datagram(
         return std::unexpected(packet_type.error());
     }
 
-    if (*packet_type != k_rtcp_packet_type_transport_feedback &&
-        *packet_type != k_rtcp_packet_type_payload_feedback)
+    if (*packet_type != k_rtcp_packet_type_transport_feedback && *packet_type != k_rtcp_packet_type_payload_feedback)
     {
         return make_error("rtcp feedback datagram member is not a feedback packet");
     }
 
-    if (feedback_packet.size() < k_rtcp_feedback_header_size ||
-        read_u32(feedback_packet, 4) != sender_ssrc)
+    if (feedback_packet.size() < k_rtcp_feedback_header_size || read_u32(feedback_packet, 4) != sender_ssrc)
     {
         return make_error("rtcp feedback sender ssrc does not match datagram sender");
     }
@@ -416,8 +387,7 @@ rtcp_packet_build_result build_rtcp_feedback_datagram(
     return build_rtcp_compound_packet(members, maximum_size);
 }
 
-rtcp_packet_build_result build_rtcp_bye(std::span<const uint32_t> ssrcs,
-                                         std::string_view reason)
+rtcp_packet_build_result build_rtcp_bye(std::span<const uint32_t> ssrcs, std::string_view reason)
 {
     if (ssrcs.empty())
     {
@@ -476,13 +446,12 @@ rtcp_packet_build_result build_rtcp_bye(std::span<const uint32_t> ssrcs,
     return packet;
 }
 
-rtcp_packet_build_result build_rtcp_bye_datagram(
-    std::span<const uint8_t> report_packet,
-    uint32_t participant_ssrc,
-    std::string_view cname,
-    std::span<const uint32_t> bye_ssrcs,
-    std::string_view reason,
-    std::size_t maximum_size)
+rtcp_packet_build_result build_rtcp_bye_datagram(std::span<const uint8_t> report_packet,
+                                                 uint32_t participant_ssrc,
+                                                 std::string_view cname,
+                                                 std::span<const uint32_t> bye_ssrcs,
+                                                 std::string_view reason,
+                                                 std::size_t maximum_size)
 {
     if (participant_ssrc == 0)
     {
@@ -501,9 +470,8 @@ rtcp_packet_build_result build_rtcp_bye_datagram(
         return std::unexpected(packet_type.error());
     }
 
-    if ((*packet_type != k_rtcp_packet_type_sender_report &&
-         *packet_type != k_rtcp_packet_type_receiver_report) ||
-        report_packet.size() < 8U || read_u32(report_packet, 4) != participant_ssrc)
+    if ((*packet_type != k_rtcp_packet_type_sender_report && *packet_type != k_rtcp_packet_type_receiver_report) || report_packet.size() < 8U ||
+        read_u32(report_packet, 4) != participant_ssrc)
     {
         return make_error("rtcp bye report sender does not match participant");
     }
@@ -529,8 +497,7 @@ rtcp_packet_build_result build_rtcp_bye_datagram(
     return build_rtcp_compound_packet(members, maximum_size);
 }
 
-rtcp_packet_build_result build_rtcp_compound_packet(std::span<const std::vector<uint8_t>> packets,
-                                                     std::size_t maximum_size)
+rtcp_packet_build_result build_rtcp_compound_packet(std::span<const std::vector<uint8_t>> packets, std::size_t maximum_size)
 {
     if (packets.empty())
     {
@@ -554,8 +521,7 @@ rtcp_packet_build_result build_rtcp_compound_packet(std::span<const std::vector<
             return std::unexpected(packet_type.error());
         }
 
-        if (index == 0 && *packet_type != k_rtcp_packet_type_sender_report &&
-            *packet_type != k_rtcp_packet_type_receiver_report)
+        if (index == 0 && *packet_type != k_rtcp_packet_type_sender_report && *packet_type != k_rtcp_packet_type_receiver_report)
         {
             return make_error("rtcp compound packet must begin with sender or receiver report");
         }

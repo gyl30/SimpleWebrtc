@@ -14,9 +14,7 @@ class session_transport_log_interval
    public:
     [[nodiscard]] bool try_begin(std::chrono::steady_clock::duration interval, int64_t& interval_ms)
     {
-        const int64_t now_tick = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                     std::chrono::steady_clock::now().time_since_epoch())
-                                     .count();
+        const int64_t now_tick = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
         const int64_t interval_ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(interval).count();
         int64_t next_summary_tick = next_summary_tick_.load(std::memory_order_relaxed);
 
@@ -24,18 +22,14 @@ class session_transport_log_interval
         {
             const int64_t first_summary_tick = now_tick + interval_ticks;
 
-            if (next_summary_tick_.compare_exchange_strong(next_summary_tick,
-                                                           first_summary_tick,
-                                                           std::memory_order_relaxed))
+            if (next_summary_tick_.compare_exchange_strong(next_summary_tick, first_summary_tick, std::memory_order_relaxed))
             {
                 return false;
             }
         }
 
         if (now_tick < next_summary_tick ||
-            !next_summary_tick_.compare_exchange_strong(next_summary_tick,
-                                                        now_tick + interval_ticks,
-                                                        std::memory_order_relaxed))
+            !next_summary_tick_.compare_exchange_strong(next_summary_tick, now_tick + interval_ticks, std::memory_order_relaxed))
         {
             return false;
         }
@@ -52,15 +46,9 @@ template <typename Counter>
 class session_transport_log_counters
 {
    public:
-    void add(Counter counter, uint64_t value = 1)
-    {
-        counters_[static_cast<std::size_t>(counter)].fetch_add(value, std::memory_order_relaxed);
-    }
+    void add(Counter counter, uint64_t value = 1) { counters_[static_cast<std::size_t>(counter)].fetch_add(value, std::memory_order_relaxed); }
 
-    [[nodiscard]] uint64_t take(Counter counter)
-    {
-        return counters_[static_cast<std::size_t>(counter)].exchange(0, std::memory_order_relaxed);
-    }
+    [[nodiscard]] uint64_t take(Counter counter) { return counters_[static_cast<std::size_t>(counter)].exchange(0, std::memory_order_relaxed); }
 
    private:
     static constexpr std::size_t k_counter_count = static_cast<std::size_t>(Counter::count);
@@ -68,8 +56,7 @@ class session_transport_log_counters
 };
 
 template <std::size_t SlotCount>
-[[nodiscard]] bool mark_session_transport_value_once(std::array<std::atomic<uint32_t>, SlotCount>& slots,
-                                                      uint32_t value)
+[[nodiscard]] bool mark_session_transport_value_once(std::array<std::atomic<uint32_t>, SlotCount>& slots, uint32_t value)
 {
     static_assert(SlotCount > 0);
 

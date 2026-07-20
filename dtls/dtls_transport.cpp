@@ -973,8 +973,7 @@ struct dtls_transport::impl
         return packets;
     }
 
-    std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint,
-                                                                  const dtls_peer_identity& expected_identity) const
+    std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint, const dtls_peer_identity& expected_identity) const
     {
         std::lock_guard lock(mutex_);
 
@@ -1201,15 +1200,12 @@ void dtls_transport::remember_peer(std::string_view remote_endpoint, dtls_peer_i
     impl_->remember_peer(remote_endpoint, std::move(identity));
 }
 
-void dtls_transport::forget_peer(std::string_view remote_endpoint)
-{
-    impl_->forget_peer(remote_endpoint);
-}
+void dtls_transport::forget_peer(std::string_view remote_endpoint) { impl_->forget_peer(remote_endpoint); }
 
 dtls_peer_rebind_result dtls_transport::rebind_peer(std::string_view previous_remote_endpoint,
-                                                     std::string_view next_remote_endpoint,
-                                                     dtls_peer_identity identity,
-                                                     dtls_network_family network_family)
+                                                    std::string_view next_remote_endpoint,
+                                                    dtls_peer_identity identity,
+                                                    dtls_network_family network_family)
 {
     return impl_->rebind_peer(previous_remote_endpoint, next_remote_endpoint, std::move(identity), network_family);
 }
@@ -1222,7 +1218,7 @@ dtls_transport_packet_result dtls_transport::handle_udp_packet(std::span<const u
 }
 
 std::optional<srtp_keying_material> dtls_transport::get_srtp_keying_material(std::string_view remote_endpoint,
-                                                                               const dtls_peer_identity& expected_identity) const
+                                                                             const dtls_peer_identity& expected_identity) const
 {
     return impl_->get_srtp_keying_material(remote_endpoint, expected_identity);
 }

@@ -151,9 +151,7 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
     };
     if (content_kind == trickle_ice_patch_content_kind::kUnsupported)
     {
-        return fail(415,
-                    "trickle_ice_unsupported_media_type",
-                    "unsupported media type, expected application/trickle-ice-sdpfrag");
+        return fail(415, "trickle_ice_unsupported_media_type", "unsupported media type, expected application/trickle-ice-sdpfrag");
     }
 
     if (request.req.body().size() > k_trickle_ice_max_patch_body_bytes)
@@ -221,8 +219,8 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
     }
 
     const auto& remote_offer = session->remote_offer_summary();
-    const bool ice_restart = !patch_body->ice_ufrag.empty() &&
-                             (patch_body->ice_ufrag != remote_offer.ice_ufrag || patch_body->ice_pwd != remote_offer.ice_pwd);
+    const bool ice_restart =
+        !patch_body->ice_ufrag.empty() && (patch_body->ice_ufrag != remote_offer.ice_ufrag || patch_body->ice_pwd != remote_offer.ice_pwd);
 
     if (ice_restart)
     {
@@ -240,8 +238,7 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
         received_candidate_bytes += candidate.candidate.size();
     }
 
-    global_trickle_ice_metrics().record_candidate_batch(
-        patch_body->candidates.size(), end_of_candidates_received_count, received_candidate_bytes);
+    global_trickle_ice_metrics().record_candidate_batch(patch_body->candidates.size(), end_of_candidates_received_count, received_candidate_bytes);
 
     std::size_t accepted_count = 0;
     std::size_t duplicate_count = 0;

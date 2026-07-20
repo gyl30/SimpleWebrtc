@@ -106,18 +106,15 @@ std::optional<std::string> find_fmtp_parameter(std::string_view fmtp, std::strin
 
         if (equal_position != std::string_view::npos)
         {
-            const std::string_view item_key =
-                boost::algorithm::trim_copy_if(item.substr(0, equal_position), boost::algorithm::is_any_of(" \t"));
+            const std::string_view item_key = boost::algorithm::trim_copy_if(item.substr(0, equal_position), boost::algorithm::is_any_of(" \t"));
 
-            const std::string_view item_value =
-                boost::algorithm::trim_copy_if(item.substr(equal_position + 1), boost::algorithm::is_any_of(" \t"));
+            const std::string_view item_value = boost::algorithm::trim_copy_if(item.substr(equal_position + 1), boost::algorithm::is_any_of(" \t"));
 
             if (boost::algorithm::iequals(item_key, key))
             {
                 return std::string(item_value);
             }
         }
-
     }
 
     return std::nullopt;
@@ -268,11 +265,9 @@ std::expected<std::vector<opus_fmtp_parameter>, std::string> parse_opus_fmtp_par
                 return make_error("opus fmtp parameter is missing value");
             }
 
-            const std::string_view key =
-                boost::algorithm::trim_copy_if(item.substr(0, equal_position), boost::algorithm::is_any_of(" \t"));
+            const std::string_view key = boost::algorithm::trim_copy_if(item.substr(0, equal_position), boost::algorithm::is_any_of(" \t"));
 
-            const std::string_view value =
-                boost::algorithm::trim_copy_if(item.substr(equal_position + 1), boost::algorithm::is_any_of(" \t"));
+            const std::string_view value = boost::algorithm::trim_copy_if(item.substr(equal_position + 1), boost::algorithm::is_any_of(" \t"));
 
             if (key.empty())
             {
@@ -292,7 +287,6 @@ std::expected<std::vector<opus_fmtp_parameter>, std::string> parse_opus_fmtp_par
 
             parameters.push_back(std::move(parameter));
         }
-
     }
 
     return parameters;
@@ -967,8 +961,7 @@ codec_negotiation_result negotiate_codecs(const media_summary& subscriber_media,
     return selected_codecs;
 }
 
-codec_payload_type_mapping_result negotiate_codec_payload_type_mappings(const media_summary& subscriber_media,
-                                                                         const media_summary& publisher_media)
+codec_payload_type_mapping_result negotiate_codec_payload_type_mappings(const media_summary& subscriber_media, const media_summary& publisher_media)
 {
     auto selected_codecs = negotiate_codecs(subscriber_media, publisher_media);
 
@@ -1016,19 +1009,18 @@ codec_payload_type_mapping_result negotiate_codec_payload_type_mappings(const me
             return make_media_error(subscriber_media, "selected rtx codec has no apt");
         }
 
-        const auto primary_mapping = std::find_if(
-            mappings.begin(),
-            mappings.end(),
-            [subscriber_apt](const codec_payload_type_mapping& mapping)
-            { return mapping.subscriber_payload_type == *subscriber_apt && !mapping.subscriber_associated_payload_type.has_value(); });
+        const auto primary_mapping =
+            std::find_if(mappings.begin(),
+                         mappings.end(),
+                         [subscriber_apt](const codec_payload_type_mapping& mapping)
+                         { return mapping.subscriber_payload_type == *subscriber_apt && !mapping.subscriber_associated_payload_type.has_value(); });
 
         if (primary_mapping == mappings.end())
         {
             return make_media_error(subscriber_media, "selected rtx codec primary mapping is missing");
         }
 
-        const codec_info* publisher_rtx_codec =
-            find_rtx_codec_for_apt(publisher_media, primary_mapping->publisher_payload_type);
+        const codec_info* publisher_rtx_codec = find_rtx_codec_for_apt(publisher_media, primary_mapping->publisher_payload_type);
 
         if (publisher_rtx_codec == nullptr)
         {

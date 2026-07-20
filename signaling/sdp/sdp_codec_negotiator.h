@@ -29,8 +29,7 @@ using codec_payload_type_mapping_result = std::expected<std::vector<codec_payloa
 codec_negotiation_result negotiate_codecs(const media_summary& subscriber_media, const media_summary& publisher_media);
 
 [[nodiscard]]
-codec_payload_type_mapping_result negotiate_codec_payload_type_mappings(const media_summary& subscriber_media,
-                                                                         const media_summary& publisher_media);
+codec_payload_type_mapping_result negotiate_codec_payload_type_mappings(const media_summary& subscriber_media, const media_summary& publisher_media);
 }    // namespace webrtc::sdp
 
 #endif

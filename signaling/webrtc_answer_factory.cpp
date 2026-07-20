@@ -69,8 +69,7 @@ std::string make_local_stream_id(std::string_view stream_id)
 
 }    // namespace
 
-webrtc_answer_factory::webrtc_answer_factory(sdp::fingerprint_info local_fingerprint,
-                                               std::vector<std::string> ice_candidate_addresses)
+webrtc_answer_factory::webrtc_answer_factory(sdp::fingerprint_info local_fingerprint, std::vector<std::string> ice_candidate_addresses)
     : local_fingerprint_(std::move(local_fingerprint)),
       ice_candidate_addresses_(std::move(ice_candidate_addresses)),
       next_session_id_(make_initial_session_id())
@@ -119,9 +118,8 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer(std::string_view
     options.local_stream_id = make_local_stream_id(stream_id);
     options.media_sources = media_sources;
 
-    sdp::sdp_answer_text_result answer_sdp = whep_publisher_offer == nullptr
-                                                 ? sdp::build_whip_answer_sdp(offer, options)
-                                                 : sdp::build_whep_answer_sdp(offer, *whep_publisher_offer, options);
+    sdp::sdp_answer_text_result answer_sdp = whep_publisher_offer == nullptr ? sdp::build_whip_answer_sdp(offer, options)
+                                                                             : sdp::build_whep_answer_sdp(offer, *whep_publisher_offer, options);
 
     if (!answer_sdp)
     {

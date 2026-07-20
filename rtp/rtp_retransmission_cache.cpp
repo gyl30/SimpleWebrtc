@@ -101,8 +101,7 @@ void rtp_retransmission_cache::prune(std::chrono::steady_clock::time_point now)
     }
 }
 
-void rtp_retransmission_cache::remember(rtp_retransmission_cache_packet packet,
-                                        std::chrono::steady_clock::time_point now)
+void rtp_retransmission_cache::remember(rtp_retransmission_cache_packet packet, std::chrono::steady_clock::time_point now)
 {
     if (packet.packet.empty() || packet.target_ssrc == 0)
     {
@@ -133,10 +132,9 @@ void rtp_retransmission_cache::remember(rtp_retransmission_cache_packet packet,
     prune(now);
 }
 
-rtp_retransmission_cache_lookup rtp_retransmission_cache::lookup_for_retransmission(
-    uint32_t target_ssrc,
-    uint16_t target_sequence_number,
-    std::chrono::steady_clock::time_point now)
+rtp_retransmission_cache_lookup rtp_retransmission_cache::lookup_for_retransmission(uint32_t target_ssrc,
+                                                                                    uint16_t target_sequence_number,
+                                                                                    std::chrono::steady_clock::time_point now)
 {
     prune(now);
     const uint64_t key = make_key(target_ssrc, target_sequence_number);
@@ -149,8 +147,7 @@ rtp_retransmission_cache_lookup rtp_retransmission_cache::lookup_for_retransmiss
 
     auto& cached = iterator->second;
 
-    if (cached.last_retransmitted_at.has_value() &&
-        now - *cached.last_retransmitted_at < config_.minimum_retransmit_interval)
+    if (cached.last_retransmitted_at.has_value() && now - *cached.last_retransmitted_at < config_.minimum_retransmit_interval)
     {
         return rtp_retransmission_cache_lookup{
             .state = rtp_retransmission_cache_lookup_state::suppressed,

@@ -52,8 +52,7 @@ rtcp_interval_scheduler::rtcp_interval_scheduler(rtcp_interval_config config, st
         config_.bandwidth_bytes_per_second = 8'000.0;
     }
 
-    if (!std::isfinite(config_.sender_bandwidth_fraction) || config_.sender_bandwidth_fraction <= 0.0 ||
-        config_.sender_bandwidth_fraction >= 1.0)
+    if (!std::isfinite(config_.sender_bandwidth_fraction) || config_.sender_bandwidth_fraction <= 0.0 || config_.sender_bandwidth_fraction >= 1.0)
     {
         config_.sender_bandwidth_fraction = 0.25;
     }
@@ -69,9 +68,7 @@ rtcp_interval_scheduler::rtcp_interval_scheduler(rtcp_interval_config config, st
     }
 }
 
-rtcp_interval_scheduler::clock::time_point rtcp_interval_scheduler::schedule_initial(
-    clock::time_point now,
-    rtcp_interval_input input)
+rtcp_interval_scheduler::clock::time_point rtcp_interval_scheduler::schedule_initial(clock::time_point now, rtcp_interval_input input)
 {
     input = normalize_input(input);
     last_input_ = input;
@@ -79,10 +76,9 @@ rtcp_interval_scheduler::clock::time_point rtcp_interval_scheduler::schedule_ini
     return make_next_deadline(now, interval, false);
 }
 
-rtcp_interval_scheduler::clock::time_point rtcp_interval_scheduler::schedule_after_fire(
-    clock::time_point now,
-    rtcp_interval_input input,
-    bool packet_sent)
+rtcp_interval_scheduler::clock::time_point rtcp_interval_scheduler::schedule_after_fire(clock::time_point now,
+                                                                                        rtcp_interval_input input,
+                                                                                        bool packet_sent)
 {
     input = normalize_input(input);
 
@@ -129,18 +125,16 @@ rtcp_interval_snapshot rtcp_interval_scheduler::snapshot() const
     };
 }
 
-std::chrono::microseconds rtcp_interval_scheduler::calculate_nominal_interval(
-    const rtcp_interval_config& config,
-    const rtcp_interval_input& raw_input,
-    std::size_t average_packet_size,
-    bool initial)
+std::chrono::microseconds rtcp_interval_scheduler::calculate_nominal_interval(const rtcp_interval_config& config,
+                                                                              const rtcp_interval_input& raw_input,
+                                                                              std::size_t average_packet_size,
+                                                                              bool initial)
 {
     const auto input = normalize_input(raw_input);
     double bandwidth = config.bandwidth_bytes_per_second;
     std::size_t participants = input.member_count;
 
-    const double sender_threshold =
-        static_cast<double>(input.member_count) * config.sender_bandwidth_fraction;
+    const double sender_threshold = static_cast<double>(input.member_count) * config.sender_bandwidth_fraction;
 
     if (input.sender_count > 0 && static_cast<double>(input.sender_count) <= sender_threshold)
     {
@@ -157,30 +151,24 @@ std::chrono::microseconds rtcp_interval_scheduler::calculate_nominal_interval(
     }
 
     const double calculated_seconds =
-        (static_cast<double>(std::max<std::size_t>(average_packet_size, 1)) *
-         static_cast<double>(participants)) /
-        std::max(bandwidth, 1.0);
+        (static_cast<double>(std::max<std::size_t>(average_packet_size, 1)) * static_cast<double>(participants)) / std::max(bandwidth, 1.0);
 
     const auto minimum = initial ? config.initial_minimum_interval : config.minimum_interval;
     const double minimum_seconds = std::chrono::duration<double>(minimum).count();
     return seconds_to_microseconds(std::max(calculated_seconds, minimum_seconds));
 }
 
-std::chrono::microseconds rtcp_interval_scheduler::make_randomized_interval(
-    rtcp_interval_input input) const
+std::chrono::microseconds rtcp_interval_scheduler::make_randomized_interval(rtcp_interval_input input) const
 {
     const auto nominal = calculate_nominal_interval(config_, input, average_packet_size_, initial_);
     const double randomized_seconds =
-        std::chrono::duration<double>(nominal).count() * random_factor_(random_generator_) /
-        k_rtcp_interval_compensation;
-    return std::max(seconds_to_microseconds(randomized_seconds),
-                    std::chrono::duration_cast<std::chrono::microseconds>(k_minimum_timer_delay));
+        std::chrono::duration<double>(nominal).count() * random_factor_(random_generator_) / k_rtcp_interval_compensation;
+    return std::max(seconds_to_microseconds(randomized_seconds), std::chrono::duration_cast<std::chrono::microseconds>(k_minimum_timer_delay));
 }
 
-rtcp_interval_scheduler::clock::time_point rtcp_interval_scheduler::make_next_deadline(
-    clock::time_point now,
-    std::chrono::microseconds interval,
-    bool preserve_previous_deadline)
+rtcp_interval_scheduler::clock::time_point rtcp_interval_scheduler::make_next_deadline(clock::time_point now,
+                                                                                       std::chrono::microseconds interval,
+                                                                                       bool preserve_previous_deadline)
 {
     clock::time_point base = now;
 

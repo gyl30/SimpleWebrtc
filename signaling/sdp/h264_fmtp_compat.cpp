@@ -78,8 +78,7 @@ std::expected<uint8_t, std::string> parse_u8_decimal(std::string_view value)
 
 std::expected<bool, std::string> parse_boolean_01(std::string_view value)
 {
-    const std::string normalized =
-        boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(std::string(value)));
+    const std::string normalized = boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(std::string(value)));
 
     if (normalized == "1" || normalized == "true" || normalized == "yes")
     {
@@ -162,8 +161,7 @@ h264_profile_kind classify_h264_profile(uint8_t profile_idc, uint8_t profile_iop
 
 std::expected<h264_profile_level_id, std::string> parse_profile_level_id(std::string_view value)
 {
-    const std::string normalized =
-        boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(std::string(value)));
+    const std::string normalized = boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(std::string(value)));
 
     if (normalized.size() != 6)
     {
@@ -442,8 +440,7 @@ std::expected<h264_fmtp_parameters, std::string> parse_h264_fmtp(std::string_vie
             continue;
         }
 
-        const std::string key = boost::algorithm::to_lower_copy(
-            boost::algorithm::trim_copy(part.substr(0, equal_position)));
+        const std::string key = boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(part.substr(0, equal_position)));
 
         const std::string value = boost::algorithm::trim_copy(part.substr(equal_position + 1));
 
@@ -553,8 +550,7 @@ std::expected<std::string, std::string> negotiate_h264_fmtp_for_answer(std::stri
     return make_answer_fmtp(selected_profile_level_id, *offer_packetization_mode, level_asymmetry_allowed);
 }
 
-std::expected<bool, std::string> check_h264_fmtp_relay_compatibility(std::string_view publisher_fmtp,
-                                                                     std::string_view subscriber_fmtp)
+std::expected<bool, std::string> check_h264_fmtp_relay_compatibility(std::string_view publisher_fmtp, std::string_view subscriber_fmtp)
 {
     auto publisher_parameters = parse_h264_fmtp(publisher_fmtp);
 

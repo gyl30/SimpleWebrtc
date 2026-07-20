@@ -137,30 +137,26 @@ void session_ice_udp_server::send(std::vector<uint8_t> packet, const boost::asio
 
     auto buffer = std::make_shared<std::vector<uint8_t>>(std::move(packet));
 
-    socket_.async_send_to(boost::asio::buffer(*buffer),
-                          remote_endpoint,
-                          [buffer, remote_endpoint](boost::system::error_code ec, std::size_t bytes_transferred)
-                          {
-                              if (ec)
-                              {
-                                  if (ec == boost::asio::error::operation_aborted)
-                                  {
-                                      WEBRTC_LOG_TRACE("session ice udp send canceled remote={}",
-                                                       endpoint_to_string(remote_endpoint));
-                                      return;
-                                  }
+    socket_.async_send_to(
+        boost::asio::buffer(*buffer),
+        remote_endpoint,
+        [buffer, remote_endpoint](boost::system::error_code ec, std::size_t bytes_transferred)
+        {
+            if (ec)
+            {
+                if (ec == boost::asio::error::operation_aborted)
+                {
+                    WEBRTC_LOG_TRACE("session ice udp send canceled remote={}", endpoint_to_string(remote_endpoint));
+                    return;
+                }
 
-                                  WEBRTC_LOG_WARN("session ice udp send failed remote={} error={}",
-                                                  endpoint_to_string(remote_endpoint),
-                                                  ec.message());
+                WEBRTC_LOG_WARN("session ice udp send failed remote={} error={}", endpoint_to_string(remote_endpoint), ec.message());
 
-                                  return;
-                              }
+                return;
+            }
 
-                              WEBRTC_LOG_TRACE("session ice udp send success remote={} bytes={}",
-                                               endpoint_to_string(remote_endpoint),
-                                               bytes_transferred);
-                          });
+            WEBRTC_LOG_TRACE("session ice udp send success remote={} bytes={}", endpoint_to_string(remote_endpoint), bytes_transferred);
+        });
 }
 
 void session_ice_udp_server::do_receive()
@@ -172,10 +168,7 @@ void session_ice_udp_server::do_receive()
 
     socket_.async_receive_from(boost::asio::buffer(receive_buffer_),
                                remote_endpoint_,
-                               [this](boost::system::error_code ec, std::size_t bytes_transferred)
-                               {
-                                   on_receive(ec, bytes_transferred);
-                               });
+                               [this](boost::system::error_code ec, std::size_t bytes_transferred) { on_receive(ec, bytes_transferred); });
 }
 
 void session_ice_udp_server::on_receive(boost::system::error_code ec, std::size_t bytes_transferred)

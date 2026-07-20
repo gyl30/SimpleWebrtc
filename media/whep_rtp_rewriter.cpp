@@ -37,13 +37,10 @@ constexpr uint16_t k_two_byte_extension_profile_value = 0x1000;
 constexpr uint8_t k_one_byte_extension_reserved_id = 15;
 
 constexpr std::string_view k_mid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:mid";
-constexpr std::string_view k_transport_wide_cc_extension_uri =
-    "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
-constexpr std::string_view k_absolute_send_time_extension_uri =
-    "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
+constexpr std::string_view k_transport_wide_cc_extension_uri = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
+constexpr std::string_view k_absolute_send_time_extension_uri = "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
 constexpr std::string_view k_rid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id";
-constexpr std::string_view k_repaired_rid_extension_uri =
-    "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id";
+constexpr std::string_view k_repaired_rid_extension_uri = "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id";
 
 std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
@@ -79,15 +76,12 @@ void write_u32(std::vector<uint8_t>& data, std::size_t offset, uint32_t value)
 
 bool is_one_byte_extension_profile(uint16_t profile) { return profile == k_one_byte_extension_profile; }
 
-bool is_two_byte_extension_profile(uint16_t profile)
-{
-    return (profile & k_two_byte_extension_profile_mask) == k_two_byte_extension_profile_value;
-}
+bool is_two_byte_extension_profile(uint16_t profile) { return (profile & k_two_byte_extension_profile_mask) == k_two_byte_extension_profile_value; }
 
 bool header_extension_requires_regeneration(std::string_view uri)
 {
-    return uri == k_transport_wide_cc_extension_uri || uri == k_absolute_send_time_extension_uri ||
-           uri == k_rid_extension_uri || uri == k_repaired_rid_extension_uri;
+    return uri == k_transport_wide_cc_extension_uri || uri == k_absolute_send_time_extension_uri || uri == k_rid_extension_uri ||
+           uri == k_repaired_rid_extension_uri;
 }
 
 bool codec_supports_generic_nack(const sdp::codec_info& codec)
@@ -140,8 +134,9 @@ struct parsed_rtp_packet
     std::vector<parsed_header_extension> header_extensions;
 };
 
-std::expected<std::vector<parsed_header_extension>, std::string> parse_one_byte_header_extensions(
-    std::span<const uint8_t> packet, std::size_t offset, std::size_t size)
+std::expected<std::vector<parsed_header_extension>, std::string> parse_one_byte_header_extensions(std::span<const uint8_t> packet,
+                                                                                                  std::size_t offset,
+                                                                                                  std::size_t size)
 {
     std::vector<parsed_header_extension> extensions;
     const std::size_t end = offset + size;
@@ -182,8 +177,9 @@ std::expected<std::vector<parsed_header_extension>, std::string> parse_one_byte_
     return extensions;
 }
 
-std::expected<std::vector<parsed_header_extension>, std::string> parse_two_byte_header_extensions(
-    std::span<const uint8_t> packet, std::size_t offset, std::size_t size)
+std::expected<std::vector<parsed_header_extension>, std::string> parse_two_byte_header_extensions(std::span<const uint8_t> packet,
+                                                                                                  std::size_t offset,
+                                                                                                  std::size_t size)
 {
     std::vector<parsed_header_extension> extensions;
     const std::size_t end = offset + size;
@@ -236,8 +232,7 @@ std::expected<parsed_rtp_packet, std::string> parse_rewriteable_rtp_packet(std::
     const bool extension = (packet[0] & 0x10U) != 0;
     const uint8_t csrc_count = static_cast<uint8_t>(packet[0] & 0x0FU);
 
-    const std::size_t base_header_size =
-        k_rtp_fixed_header_size + static_cast<std::size_t>(csrc_count) * k_rtp_csrc_size;
+    const std::size_t base_header_size = k_rtp_fixed_header_size + static_cast<std::size_t>(csrc_count) * k_rtp_csrc_size;
 
     std::size_t payload_offset = base_header_size;
     std::vector<parsed_header_extension> header_extensions;
@@ -369,10 +364,9 @@ const whep_rtp_header_extension_mapping* find_header_extension_mapping(const whe
     return nullptr;
 }
 
-std::expected<std::vector<parsed_header_extension>, std::string> rewrite_header_extensions(
-    const parsed_rtp_packet& packet,
-    const whep_rtp_media_mapping& mapping,
-    uint16_t transport_sequence_number)
+std::expected<std::vector<parsed_header_extension>, std::string> rewrite_header_extensions(const parsed_rtp_packet& packet,
+                                                                                           const whep_rtp_media_mapping& mapping,
+                                                                                           uint16_t transport_sequence_number)
 {
     std::vector<parsed_header_extension> rewritten_extensions;
     std::array<bool, 256> used_target_ids{};
@@ -430,8 +424,7 @@ std::expected<std::vector<parsed_header_extension>, std::string> rewrite_header_
         rewritten_extensions.push_back(std::move(mid_extension));
     }
 
-    if (mapping.target_transport_cc_extension_id != 0 &&
-        !used_target_ids[mapping.target_transport_cc_extension_id])
+    if (mapping.target_transport_cc_extension_id != 0 && !used_target_ids[mapping.target_transport_cc_extension_id])
     {
         parsed_header_extension transport_cc_extension;
         transport_cc_extension.id = mapping.target_transport_cc_extension_id;
@@ -449,10 +442,7 @@ std::expected<std::vector<parsed_header_extension>, std::string> rewrite_header_
     return rewritten_extensions;
 }
 
-std::expected<void, std::string> write_transport_sequence_number(
-    std::vector<uint8_t>& packet,
-    uint8_t extension_id,
-    uint16_t sequence_number)
+std::expected<void, std::string> write_transport_sequence_number(std::vector<uint8_t>& packet, uint8_t extension_id, uint16_t sequence_number)
 {
     auto extension = find_rtp_header_extension(packet, extension_id);
 
@@ -489,8 +479,8 @@ bool extensions_fit_one_byte_format(std::span<const parsed_header_extension> ext
     return true;
 }
 
-std::expected<std::vector<uint8_t>, std::string> build_header_extension_block(
-    std::span<const parsed_header_extension> extensions, bool target_extmap_allow_mixed)
+std::expected<std::vector<uint8_t>, std::string> build_header_extension_block(std::span<const parsed_header_extension> extensions,
+                                                                              bool target_extmap_allow_mixed)
 {
     if (extensions.empty())
     {
@@ -544,17 +534,11 @@ std::expected<std::vector<uint8_t>, std::string> build_header_extension_block(
     return block;
 }
 
-uint16_t make_initial_sequence_number(uint32_t target_ssrc)
-{
-    return static_cast<uint16_t>((target_ssrc ^ (target_ssrc >> 16U)) & 0xFFFFU);
-}
+uint16_t make_initial_sequence_number(uint32_t target_ssrc) { return static_cast<uint16_t>((target_ssrc ^ (target_ssrc >> 16U)) & 0xFFFFU); }
 
 uint32_t make_initial_timestamp_offset(uint32_t target_ssrc) { return target_ssrc * 0x9E3779B1U; }
 
-bool timestamp_is_newer(uint32_t value, uint32_t reference)
-{
-    return static_cast<int32_t>(value - reference) > 0;
-}
+bool timestamp_is_newer(uint32_t value, uint32_t reference) { return static_cast<int32_t>(value - reference) > 0; }
 
 struct sequence_number_cache
 {
@@ -631,10 +615,7 @@ struct media_runtime_state
         primary_sequence_numbers.clear();
     }
 
-    void begin_primary_source(uint32_t source_ssrc,
-                              uint8_t source_payload_type,
-                              uint32_t source_timestamp,
-                              uint32_t clock_rate)
+    void begin_primary_source(uint32_t source_ssrc, uint8_t source_payload_type, uint32_t source_timestamp, uint32_t clock_rate)
     {
         source_primary_ssrc = source_ssrc;
         source_rtx_ssrc.reset();
@@ -693,8 +674,7 @@ struct media_runtime_state
                                  std::max<uint32_t>(1U, source_clock_rate));
         }
 
-        const uint32_t target_timestamp =
-            target_timestamp_anchor + (source_timestamp - *source_timestamp_anchor);
+        const uint32_t target_timestamp = target_timestamp_anchor + (source_timestamp - *source_timestamp_anchor);
 
         if (timestamp_is_newer(target_timestamp, last_target_timestamp))
         {
@@ -717,8 +697,7 @@ struct resolved_media
     const whep_rtp_payload_type_mapping* payload_type = nullptr;
 };
 
-std::optional<resolved_media> resolve_media_by_mid(std::span<media_runtime_state> media,
-                                                   const parsed_rtp_packet& packet)
+std::optional<resolved_media> resolve_media_by_mid(std::span<media_runtime_state> media, const parsed_rtp_packet& packet)
 {
     std::optional<resolved_media> resolved;
 
@@ -764,8 +743,7 @@ std::optional<resolved_media> resolve_media_by_mid(std::span<media_runtime_state
     return resolved;
 }
 
-std::optional<resolved_media> resolve_media_by_payload_type(std::span<media_runtime_state> media,
-                                                            uint8_t source_payload_type)
+std::optional<resolved_media> resolve_media_by_payload_type(std::span<media_runtime_state> media, uint8_t source_payload_type)
 {
     std::optional<resolved_media> resolved;
 
@@ -803,10 +781,9 @@ whep_rtp_rewrite_result make_drop_result(const parsed_rtp_packet& packet, std::s
 
 }    // namespace
 
-whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(
-    std::string_view publisher_session_id,
-    const sdp::webrtc_offer_summary& publisher_offer,
-    const whep_rtp_rewriter_target& target)
+whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(std::string_view publisher_session_id,
+                                                              const sdp::webrtc_offer_summary& publisher_offer,
+                                                              const whep_rtp_rewriter_target& target)
 {
     if (publisher_session_id.empty())
     {
@@ -848,8 +825,7 @@ whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(
             return make_media_error(subscriber_media.mid, "answer media source does not match subscriber media");
         }
 
-        const auto* publisher_media =
-            sdp::find_whep_forwarded_publisher_media(subscriber_media, subscriber_offer, publisher_offer);
+        const auto* publisher_media = sdp::find_whep_forwarded_publisher_media(subscriber_media, subscriber_offer, publisher_offer);
 
         if (publisher_media == nullptr)
         {
@@ -905,10 +881,8 @@ whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(
                     return make_media_error(subscriber_media.mid, "rtx associated payload type exceeds RTP range");
                 }
 
-                payload_mapping.source_associated_payload_type =
-                    static_cast<uint8_t>(*codec_mapping.publisher_associated_payload_type);
-                payload_mapping.target_associated_payload_type =
-                    static_cast<uint8_t>(*codec_mapping.subscriber_associated_payload_type);
+                payload_mapping.source_associated_payload_type = static_cast<uint8_t>(*codec_mapping.publisher_associated_payload_type);
+                payload_mapping.target_associated_payload_type = static_cast<uint8_t>(*codec_mapping.subscriber_associated_payload_type);
                 clock_rate_payload_type = *codec_mapping.subscriber_associated_payload_type;
             }
             else
@@ -916,11 +890,10 @@ whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(
                 has_primary_payload_type = true;
             }
 
-            const auto target_codec = std::find_if(
-                subscriber_media.codecs.begin(),
-                subscriber_media.codecs.end(),
-                [clock_rate_payload_type](const sdp::codec_info& codec)
-                { return codec.payload_type == clock_rate_payload_type; });
+            const auto target_codec =
+                std::find_if(subscriber_media.codecs.begin(),
+                             subscriber_media.codecs.end(),
+                             [clock_rate_payload_type](const sdp::codec_info& codec) { return codec.payload_type == clock_rate_payload_type; });
 
             if (target_codec == subscriber_media.codecs.end() || target_codec->clock_rate == 0)
             {
@@ -988,11 +961,11 @@ struct whep_rtp_rewriter::impl
         {
             media_runtime_state next_state;
 
-            const auto previous = std::find_if(
-                previous_media.begin(),
-                previous_media.end(),
-                [&mapping](const media_runtime_state& current)
-                { return current.mapping.kind == mapping.kind && current.mapping.target_ssrc == mapping.target_ssrc; });
+            const auto previous =
+                std::find_if(previous_media.begin(),
+                             previous_media.end(),
+                             [&mapping](const media_runtime_state& current)
+                             { return current.mapping.kind == mapping.kind && current.mapping.target_ssrc == mapping.target_ssrc; });
 
             if (previous != previous_media.end())
             {
@@ -1046,14 +1019,12 @@ struct whep_rtp_rewriter::impl
         {
             if (media[index].source_primary_ssrc.has_value())
             {
-                bindings.insert_or_assign(*media[index].source_primary_ssrc,
-                                          source_ssrc_binding{.media_index = index, .rtx = false});
+                bindings.insert_or_assign(*media[index].source_primary_ssrc, source_ssrc_binding{.media_index = index, .rtx = false});
             }
 
             if (media[index].source_rtx_ssrc.has_value())
             {
-                bindings.insert_or_assign(*media[index].source_rtx_ssrc,
-                                          source_ssrc_binding{.media_index = index, .rtx = true});
+                bindings.insert_or_assign(*media[index].source_rtx_ssrc, source_ssrc_binding{.media_index = index, .rtx = true});
             }
         }
     }
@@ -1072,9 +1043,7 @@ struct whep_rtp_rewriter::impl
         }
     }
 
-    whep_rtp_rewrite_packet_result rewrite(
-        std::span<const uint8_t> packet,
-        uint16_t transport_sequence_number)
+    whep_rtp_rewrite_packet_result rewrite(std::span<const uint8_t> packet, uint16_t transport_sequence_number)
     {
         auto parsed = parse_rewriteable_rtp_packet(packet);
 
@@ -1137,14 +1106,12 @@ struct whep_rtp_rewriter::impl
                 }
 
                 current.source_rtx_ssrc = parsed->header.ssrc;
-                bindings.insert_or_assign(parsed->header.ssrc,
-                                          source_ssrc_binding{.media_index = resolved->media_index, .rtx = true});
+                bindings.insert_or_assign(parsed->header.ssrc, source_ssrc_binding{.media_index = resolved->media_index, .rtx = true});
             }
         }
         else
         {
-            const bool source_changed = !current.source_primary_ssrc.has_value() ||
-                                        *current.source_primary_ssrc != parsed->header.ssrc ||
+            const bool source_changed = !current.source_primary_ssrc.has_value() || *current.source_primary_ssrc != parsed->header.ssrc ||
                                         !current.source_primary_payload_type.has_value() ||
                                         *current.source_primary_payload_type != parsed->header.payload_type ||
                                         current.source_clock_rate != resolved->payload_type->clock_rate;
@@ -1153,20 +1120,15 @@ struct whep_rtp_rewriter::impl
             {
                 // 发布端重新推流或更换编码源时，只重置源侧锚点，WHEP 输出序列和时间轴继续向前。
                 erase_bindings_for_media(resolved->media_index);
-                current.begin_primary_source(parsed->header.ssrc,
-                                             parsed->header.payload_type,
-                                             parsed->header.timestamp,
-                                             resolved->payload_type->clock_rate);
-                bindings.insert_or_assign(parsed->header.ssrc,
-                                          source_ssrc_binding{.media_index = resolved->media_index, .rtx = false});
+                current.begin_primary_source(
+                    parsed->header.ssrc, parsed->header.payload_type, parsed->header.timestamp, resolved->payload_type->clock_rate);
+                bindings.insert_or_assign(parsed->header.ssrc, source_ssrc_binding{.media_index = resolved->media_index, .rtx = false});
                 keyframe_request_needed = current.mapping.kind == "video";
             }
             else if (!current.source_timestamp_anchor.has_value())
             {
-                current.begin_primary_source(parsed->header.ssrc,
-                                             parsed->header.payload_type,
-                                             parsed->header.timestamp,
-                                             resolved->payload_type->clock_rate);
+                current.begin_primary_source(
+                    parsed->header.ssrc, parsed->header.payload_type, parsed->header.timestamp, resolved->payload_type->clock_rate);
             }
         }
 
@@ -1198,8 +1160,7 @@ struct whep_rtp_rewriter::impl
         const uint16_t target_sequence_number = current.allocate_sequence_number(is_rtx);
         const uint32_t target_timestamp = current.translate_timestamp(parsed->header.timestamp);
 
-        auto rewritten_extensions = rewrite_header_extensions(
-            *parsed, current.mapping, transport_sequence_number);
+        auto rewritten_extensions = rewrite_header_extensions(*parsed, current.mapping, transport_sequence_number);
 
         if (!rewritten_extensions)
         {
@@ -1215,9 +1176,7 @@ struct whep_rtp_rewriter::impl
 
         std::vector<uint8_t> rewritten_packet;
         rewritten_packet.reserve(parsed->base_header_size + extension_block->size() + packet.size() - parsed->payload_offset);
-        rewritten_packet.insert(rewritten_packet.end(),
-                                packet.begin(),
-                                packet.begin() + static_cast<std::ptrdiff_t>(parsed->base_header_size));
+        rewritten_packet.insert(rewritten_packet.end(), packet.begin(), packet.begin() + static_cast<std::ptrdiff_t>(parsed->base_header_size));
 
         if (extension_block->empty())
         {
@@ -1229,9 +1188,7 @@ struct whep_rtp_rewriter::impl
             rewritten_packet.insert(rewritten_packet.end(), extension_block->begin(), extension_block->end());
         }
 
-        rewritten_packet.insert(rewritten_packet.end(),
-                                packet.begin() + static_cast<std::ptrdiff_t>(parsed->payload_offset),
-                                packet.end());
+        rewritten_packet.insert(rewritten_packet.end(), packet.begin() + static_cast<std::ptrdiff_t>(parsed->payload_offset), packet.end());
 
         rewritten_packet[1] = static_cast<uint8_t>((rewritten_packet[1] & 0x80U) | resolved->payload_type->target_payload_type);
         write_u16(rewritten_packet, 2, target_sequence_number);
@@ -1276,27 +1233,23 @@ struct whep_rtp_rewriter::impl
     [[nodiscard]] bool nack_enabled(uint32_t target_ssrc, uint8_t target_payload_type) const
     {
         const auto media_iterator = std::find_if(
-            media.begin(),
-            media.end(),
-            [target_ssrc](const media_runtime_state& current) { return current.mapping.target_ssrc == target_ssrc; });
+            media.begin(), media.end(), [target_ssrc](const media_runtime_state& current) { return current.mapping.target_ssrc == target_ssrc; });
 
         if (media_iterator == media.end())
         {
             return false;
         }
 
-        const auto payload_iterator = std::find_if(
-            media_iterator->mapping.payload_types.begin(),
-            media_iterator->mapping.payload_types.end(),
-            [target_payload_type](const whep_rtp_payload_type_mapping& mapping)
-            { return !mapping.rtx && mapping.target_payload_type == target_payload_type; });
+        const auto payload_iterator = std::find_if(media_iterator->mapping.payload_types.begin(),
+                                                   media_iterator->mapping.payload_types.end(),
+                                                   [target_payload_type](const whep_rtp_payload_type_mapping& mapping)
+                                                   { return !mapping.rtx && mapping.target_payload_type == target_payload_type; });
 
         return payload_iterator != media_iterator->mapping.payload_types.end() && payload_iterator->nack;
     }
 
-    [[nodiscard]] whep_rtp_retransmission_result_type build_retransmission(
-        std::span<const uint8_t> primary_packet,
-        uint16_t transport_sequence_number)
+    [[nodiscard]] whep_rtp_retransmission_result_type build_retransmission(std::span<const uint8_t> primary_packet,
+                                                                           uint16_t transport_sequence_number)
     {
         auto parsed = parse_rewriteable_rtp_packet(primary_packet);
 
@@ -1306,9 +1259,7 @@ struct whep_rtp_rewriter::impl
         }
 
         auto media_iterator = std::find_if(
-            media.begin(),
-            media.end(),
-            [&parsed](const media_runtime_state& current) { return current.mapping.target_ssrc == parsed->header.ssrc; });
+            media.begin(), media.end(), [&parsed](const media_runtime_state& current) { return current.mapping.target_ssrc == parsed->header.ssrc; });
 
         if (media_iterator == media.end())
         {
@@ -1316,22 +1267,20 @@ struct whep_rtp_rewriter::impl
         }
 
         auto& current = *media_iterator;
-        const auto primary_mapping = std::find_if(
-            current.mapping.payload_types.begin(),
-            current.mapping.payload_types.end(),
-            [&parsed](const whep_rtp_payload_type_mapping& mapping)
-            { return !mapping.rtx && mapping.target_payload_type == parsed->header.payload_type; });
+        const auto primary_mapping = std::find_if(current.mapping.payload_types.begin(),
+                                                  current.mapping.payload_types.end(),
+                                                  [&parsed](const whep_rtp_payload_type_mapping& mapping)
+                                                  { return !mapping.rtx && mapping.target_payload_type == parsed->header.payload_type; });
 
         if (primary_mapping == current.mapping.payload_types.end() || !primary_mapping->nack)
         {
             return make_error("whep retransmission target payload type has no generic nack");
         }
 
-        const auto rtx_mapping = std::find_if(
-            current.mapping.payload_types.begin(),
-            current.mapping.payload_types.end(),
-            [&parsed](const whep_rtp_payload_type_mapping& mapping)
-            { return mapping.rtx && mapping.target_associated_payload_type == parsed->header.payload_type; });
+        const auto rtx_mapping = std::find_if(current.mapping.payload_types.begin(),
+                                              current.mapping.payload_types.end(),
+                                              [&parsed](const whep_rtp_payload_type_mapping& mapping)
+                                              { return mapping.rtx && mapping.target_associated_payload_type == parsed->header.payload_type; });
 
         whep_rtp_retransmission_result result;
         result.kind = current.mapping.kind;
@@ -1351,10 +1300,8 @@ struct whep_rtp_rewriter::impl
 
             if (current.mapping.target_transport_cc_extension_id != 0)
             {
-                auto written = write_transport_sequence_number(
-                    result.packet,
-                    current.mapping.target_transport_cc_extension_id,
-                    transport_sequence_number);
+                auto written =
+                    write_transport_sequence_number(result.packet, current.mapping.target_transport_cc_extension_id, transport_sequence_number);
 
                 if (!written)
                 {
@@ -1369,14 +1316,11 @@ struct whep_rtp_rewriter::impl
 
         result.rtx = true;
         result.packet.reserve(primary_packet.size() + k_rtx_original_sequence_size);
-        result.packet.insert(result.packet.end(),
-                             primary_packet.begin(),
-                             primary_packet.begin() + static_cast<std::ptrdiff_t>(parsed->payload_offset));
+        result.packet.insert(
+            result.packet.end(), primary_packet.begin(), primary_packet.begin() + static_cast<std::ptrdiff_t>(parsed->payload_offset));
         result.packet.push_back(static_cast<uint8_t>(parsed->header.sequence_number >> 8U));
         result.packet.push_back(static_cast<uint8_t>(parsed->header.sequence_number & 0xFFU));
-        result.packet.insert(result.packet.end(),
-                             primary_packet.begin() + static_cast<std::ptrdiff_t>(parsed->payload_offset),
-                             primary_packet.end());
+        result.packet.insert(result.packet.end(), primary_packet.begin() + static_cast<std::ptrdiff_t>(parsed->payload_offset), primary_packet.end());
 
         result.target_ssrc = current.mapping.target_rtx_ssrc;
         result.target_payload_type = rtx_mapping->target_payload_type;
@@ -1389,10 +1333,8 @@ struct whep_rtp_rewriter::impl
 
         if (current.mapping.target_transport_cc_extension_id != 0)
         {
-            auto written = write_transport_sequence_number(
-                result.packet,
-                current.mapping.target_transport_cc_extension_id,
-                transport_sequence_number);
+            auto written =
+                write_transport_sequence_number(result.packet, current.mapping.target_transport_cc_extension_id, transport_sequence_number);
 
             if (!written)
             {
@@ -1428,9 +1370,7 @@ struct whep_rtp_rewriter::impl
         return std::nullopt;
     }
 
-    [[nodiscard]] std::optional<whep_rtp_timestamp_mapping> map_source_timestamp(
-        uint32_t source_ssrc,
-        uint32_t source_timestamp) const
+    [[nodiscard]] std::optional<whep_rtp_timestamp_mapping> map_source_timestamp(uint32_t source_ssrc, uint32_t source_timestamp) const
     {
         if (source_ssrc == 0)
         {
@@ -1439,18 +1379,15 @@ struct whep_rtp_rewriter::impl
 
         for (const auto& current : media)
         {
-            if (!current.source_primary_ssrc.has_value() ||
-                *current.source_primary_ssrc != source_ssrc ||
-                !current.source_timestamp_anchor.has_value() ||
-                !current.timestamp_initialized)
+            if (!current.source_primary_ssrc.has_value() || *current.source_primary_ssrc != source_ssrc ||
+                !current.source_timestamp_anchor.has_value() || !current.timestamp_initialized)
             {
                 continue;
             }
 
             return whep_rtp_timestamp_mapping{
                 .target_ssrc = current.mapping.target_ssrc,
-                .target_timestamp = current.target_timestamp_anchor +
-                                    (source_timestamp - *current.source_timestamp_anchor),
+                .target_timestamp = current.target_timestamp_anchor + (source_timestamp - *current.source_timestamp_anchor),
             };
         }
 
@@ -1471,9 +1408,7 @@ void whep_rtp_rewriter::set_config(whep_rtp_rewriter_config config) { impl_->set
 
 void whep_rtp_rewriter::clear_source() { impl_->clear_source(); }
 
-whep_rtp_rewrite_packet_result whep_rtp_rewriter::rewrite(
-    std::span<const uint8_t> packet,
-    uint16_t transport_sequence_number)
+whep_rtp_rewrite_packet_result whep_rtp_rewriter::rewrite(std::span<const uint8_t> packet, uint16_t transport_sequence_number)
 {
     return impl_->rewrite(packet, transport_sequence_number);
 }
@@ -1483,9 +1418,8 @@ bool whep_rtp_rewriter::nack_enabled(uint32_t target_ssrc, uint8_t target_payloa
     return impl_->nack_enabled(target_ssrc, target_payload_type);
 }
 
-whep_rtp_retransmission_result_type whep_rtp_rewriter::build_retransmission(
-    std::span<const uint8_t> primary_packet,
-    uint16_t transport_sequence_number)
+whep_rtp_retransmission_result_type whep_rtp_rewriter::build_retransmission(std::span<const uint8_t> primary_packet,
+                                                                            uint16_t transport_sequence_number)
 {
     return impl_->build_retransmission(primary_packet, transport_sequence_number);
 }
@@ -1495,9 +1429,7 @@ std::optional<uint32_t> whep_rtp_rewriter::source_ssrc_for_target_ssrc(uint32_t 
     return impl_->source_ssrc_for_target_ssrc(target_ssrc);
 }
 
-std::optional<whep_rtp_timestamp_mapping> whep_rtp_rewriter::map_source_timestamp(
-    uint32_t source_ssrc,
-    uint32_t source_timestamp) const
+std::optional<whep_rtp_timestamp_mapping> whep_rtp_rewriter::map_source_timestamp(uint32_t source_ssrc, uint32_t source_timestamp) const
 {
     return impl_->map_source_timestamp(source_ssrc, source_timestamp);
 }

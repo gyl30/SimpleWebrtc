@@ -295,8 +295,8 @@ std::expected<ice_candidate_transport, std::string> parse_transport(std::string_
 
 std::expected<void, std::string> validate_candidate_type(std::string_view value)
 {
-    if (boost::algorithm::iequals(value, "host") || boost::algorithm::iequals(value, "srflx") ||
-        boost::algorithm::iequals(value, "prflx") || boost::algorithm::iequals(value, "relay"))
+    if (boost::algorithm::iequals(value, "host") || boost::algorithm::iequals(value, "srflx") || boost::algorithm::iequals(value, "prflx") ||
+        boost::algorithm::iequals(value, "relay"))
     {
         return {};
     }
@@ -306,8 +306,7 @@ std::expected<void, std::string> validate_candidate_type(std::string_view value)
 
 std::expected<void, std::string> validate_tcp_candidate_type(std::string_view value)
 {
-    if (boost::algorithm::iequals(value, "active") || boost::algorithm::iequals(value, "passive") ||
-        boost::algorithm::iequals(value, "so"))
+    if (boost::algorithm::iequals(value, "active") || boost::algorithm::iequals(value, "passive") || boost::algorithm::iequals(value, "so"))
     {
         return {};
     }
@@ -755,9 +754,7 @@ std::expected<void, std::string> parse_candidate_fields(std::string_view candida
 }
 }    // namespace
 
-remote_ice_candidate_result make_remote_ice_candidate(std::string_view candidate,
-                                                      std::string_view sdp_mid,
-                                                      int sdp_mline_index)
+remote_ice_candidate_result make_remote_ice_candidate(std::string_view candidate, std::string_view sdp_mid, int sdp_mline_index)
 {
     auto normalized_candidate = normalize_candidate_text(candidate);
 

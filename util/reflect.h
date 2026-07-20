@@ -204,7 +204,6 @@ inline void reflect(JsonWriter& vis, std::vector<T>& v)
     vis.endArray();
 }
 
-
 inline void reflectMemberStart(JsonReader& vis)
 {
     if (!vis.m->IsObject())

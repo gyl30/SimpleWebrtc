@@ -48,10 +48,7 @@ uint16_t subscriber_session::local_udp_port() const { return local_udp_port_->po
 
 const std::vector<remote_ice_candidate>& subscriber_session::remote_ice_candidates() const { return remote_ice_candidates_; }
 
-bool subscriber_session::remote_ice_completed() const
-{
-    return !remote_ice_candidates_.empty() && remote_ice_candidates_.back().end_of_candidates;
-}
+bool subscriber_session::remote_ice_completed() const { return !remote_ice_candidates_.empty() && remote_ice_candidates_.back().end_of_candidates; }
 const std::vector<int>& subscriber_session::accepted_remote_media_mline_indexes() const { return accepted_remote_media_mline_indexes_; }
 
 const std::vector<sdp::sdp_answer_media_source>& subscriber_session::outbound_media_sources() const { return outbound_media_sources_; }
@@ -72,9 +69,7 @@ void subscriber_session::complete_initial_setup(ice_credentials local_ice,
     outbound_media_sources_ = std::move(outbound_media_sources);
     local_udp_port_ = std::move(local_udp_port);
 
-    transport->set_peer_context(local_ice_.pwd,
-                                make_dtls_peer_identity(*this),
-                                std::move(rewriter_target));
+    transport->set_peer_context(local_ice_.pwd, make_dtls_peer_identity(*this), std::move(rewriter_target));
     transport_ = std::move(transport);
 
     updated_at_milliseconds_ = now_milliseconds();

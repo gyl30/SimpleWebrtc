@@ -49,12 +49,9 @@ class rtcp_interval_scheduler
 
     explicit rtcp_interval_scheduler(rtcp_interval_config config = {}, std::uint64_t random_seed = 0);
 
-    [[nodiscard]] clock::time_point schedule_initial(clock::time_point now,
-                                                     rtcp_interval_input input);
+    [[nodiscard]] clock::time_point schedule_initial(clock::time_point now, rtcp_interval_input input);
 
-    [[nodiscard]] clock::time_point schedule_after_fire(clock::time_point now,
-                                                        rtcp_interval_input input,
-                                                        bool packet_sent);
+    [[nodiscard]] clock::time_point schedule_after_fire(clock::time_point now, rtcp_interval_input input, bool packet_sent);
 
     void note_transmission(std::size_t wire_bytes);
 
@@ -62,17 +59,14 @@ class rtcp_interval_scheduler
 
     [[nodiscard]] rtcp_interval_snapshot snapshot() const;
 
-    [[nodiscard]] static std::chrono::microseconds calculate_nominal_interval(
-        const rtcp_interval_config& config,
-        const rtcp_interval_input& input,
-        std::size_t average_packet_size,
-        bool initial);
+    [[nodiscard]] static std::chrono::microseconds calculate_nominal_interval(const rtcp_interval_config& config,
+                                                                              const rtcp_interval_input& input,
+                                                                              std::size_t average_packet_size,
+                                                                              bool initial);
 
    private:
     [[nodiscard]] std::chrono::microseconds make_randomized_interval(rtcp_interval_input input) const;
-    [[nodiscard]] clock::time_point make_next_deadline(clock::time_point now,
-                                                       std::chrono::microseconds interval,
-                                                       bool preserve_previous_deadline);
+    [[nodiscard]] clock::time_point make_next_deadline(clock::time_point now, std::chrono::microseconds interval, bool preserve_previous_deadline);
 
     rtcp_interval_config config_;
     mutable std::mt19937_64 random_generator_;

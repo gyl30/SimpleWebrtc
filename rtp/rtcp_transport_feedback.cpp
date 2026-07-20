@@ -30,10 +30,7 @@ constexpr int64_t k_maximum_sequence_jump = 4096;
 constexpr std::size_t k_maximum_statuses_per_feedback = 4096;
 constexpr std::size_t k_maximum_parsed_statuses_per_feedback = 8192;
 
-std::unexpected<std::string> make_error(std::string_view message)
-{
-    return std::unexpected(std::string(message));
-}
+std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 void write_u16(std::span<uint8_t> data, std::size_t offset, uint16_t value)
 {
@@ -58,41 +55,30 @@ void write_u32(std::span<uint8_t> data, std::size_t offset, uint32_t value)
 
 uint16_t read_u16(std::span<const uint8_t> data, std::size_t offset)
 {
-    return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) |
-                                 static_cast<uint16_t>(data[offset + 1U]));
+    return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1U]));
 }
 
 uint32_t read_u24(std::span<const uint8_t> data, std::size_t offset)
 {
-    return (static_cast<uint32_t>(data[offset]) << 16U) |
-           (static_cast<uint32_t>(data[offset + 1U]) << 8U) |
-           static_cast<uint32_t>(data[offset + 2U]);
+    return (static_cast<uint32_t>(data[offset]) << 16U) | (static_cast<uint32_t>(data[offset + 1U]) << 8U) | static_cast<uint32_t>(data[offset + 2U]);
 }
 
 uint32_t read_u32(std::span<const uint8_t> data, std::size_t offset)
 {
-    return (static_cast<uint32_t>(data[offset]) << 24U) |
-           (static_cast<uint32_t>(data[offset + 1U]) << 16U) |
-           (static_cast<uint32_t>(data[offset + 2U]) << 8U) |
-           static_cast<uint32_t>(data[offset + 3U]);
+    return (static_cast<uint32_t>(data[offset]) << 24U) | (static_cast<uint32_t>(data[offset + 1U]) << 16U) |
+           (static_cast<uint32_t>(data[offset + 2U]) << 8U) | static_cast<uint32_t>(data[offset + 3U]);
 }
 
-int16_t read_i16(std::span<const uint8_t> data, std::size_t offset)
-{
-    return std::bit_cast<int16_t>(read_u16(data, offset));
-}
+int16_t read_i16(std::span<const uint8_t> data, std::size_t offset) { return std::bit_cast<int16_t>(read_u16(data, offset)); }
 
 bool trailing_bytes_are_zero(std::span<const uint8_t> data, std::size_t offset, std::size_t end)
 {
-    return offset <= end && end - offset <= 3U &&
-           std::ranges::all_of(data.subspan(offset, end - offset), [](uint8_t value) { return value == 0; });
+    return offset <= end && end - offset <= 3U && std::ranges::all_of(data.subspan(offset, end - offset), [](uint8_t value) { return value == 0; });
 }
 
 int64_t arrival_time_microseconds(std::chrono::steady_clock::time_point time)
 {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               time.time_since_epoch())
-        .count();
+    return std::chrono::duration_cast<std::chrono::microseconds>(time.time_since_epoch()).count();
 }
 
 int64_t floor_reference_time(int64_t arrival_microseconds)
@@ -102,20 +88,17 @@ int64_t floor_reference_time(int64_t arrival_microseconds)
         return arrival_microseconds / k_reference_time_microseconds;
     }
 
-    return -((-arrival_microseconds + k_reference_time_microseconds - 1) /
-             k_reference_time_microseconds);
+    return -((-arrival_microseconds + k_reference_time_microseconds - 1) / k_reference_time_microseconds);
 }
 
 int64_t round_delta_ticks(int64_t delta_microseconds)
 {
     if (delta_microseconds >= 0)
     {
-        return (delta_microseconds + k_delta_tick_microseconds / 2) /
-               k_delta_tick_microseconds;
+        return (delta_microseconds + k_delta_tick_microseconds / 2) / k_delta_tick_microseconds;
     }
 
-    return (delta_microseconds - k_delta_tick_microseconds / 2) /
-           k_delta_tick_microseconds;
+    return (delta_microseconds - k_delta_tick_microseconds / 2) / k_delta_tick_microseconds;
 }
 
 std::vector<uint16_t> encode_status_chunks(std::span<const uint8_t> symbols)
@@ -128,25 +111,20 @@ std::vector<uint16_t> encode_status_chunks(std::span<const uint8_t> symbols)
         const uint8_t symbol = symbols[offset];
         std::size_t run_length = 1;
 
-        while (offset + run_length < symbols.size() &&
-               symbols[offset + run_length] == symbol &&
-               run_length < 0x1FFFU)
+        while (offset + run_length < symbols.size() && symbols[offset + run_length] == symbol && run_length < 0x1FFFU)
         {
             ++run_length;
         }
 
         if (run_length >= k_statuses_per_two_bit_chunk)
         {
-            const uint16_t chunk = static_cast<uint16_t>(
-                (static_cast<uint16_t>(symbol) << 13U) |
-                static_cast<uint16_t>(run_length));
+            const uint16_t chunk = static_cast<uint16_t>((static_cast<uint16_t>(symbol) << 13U) | static_cast<uint16_t>(run_length));
             chunks.push_back(chunk);
             offset += run_length;
             continue;
         }
 
-        const std::size_t one_bit_count =
-            std::min<std::size_t>(14U, symbols.size() - offset);
+        const std::size_t one_bit_count = std::min<std::size_t>(14U, symbols.size() - offset);
         bool one_bit_compatible = true;
 
         for (std::size_t index = 0; index < one_bit_count; ++index)
@@ -165,10 +143,7 @@ std::vector<uint16_t> encode_status_chunks(std::span<const uint8_t> symbols)
             for (std::size_t index = 0; index < one_bit_count; ++index)
             {
                 chunk = static_cast<uint16_t>(
-                    chunk |
-                    static_cast<uint16_t>(
-                        static_cast<uint16_t>(symbols[offset + index])
-                        << static_cast<unsigned>(13U - index)));
+                    chunk | static_cast<uint16_t>(static_cast<uint16_t>(symbols[offset + index]) << static_cast<unsigned>(13U - index)));
             }
 
             chunks.push_back(chunk);
@@ -177,17 +152,12 @@ std::vector<uint16_t> encode_status_chunks(std::span<const uint8_t> symbols)
         }
 
         uint16_t chunk = 0xC000U;
-        const std::size_t two_bit_count = std::min<std::size_t>(
-            k_statuses_per_two_bit_chunk, symbols.size() - offset);
+        const std::size_t two_bit_count = std::min<std::size_t>(k_statuses_per_two_bit_chunk, symbols.size() - offset);
 
         for (std::size_t index = 0; index < two_bit_count; ++index)
         {
-            const unsigned shift = static_cast<unsigned>(
-                2U * (k_statuses_per_two_bit_chunk - 1U - index));
-            chunk = static_cast<uint16_t>(
-                chunk |
-                static_cast<uint16_t>(
-                    static_cast<uint16_t>(symbols[offset + index]) << shift));
+            const unsigned shift = static_cast<unsigned>(2U * (k_statuses_per_two_bit_chunk - 1U - index));
+            chunk = static_cast<uint16_t>(chunk | static_cast<uint16_t>(static_cast<uint16_t>(symbols[offset + index]) << shift));
         }
 
         chunks.push_back(chunk);
@@ -210,20 +180,18 @@ std::size_t encoded_packet_size(std::span<const uint8_t> delta_sizes)
     return (size + 3U) & ~std::size_t{3U};
 }
 
-std::vector<uint8_t> encode_transport_feedback_packet(
-    uint32_t sender_ssrc,
-    uint32_t media_ssrc,
-    uint16_t base_sequence,
-    uint32_t reference_time,
-    uint8_t feedback_packet_count,
-    std::span<const uint8_t> delta_sizes,
-    std::span<const int16_t> deltas)
+std::vector<uint8_t> encode_transport_feedback_packet(uint32_t sender_ssrc,
+                                                      uint32_t media_ssrc,
+                                                      uint16_t base_sequence,
+                                                      uint32_t reference_time,
+                                                      uint8_t feedback_packet_count,
+                                                      std::span<const uint8_t> delta_sizes,
+                                                      std::span<const int16_t> deltas)
 {
     const std::size_t packet_size = encoded_packet_size(delta_sizes);
     std::vector<uint8_t> packet(packet_size);
     const auto chunks = encode_status_chunks(delta_sizes);
-    std::size_t unpadded_size =
-        k_rtcp_transport_feedback_header_size + chunks.size() * 2U;
+    std::size_t unpadded_size = k_rtcp_transport_feedback_header_size + chunks.size() * 2U;
 
     for (const uint8_t delta_size : delta_sizes)
     {
@@ -231,9 +199,7 @@ std::vector<uint8_t> encode_transport_feedback_packet(
     }
 
     const std::size_t padding_size = packet_size - unpadded_size;
-    packet[0] = static_cast<uint8_t>((k_rtcp_version << 6U) |
-                                     (padding_size != 0 ? 0x20U : 0U) |
-                                     k_rtcp_transport_feedback_fmt);
+    packet[0] = static_cast<uint8_t>((k_rtcp_version << 6U) | (padding_size != 0 ? 0x20U : 0U) | k_rtcp_transport_feedback_fmt);
     packet[1] = k_rtcp_transport_feedback_packet_type;
     write_u16(packet, 2U, static_cast<uint16_t>(packet_size / 4U - 1U));
     write_u32(packet, 4U, sender_ssrc);
@@ -282,16 +248,12 @@ std::vector<uint8_t> encode_transport_feedback_packet(
 }
 }    // namespace
 
-transport_feedback_generator::transport_feedback_generator(
-    std::chrono::milliseconds maximum_history_age,
-    std::size_t maximum_history_packets)
-    : maximum_history_age_(maximum_history_age),
-      maximum_history_packets_(maximum_history_packets)
+transport_feedback_generator::transport_feedback_generator(std::chrono::milliseconds maximum_history_age, std::size_t maximum_history_packets)
+    : maximum_history_age_(maximum_history_age), maximum_history_packets_(maximum_history_packets)
 {
 }
 
-int64_t transport_feedback_generator::unwrap_sequence(
-    uint16_t sequence_number, bool& discontinuity)
+int64_t transport_feedback_generator::unwrap_sequence(uint16_t sequence_number, bool& discontinuity)
 {
     discontinuity = false;
 
@@ -302,8 +264,7 @@ int64_t transport_feedback_generator::unwrap_sequence(
     }
 
     const int64_t newest = *newest_extended_sequence_;
-    int64_t candidate = (newest & ~(k_sequence_modulus - 1LL)) |
-                        static_cast<int64_t>(sequence_number);
+    int64_t candidate = (newest & ~(k_sequence_modulus - 1LL)) | static_cast<int64_t>(sequence_number);
 
     if (candidate - newest > k_sequence_half_range)
     {
@@ -314,8 +275,7 @@ int64_t transport_feedback_generator::unwrap_sequence(
         candidate += k_sequence_modulus;
     }
 
-    const int64_t sequence_distance =
-        candidate >= newest ? candidate - newest : newest - candidate;
+    const int64_t sequence_distance = candidate >= newest ? candidate - newest : newest - candidate;
 
     if (sequence_distance > k_maximum_sequence_jump)
     {
@@ -334,8 +294,7 @@ int64_t transport_feedback_generator::unwrap_sequence(
     return candidate;
 }
 
-void transport_feedback_generator::evict_old(
-    std::chrono::steady_clock::time_point now)
+void transport_feedback_generator::evict_old(std::chrono::steady_clock::time_point now)
 {
     for (auto iterator = arrivals_.begin(); iterator != arrivals_.end();)
     {
@@ -368,9 +327,7 @@ void transport_feedback_generator::evict_old(
     else if (feedback_window_start_.has_value())
     {
         const int64_t earliest_received = arrivals_.begin()->first;
-        const int64_t earliest_encodable =
-            earliest_received -
-            static_cast<int64_t>(k_maximum_statuses_per_feedback - 1U);
+        const int64_t earliest_encodable = earliest_received - static_cast<int64_t>(k_maximum_statuses_per_feedback - 1U);
 
         if (*feedback_window_start_ < earliest_encodable)
         {
@@ -379,15 +336,13 @@ void transport_feedback_generator::evict_old(
     }
 }
 
-transport_feedback_observe_result transport_feedback_generator::observe(
-    uint16_t sequence_number,
-    std::chrono::steady_clock::time_point arrival_time,
-    uint32_t media_ssrc)
+transport_feedback_observe_result transport_feedback_generator::observe(uint16_t sequence_number,
+                                                                        std::chrono::steady_clock::time_point arrival_time,
+                                                                        uint32_t media_ssrc)
 {
     bool discontinuity = false;
     const int64_t extended_sequence = unwrap_sequence(sequence_number, discontinuity);
-    auto [iterator, inserted] = arrivals_.try_emplace(
-        extended_sequence, arrival_record{.arrival_time = arrival_time});
+    auto [iterator, inserted] = arrivals_.try_emplace(extended_sequence, arrival_record{.arrival_time = arrival_time});
 
     media_ssrc_ = media_ssrc;
 
@@ -405,8 +360,7 @@ transport_feedback_observe_result transport_feedback_generator::observe(
         };
     }
 
-    if (!feedback_window_start_.has_value() ||
-        extended_sequence < *feedback_window_start_)
+    if (!feedback_window_start_.has_value() || extended_sequence < *feedback_window_start_)
     {
         feedback_window_start_ = extended_sequence;
     }
@@ -430,9 +384,8 @@ transport_feedback_observe_result transport_feedback_generator::observe(
     };
 }
 
-std::expected<std::optional<built_rtcp_transport_feedback>, std::string>
-transport_feedback_generator::preview_feedback(uint32_t sender_ssrc,
-                                               std::size_t maximum_packet_size) const
+std::expected<std::optional<built_rtcp_transport_feedback>, std::string> transport_feedback_generator::preview_feedback(
+    uint32_t sender_ssrc, std::size_t maximum_packet_size) const
 {
     if (sender_ssrc == 0)
     {
@@ -450,10 +403,8 @@ transport_feedback_generator::preview_feedback(uint32_t sender_ssrc,
     }
 
     const int64_t base_extended_sequence = *feedback_window_start_;
-    const int64_t maximum_sequence = std::min(
-        *newest_extended_sequence_,
-        base_extended_sequence +
-            static_cast<int64_t>(k_maximum_statuses_per_feedback - 1U));
+    const int64_t maximum_sequence =
+        std::min(*newest_extended_sequence_, base_extended_sequence + static_cast<int64_t>(k_maximum_statuses_per_feedback - 1U));
     const auto first_received = arrivals_.lower_bound(base_extended_sequence);
 
     if (first_received == arrivals_.end() || first_received->first > maximum_sequence)
@@ -461,22 +412,18 @@ transport_feedback_generator::preview_feedback(uint32_t sender_ssrc,
         return make_error("rtcp transport feedback pending range has no received packet");
     }
 
-    const int64_t first_arrival_us =
-        arrival_time_microseconds(first_received->second.arrival_time);
+    const int64_t first_arrival_us = arrival_time_microseconds(first_received->second.arrival_time);
     const int64_t reference_time_full = floor_reference_time(first_arrival_us);
     int64_t last_arrival_us = reference_time_full * k_reference_time_microseconds;
     std::vector<uint8_t> delta_sizes;
     std::vector<int16_t> deltas;
-    delta_sizes.reserve(static_cast<std::size_t>(
-        maximum_sequence - base_extended_sequence + 1));
+    delta_sizes.reserve(static_cast<std::size_t>(maximum_sequence - base_extended_sequence + 1));
     deltas.reserve(delta_sizes.capacity());
     std::size_t received_count = 0;
     std::size_t lost_count = 0;
     int64_t actual_end = base_extended_sequence - 1;
 
-    for (int64_t sequence = base_extended_sequence;
-         sequence <= maximum_sequence;
-         ++sequence)
+    for (int64_t sequence = base_extended_sequence; sequence <= maximum_sequence; ++sequence)
     {
         uint8_t delta_size = 0;
         std::optional<int16_t> delta;
@@ -484,13 +431,10 @@ transport_feedback_generator::preview_feedback(uint32_t sender_ssrc,
 
         if (arrival != arrivals_.end())
         {
-            const int64_t current_arrival_us =
-                arrival_time_microseconds(arrival->second.arrival_time);
-            const int64_t delta_ticks =
-                round_delta_ticks(current_arrival_us - last_arrival_us);
+            const int64_t current_arrival_us = arrival_time_microseconds(arrival->second.arrival_time);
+            const int64_t delta_ticks = round_delta_ticks(current_arrival_us - last_arrival_us);
 
-            if (delta_ticks < std::numeric_limits<int16_t>::min() ||
-                delta_ticks > std::numeric_limits<int16_t>::max())
+            if (delta_ticks < std::numeric_limits<int16_t>::min() || delta_ticks > std::numeric_limits<int16_t>::max())
             {
                 if (sequence == base_extended_sequence)
                 {
@@ -526,8 +470,7 @@ transport_feedback_generator::preview_feedback(uint32_t sender_ssrc,
         if (delta.has_value())
         {
             ++received_count;
-            last_arrival_us += static_cast<int64_t>(*delta) *
-                               k_delta_tick_microseconds;
+            last_arrival_us += static_cast<int64_t>(*delta) * k_delta_tick_microseconds;
         }
         else
         {
@@ -540,37 +483,31 @@ transport_feedback_generator::preview_feedback(uint32_t sender_ssrc,
         return make_error("rtcp transport feedback packet cannot encode any status");
     }
 
-    std::vector<uint8_t> packet = encode_transport_feedback_packet(
-        sender_ssrc,
-        media_ssrc_,
-        static_cast<uint16_t>(base_extended_sequence & 0xFFFF),
-        static_cast<uint32_t>(reference_time_full) & 0x00FFFFFFU,
-        feedback_packet_count_,
-        delta_sizes,
-        deltas);
+    std::vector<uint8_t> packet = encode_transport_feedback_packet(sender_ssrc,
+                                                                   media_ssrc_,
+                                                                   static_cast<uint16_t>(base_extended_sequence & 0xFFFF),
+                                                                   static_cast<uint32_t>(reference_time_full) & 0x00FFFFFFU,
+                                                                   feedback_packet_count_,
+                                                                   delta_sizes,
+                                                                   deltas);
 
-    return std::optional<built_rtcp_transport_feedback>(
-        built_rtcp_transport_feedback{
-            .packet = std::move(packet),
-            .base_sequence_number =
-                static_cast<uint16_t>(base_extended_sequence & 0xFFFF),
-            .packet_status_count = static_cast<uint16_t>(delta_sizes.size()),
-            .media_ssrc = media_ssrc_,
-            .feedback_packet_count = feedback_packet_count_,
-            .received_packet_count = received_count,
-            .lost_packet_count = lost_count,
-            .begin_extended_sequence = base_extended_sequence,
-            .end_extended_sequence = actual_end,
-        });
+    return std::optional<built_rtcp_transport_feedback>(built_rtcp_transport_feedback{
+        .packet = std::move(packet),
+        .base_sequence_number = static_cast<uint16_t>(base_extended_sequence & 0xFFFF),
+        .packet_status_count = static_cast<uint16_t>(delta_sizes.size()),
+        .media_ssrc = media_ssrc_,
+        .feedback_packet_count = feedback_packet_count_,
+        .received_packet_count = received_count,
+        .lost_packet_count = lost_count,
+        .begin_extended_sequence = base_extended_sequence,
+        .end_extended_sequence = actual_end,
+    });
 }
 
-void transport_feedback_generator::commit_feedback(
-    const built_rtcp_transport_feedback& feedback)
+void transport_feedback_generator::commit_feedback(const built_rtcp_transport_feedback& feedback)
 {
-    if (!feedback_window_start_.has_value() ||
-        feedback.begin_extended_sequence != *feedback_window_start_ ||
-        feedback.end_extended_sequence < feedback.begin_extended_sequence ||
-        feedback.feedback_packet_count != feedback_packet_count_)
+    if (!feedback_window_start_.has_value() || feedback.begin_extended_sequence != *feedback_window_start_ ||
+        feedback.end_extended_sequence < feedback.begin_extended_sequence || feedback.feedback_packet_count != feedback_packet_count_)
     {
         return;
     }
@@ -583,8 +520,7 @@ void transport_feedback_generator::commit_feedback(
     stats_.pending_packets = pending_status_count();
 }
 
-void transport_feedback_generator::expire(
-    std::chrono::steady_clock::time_point now)
+void transport_feedback_generator::expire(std::chrono::steady_clock::time_point now)
 {
     evict_old(now);
     stats_.history_packets = arrivals_.size();
@@ -598,18 +534,13 @@ std::size_t transport_feedback_generator::pending_status_count() const
         return 0;
     }
 
-    const uint64_t count = static_cast<uint64_t>(
-        *newest_extended_sequence_ - *feedback_window_start_ + 1);
-    return count > std::numeric_limits<std::size_t>::max()
-               ? std::numeric_limits<std::size_t>::max()
-               : static_cast<std::size_t>(count);
+    const uint64_t count = static_cast<uint64_t>(*newest_extended_sequence_ - *feedback_window_start_ + 1);
+    return count > std::numeric_limits<std::size_t>::max() ? std::numeric_limits<std::size_t>::max() : static_cast<std::size_t>(count);
 }
 
 bool transport_feedback_generator::has_pending_feedback() const
 {
-    return feedback_window_start_.has_value() &&
-           newest_extended_sequence_.has_value() &&
-           *feedback_window_start_ <= *newest_extended_sequence_;
+    return feedback_window_start_.has_value() && newest_extended_sequence_.has_value() && *feedback_window_start_ <= *newest_extended_sequence_;
 }
 
 transport_feedback_generator_snapshot transport_feedback_generator::snapshot() const
@@ -630,18 +561,12 @@ void transport_feedback_generator::reset()
     stats_ = {};
 }
 
-transport_feedback_send_history::transport_feedback_send_history(
-    std::chrono::milliseconds maximum_history_age,
-    std::size_t maximum_history_packets)
-    : maximum_history_age_(maximum_history_age),
-      maximum_history_packets_(maximum_history_packets)
+transport_feedback_send_history::transport_feedback_send_history(std::chrono::milliseconds maximum_history_age, std::size_t maximum_history_packets)
+    : maximum_history_age_(maximum_history_age), maximum_history_packets_(maximum_history_packets)
 {
 }
 
-uint16_t transport_feedback_send_history::next_sequence_number() const
-{
-    return static_cast<uint16_t>(next_extended_sequence_);
-}
+uint16_t transport_feedback_send_history::next_sequence_number() const { return static_cast<uint16_t>(next_extended_sequence_); }
 
 void transport_feedback_send_history::remember_sent(transport_feedback_sent_packet packet)
 {
@@ -662,8 +587,7 @@ void transport_feedback_send_history::remember_sent(transport_feedback_sent_pack
     evict_old(packet.sent_at);
 }
 
-std::optional<uint64_t> transport_feedback_send_history::find_extended_sequence(
-    uint16_t sequence_number) const
+std::optional<uint64_t> transport_feedback_send_history::find_extended_sequence(uint16_t sequence_number) const
 {
     if (history_.empty())
     {
@@ -682,9 +606,7 @@ std::optional<uint64_t> transport_feedback_send_history::find_extended_sequence(
         candidate += k_sequence_modulus;
     }
 
-    if (candidate < 0 ||
-        candidate < static_cast<int64_t>(history_.front().extended_sequence_number) ||
-        candidate > newest)
+    if (candidate < 0 || candidate < static_cast<int64_t>(history_.front().extended_sequence_number) || candidate > newest)
     {
         return std::nullopt;
     }
@@ -717,9 +639,8 @@ void transport_feedback_send_history::observe_feedback_packet_count(uint8_t feed
     }
 }
 
-transport_feedback_send_observation transport_feedback_send_history::observe(
-    const parsed_rtcp_transport_feedback& feedback,
-    std::chrono::steady_clock::time_point now)
+transport_feedback_send_observation transport_feedback_send_history::observe(const parsed_rtcp_transport_feedback& feedback,
+                                                                             std::chrono::steady_clock::time_point now)
 {
     evict_old(now);
     observe_feedback_packet_count(feedback.feedback_packet_count);
@@ -739,14 +660,11 @@ transport_feedback_send_observation transport_feedback_send_history::observe(
             continue;
         }
 
-        const auto& packet = history_[static_cast<std::size_t>(
-            *extended_sequence - history_.front().extended_sequence_number)].packet;
+        const auto& packet = history_[static_cast<std::size_t>(*extended_sequence - history_.front().extended_sequence_number)].packet;
         observation.lookup_hit += 1;
 
-        const uint64_t delay_ms = now >= packet.sent_at
-                                      ? static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                            now - packet.sent_at).count())
-                                      : 0;
+        const uint64_t delay_ms =
+            now >= packet.sent_at ? static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now - packet.sent_at).count()) : 0;
         observation.maximum_feedback_delay_ms = std::max(observation.maximum_feedback_delay_ms, delay_ms);
 
         if (status.received)
@@ -771,8 +689,7 @@ transport_feedback_send_observation transport_feedback_send_history::observe(
     stats_.not_received_bytes += observation.not_received_bytes;
     stats_.received_retransmissions += observation.received_retransmissions;
     stats_.not_received_retransmissions += observation.not_received_retransmissions;
-    stats_.maximum_feedback_delay_ms = std::max(
-        stats_.maximum_feedback_delay_ms, observation.maximum_feedback_delay_ms);
+    stats_.maximum_feedback_delay_ms = std::max(stats_.maximum_feedback_delay_ms, observation.maximum_feedback_delay_ms);
     return observation;
 }
 
@@ -791,10 +708,7 @@ void transport_feedback_send_history::evict_old(std::chrono::steady_clock::time_
     }
 }
 
-void transport_feedback_send_history::expire(std::chrono::steady_clock::time_point now)
-{
-    evict_old(now);
-}
+void transport_feedback_send_history::expire(std::chrono::steady_clock::time_point now) { evict_old(now); }
 
 transport_feedback_send_history_snapshot transport_feedback_send_history::snapshot() const
 {
@@ -811,24 +725,19 @@ void transport_feedback_send_history::reset()
     stats_ = {};
 }
 
-rtcp_transport_feedback_parse_result parse_rtcp_transport_feedback(
-    std::span<const uint8_t> data)
+rtcp_transport_feedback_parse_result parse_rtcp_transport_feedback(std::span<const uint8_t> data)
 {
-    if (data.size() < k_rtcp_transport_feedback_header_size ||
-        data.size() % 4U != 0)
+    if (data.size() < k_rtcp_transport_feedback_header_size || data.size() % 4U != 0)
     {
         return make_error("rtcp transport feedback packet size is invalid");
     }
 
-    if ((data[0] >> 6U) != k_rtcp_version ||
-        (data[0] & 0x1FU) != k_rtcp_transport_feedback_fmt ||
-        data[1] != k_rtcp_transport_feedback_packet_type)
+    if ((data[0] >> 6U) != k_rtcp_version || (data[0] & 0x1FU) != k_rtcp_transport_feedback_fmt || data[1] != k_rtcp_transport_feedback_packet_type)
     {
         return make_error("rtcp transport feedback header is invalid");
     }
 
-    const std::size_t declared_size =
-        (static_cast<std::size_t>(read_u16(data, 2U)) + 1U) * 4U;
+    const std::size_t declared_size = (static_cast<std::size_t>(read_u16(data, 2U)) + 1U) * 4U;
 
     if (declared_size != data.size())
     {
@@ -841,9 +750,7 @@ rtcp_transport_feedback_parse_result parse_rtcp_transport_feedback(
     {
         const std::size_t padding_size = data.back();
 
-        if (padding_size == 0 || padding_size >
-                                     effective_size -
-                                         k_rtcp_transport_feedback_header_size)
+        if (padding_size == 0 || padding_size > effective_size - k_rtcp_transport_feedback_header_size)
         {
             return make_error("rtcp transport feedback padding is invalid");
         }
@@ -888,39 +795,26 @@ rtcp_transport_feedback_parse_result parse_rtcp_transport_feedback(
                 return make_error("rtcp transport feedback run-length chunk is invalid");
             }
 
-            const std::size_t remaining =
-                static_cast<std::size_t>(parsed.packet_status_count) -
-                delta_sizes.size();
-            delta_sizes.insert(delta_sizes.end(),
-                               std::min(run_length, remaining),
-                               symbol);
+            const std::size_t remaining = static_cast<std::size_t>(parsed.packet_status_count) - delta_sizes.size();
+            delta_sizes.insert(delta_sizes.end(), std::min(run_length, remaining), symbol);
         }
         else if ((chunk & 0x4000U) == 0)
         {
-            const std::size_t count = std::min<std::size_t>(
-                14U,
-                static_cast<std::size_t>(parsed.packet_status_count) -
-                    delta_sizes.size());
+            const std::size_t count = std::min<std::size_t>(14U, static_cast<std::size_t>(parsed.packet_status_count) - delta_sizes.size());
 
             for (std::size_t index = 0; index < count; ++index)
             {
-                delta_sizes.push_back(static_cast<uint8_t>(
-                    (chunk >> static_cast<unsigned>(13U - index)) & 0x01U));
+                delta_sizes.push_back(static_cast<uint8_t>((chunk >> static_cast<unsigned>(13U - index)) & 0x01U));
             }
         }
         else
         {
-            const std::size_t count = std::min<std::size_t>(
-                7U,
-                static_cast<std::size_t>(parsed.packet_status_count) -
-                    delta_sizes.size());
+            const std::size_t count = std::min<std::size_t>(7U, static_cast<std::size_t>(parsed.packet_status_count) - delta_sizes.size());
 
             for (std::size_t index = 0; index < count; ++index)
             {
-                const unsigned shift = static_cast<unsigned>(
-                    2U * (k_statuses_per_two_bit_chunk - 1U - index));
-                const uint8_t symbol =
-                    static_cast<uint8_t>((chunk >> shift) & 0x03U);
+                const unsigned shift = static_cast<unsigned>(2U * (k_statuses_per_two_bit_chunk - 1U - index));
+                const uint8_t symbol = static_cast<uint8_t>((chunk >> shift) & 0x03U);
 
                 if (symbol == 3U)
                 {

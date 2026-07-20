@@ -35,9 +35,7 @@ class rtp_receive_statistics
    private:
     void initialize_sequence(uint16_t sequence_number);
     [[nodiscard]] bool update_sequence(uint16_t sequence_number);
-    void update_jitter(uint32_t rtp_timestamp,
-                       uint32_t clock_rate,
-                       std::chrono::steady_clock::time_point arrival_time);
+    void update_jitter(uint32_t rtp_timestamp, uint32_t clock_rate, std::chrono::steady_clock::time_point arrival_time);
     [[nodiscard]] uint64_t expected_packet_count() const;
 
    private:

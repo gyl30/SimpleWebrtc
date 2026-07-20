@@ -16,10 +16,7 @@ struct rtp_packet_layout
     std::size_t padding_size = 0;
     bool padding = false;
 
-    [[nodiscard]] bool padding_only() const
-    {
-        return padding && media_payload_size == 0;
-    }
+    [[nodiscard]] bool padding_only() const { return padding && media_payload_size == 0; }
 };
 
 struct rtp_packet_header

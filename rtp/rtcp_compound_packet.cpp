@@ -53,8 +53,8 @@ bool trailing_bytes_are_zero(std::span<const uint8_t> data, std::size_t offset, 
 }
 
 std::expected<std::size_t, std::string> rtcp_payload_end(const rtcp_packet_header& header,
-                                                          std::span<const uint8_t> data,
-                                                          std::string_view packet_name)
+                                                         std::span<const uint8_t> data,
+                                                         std::string_view packet_name)
 {
     if (header.packet_size > data.size())
     {
@@ -166,9 +166,8 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
         packet.remb_block_count += 1;
     }
 
-    const bool feedback_is_classified =
-        block.feedback_name == "pli" || block.feedback_name == "fir" || block.has_generic_nack ||
-        block.transport_feedback.has_value() || block.has_remb;
+    const bool feedback_is_classified = block.feedback_name == "pli" || block.feedback_name == "fir" || block.has_generic_nack ||
+                                        block.transport_feedback.has_value() || block.has_remb;
 
     if (!feedback_is_classified)
     {
@@ -178,15 +177,12 @@ void aggregate_feedback_block(const rtcp_compound_block& block, rtcp_compound_pa
     packet.has_generic_nack = packet.has_generic_nack || block.has_generic_nack;
     packet.has_keyframe_request = packet.has_keyframe_request || block.has_keyframe_request;
     packet.nack_entries.insert(packet.nack_entries.end(), block.nack_entries.begin(), block.nack_entries.end());
-    packet.nack_sequence_numbers.insert(packet.nack_sequence_numbers.end(),
-                                        block.nack_sequence_numbers.begin(),
-                                        block.nack_sequence_numbers.end());
+    packet.nack_sequence_numbers.insert(packet.nack_sequence_numbers.end(), block.nack_sequence_numbers.begin(), block.nack_sequence_numbers.end());
 
     for (const uint32_t media_ssrc : block.keyframe_request_media_ssrcs)
     {
-        if (std::find(packet.keyframe_request_media_ssrcs.begin(),
-                      packet.keyframe_request_media_ssrcs.end(),
-                      media_ssrc) == packet.keyframe_request_media_ssrcs.end())
+        if (std::find(packet.keyframe_request_media_ssrcs.begin(), packet.keyframe_request_media_ssrcs.end(), media_ssrc) ==
+            packet.keyframe_request_media_ssrcs.end())
         {
             packet.keyframe_request_media_ssrcs.push_back(media_ssrc);
         }
@@ -306,8 +302,7 @@ std::expected<std::vector<rtcp_sdes_chunk>, std::string> parse_rtcp_sdes_packet(
 
             rtcp_sdes_item item;
             item.type = item_type;
-            item.value.assign(data.begin() + static_cast<std::ptrdiff_t>(offset),
-                              data.begin() + static_cast<std::ptrdiff_t>(offset + item_size));
+            item.value.assign(data.begin() + static_cast<std::ptrdiff_t>(offset), data.begin() + static_cast<std::ptrdiff_t>(offset + item_size));
 
             if (item_type == k_rtcp_sdes_item_cname && chunk.cname.empty())
             {
@@ -484,9 +479,7 @@ rtcp_compound_packet_result parse_rtcp_compound_packet(std::span<const uint8_t> 
 
             block.is_sdes = true;
             packet.sdes_packet_count += 1;
-            packet.sdes_chunks.insert(packet.sdes_chunks.end(),
-                                      std::make_move_iterator(chunks->begin()),
-                                      std::make_move_iterator(chunks->end()));
+            packet.sdes_chunks.insert(packet.sdes_chunks.end(), std::make_move_iterator(chunks->begin()), std::make_move_iterator(chunks->end()));
         }
         else if (header->packet_type == k_rtcp_packet_type_bye)
         {

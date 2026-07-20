@@ -55,8 +55,7 @@ const media_summary* find_whep_forwarded_publisher_media(const media_summary& su
                                                          const webrtc_offer_summary& publisher_offer);
 
 [[nodiscard]]
-std::vector<rtp_header_extension> select_whep_answer_header_extensions(const media_summary& subscriber_media,
-                                                                       const media_summary& publisher_media);
+std::vector<rtp_header_extension> select_whep_answer_header_extensions(const media_summary& subscriber_media, const media_summary& publisher_media);
 
 [[nodiscard]] sdp_answer_text_result build_whip_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options);
 

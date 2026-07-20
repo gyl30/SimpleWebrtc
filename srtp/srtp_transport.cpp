@@ -69,10 +69,10 @@ srtp_packet_process_result make_ignored_result(srtp_packet_kind kind, std::strin
 }
 
 void log_unprotected_rtp_packet(std::string_view remote_endpoint,
-                                  std::size_t protected_size,
-                                  std::size_t unprotected_size,
-                                  const rtp_packet_header& header,
-                                  uint64_t packet_count)
+                                std::size_t protected_size,
+                                std::size_t unprotected_size,
+                                const rtp_packet_header& header,
+                                uint64_t packet_count)
 {
     WEBRTC_LOG_TRACE(
         "srtp inbound rtp unprotected remote={} size={} plain_size={} ssrc={} payload_type={} marker={} sequence={} timestamp={} packets={}",
@@ -87,16 +87,10 @@ void log_unprotected_rtp_packet(std::string_view remote_endpoint,
         packet_count);
 }
 
-void log_unprotected_rtcp_packet(std::string_view remote_endpoint,
-                                 std::size_t protected_size,
-                                 std::size_t unprotected_size,
-                                 uint64_t packet_count)
+void log_unprotected_rtcp_packet(std::string_view remote_endpoint, std::size_t protected_size, std::size_t unprotected_size, uint64_t packet_count)
 {
-    WEBRTC_LOG_TRACE("srtp inbound rtcp unprotected remote={} size={} plain_size={} packets={}",
-                     remote_endpoint,
-                     protected_size,
-                     unprotected_size,
-                     packet_count);
+    WEBRTC_LOG_TRACE(
+        "srtp inbound rtcp unprotected remote={} size={} plain_size={} packets={}", remote_endpoint, protected_size, unprotected_size, packet_count);
 }
 
 srtp_transport_result make_protected_result(srtp_packet_kind kind, std::vector<uint8_t> packet)
@@ -241,8 +235,7 @@ struct srtp_transport::impl
             return false;
         }
 
-        if (previous->second.session_id != identity.session_id ||
-            previous->second.stream_id != identity.stream_id)
+        if (previous->second.session_id != identity.session_id || previous->second.stream_id != identity.stream_id)
         {
             return std::unexpected("srtp peer rebind session identity changed");
         }
@@ -516,16 +509,15 @@ struct srtp_transport::impl
 
         peer.outbound_session.emplace(std::move(*outbound));
 
-        WEBRTC_LOG_INFO(
-            "srtp sessions created remote={} session={} stream={} profile={} local_ufrag={} remote_ufrag={} inbound={} outbound={}",
-            remote_endpoint,
-            peer.session_id,
-            peer.stream_id,
-            srtp_profile_id_to_string(material->profile),
-            peer.local_ice_ufrag,
-            peer.remote_ice_ufrag,
-            srtp_direction_to_string(srtp_direction::inbound),
-            srtp_direction_to_string(srtp_direction::outbound));
+        WEBRTC_LOG_INFO("srtp sessions created remote={} session={} stream={} profile={} local_ufrag={} remote_ufrag={} inbound={} outbound={}",
+                        remote_endpoint,
+                        peer.session_id,
+                        peer.stream_id,
+                        srtp_profile_id_to_string(material->profile),
+                        peer.local_ice_ufrag,
+                        peer.remote_ice_ufrag,
+                        srtp_direction_to_string(srtp_direction::inbound),
+                        srtp_direction_to_string(srtp_direction::outbound));
 
         return true;
     }
@@ -538,22 +530,16 @@ srtp_transport::srtp_transport(std::shared_ptr<dtls_transport> dtls_transport) :
 
 srtp_transport::~srtp_transport() = default;
 
-void srtp_transport::forget_peer(std::string_view remote_endpoint)
-{
-    impl_->forget_peer(remote_endpoint);
-}
+void srtp_transport::forget_peer(std::string_view remote_endpoint) { impl_->forget_peer(remote_endpoint); }
 
 srtp_peer_rebind_result srtp_transport::rebind_peer(std::string_view previous_remote_endpoint,
-                                                     std::string_view next_remote_endpoint,
-                                                     const dtls_peer_identity& identity)
+                                                    std::string_view next_remote_endpoint,
+                                                    const dtls_peer_identity& identity)
 {
     return impl_->rebind_peer(previous_remote_endpoint, next_remote_endpoint, identity);
 }
 
-srtp_peer_ready_result srtp_transport::peer_ready(std::string_view remote_endpoint)
-{
-    return impl_->peer_ready(remote_endpoint);
-}
+srtp_peer_ready_result srtp_transport::peer_ready(std::string_view remote_endpoint) { return impl_->peer_ready(remote_endpoint); }
 
 srtp_transport_result srtp_transport::handle_inbound_packet(std::span<const uint8_t> data, std::string_view remote_endpoint)
 {

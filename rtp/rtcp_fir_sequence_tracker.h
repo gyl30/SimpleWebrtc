@@ -9,9 +9,7 @@ namespace webrtc
 class rtcp_fir_sequence_tracker
 {
    public:
-    [[nodiscard]] bool accept(uint32_t sender_ssrc,
-                              uint32_t media_ssrc,
-                              uint8_t sequence_number);
+    [[nodiscard]] bool accept(uint32_t sender_ssrc, uint32_t media_ssrc, uint8_t sequence_number);
 
     void clear();
 

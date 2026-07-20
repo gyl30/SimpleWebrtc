@@ -276,8 +276,8 @@ const media_summary* find_send_capable_media_by_kind_ordinal(const webrtc_offer_
 }
 
 const media_summary* find_matching_publisher_media_impl(const media_summary& subscriber_media,
-                                                         const webrtc_offer_summary& subscriber_offer,
-                                                         const webrtc_offer_summary& publisher_offer)
+                                                        const webrtc_offer_summary& subscriber_offer,
+                                                        const webrtc_offer_summary& publisher_offer)
 {
     if (!media_can_receive(subscriber_media))
     {
@@ -439,10 +439,7 @@ std::string make_rtcp_feedback_value(const codec_info& codec, std::string_view f
 std::string normalize_rtcp_feedback_value(std::string_view feedback)
 {
     std::vector<std::string> tokens;
-    boost::algorithm::split(tokens,
-                            feedback,
-                            boost::algorithm::is_space(),
-                            boost::algorithm::token_compress_on);
+    boost::algorithm::split(tokens, feedback, boost::algorithm::is_space(), boost::algorithm::token_compress_on);
     std::erase(tokens, std::string{});
 
     for (auto& token : tokens)
@@ -470,8 +467,7 @@ bool rtcp_feedback_is_supported_for_answer_media(std::string_view media_kind,
         return false;
     }
 
-    return (generic_nack_enabled && normalized_feedback == "nack") ||
-           normalized_feedback == "nack pli" || normalized_feedback == "ccm fir";
+    return (generic_nack_enabled && normalized_feedback == "nack") || normalized_feedback == "nack pli" || normalized_feedback == "ccm fir";
 }
 
 std::string make_rtcp_feedback_deduplication_key(const codec_info& codec, std::string_view normalized_feedback)
@@ -530,10 +526,9 @@ std::string make_extmap_value(const rtp_header_extension& extension)
 }
 bool rtp_header_extension_id_requires_two_byte(int id) { return id >= 15 && id <= 255; }
 
-std::vector<rtp_header_extension> select_answer_header_extensions_impl(
-    const media_summary& media,
-    const media_summary* forwarded_publisher_media,
-    bool transport_cc_enabled)
+std::vector<rtp_header_extension> select_answer_header_extensions_impl(const media_summary& media,
+                                                                       const media_summary* forwarded_publisher_media,
+                                                                       bool transport_cc_enabled)
 {
     std::vector<rtp_header_extension> selected_extensions;
 
@@ -554,8 +549,7 @@ std::vector<rtp_header_extension> select_answer_header_extensions_impl(
             continue;
         }
 
-        if (forwarded_publisher_media != nullptr &&
-            extension.uri != k_transport_wide_cc_extension_uri &&
+        if (forwarded_publisher_media != nullptr && extension.uri != k_transport_wide_cc_extension_uri &&
             !media_has_header_extension_uri(*forwarded_publisher_media, extension.uri))
         {
             continue;
@@ -577,8 +571,7 @@ void append_header_extension_attributes(media_description& answer_media,
                                         const media_summary* forwarded_publisher_media,
                                         bool transport_cc_enabled)
 {
-    const auto selected_extensions = select_answer_header_extensions_impl(
-        media, forwarded_publisher_media, transport_cc_enabled);
+    const auto selected_extensions = select_answer_header_extensions_impl(media, forwarded_publisher_media, transport_cc_enabled);
 
     bool answer_needs_extmap_allow_mixed = false;
 
@@ -954,17 +947,14 @@ bool find_rtx_apt_payload_type(const codec_info& codec, uint16_t& apt_payload_ty
 
         if (equal_position != std::string_view::npos)
         {
-            const std::string_view key =
-                boost::algorithm::trim_copy_if(item.substr(0, equal_position), boost::algorithm::is_any_of(" \t"));
-            const std::string_view value =
-                boost::algorithm::trim_copy_if(item.substr(equal_position + 1), boost::algorithm::is_any_of(" \t"));
+            const std::string_view key = boost::algorithm::trim_copy_if(item.substr(0, equal_position), boost::algorithm::is_any_of(" \t"));
+            const std::string_view value = boost::algorithm::trim_copy_if(item.substr(equal_position + 1), boost::algorithm::is_any_of(" \t"));
 
             if (boost::algorithm::iequals(key, "apt"))
             {
                 return parse_fmtp_payload_type(value, apt_payload_type);
             }
         }
-
     }
 
     return false;
@@ -1059,8 +1049,7 @@ void append_codec_attributes(media_description& answer_media,
 
         for (const auto& feedback : codec.rtcp_feedback)
         {
-            if (!rtcp_feedback_is_supported_for_answer_media(
-                    media_kind, feedback, generic_nack_enabled, transport_cc_enabled))
+            if (!rtcp_feedback_is_supported_for_answer_media(media_kind, feedback, generic_nack_enabled, transport_cc_enabled))
             {
                 continue;
             }
@@ -1144,20 +1133,15 @@ media_description make_rejected_answer_media(const media_summary& media)
 
     return answer_media;
 }
-bool media_offers_transport_cc(const media_summary& media,
-                               const std::vector<codec_info>& codecs,
-                               bool remote_sends_rtp)
+bool media_offers_transport_cc(const media_summary& media, const std::vector<codec_info>& codecs, bool remote_sends_rtp)
 {
     const bool has_extension = std::ranges::any_of(
         media.header_extensions,
         [remote_sends_rtp](const rtp_header_extension& extension)
         {
-            const bool direction_matches =
-                extension.direction == media_direction::unknown ||
-                extension.direction == media_direction::send_recv ||
-                extension.direction == (remote_sends_rtp ? media_direction::send_only : media_direction::recv_only);
-            return direction_matches &&
-                   extension.uri == k_transport_wide_cc_extension_uri;
+            const bool direction_matches = extension.direction == media_direction::unknown || extension.direction == media_direction::send_recv ||
+                                           extension.direction == (remote_sends_rtp ? media_direction::send_only : media_direction::recv_only);
+            return direction_matches && extension.uri == k_transport_wide_cc_extension_uri;
         });
 
     if (!has_extension)
@@ -1165,15 +1149,13 @@ bool media_offers_transport_cc(const media_summary& media,
         return false;
     }
 
-    return std::ranges::any_of(
-        codecs,
-        [](const codec_info& codec)
-        {
-            return std::ranges::any_of(
-                codec.rtcp_feedback,
-                [](const std::string& feedback)
-                { return normalize_rtcp_feedback_value(feedback) == "transport-cc"; });
-        });
+    return std::ranges::any_of(codecs,
+                               [](const codec_info& codec)
+                               {
+                                   return std::ranges::any_of(codec.rtcp_feedback,
+                                                              [](const std::string& feedback)
+                                                              { return normalize_rtcp_feedback_value(feedback) == "transport-cc"; });
+                               });
 }
 
 std::expected<media_description, std::string> make_answer_media(const sdp_answer_options& options,
@@ -1254,8 +1236,7 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
         push_property_attribute(answer_media.attributes, k_attribute_rtcp_rsize);
     }
 
-    append_header_extension_attributes(
-        answer_media, media, forwarded_publisher_media, transport_cc_enabled);
+    append_header_extension_attributes(answer_media, media, forwarded_publisher_media, transport_cc_enabled);
 
     if (!is_whep && answer_direction == media_direction::recv_only)
     {
@@ -1266,8 +1247,7 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
         append_whep_simulcast_send_attributes(answer_media, media, forwarded_publisher_media);
     }
 
-    append_codec_attributes(
-        answer_media, media.kind, codecs, is_whep, transport_cc_enabled);
+    append_codec_attributes(answer_media, media.kind, codecs, is_whep, transport_cc_enabled);
 
     append_media_timing_attributes(answer_media, media);
 
@@ -1293,11 +1273,10 @@ std::expected<media_description, std::string> make_answer_media(const sdp_answer
     return answer_media;
 }
 
-std::expected<std::vector<int>, std::string> append_answer_media_descriptions(
-    session_description& answer,
-    const sdp_answer_options& options,
-    const webrtc_offer_summary& offer,
-    const webrtc_offer_summary* whep_publisher_offer)
+std::expected<std::vector<int>, std::string> append_answer_media_descriptions(session_description& answer,
+                                                                              const sdp_answer_options& options,
+                                                                              const webrtc_offer_summary& offer,
+                                                                              const webrtc_offer_summary* whep_publisher_offer)
 {
     std::vector<int> accepted_mline_indexes;
 
@@ -1335,9 +1314,7 @@ std::expected<std::vector<int>, std::string> append_answer_media_descriptions(
     return accepted_mline_indexes;
 }
 
-sdp_answer_result build_answer(const webrtc_offer_summary& offer,
-                               const sdp_answer_options& options,
-                               const webrtc_offer_summary* whep_publisher_offer)
+sdp_answer_result build_answer(const webrtc_offer_summary& offer, const sdp_answer_options& options, const webrtc_offer_summary* whep_publisher_offer)
 {
     auto options_result = validate_options(options);
     if (!options_result)
@@ -1398,8 +1375,7 @@ const media_summary* find_whep_forwarded_publisher_media(const media_summary& su
     return find_matching_publisher_media_impl(subscriber_media, subscriber_offer, publisher_offer);
 }
 
-std::vector<rtp_header_extension> select_whep_answer_header_extensions(const media_summary& subscriber_media,
-                                                                       const media_summary& publisher_media)
+std::vector<rtp_header_extension> select_whep_answer_header_extensions(const media_summary& subscriber_media, const media_summary& publisher_media)
 {
     auto codecs = negotiate_codecs(subscriber_media, publisher_media);
 
@@ -1408,10 +1384,7 @@ std::vector<rtp_header_extension> select_whep_answer_header_extensions(const med
         return {};
     }
 
-    return select_answer_header_extensions_impl(
-        subscriber_media,
-        &publisher_media,
-        media_offers_transport_cc(subscriber_media, *codecs, false));
+    return select_answer_header_extensions_impl(subscriber_media, &publisher_media, media_offers_transport_cc(subscriber_media, *codecs, false));
 }
 
 sdp_answer_text_result build_whip_answer_sdp(const webrtc_offer_summary& offer, const sdp_answer_options& options)

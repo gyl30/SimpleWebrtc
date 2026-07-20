@@ -29,8 +29,7 @@ using generated_sdp_answer_result = std::expected<generated_sdp_answer, std::str
 class webrtc_answer_factory
 {
    public:
-    explicit webrtc_answer_factory(sdp::fingerprint_info local_fingerprint,
-                                   std::vector<std::string> ice_candidate_addresses);
+    explicit webrtc_answer_factory(sdp::fingerprint_info local_fingerprint, std::vector<std::string> ice_candidate_addresses);
 
     webrtc_answer_factory(const webrtc_answer_factory&) = delete;
 
@@ -44,9 +43,7 @@ class webrtc_answer_factory
 
    public:
     [[nodiscard]]
-    generated_sdp_answer_result build_whip_answer(std::string_view stream_id,
-                                                  const sdp::webrtc_offer_summary& offer,
-                                                  uint16_t local_candidate_port);
+    generated_sdp_answer_result build_whip_answer(std::string_view stream_id, const sdp::webrtc_offer_summary& offer, uint16_t local_candidate_port);
 
     [[nodiscard]]
     generated_sdp_answer_result build_whep_answer(std::string_view stream_id,

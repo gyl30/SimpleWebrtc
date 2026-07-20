@@ -69,10 +69,9 @@ struct whep_rtp_rewriter_config
 using whep_rtp_rewriter_config_result = std::expected<whep_rtp_rewriter_config, std::string>;
 
 [[nodiscard]]
-whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(
-    std::string_view publisher_session_id,
-    const sdp::webrtc_offer_summary& publisher_offer,
-    const whep_rtp_rewriter_target& target);
+whep_rtp_rewriter_config_result make_whep_rtp_rewriter_config(std::string_view publisher_session_id,
+                                                              const sdp::webrtc_offer_summary& publisher_offer,
+                                                              const whep_rtp_rewriter_target& target);
 
 enum class whep_rtp_rewrite_state
 {
@@ -156,21 +155,16 @@ class whep_rtp_rewriter
 
     void clear_source();
 
-    [[nodiscard]] whep_rtp_rewrite_packet_result rewrite(
-        std::span<const uint8_t> packet,
-        uint16_t transport_sequence_number);
+    [[nodiscard]] whep_rtp_rewrite_packet_result rewrite(std::span<const uint8_t> packet, uint16_t transport_sequence_number);
 
     [[nodiscard]] bool nack_enabled(uint32_t target_ssrc, uint8_t target_payload_type) const;
 
-    [[nodiscard]] whep_rtp_retransmission_result_type build_retransmission(
-        std::span<const uint8_t> primary_packet,
-        uint16_t transport_sequence_number);
+    [[nodiscard]] whep_rtp_retransmission_result_type build_retransmission(std::span<const uint8_t> primary_packet,
+                                                                           uint16_t transport_sequence_number);
 
     [[nodiscard]] std::optional<uint32_t> source_ssrc_for_target_ssrc(uint32_t target_ssrc) const;
 
-    [[nodiscard]] std::optional<whep_rtp_timestamp_mapping> map_source_timestamp(
-        uint32_t source_ssrc,
-        uint32_t source_timestamp) const;
+    [[nodiscard]] std::optional<whep_rtp_timestamp_mapping> map_source_timestamp(uint32_t source_ssrc, uint32_t source_timestamp) const;
 
    private:
     struct impl;

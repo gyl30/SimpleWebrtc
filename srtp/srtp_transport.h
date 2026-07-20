@@ -68,8 +68,8 @@ class srtp_transport
     void forget_peer(std::string_view remote_endpoint);
 
     [[nodiscard]] srtp_peer_rebind_result rebind_peer(std::string_view previous_remote_endpoint,
-                                                       std::string_view next_remote_endpoint,
-                                                       const dtls_peer_identity& identity);
+                                                      std::string_view next_remote_endpoint,
+                                                      const dtls_peer_identity& identity);
 
     [[nodiscard]] srtp_peer_ready_result peer_ready(std::string_view remote_endpoint);
 

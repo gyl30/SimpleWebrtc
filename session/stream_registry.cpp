@@ -60,8 +60,7 @@ std::string_view stream_session_kind_to_string(stream_session_kind kind)
     return "unknown";
 }
 
-publisher_session_result stream_registry::create_publisher_session(std::string stream_id,
-                                                                   sdp::webrtc_offer_summary remote_offer_summary)
+publisher_session_result stream_registry::create_publisher_session(std::string stream_id, sdp::webrtc_offer_summary remote_offer_summary)
 {
     std::lock_guard lock(mutex_);
 
@@ -124,8 +123,7 @@ publisher_session_result stream_registry::replace_publisher_session(std::string 
     return session;
 }
 
-subscriber_session_result stream_registry::create_subscriber_session(std::string stream_id,
-                                                                     sdp::webrtc_offer_summary remote_offer_summary)
+subscriber_session_result stream_registry::create_subscriber_session(std::string stream_id, sdp::webrtc_offer_summary remote_offer_summary)
 {
     std::lock_guard lock(mutex_);
 

@@ -23,8 +23,7 @@ std::string make_sdpfrag_error(std::size_t line_number, std::string_view message
     return error;
 }
 
-std::expected<void, std::string> set_attribute_once(
-    std::string& target, std::string_view value, std::string_view name, std::size_t line_number)
+std::expected<void, std::string> set_attribute_once(std::string& target, std::string_view value, std::string_view name, std::size_t line_number)
 {
     const std::string trimmed_value = boost::algorithm::trim_copy(std::string(value));
     if (trimmed_value.empty())
@@ -34,16 +33,17 @@ std::expected<void, std::string> set_attribute_once(
 
     if (!target.empty() && target != trimmed_value)
     {
-        return std::unexpected(
-            make_sdpfrag_error(line_number, std::string(name) + " is duplicated with different value"));
+        return std::unexpected(make_sdpfrag_error(line_number, std::string(name) + " is duplicated with different value"));
     }
 
     target = trimmed_value;
     return {};
 }
 
-std::expected<remote_ice_candidate, std::string> parse_candidate(
-    std::string_view line, std::string_view mid, int mline_index, std::size_t line_number)
+std::expected<remote_ice_candidate, std::string> parse_candidate(std::string_view line,
+                                                                 std::string_view mid,
+                                                                 int mline_index,
+                                                                 std::size_t line_number)
 {
     if (mid.empty())
     {
@@ -64,8 +64,7 @@ std::expected<remote_ice_candidate, std::string> parse_candidate(
     return candidate;
 }
 
-std::expected<remote_ice_candidate, std::string> parse_end_of_candidates(
-    std::string_view mid, int mline_index, std::size_t line_number)
+std::expected<remote_ice_candidate, std::string> parse_end_of_candidates(std::string_view mid, int mline_index, std::size_t line_number)
 {
     if (mid.empty())
     {
@@ -110,14 +109,12 @@ struct sdpfrag_parser
 
         if (line.starts_with("a=ice-ufrag:"))
         {
-            return set_attribute_once(
-                result.ice_ufrag, std::string_view(line).substr(12), "ice-ufrag", line_number);
+            return set_attribute_once(result.ice_ufrag, std::string_view(line).substr(12), "ice-ufrag", line_number);
         }
 
         if (line.starts_with("a=ice-pwd:"))
         {
-            return set_attribute_once(
-                result.ice_pwd, std::string_view(line).substr(10), "ice-pwd", line_number);
+            return set_attribute_once(result.ice_pwd, std::string_view(line).substr(10), "ice-pwd", line_number);
         }
 
         if (line.starts_with("a=candidate:") || line.starts_with("candidate:"))
@@ -165,9 +162,7 @@ trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag(std::string_view
     while (offset <= body.size())
     {
         const std::size_t line_end = body.find('\n', offset);
-        const std::string_view line = line_end == std::string_view::npos
-                                          ? body.substr(offset)
-                                          : body.substr(offset, line_end - offset);
+        const std::string_view line = line_end == std::string_view::npos ? body.substr(offset) : body.substr(offset, line_end - offset);
         ++line_number;
 
         auto line_result = parser.parse_line(line, line_number);
@@ -190,8 +185,7 @@ trickle_ice_sdpfrag_parse_result_type parse_trickle_ice_sdpfrag(std::string_view
 
     if (parser.result.ice_ufrag.empty() != parser.result.ice_pwd.empty())
     {
-        return std::unexpected(
-            std::string("trickle ice sdpfrag must include both ice-ufrag and ice-pwd when either is present"));
+        return std::unexpected(std::string("trickle ice sdpfrag must include both ice-ufrag and ice-pwd when either is present"));
     }
 
     return std::move(parser.result);

@@ -13,7 +13,6 @@ struct sdp_attribute
 {
     std::string key;
     std::string value;
-
 };
 
 sdp_attribute make_property_attribute(std::string key);
@@ -24,7 +23,6 @@ struct media_name_line
     std::string media;
     int32_t port = 0;
     std::vector<std::string> formats;
-
 };
 
 struct media_description

@@ -30,16 +30,13 @@ std::unexpected<std::string> make_error(std::string_view message) { return std::
 
 uint16_t read_u16(std::span<const uint8_t> data, std::size_t offset)
 {
-    return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) |
-                                 static_cast<uint16_t>(data[offset + 1]));
+    return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
 }
 
 uint32_t read_u32(std::span<const uint8_t> data, std::size_t offset)
 {
-    return (static_cast<uint32_t>(data[offset]) << 24U) |
-           (static_cast<uint32_t>(data[offset + 1]) << 16U) |
-           (static_cast<uint32_t>(data[offset + 2]) << 8U) |
-           static_cast<uint32_t>(data[offset + 3]);
+    return (static_cast<uint32_t>(data[offset]) << 24U) | (static_cast<uint32_t>(data[offset + 1]) << 16U) |
+           (static_cast<uint32_t>(data[offset + 2]) << 8U) | static_cast<uint32_t>(data[offset + 3]);
 }
 
 std::expected<rtp_payload_view, std::string> parse_rtp_payload_view(std::span<const uint8_t> packet)
@@ -58,8 +55,7 @@ std::expected<rtp_payload_view, std::string> parse_rtp_payload_view(std::span<co
     const bool extension = (packet[0] & 0x10U) != 0;
     const uint8_t csrc_count = static_cast<uint8_t>(packet[0] & 0x0FU);
 
-    std::size_t payload_offset =
-        k_rtp_fixed_header_size + static_cast<std::size_t>(csrc_count) * k_rtp_csrc_size;
+    std::size_t payload_offset = k_rtp_fixed_header_size + static_cast<std::size_t>(csrc_count) * k_rtp_csrc_size;
 
     if (payload_offset > packet.size())
     {
@@ -74,8 +70,7 @@ std::expected<rtp_payload_view, std::string> parse_rtp_payload_view(std::span<co
         }
 
         const uint16_t extension_length_words = read_u16(packet, payload_offset + 2);
-        const std::size_t extension_size =
-            k_rtp_extension_header_size + static_cast<std::size_t>(extension_length_words) * 4U;
+        const std::size_t extension_size = k_rtp_extension_header_size + static_cast<std::size_t>(extension_length_words) * 4U;
 
         if (payload_offset + extension_size > packet.size())
         {
@@ -186,8 +181,7 @@ std::expected<bool, std::string> is_vp8_keyframe_start(std::span<const uint8_t> 
 }
 }    // namespace
 
-video_keyframe_observation_result video_keyframe_tracker::observe(std::string_view codec,
-                                                                  std::span<const uint8_t> rtp_packet)
+video_keyframe_observation_result video_keyframe_tracker::observe(std::string_view codec, std::span<const uint8_t> rtp_packet)
 {
     auto view = parse_rtp_payload_view(rtp_packet);
 
@@ -219,8 +213,7 @@ video_keyframe_observation_result video_keyframe_tracker::observe(std::string_vi
 
     if (active != active_frames_by_ssrc_.end())
     {
-        if (active->second.timestamp != view->timestamp ||
-            active->second.next_sequence_number != view->sequence_number)
+        if (active->second.timestamp != view->timestamp || active->second.next_sequence_number != view->sequence_number)
         {
             active_frames_by_ssrc_.erase(active);
             observation.state = video_keyframe_observation_state::aborted;
@@ -250,12 +243,11 @@ video_keyframe_observation_result video_keyframe_tracker::observe(std::string_vi
         return observation;
     }
 
-    active_frames_by_ssrc_.insert_or_assign(
-        view->ssrc,
-        frame_state{
-            .timestamp = view->timestamp,
-            .next_sequence_number = static_cast<uint16_t>(view->sequence_number + 1U),
-        });
+    active_frames_by_ssrc_.insert_or_assign(view->ssrc,
+                                            frame_state{
+                                                .timestamp = view->timestamp,
+                                                .next_sequence_number = static_cast<uint16_t>(view->sequence_number + 1U),
+                                            });
     observation.state = video_keyframe_observation_state::started;
     return observation;
 }

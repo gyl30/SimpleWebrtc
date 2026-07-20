@@ -60,18 +60,14 @@ class rtp_retransmission_cache
    public:
     explicit rtp_retransmission_cache(rtp_retransmission_cache_config config = {});
 
-    void remember(rtp_retransmission_cache_packet packet,
-                  std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    void remember(rtp_retransmission_cache_packet packet, std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 
     [[nodiscard]] rtp_retransmission_cache_lookup lookup_for_retransmission(
-        uint32_t target_ssrc,
-        uint16_t target_sequence_number,
-        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+        uint32_t target_ssrc, uint16_t target_sequence_number, std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 
     void clear();
 
-    [[nodiscard]] rtp_retransmission_cache_snapshot snapshot(
-        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    [[nodiscard]] rtp_retransmission_cache_snapshot snapshot(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 
    private:
     struct entry

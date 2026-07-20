@@ -65,15 +65,13 @@ class stream_registry
     stream_registry& operator=(stream_registry&&) = delete;
 
    public:
-    [[nodiscard]] publisher_session_result create_publisher_session(std::string stream_id,
-                                                                    sdp::webrtc_offer_summary remote_offer_summary);
+    [[nodiscard]] publisher_session_result create_publisher_session(std::string stream_id, sdp::webrtc_offer_summary remote_offer_summary);
 
     [[nodiscard]]
     publisher_session_result replace_publisher_session(std::string previous_session_id,
                                                        std::string stream_id,
                                                        sdp::webrtc_offer_summary remote_offer_summary);
-    [[nodiscard]] subscriber_session_result create_subscriber_session(std::string stream_id,
-                                                                      sdp::webrtc_offer_summary remote_offer_summary);
+    [[nodiscard]] subscriber_session_result create_subscriber_session(std::string stream_id, sdp::webrtc_offer_summary remote_offer_summary);
     [[nodiscard]]
     subscriber_session_result replace_subscriber_session(std::string previous_session_id,
                                                          std::string stream_id,

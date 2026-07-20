@@ -48,10 +48,7 @@ uint16_t publisher_session::local_udp_port() const { return local_udp_port_->por
 
 const std::vector<remote_ice_candidate>& publisher_session::remote_ice_candidates() const { return remote_ice_candidates_; }
 
-bool publisher_session::remote_ice_completed() const
-{
-    return !remote_ice_candidates_.empty() && remote_ice_candidates_.back().end_of_candidates;
-}
+bool publisher_session::remote_ice_completed() const { return !remote_ice_candidates_.empty() && remote_ice_candidates_.back().end_of_candidates; }
 
 const std::vector<int>& publisher_session::accepted_remote_media_mline_indexes() const { return accepted_remote_media_mline_indexes_; }
 
@@ -68,10 +65,7 @@ void publisher_session::complete_initial_setup(ice_credentials local_ice,
     accepted_remote_media_mline_indexes_ = std::move(accepted_remote_media_mline_indexes);
     local_udp_port_ = std::move(local_udp_port);
 
-    transport->set_peer_context(local_ice_.pwd,
-                                make_dtls_peer_identity(*this),
-                                remote_offer_summary_,
-                                accepted_remote_media_mline_indexes_);
+    transport->set_peer_context(local_ice_.pwd, make_dtls_peer_identity(*this), remote_offer_summary_, accepted_remote_media_mline_indexes_);
     transport_ = std::move(transport);
 
     updated_at_milliseconds_ = now_milliseconds();

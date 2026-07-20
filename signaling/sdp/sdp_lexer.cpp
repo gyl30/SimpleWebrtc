@@ -8,10 +8,7 @@ namespace webrtc::sdp
 {
 namespace
 {
-std::unexpected<std::string> make_error(std::string_view message)
-{
-    return std::unexpected(std::string(message));
-}
+std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 bool is_line_break(char ch) { return ch == '\n' || ch == '\r'; }
 
@@ -39,10 +36,7 @@ std::string escape_char_for_error(char ch)
 
 sdp_lexer::sdp_lexer(std::string_view text) : text_(text) {}
 
-bool sdp_lexer::eof() const
-{
-    return position_ >= text_.size();
-}
+bool sdp_lexer::eof() const { return position_ >= text_.size(); }
 
 void sdp_lexer::skip_line_breaks()
 {

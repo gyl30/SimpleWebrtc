@@ -37,8 +37,7 @@ namespace webrtc
 {
 using whep_session_transport_result = std::expected<void, std::string>;
 
-class whep_session_transport : public session_ice_udp_packet_handler,
-                               public std::enable_shared_from_this<whep_session_transport>
+class whep_session_transport : public session_ice_udp_packet_handler, public std::enable_shared_from_this<whep_session_transport>
 {
    public:
     whep_session_transport(boost::asio::io_context& io_context,
@@ -58,9 +57,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
    public:
     [[nodiscard]] whep_session_transport_result start(uint16_t local_port);
 
-    void set_peer_context(std::string local_ice_pwd,
-                          dtls_peer_identity identity,
-                          whep_rtp_rewriter_target target);
+    void set_peer_context(std::string local_ice_pwd, dtls_peer_identity identity, whep_rtp_rewriter_target target);
 
     void send_rtp(uint64_t source_generation, std::span<const uint8_t> plain_rtp);
 
@@ -246,11 +243,8 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void clear_publisher_sender_timings_locked();
     void refresh_sender_timing_locked(uint32_t source_ssrc);
     void record_outbound_rtp_sent_locked(const whep_rtp_rewrite_result& rewritten);
-    void record_outbound_rtp_sent_locked(uint32_t target_ssrc,
-                                         std::size_t payload_size,
-                                         uint32_t target_timestamp);
-    void cache_rewritten_rtp_locked(uint64_t source_generation,
-                                    const whep_rtp_rewrite_result& rewritten);
+    void record_outbound_rtp_sent_locked(uint32_t target_ssrc, std::size_t payload_size, uint32_t target_timestamp);
+    void cache_rewritten_rtp_locked(uint64_t source_generation, const whep_rtp_rewrite_result& rewritten);
     void handle_generic_nacks(const rtcp_compound_packet& compound);
     void handle_transport_feedback(const rtcp_compound_packet& compound);
     void send_retransmission(rtp_retransmission_cache_packet cached);
@@ -260,14 +254,9 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void clear_keyframe_feedback_state_locked();
 
     [[nodiscard]] std::optional<keyframe_request_context> prepare_keyframe_request_locked(
-        uint64_t source_generation,
-        uint32_t source_ssrc,
-        uint32_t target_ssrc,
-        bool force_dispatch,
-        bool coalesce_if_waiting);
+        uint64_t source_generation, uint32_t source_ssrc, uint32_t target_ssrc, bool force_dispatch, bool coalesce_if_waiting);
 
-    [[nodiscard]] bool dispatch_keyframe_request(const keyframe_request_context& context,
-                                                 std::string_view reason);
+    [[nodiscard]] bool dispatch_keyframe_request(const keyframe_request_context& context, std::string_view reason);
 
     void complete_keyframe_request(const keyframe_request_context& context);
     void handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp);
@@ -290,8 +279,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void log_transport_feedback_state();
     void log_transport_feedback_final_summary(std::string_view reason);
     void log_rtcp_interval_state();
-    [[nodiscard]] peer_nomination_result nominate_remote_endpoint(
-        const boost::asio::ip::udp::endpoint& remote_endpoint);
+    [[nodiscard]] peer_nomination_result nominate_remote_endpoint(const boost::asio::ip::udp::endpoint& remote_endpoint);
 
     session_udp_outbound_packet_list handle_udp_packet(const session_udp_packet& packet) override;
 

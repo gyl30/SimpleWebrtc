@@ -9,7 +9,7 @@ namespace
 constexpr uint64_t kMicrosecondsPerSecond = 1000ULL * 1000ULL;
 constexpr uint64_t kNanosecondsPerMicrosecond = 1000ULL;
 constexpr uint64_t kNanosecondsPerMillisecond = 1000ULL * 1000ULL;
-}
+}    // namespace
 
 uint64_t timestamp::milliseconds() const { return nanoseconds_ / kNanosecondsPerMillisecond; }
 

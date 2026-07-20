@@ -20,19 +20,14 @@ constexpr uint16_t k_two_byte_extension_profile_mask = 0xFFF0;
 constexpr uint16_t k_two_byte_extension_profile_value = 0x1000;
 constexpr uint8_t k_one_byte_extension_reserved_id = 15;
 
-std::unexpected<std::string> make_error(std::string_view message)
-{
-    return std::unexpected(std::string(message));
-}
+std::unexpected<std::string> make_error(std::string_view message) { return std::unexpected(std::string(message)); }
 
 uint16_t read_u16(std::span<const uint8_t> data, std::size_t offset)
 {
-    return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) |
-                                 static_cast<uint16_t>(data[offset + 1]));
+    return static_cast<uint16_t>((static_cast<uint16_t>(data[offset]) << 8U) | static_cast<uint16_t>(data[offset + 1]));
 }
 
-rtp_header_extension_result find_one_byte_extension(
-    std::span<const uint8_t> payload, uint8_t extension_id)
+rtp_header_extension_result find_one_byte_extension(std::span<const uint8_t> payload, uint8_t extension_id)
 {
     std::size_t offset = 0;
 
@@ -70,8 +65,7 @@ rtp_header_extension_result find_one_byte_extension(
     return std::optional<std::span<const uint8_t>>{};
 }
 
-rtp_header_extension_result find_two_byte_extension(
-    std::span<const uint8_t> payload, uint8_t extension_id)
+rtp_header_extension_result find_two_byte_extension(std::span<const uint8_t> payload, uint8_t extension_id)
 {
     std::size_t offset = 0;
 
@@ -108,8 +102,7 @@ rtp_header_extension_result find_two_byte_extension(
 }
 }    // namespace
 
-rtp_header_extension_result find_rtp_header_extension(
-    std::span<const uint8_t> packet, uint8_t extension_id)
+rtp_header_extension_result find_rtp_header_extension(std::span<const uint8_t> packet, uint8_t extension_id)
 {
     if (extension_id == 0)
     {
@@ -134,8 +127,7 @@ rtp_header_extension_result find_rtp_header_extension(
     }
 
     const uint8_t csrc_count = static_cast<uint8_t>(packet[0] & 0x0FU);
-    const std::size_t extension_header_offset =
-        k_rtp_fixed_header_size + static_cast<std::size_t>(csrc_count) * k_rtp_csrc_size;
+    const std::size_t extension_header_offset = k_rtp_fixed_header_size + static_cast<std::size_t>(csrc_count) * k_rtp_csrc_size;
 
     if (extension_header_offset + k_rtp_extension_header_size > packet.size())
     {
@@ -164,8 +156,7 @@ rtp_header_extension_result find_rtp_header_extension(
         return find_one_byte_extension(payload, extension_id);
     }
 
-    if ((profile & k_two_byte_extension_profile_mask) ==
-        k_two_byte_extension_profile_value)
+    if ((profile & k_two_byte_extension_profile_mask) == k_two_byte_extension_profile_value)
     {
         return find_two_byte_extension(payload, extension_id);
     }

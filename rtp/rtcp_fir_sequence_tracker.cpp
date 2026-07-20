@@ -12,15 +12,12 @@ uint64_t make_sequence_key(uint32_t sender_ssrc, uint32_t media_ssrc)
 }
 }    // namespace
 
-bool rtcp_fir_sequence_tracker::accept(uint32_t sender_ssrc,
-                                       uint32_t media_ssrc,
-                                       uint8_t sequence_number)
+bool rtcp_fir_sequence_tracker::accept(uint32_t sender_ssrc, uint32_t media_ssrc, uint8_t sequence_number)
 {
     const uint64_t key = make_sequence_key(sender_ssrc, media_ssrc);
     const auto previous = last_sequence_by_sender_and_media_.find(key);
 
-    if (previous != last_sequence_by_sender_and_media_.end() &&
-        previous->second == sequence_number)
+    if (previous != last_sequence_by_sender_and_media_.end() && previous->second == sequence_number)
     {
         return false;
     }
@@ -29,8 +26,5 @@ bool rtcp_fir_sequence_tracker::accept(uint32_t sender_ssrc,
     return true;
 }
 
-void rtcp_fir_sequence_tracker::clear()
-{
-    last_sequence_by_sender_and_media_.clear();
-}
+void rtcp_fir_sequence_tracker::clear() { last_sequence_by_sender_and_media_.clear(); }
 }    // namespace webrtc

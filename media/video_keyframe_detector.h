@@ -32,8 +32,7 @@ using video_keyframe_observation_result = std::expected<video_keyframe_observati
 class video_keyframe_tracker
 {
    public:
-    [[nodiscard]] video_keyframe_observation_result observe(std::string_view codec,
-                                                            std::span<const uint8_t> rtp_packet);
+    [[nodiscard]] video_keyframe_observation_result observe(std::string_view codec, std::span<const uint8_t> rtp_packet);
 
     void reset();
     void reset(uint32_t ssrc);

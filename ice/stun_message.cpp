@@ -865,9 +865,9 @@ stun_message_result parse_stun_message(std::span<const uint8_t> data)
 }
 
 stun_packet_result write_stun_binding_success_response(const stun_message& request,
-                                                        std::string_view mapped_ip,
-                                                        uint16_t mapped_port,
-                                                        std::string_view message_integrity_key)
+                                                       std::string_view mapped_ip,
+                                                       uint16_t mapped_port,
+                                                       std::string_view message_integrity_key)
 {
     auto request_result = validate_binding_request(request);
     if (!request_result)
