@@ -2,10 +2,8 @@
 #define SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_HTTP_H
 
 #include <cstddef>
-#include <cstdint>
 #include <cstdlib>
 #include <expected>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -16,46 +14,15 @@
 
 namespace webrtc
 {
-inline constexpr std::string_view k_trickle_ice_patch_accept_patch_value = "application/sdp, application/trickle-ice-sdpfrag, application/json";
+inline constexpr std::string_view k_trickle_ice_patch_accept_patch_value = "application/trickle-ice-sdpfrag";
 
-inline constexpr std::string_view k_session_resource_state_header = "X-Session-Resource-State";
-inline constexpr std::string_view k_session_resource_updated_at_header = "X-Session-Resource-Updated-At";
-inline constexpr std::string_view k_session_resource_ice_completed_header = "X-Session-Resource-Ice-Completed";
-inline constexpr std::string_view k_session_resource_candidate_count_header = "X-Session-Resource-Candidate-Count";
-
-inline constexpr std::string_view k_trickle_ice_expose_headers_value =
-    "Location, ETag, Link, Accept-Patch, X-Session-Resource-State, X-Session-Resource-Updated-At, X-Session-Resource-Ice-Completed, "
-    "X-Session-Resource-Candidate-Count";
+inline constexpr std::string_view k_trickle_ice_expose_headers_value = "Location, ETag, Link, Accept-Patch";
 
 inline constexpr std::size_t k_trickle_ice_max_patch_body_bytes = 64L * 1024;
 inline constexpr std::size_t k_trickle_ice_max_candidates_per_patch = 32;
 
 namespace trickle_ice_http_detail
 {
-inline uint64_t fnv1a_append(uint64_t hash, std::string_view value)
-{
-    constexpr uint64_t k_fnv_prime = 1099511628211ULL;
-
-    for (char item : value)
-    {
-        hash ^= static_cast<unsigned char>(item);
-
-        hash *= k_fnv_prime;
-    }
-
-    return hash;
-}
-
-inline uint64_t fnv1a_append_separator(uint64_t hash) { return fnv1a_append(hash, "|"); }
-
-inline uint64_t fnv1a_append_uint64(uint64_t hash, uint64_t value) { return fnv1a_append(hash, std::to_string(value)); }
-
-inline bool content_type_matches(std::string_view content_type, std::string_view expected)
-{
-    return boost::algorithm::istarts_with(content_type, expected) &&
-           (content_type.size() == expected.size() || content_type[expected.size()] == ';');
-}
-
 inline std::string get_env_string(const char* name)
 {
     const char* value = std::getenv(name);
@@ -199,28 +166,6 @@ inline std::string make_configured_ice_server_link_header()
 
 inline const std::string k_configured_ice_server_link_header = make_configured_ice_server_link_header();
 
-inline bool etag_list_contains(std::string_view if_match, std::string_view current_etag)
-{
-    std::vector<std::string_view> tokens;
-    boost::algorithm::split(tokens, if_match, boost::algorithm::is_any_of(","));
-
-    for (std::string_view token : tokens)
-    {
-        token = boost::algorithm::trim_copy(token);
-
-        if (token == "*")
-        {
-            return true;
-        }
-
-        if (token == current_etag)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
 }    // namespace trickle_ice_http_detail
 
 inline void set_trickle_ice_patch_headers(const http_response_ptr& response)
@@ -228,64 +173,16 @@ inline void set_trickle_ice_patch_headers(const http_response_ptr& response)
     response->set("Accept-Patch", std::string(k_trickle_ice_patch_accept_patch_value));
 }
 
-
 template <typename session_type>
 [[nodiscard]]
 std::string make_session_resource_etag(const session_type& session)
 {
-    constexpr uint64_t k_fnv_offset_basis = 1469598103934665603ULL;
-
-    uint64_t hash = k_fnv_offset_basis;
-
-    /*
-     * ETag represents the HTTP session resource version, not transient transport
-     * runtime state.
-     *
-     * Do not include:
-     *   - session.updated_at_milliseconds()
-     *   - ICE selected pair / DTLS / SRTP / media runtime state
-     *
-     */
-    hash = trickle_ice_http_detail::fnv1a_append(hash, session.session_id());
-
-    hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
-
-    hash = trickle_ice_http_detail::fnv1a_append(hash, session.stream_id());
-
-    hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
-
-    hash = trickle_ice_http_detail::fnv1a_append_uint64(hash, session.created_at_milliseconds());
-
-    hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
-
-    hash = trickle_ice_http_detail::fnv1a_append(hash, session.local_ice().ufrag);
-
-    hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
-
-    hash = trickle_ice_http_detail::fnv1a_append(hash, session.remote_offer_summary().ice_ufrag);
-
-    hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
-
-    hash = trickle_ice_http_detail::fnv1a_append_uint64(hash, session.sdp_session_id());
-
-    hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
-
-    hash = trickle_ice_http_detail::fnv1a_append_uint64(hash, session.sdp_session_version());
-
-    hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
-
-    hash = trickle_ice_http_detail::fnv1a_append_uint64(hash, static_cast<uint64_t>(session.remote_ice_candidates().size()));
-
-    hash = trickle_ice_http_detail::fnv1a_append_separator(hash);
-
-    hash = trickle_ice_http_detail::fnv1a_append(hash, session.remote_ice_completed() ? "completed" : "open");
-
-    std::ostringstream output;
-
-    output << "\"swrtc-" << std::hex << hash << "-" << std::dec << session.created_at_milliseconds() << "-" << session.remote_ice_candidates().size()
-           << "-" << (session.remote_ice_completed() ? 1 : 0) << "\"";
-
-    return output.str();
+    std::string etag;
+    etag.reserve(session.session_id().size() + 2);
+    etag.push_back('"');
+    etag.append(session.session_id());
+    etag.push_back('"');
+    return etag;
 }
 template <typename session_type>
 void set_session_resource_headers(const http_response_ptr& response, const session_type& session)
@@ -298,14 +195,6 @@ void set_session_resource_headers(const http_response_ptr& response, const sessi
     {
         response->set("Link", trickle_ice_http_detail::k_configured_ice_server_link_header);
     }
-
-    response->set(std::string(k_session_resource_state_header), "sdp_answered");
-
-    response->set(std::string(k_session_resource_updated_at_header), std::to_string(session.updated_at_milliseconds()));
-
-    response->set(std::string(k_session_resource_ice_completed_header), session.remote_ice_completed() ? "1" : "0");
-
-    response->set(std::string(k_session_resource_candidate_count_header), std::to_string(session.remote_ice_candidates().size()));
 }
 
 template <typename session_type>
@@ -323,7 +212,7 @@ std::expected<void, std::string> validate_session_if_match(http_request_t& reque
 
     const std::string current_etag = make_session_resource_etag(session);
 
-    if (!trickle_ice_http_detail::etag_list_contains(if_match, current_etag))
+    if (boost::algorithm::trim_copy(if_match) != current_etag)
     {
         std::string message = "if-match does not match current session etag current=";
 

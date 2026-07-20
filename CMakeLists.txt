@@ -171,6 +171,7 @@ set(WEBRTC_SOURCES
     util/error.cpp
     util/timestamp.cpp
     server/router.cpp
+    server/trickle_ice_sdpfrag.cpp
     server/whip_handler.cpp
     server/whep_handler.cpp
     session/peer_transport.cpp

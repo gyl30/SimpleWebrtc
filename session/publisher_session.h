@@ -44,10 +44,6 @@ class publisher_session
 
     [[nodiscard]] uint16_t local_udp_port() const;
 
-    [[nodiscard]] uint64_t sdp_session_id() const;
-
-    [[nodiscard]] uint64_t sdp_session_version() const;
-
     [[nodiscard]] const std::vector<remote_ice_candidate>& remote_ice_candidates() const;
 
     [[nodiscard]] bool remote_ice_completed() const;
@@ -60,8 +56,6 @@ class publisher_session
 
    public:
     void complete_initial_setup(ice_credentials local_ice,
-                                uint64_t sdp_session_id,
-                                uint64_t sdp_session_version,
                                 std::vector<int> accepted_remote_media_mline_indexes,
                                 udp_port_reservation_ptr local_udp_port,
                                 std::shared_ptr<whip_session_transport> transport);
@@ -71,12 +65,6 @@ class publisher_session
     void set_publisher_source_generation(uint64_t source_generation);
 
     void close(std::string_view reason);
-
-    void apply_remote_ice_restart(sdp::webrtc_offer_summary remote_offer_summary,
-                                  std::vector<int> accepted_remote_media_mline_indexes,
-                                  ice_credentials local_ice,
-                                  uint64_t sdp_session_id,
-                                  uint64_t sdp_session_version);
 
     [[nodiscard]] std::expected<void, std::string> add_remote_ice_candidate(remote_ice_candidate candidate);
 
@@ -89,9 +77,6 @@ class publisher_session
     ice_credentials local_ice_;
     udp_port_reservation_ptr local_udp_port_;
     std::shared_ptr<whip_session_transport> transport_;
-
-    uint64_t sdp_session_id_ = 0;
-    uint64_t sdp_session_version_ = 0;
 
     std::vector<remote_ice_candidate> remote_ice_candidates_;
 

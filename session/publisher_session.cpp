@@ -46,10 +46,6 @@ const ice_credentials& publisher_session::local_ice() const { return local_ice_;
 
 uint16_t publisher_session::local_udp_port() const { return local_udp_port_->port(); }
 
-uint64_t publisher_session::sdp_session_id() const { return sdp_session_id_; }
-
-uint64_t publisher_session::sdp_session_version() const { return sdp_session_version_; }
-
 const std::vector<remote_ice_candidate>& publisher_session::remote_ice_candidates() const { return remote_ice_candidates_; }
 
 bool publisher_session::remote_ice_completed() const
@@ -64,15 +60,11 @@ uint64_t publisher_session::created_at_milliseconds() const { return created_at_
 uint64_t publisher_session::updated_at_milliseconds() const { return updated_at_milliseconds_; }
 
 void publisher_session::complete_initial_setup(ice_credentials local_ice,
-                                               uint64_t sdp_session_id,
-                                               uint64_t sdp_session_version,
                                                std::vector<int> accepted_remote_media_mline_indexes,
                                                udp_port_reservation_ptr local_udp_port,
                                                std::shared_ptr<whip_session_transport> transport)
 {
     local_ice_ = std::move(local_ice);
-    sdp_session_id_ = sdp_session_id;
-    sdp_session_version_ = sdp_session_version;
     accepted_remote_media_mline_indexes_ = std::move(accepted_remote_media_mline_indexes);
     local_udp_port_ = std::move(local_udp_port);
 
@@ -107,27 +99,6 @@ void publisher_session::set_publisher_source_generation(uint64_t source_generati
     {
         transport_->set_publisher_source_generation(source_generation);
     }
-}
-
-void publisher_session::apply_remote_ice_restart(sdp::webrtc_offer_summary remote_offer_summary,
-                                                 std::vector<int> accepted_remote_media_mline_indexes,
-                                                 ice_credentials local_ice,
-                                                 uint64_t sdp_session_id,
-                                                 uint64_t sdp_session_version)
-{
-    remote_offer_summary_ = std::move(remote_offer_summary);
-    remote_ice_candidates_.clear();
-    accepted_remote_media_mline_indexes_ = std::move(accepted_remote_media_mline_indexes);
-    local_ice_ = std::move(local_ice);
-    sdp_session_id_ = sdp_session_id;
-    sdp_session_version_ = sdp_session_version;
-
-    transport_->restart_peer_context(local_ice_.pwd,
-                                     make_dtls_peer_identity(*this),
-                                     remote_offer_summary_,
-                                     accepted_remote_media_mline_indexes_);
-
-    updated_at_milliseconds_ = now_milliseconds();
 }
 
 std::expected<void, std::string> publisher_session::add_remote_ice_candidate(remote_ice_candidate candidate)

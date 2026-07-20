@@ -56,11 +56,6 @@ class whip_session_transport : public session_ice_udp_packet_handler,
                           const sdp::webrtc_offer_summary& remote_offer,
                           std::span<const int> accepted_remote_media_mline_indexes);
 
-    void restart_peer_context(std::string local_ice_pwd,
-                              dtls_peer_identity identity,
-                              const sdp::webrtc_offer_summary& remote_offer,
-                              std::span<const int> accepted_remote_media_mline_indexes);
-
     void set_publisher_source_generation(uint64_t source_generation);
 
     void send_keyframe_request(uint32_t media_ssrc);
@@ -73,13 +68,6 @@ class whip_session_transport : public session_ice_udp_packet_handler,
         unchanged,
         selected_fresh,
         association_rebound,
-    };
-
-    struct pending_ice_restart
-    {
-        uint64_t generation = 0;
-        boost::asio::ip::udp::endpoint association_endpoint;
-        dtls_peer_identity association_identity;
     };
 
     struct inbound_payload_type_context
@@ -242,8 +230,6 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     void update_receiver_sender_report(uint32_t source_ssrc,
                                        uint64_t ntp_timestamp,
                                        std::chrono::steady_clock::time_point received_at);
-    void schedule_ice_restart_timeout(uint64_t generation);
-    void handle_ice_restart_timeout(uint64_t generation);
     void record_media_log_event(media_log_event event, uint64_t value = 1);
     void schedule_media_log_summary();
     void handle_media_log_summary(const boost::system::error_code& error);
@@ -269,7 +255,6 @@ class whip_session_transport : public session_ice_udp_packet_handler,
 
    private:
     session_ice_udp_server udp_server_;
-    boost::asio::steady_timer ice_restart_timer_;
     boost::asio::steady_timer media_log_timer_;
     boost::asio::steady_timer rtcp_receiver_report_timer_;
     boost::asio::steady_timer transport_feedback_timer_;
@@ -291,9 +276,7 @@ class whip_session_transport : public session_ice_udp_packet_handler,
     std::string session_id_;
     std::string local_ice_pwd_;
     std::optional<dtls_peer_identity> dtls_identity_;
-    uint64_t ice_generation_ = 0;
     uint64_t publisher_source_generation_ = 0;
-    std::optional<pending_ice_restart> pending_ice_restart_;
 
     std::unordered_map<uint8_t, inbound_payload_type_context> inbound_payload_types_;
     std::unordered_map<uint32_t, inbound_rtcp_receiver_state> inbound_rtcp_receivers_;

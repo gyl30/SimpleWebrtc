@@ -1,7 +1,6 @@
 #ifndef SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_METRICS_H
 #define SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_METRICS_H
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -11,7 +10,6 @@ namespace webrtc
 {
 enum class trickle_ice_patch_content_kind
 {
-    kJson,
     kSdpfrag,
     kUnsupported
 };
@@ -19,7 +17,6 @@ enum class trickle_ice_patch_content_kind
 struct trickle_ice_metrics_snapshot
 {
     uint64_t patch_requests = 0;
-    uint64_t json_patch_requests = 0;
     uint64_t sdpfrag_patch_requests = 0;
     uint64_t unsupported_patch_requests = 0;
 
@@ -42,141 +39,91 @@ struct trickle_ice_metrics_snapshot
 class trickle_ice_metrics
 {
    public:
-    trickle_ice_metrics() = default;
-
-    ~trickle_ice_metrics() = default;
-
-    trickle_ice_metrics(const trickle_ice_metrics&) = delete;
-
-    trickle_ice_metrics& operator=(const trickle_ice_metrics&) = delete;
-
-    trickle_ice_metrics(trickle_ice_metrics&&) = delete;
-
-    trickle_ice_metrics& operator=(trickle_ice_metrics&&) = delete;
-
-   public:
     void record_patch_request(trickle_ice_patch_content_kind kind)
     {
-        patch_requests_.fetch_add(1, std::memory_order_relaxed);
+        ++patch_requests_;
 
         switch (kind)
         {
-            case trickle_ice_patch_content_kind::kJson:
-            {
-                json_patch_requests_.fetch_add(1, std::memory_order_relaxed);
-
-                break;
-            }
-
             case trickle_ice_patch_content_kind::kSdpfrag:
             {
-                sdpfrag_patch_requests_.fetch_add(1, std::memory_order_relaxed);
+                ++sdpfrag_patch_requests_;
 
                 break;
             }
 
             case trickle_ice_patch_content_kind::kUnsupported:
             {
-                unsupported_patch_requests_.fetch_add(1, std::memory_order_relaxed);
+                ++unsupported_patch_requests_;
 
                 break;
             }
         }
     }
 
-    void record_patch_success() { patch_success_.fetch_add(1, std::memory_order_relaxed); }
+    void record_patch_success() { ++patch_success_; }
 
-    void record_patch_failed() { patch_failed_.fetch_add(1, std::memory_order_relaxed); }
+    void record_patch_failed() { ++patch_failed_; }
 
-    void record_session_not_found() { session_not_found_.fetch_add(1, std::memory_order_relaxed); }
+    void record_session_not_found() { ++session_not_found_; }
 
-    void record_parse_failed() { parse_failed_.fetch_add(1, std::memory_order_relaxed); }
+    void record_parse_failed() { ++parse_failed_; }
 
     void record_candidate_batch(std::size_t candidate_count, std::size_t end_of_candidates_count, std::size_t candidate_bytes)
     {
-        candidates_received_.fetch_add(static_cast<uint64_t>(candidate_count), std::memory_order_relaxed);
-
-        end_of_candidates_received_.fetch_add(static_cast<uint64_t>(end_of_candidates_count), std::memory_order_relaxed);
-
-        candidate_bytes_received_.fetch_add(static_cast<uint64_t>(candidate_bytes), std::memory_order_relaxed);
+        candidates_received_ += static_cast<uint64_t>(candidate_count);
+        end_of_candidates_received_ += static_cast<uint64_t>(end_of_candidates_count);
+        candidate_bytes_received_ += static_cast<uint64_t>(candidate_bytes);
     }
 
     void record_candidate_accepted(bool end_of_candidates)
     {
-        candidates_accepted_.fetch_add(1, std::memory_order_relaxed);
+        ++candidates_accepted_;
 
         if (end_of_candidates)
         {
-            end_of_candidates_accepted_.fetch_add(1, std::memory_order_relaxed);
+            ++end_of_candidates_accepted_;
         }
     }
 
-    void record_candidate_rejected() { candidates_rejected_.fetch_add(1, std::memory_order_relaxed); }
+    void record_candidate_rejected() { ++candidates_rejected_; }
 
     [[nodiscard]]
     trickle_ice_metrics_snapshot snapshot() const
     {
         trickle_ice_metrics_snapshot result;
 
-        result.patch_requests = patch_requests_.load(std::memory_order_relaxed);
-
-        result.json_patch_requests = json_patch_requests_.load(std::memory_order_relaxed);
-
-        result.sdpfrag_patch_requests = sdpfrag_patch_requests_.load(std::memory_order_relaxed);
-
-        result.unsupported_patch_requests = unsupported_patch_requests_.load(std::memory_order_relaxed);
-
-        result.patch_success = patch_success_.load(std::memory_order_relaxed);
-
-        result.patch_failed = patch_failed_.load(std::memory_order_relaxed);
-
-        result.session_not_found = session_not_found_.load(std::memory_order_relaxed);
-
-        result.parse_failed = parse_failed_.load(std::memory_order_relaxed);
-
-        result.candidates_received = candidates_received_.load(std::memory_order_relaxed);
-
-        result.candidates_accepted = candidates_accepted_.load(std::memory_order_relaxed);
-
-        result.candidates_rejected = candidates_rejected_.load(std::memory_order_relaxed);
-
-        result.end_of_candidates_received = end_of_candidates_received_.load(std::memory_order_relaxed);
-
-        result.end_of_candidates_accepted = end_of_candidates_accepted_.load(std::memory_order_relaxed);
-
-        result.candidate_bytes_received = candidate_bytes_received_.load(std::memory_order_relaxed);
+        result.patch_requests = patch_requests_;
+        result.sdpfrag_patch_requests = sdpfrag_patch_requests_;
+        result.unsupported_patch_requests = unsupported_patch_requests_;
+        result.patch_success = patch_success_;
+        result.patch_failed = patch_failed_;
+        result.session_not_found = session_not_found_;
+        result.parse_failed = parse_failed_;
+        result.candidates_received = candidates_received_;
+        result.candidates_accepted = candidates_accepted_;
+        result.candidates_rejected = candidates_rejected_;
+        result.end_of_candidates_received = end_of_candidates_received_;
+        result.end_of_candidates_accepted = end_of_candidates_accepted_;
+        result.candidate_bytes_received = candidate_bytes_received_;
 
         return result;
     }
 
    private:
-    std::atomic<uint64_t> patch_requests_{0};
-
-    std::atomic<uint64_t> json_patch_requests_{0};
-
-    std::atomic<uint64_t> sdpfrag_patch_requests_{0};
-
-    std::atomic<uint64_t> unsupported_patch_requests_{0};
-
-    std::atomic<uint64_t> patch_success_{0};
-
-    std::atomic<uint64_t> patch_failed_{0};
-
-    std::atomic<uint64_t> session_not_found_{0};
-
-    std::atomic<uint64_t> parse_failed_{0};
-
-    std::atomic<uint64_t> candidates_received_{0};
-
-    std::atomic<uint64_t> candidates_accepted_{0};
-
-    std::atomic<uint64_t> candidates_rejected_{0};
-
-    std::atomic<uint64_t> end_of_candidates_received_{0};
-
-    std::atomic<uint64_t> end_of_candidates_accepted_{0};
-
-    std::atomic<uint64_t> candidate_bytes_received_{0};
+    uint64_t patch_requests_ = 0;
+    uint64_t sdpfrag_patch_requests_ = 0;
+    uint64_t unsupported_patch_requests_ = 0;
+    uint64_t patch_success_ = 0;
+    uint64_t patch_failed_ = 0;
+    uint64_t session_not_found_ = 0;
+    uint64_t parse_failed_ = 0;
+    uint64_t candidates_received_ = 0;
+    uint64_t candidates_accepted_ = 0;
+    uint64_t candidates_rejected_ = 0;
+    uint64_t end_of_candidates_received_ = 0;
+    uint64_t end_of_candidates_accepted_ = 0;
+    uint64_t candidate_bytes_received_ = 0;
 };
 
 inline trickle_ice_metrics& global_trickle_ice_metrics()
@@ -240,8 +187,6 @@ inline std::string trickle_ice_metrics_snapshot_to_json(const trickle_ice_metric
 
     trickle_ice_metrics_detail::append_json_uint64(output, "patch_requests", snapshot.patch_requests, first);
 
-    trickle_ice_metrics_detail::append_json_uint64(output, "json_patch_requests", snapshot.json_patch_requests, first);
-
     trickle_ice_metrics_detail::append_json_uint64(output, "sdpfrag_patch_requests", snapshot.sdpfrag_patch_requests, first);
 
     trickle_ice_metrics_detail::append_json_uint64(output, "unsupported_patch_requests", snapshot.unsupported_patch_requests, first);
@@ -282,11 +227,6 @@ inline std::string trickle_ice_metrics_snapshot_to_prometheus(const trickle_ice_
         output, "simplewebrtc_trickle_ice_patch_requests_total", "total trickle ice patch requests", "counter");
 
     trickle_ice_metrics_detail::append_metric_value(output, "simplewebrtc_trickle_ice_patch_requests_total", snapshot.patch_requests);
-
-    trickle_ice_metrics_detail::append_metric_header(
-        output, "simplewebrtc_trickle_ice_patch_json_requests_total", "total trickle ice json patch requests", "counter");
-
-    trickle_ice_metrics_detail::append_metric_value(output, "simplewebrtc_trickle_ice_patch_json_requests_total", snapshot.json_patch_requests);
 
     trickle_ice_metrics_detail::append_metric_header(
         output, "simplewebrtc_trickle_ice_patch_sdpfrag_requests_total", "total trickle ice sdp fragment patch requests", "counter");

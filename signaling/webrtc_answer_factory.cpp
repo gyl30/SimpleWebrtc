@@ -92,32 +92,6 @@ generated_sdp_answer_result webrtc_answer_factory::build_whep_answer(std::string
     return build_answer(stream_id, subscriber_offer, &publisher_offer, media_sources, local_candidate_port);
 }
 
-generated_sdp_answer_result webrtc_answer_factory::build_whip_restart_answer(std::string_view stream_id,
-                                                                             const sdp::webrtc_offer_summary& offer,
-                                                                             uint64_t sdp_session_id,
-                                                                             uint64_t sdp_session_version,
-                                                                             uint16_t local_candidate_port)
-{
-    return build_answer_with_origin(stream_id, offer, nullptr, sdp_session_id, sdp_session_version, {}, local_candidate_port);
-}
-
-generated_sdp_answer_result webrtc_answer_factory::build_whep_restart_answer(std::string_view stream_id,
-                                                                             const sdp::webrtc_offer_summary& subscriber_offer,
-                                                                             const sdp::webrtc_offer_summary& publisher_offer,
-                                                                             uint64_t sdp_session_id,
-                                                                             uint64_t sdp_session_version,
-                                                                             std::span<const sdp::sdp_answer_media_source> media_sources,
-                                                                             uint16_t local_candidate_port)
-{
-    return build_answer_with_origin(stream_id,
-                                    subscriber_offer,
-                                    &publisher_offer,
-                                    sdp_session_id,
-                                    sdp_session_version,
-                                    media_sources,
-                                    local_candidate_port);
-}
-
 generated_sdp_answer_result webrtc_answer_factory::build_answer(std::string_view stream_id,
                                                                 const sdp::webrtc_offer_summary& offer,
                                                                 const sdp::webrtc_offer_summary* whep_publisher_offer,
@@ -125,21 +99,7 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer(std::string_view
                                                                 uint16_t local_candidate_port)
 {
     const uint64_t session_id = next_session_id_.fetch_add(1, std::memory_order_relaxed);
-
     const uint64_t session_version = 1;
-
-    return build_answer_with_origin(
-        stream_id, offer, whep_publisher_offer, session_id, session_version, media_sources, local_candidate_port);
-}
-
-generated_sdp_answer_result webrtc_answer_factory::build_answer_with_origin(std::string_view stream_id,
-                                                                            const sdp::webrtc_offer_summary& offer,
-                                                                            const sdp::webrtc_offer_summary* whep_publisher_offer,
-                                                                            uint64_t sdp_session_id,
-                                                                            uint64_t sdp_session_version,
-                                                                            std::span<const sdp::sdp_answer_media_source> media_sources,
-                                                                            uint16_t local_candidate_port)
-{
     auto local_ice = generate_ice_credentials();
 
     if (!local_ice)
@@ -149,8 +109,8 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer_with_origin(std:
 
     sdp::sdp_answer_options options;
 
-    options.session_id = sdp_session_id;
-    options.session_version = sdp_session_version;
+    options.session_id = session_id;
+    options.session_version = session_version;
     options.local_ice_ufrag = local_ice->ufrag;
     options.local_ice_pwd = local_ice->pwd;
     options.local_fingerprint = local_fingerprint_;
@@ -171,8 +131,6 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer_with_origin(std:
     generated_sdp_answer answer;
     answer.sdp = std::move(answer_sdp->sdp);
     answer.local_ice = std::move(*local_ice);
-    answer.sdp_session_id = sdp_session_id;
-    answer.sdp_session_version = sdp_session_version;
     answer.accepted_mline_indexes = std::move(answer_sdp->accepted_mline_indexes);
 
     return answer;

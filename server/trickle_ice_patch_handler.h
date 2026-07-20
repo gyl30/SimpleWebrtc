@@ -2,11 +2,9 @@
 #define SIMPLE_WEBRTC_SERVER_TRICKLE_ICE_PATCH_HANDLER_H
 
 #include <cstddef>
-#include <expected>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include <boost/algorithm/string.hpp>
 
@@ -14,27 +12,13 @@
 #include "net/http.h"
 #include "ice/ice_candidate.h"
 #include "server/trickle_ice_http.h"
-#include "server/trickle_ice_json.h"
 #include "server/trickle_ice_metrics.h"
 #include "server/trickle_ice_sdpfrag.h"
 
 namespace webrtc
 {
-struct trickle_ice_patch_body
-{
-    std::vector<remote_ice_candidate> candidates;
-
-    std::string ice_ufrag;
-    std::string ice_pwd;
-
-    bool has_ice_ufrag = false;
-    bool has_ice_pwd = false;
-};
-
 namespace trickle_ice_patch_detail
 {
-inline constexpr std::string_view k_application_json = "application/json";
-
 inline constexpr std::string_view k_application_trickle_ice_sdpfrag = "application/trickle-ice-sdpfrag";
 
 inline std::string_view beast_string_view_to_std_string_view(boost::beast::string_view value) { return {value.data(), value.size()}; }
@@ -57,11 +41,6 @@ inline trickle_ice_patch_content_kind content_kind_from_request(http_request_t& 
         content_type = boost::algorithm::trim_copy(content_type.substr(0, semicolon));
     }
 
-    if (boost::algorithm::iequals(content_type, k_application_json))
-    {
-        return trickle_ice_patch_content_kind::kJson;
-    }
-
     if (boost::algorithm::iequals(content_type, k_application_trickle_ice_sdpfrag))
     {
         return trickle_ice_patch_content_kind::kSdpfrag;
@@ -74,9 +53,6 @@ inline std::string describe_content_type(http_request_t& request, trickle_ice_pa
 {
     switch (content_kind)
     {
-        case trickle_ice_patch_content_kind::kJson:
-            return std::string(k_application_json);
-
         case trickle_ice_patch_content_kind::kSdpfrag:
             return std::string(k_application_trickle_ice_sdpfrag);
 
@@ -121,46 +97,6 @@ bool remote_ice_candidate_media_is_accepted(const session_type& session, const r
     return false;
 }
 
-inline std::expected<trickle_ice_patch_body, std::string> parse_json_patch_body(std::string_view body)
-{
-    auto candidates = parse_trickle_ice_candidates(body);
-
-    if (!candidates)
-    {
-        return std::unexpected(candidates.error());
-    }
-
-    trickle_ice_patch_body parsed_body;
-
-    parsed_body.candidates = std::move(*candidates);
-
-    return parsed_body;
-}
-
-inline std::expected<trickle_ice_patch_body, std::string> parse_sdpfrag_patch_body(std::string_view body)
-{
-    auto result = parse_trickle_ice_sdpfrag_with_attributes(body);
-
-    if (!result)
-    {
-        return std::unexpected(result.error());
-    }
-
-    trickle_ice_patch_body parsed_body;
-
-    parsed_body.candidates = std::move(result->candidates);
-
-    parsed_body.ice_ufrag = std::move(result->ice_ufrag);
-
-    parsed_body.ice_pwd = std::move(result->ice_pwd);
-
-    parsed_body.has_ice_ufrag = result->has_ice_ufrag;
-
-    parsed_body.has_ice_pwd = result->has_ice_pwd;
-
-    return parsed_body;
-}
-
 inline bool remote_ice_candidate_matches(const remote_ice_candidate& left, const remote_ice_candidate& right)
 {
     return left.end_of_candidates == right.end_of_candidates && left.candidate == right.candidate && left.sdp_mid == right.sdp_mid &&
@@ -186,33 +122,6 @@ bool remote_ice_candidate_already_known(const session_type& session, const remot
     return false;
 }
 
-template <typename session_type>
-std::expected<void, std::string> validate_patch_ice_credentials(const session_type& session, const trickle_ice_patch_body& patch_body)
-{
-    if (!patch_body.has_ice_ufrag && !patch_body.has_ice_pwd)
-    {
-        return {};
-    }
-
-    if (patch_body.has_ice_ufrag != patch_body.has_ice_pwd)
-    {
-        return std::unexpected(std::string("trickle ice sdpfrag must include both ice-ufrag and ice-pwd when either is present"));
-    }
-
-    const auto& remote_offer = session.remote_offer_summary();
-
-    if (patch_body.ice_ufrag != remote_offer.ice_ufrag)
-    {
-        return std::unexpected(std::string("trickle ice sdpfrag ice-ufrag does not match session"));
-    }
-
-    if (patch_body.ice_pwd != remote_offer.ice_pwd)
-    {
-        return std::unexpected(std::string("trickle ice sdpfrag ice-pwd does not match session"));
-    }
-
-    return {};
-}
 }    // namespace trickle_ice_patch_detail
 
 template <typename session_ptr_type, typename error_response_callback, typename success_response_callback>
@@ -242,8 +151,9 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
     };
     if (content_kind == trickle_ice_patch_content_kind::kUnsupported)
     {
-        return fail(
-            415, "trickle_ice_unsupported_media_type", "unsupported media type, expected application/json or application/trickle-ice-sdpfrag");
+        return fail(415,
+                    "trickle_ice_unsupported_media_type",
+                    "unsupported media type, expected application/trickle-ice-sdpfrag");
     }
 
     if (request.req.body().size() > k_trickle_ice_max_patch_body_bytes)
@@ -264,6 +174,13 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
         return fail(404, "trickle_ice_session_not_found", session_not_found_message);
     }
 
+    const auto if_match_field = request.req[boost::beast::http::field::if_match];
+
+    if (if_match_field.empty())
+    {
+        return fail(428, "trickle_ice_precondition_required", "missing if-match header");
+    }
+
     auto precondition = validate_session_if_match(request, *session);
 
     if (!precondition)
@@ -273,9 +190,7 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
         return fail(412, "trickle_ice_precondition_failed", precondition.error());
     }
 
-    auto patch_body = content_kind == trickle_ice_patch_content_kind::kJson
-                          ? trickle_ice_patch_detail::parse_json_patch_body(request.req.body())
-                          : trickle_ice_patch_detail::parse_sdpfrag_patch_body(request.req.body());
+    auto patch_body = parse_trickle_ice_sdpfrag(request.req.body());
 
     if (!patch_body)
     {
@@ -305,14 +220,15 @@ http_response_ptr handle_trickle_ice_patch_request(http_request_t& request,
         return fail(413, "trickle_ice_too_many_candidates", "too many trickle ice candidates in one patch");
     }
 
-    auto credential_validation = trickle_ice_patch_detail::validate_patch_ice_credentials(*session, *patch_body);
+    const auto& remote_offer = session->remote_offer_summary();
+    const bool ice_restart = !patch_body->ice_ufrag.empty() &&
+                             (patch_body->ice_ufrag != remote_offer.ice_ufrag || patch_body->ice_pwd != remote_offer.ice_pwd);
 
-    if (!credential_validation)
+    if (ice_restart)
     {
-        WEBRTC_LOG_WARN(
-            "{} trickle ice sdpfrag credential validation failed session={} error={}", protocol_name, session_id, credential_validation.error());
+        WEBRTC_LOG_WARN("{} ICE restart is unsupported session={}", protocol_name, session_id);
 
-        return fail(400, "trickle_ice_credentials_mismatch", credential_validation.error());
+        return fail(422, "trickle_ice_restart_unsupported", "ICE restart is not supported");
     }
 
     std::size_t end_of_candidates_received_count = 0;

@@ -45,10 +45,6 @@ class subscriber_session
 
     [[nodiscard]] uint16_t local_udp_port() const;
 
-    [[nodiscard]] uint64_t sdp_session_id() const;
-
-    [[nodiscard]] uint64_t sdp_session_version() const;
-
     [[nodiscard]] const std::vector<remote_ice_candidate>& remote_ice_candidates() const;
 
     [[nodiscard]] bool remote_ice_completed() const;
@@ -63,8 +59,6 @@ class subscriber_session
 
    public:
     void complete_initial_setup(ice_credentials local_ice,
-                                uint64_t sdp_session_id,
-                                uint64_t sdp_session_version,
                                 std::vector<int> accepted_remote_media_mline_indexes,
                                 std::vector<sdp::sdp_answer_media_source> outbound_media_sources,
                                 whep_rtp_rewriter_target rewriter_target,
@@ -72,13 +66,6 @@ class subscriber_session
                                 std::shared_ptr<whep_session_transport> transport);
 
     void close(std::string_view reason);
-
-    void apply_remote_ice_restart(sdp::webrtc_offer_summary remote_offer_summary,
-                                  std::vector<int> accepted_remote_media_mline_indexes,
-                                  ice_credentials local_ice,
-                                  uint64_t sdp_session_id,
-                                  uint64_t sdp_session_version,
-                                  whep_rtp_rewriter_target rewriter_target);
 
     [[nodiscard]] std::expected<void, std::string> add_remote_ice_candidate(remote_ice_candidate candidate);
 
@@ -91,9 +78,6 @@ class subscriber_session
     ice_credentials local_ice_;
     udp_port_reservation_ptr local_udp_port_;
     std::shared_ptr<whep_session_transport> transport_;
-
-    uint64_t sdp_session_id_ = 0;
-    uint64_t sdp_session_version_ = 0;
 
     std::vector<remote_ice_candidate> remote_ice_candidates_;
     std::vector<int> accepted_remote_media_mline_indexes_;

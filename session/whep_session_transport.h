@@ -61,10 +61,6 @@ class whep_session_transport : public session_ice_udp_packet_handler,
                           dtls_peer_identity identity,
                           whep_rtp_rewriter_target target);
 
-    void restart_peer_context(std::string local_ice_pwd,
-                              dtls_peer_identity identity,
-                              whep_rtp_rewriter_target target);
-
     void send_rtp(uint64_t source_generation, std::span<const uint8_t> plain_rtp);
 
     void close(std::string_view reason);
@@ -75,13 +71,6 @@ class whep_session_transport : public session_ice_udp_packet_handler,
         unchanged,
         selected_fresh,
         association_rebound,
-    };
-
-    struct pending_ice_restart
-    {
-        uint64_t generation = 0;
-        boost::asio::ip::udp::endpoint association_endpoint;
-        dtls_peer_identity association_identity;
     };
 
     struct keyframe_request_context
@@ -252,8 +241,7 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     void handle_publisher_source(media_publisher_source_update update);
     void handle_publisher_sender_timing(media_publisher_sender_timing timing);
     void handle_publisher_source_bye(media_publisher_source_bye bye);
-    void configure_outbound_rtcp_senders_locked(const whep_rtp_rewriter_target& target,
-                                                 bool preserve_runtime_state);
+    void configure_outbound_rtcp_senders_locked(const whep_rtp_rewriter_target& target);
     void clear_publisher_sender_timings_locked();
     void refresh_sender_timing_locked(uint32_t source_ssrc);
     void record_outbound_rtp_sent_locked(const whep_rtp_rewrite_result& rewritten);
@@ -287,8 +275,6 @@ class whep_session_transport : public session_ice_udp_packet_handler,
 
     void clear_peer_state();
     void clear_peer_state_locked();
-    void schedule_ice_restart_timeout(uint64_t generation);
-    void handle_ice_restart_timeout(uint64_t generation);
     void record_media_log_event(media_log_event event, uint64_t value = 1);
     void schedule_media_log_summary();
     void schedule_rtcp_sender_reports(bool initial, bool packet_sent);
@@ -307,7 +293,6 @@ class whep_session_transport : public session_ice_udp_packet_handler,
 
    private:
     session_ice_udp_server udp_server_;
-    boost::asio::steady_timer ice_restart_timer_;
     boost::asio::steady_timer media_log_timer_;
     boost::asio::steady_timer rtcp_sender_report_timer_;
     std::chrono::steady_clock::time_point media_log_interval_started_at_;
@@ -324,8 +309,6 @@ class whep_session_transport : public session_ice_udp_packet_handler,
     std::string session_id_;
     std::string local_ice_pwd_;
     std::optional<dtls_peer_identity> dtls_identity_;
-    uint64_t ice_generation_ = 0;
-    std::optional<pending_ice_restart> pending_ice_restart_;
 
     std::mutex rtp_rewriter_mutex_;
     whep_rtp_rewriter_target rtp_rewriter_target_;

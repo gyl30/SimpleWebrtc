@@ -45,12 +45,6 @@ constexpr std::string_view k_whep_runtime_offer_filter_failed_error = "whep_runt
 constexpr std::string_view k_whep_create_session_failed_error = "whep_create_session_failed";
 constexpr std::string_view k_whep_session_not_found_error = "whep_session_not_found";
 constexpr std::string_view k_whep_delete_session_failed_error = "whep_delete_session_failed";
-constexpr std::string_view k_whep_ice_restart_incompatible_offer_error = "whep_ice_restart_incompatible_offer";
-constexpr std::string_view k_whep_ice_restart_invalid_sdp_offer_error = "whep_ice_restart_invalid_sdp_offer";
-constexpr std::string_view k_whep_ice_restart_invalid_webrtc_offer_error = "whep_ice_restart_invalid_webrtc_offer";
-constexpr std::string_view k_whep_ice_restart_invalid_offer_error = "whep_ice_restart_invalid_offer";
-constexpr std::string_view k_whep_ice_restart_sdp_answer_failed_error = "whep_ice_restart_sdp_answer_failed";
-constexpr std::string_view k_whep_ice_restart_runtime_offer_filter_failed_error = "whep_ice_restart_runtime_offer_filter_failed";
 
 std::string make_prefixed_error(std::string_view prefix, std::string_view error)
 {
@@ -63,49 +57,6 @@ std::string make_prefixed_error(std::string_view prefix, std::string_view error)
     message.append(error);
 
     return message;
-}
-constexpr std::string_view k_restart_application_sdp = "application/sdp";
-
-bool is_application_sdp_restart_request(http_request_t& request)
-{
-    const auto content_type_field = request.req[http::field::content_type];
-
-    const std::string_view content_type(content_type_field.data(), content_type_field.size());
-
-    if (content_type.empty())
-    {
-        return false;
-    }
-
-    return trickle_ice_http_detail::content_type_matches(content_type, k_restart_application_sdp);
-}
-http_response_ptr validate_sdp_restart_body(http_request_t& request,
-                                            std::string_view protocol_name,
-                                            std::string_view session_id,
-                                            std::string_view empty_error_code,
-                                            std::string_view too_large_error_code)
-{
-    const std::string& body = request.req.body();
-
-    if (body.empty())
-    {
-        WEBRTC_LOG_WARN("{} SDP restart body empty session={}", protocol_name, session_id);
-
-        return make_json_http_error_response(request, 400, empty_error_code, "sdp restart body is empty");
-    }
-
-    if (body.size() > k_trickle_ice_max_patch_body_bytes)
-    {
-        WEBRTC_LOG_WARN("{} SDP restart body too large session={} body_size={} limit={}",
-                        protocol_name,
-                        session_id,
-                        body.size(),
-                        k_trickle_ice_max_patch_body_bytes);
-
-        return make_json_http_error_response(request, 413, too_large_error_code, "sdp restart body is too large");
-    }
-
-    return nullptr;
 }
 constexpr std::string_view k_whep_reconnect_session_header = "WHEP-Reconnect-Session";
 
@@ -497,8 +448,6 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     }
 
     session->complete_initial_setup(std::move(generated_answer->local_ice),
-                                    generated_answer->sdp_session_id,
-                                    generated_answer->sdp_session_version,
                                     std::move(generated_answer->accepted_mline_indexes),
                                     std::move(accepted_outbound_media_sources),
                                     std::move(rewriter_target),
@@ -524,168 +473,6 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
     set_session_resource_headers(response, *session);
     return response;
 }
-http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
-                                                  std::string_view session_id,
-                                                  const std::shared_ptr<subscriber_session>& session)
-{
-    if (session == nullptr)
-    {
-        const auto removed_session_kind = registry_->find_removed_session_kind(session_id);
-
-        if (removed_session_kind.has_value() && *removed_session_kind == stream_session_kind::subscriber)
-        {
-            return json_error_response(request, 410, "whep_session_gone", "subscriber session already deleted");
-        }
-
-        return json_error_response(request, 404, k_whep_session_not_found_error, "subscriber session not found");
-    }
-
-    auto precondition = validate_session_if_match(request, *session);
-    if (!precondition)
-    {
-        WEBRTC_LOG_WARN("WHEP sdp restart precondition failed session={} error={}", session_id, precondition.error());
-
-        return json_error_response(request, 412, k_whep_precondition_failed_error, precondition.error());
-    }
-
-    auto body_validation_error =
-        validate_sdp_restart_body(request, "WHEP", session_id, "whep_sdp_restart_body_empty", "whep_sdp_restart_body_too_large");
-
-    if (body_validation_error != nullptr)
-    {
-        return body_validation_error;
-    }
-
-    auto publisher = registry_->find_publisher_by_stream_id(session->stream_id());
-
-    if (publisher == nullptr)
-    {
-        WEBRTC_LOG_WARN("WHEP SDP ICE restart failed session={} stream={} publisher not found", session_id, session->stream_id());
-
-        return json_error_response(request, 404, k_whep_publisher_not_found_error, "publisher not found");
-    }
-
-    const std::string& offer = request.req.body();
-    auto description = sdp::parse_session_description(offer);
-
-    if (!description)
-    {
-        WEBRTC_LOG_WARN("WHEP parse SDP restart offer failed session={} error={}", session_id, description.error());
-
-        return json_error_response(
-            request, 400, k_whep_ice_restart_invalid_sdp_offer_error, make_prefixed_error("invalid sdp offer: ", description.error()));
-    }
-    auto offer_summary = sdp::extract_webrtc_offer_summary(*description);
-
-    if (!offer_summary)
-    {
-        WEBRTC_LOG_WARN("WHEP extract SDP restart offer summary failed session={} error={}", session_id, offer_summary.error());
-
-        return json_error_response(
-            request, 400, k_whep_ice_restart_invalid_webrtc_offer_error, make_prefixed_error("invalid webrtc offer: ", offer_summary.error()));
-    }
-    auto validation_result = sdp::validate_whep_offer(*offer_summary);
-
-    if (!validation_result)
-    {
-        WEBRTC_LOG_WARN("WHEP validate SDP restart offer failed session={} error={}", session_id, validation_result.error());
-
-        return json_error_response(
-            request, 400, k_whep_ice_restart_invalid_offer_error, make_prefixed_error("invalid whep offer: ", validation_result.error()));
-    }
-    if (!sdp::offer_has_ice_restart(session->remote_offer_summary(), *offer_summary))
-    {
-        WEBRTC_LOG_WARN("WHEP SDP patch without ICE restart session={} previous={} next={}",
-                        session_id,
-                        sdp::offer_ice_credentials_to_string(session->remote_offer_summary()),
-                        sdp::offer_ice_credentials_to_string(*offer_summary));
-
-        return json_error_response(request, 400, "sdp patch does not contain ice restart");
-    }
-
-    const uint64_t next_sdp_session_version = session->sdp_session_version() + 1U;
-
-    auto answer = answer_factory_->build_whep_restart_answer(session->stream_id(),
-                                                             *offer_summary,
-                                                             publisher->remote_offer_summary(),
-                                                             session->sdp_session_id(),
-                                                             next_sdp_session_version,
-                                                             session->outbound_media_sources(),
-                                                             session->local_udp_port());
-    if (!answer)
-    {
-        WEBRTC_LOG_WARN("WHEP build SDP restart answer failed session={} error={}", session_id, answer.error());
-
-        return json_error_response(
-            request, 400, k_whep_ice_restart_sdp_answer_failed_error, make_prefixed_error("cannot build sdp answer: ", answer.error()));
-    }
-
-    auto runtime_offer = sdp::make_offer_summary(*offer_summary, answer->accepted_mline_indexes);
-    if (!runtime_offer)
-    {
-        WEBRTC_LOG_WARN("WHEP runtime restart offer summary failed session={} error={}", session_id, runtime_offer.error());
-
-        return json_error_response(request,
-                                   400,
-                                   k_whep_ice_restart_runtime_offer_filter_failed_error,
-                                   make_prefixed_error("failed to build runtime subscriber offer summary: ", runtime_offer.error()));
-    }
-    auto restart_compatibility = sdp::validate_ice_restart_offer_compatibility_ignoring_header_extensions(
-        session->remote_offer_summary(), *runtime_offer);
-
-    if (!restart_compatibility)
-    {
-        WEBRTC_LOG_WARN("WHEP SDP ICE restart incompatible offer session={} error={}", session_id, restart_compatibility.error());
-        return json_error_response(request,
-                                   409,
-                                   k_whep_ice_restart_incompatible_offer_error,
-                                   make_prefixed_error("invalid ice restart offer: ", restart_compatibility.error()));
-    }
-    whep_rtp_rewriter_target rewriter_target{
-        .subscriber_offer = *offer_summary,
-        .accepted_mline_indexes = answer->accepted_mline_indexes,
-        .accepted_media_sources = session->outbound_media_sources(),
-    };
-
-    auto rewriter_config =
-        make_whep_rtp_rewriter_config(publisher->session_id(), publisher->remote_offer_summary(), rewriter_target);
-
-    if (!rewriter_config)
-    {
-        WEBRTC_LOG_WARN("WHEP rebuild RTP rewrite mapping failed session={} publisher_session={} error={}",
-                        session_id,
-                        publisher->session_id(),
-                        rewriter_config.error());
-        return json_error_response(request,
-                                   409,
-                                   k_whep_ice_restart_incompatible_offer_error,
-                                   make_prefixed_error("invalid ice restart rtp mapping: ", rewriter_config.error()));
-    }
-
-    session->apply_remote_ice_restart(std::move(*runtime_offer),
-                                      std::move(answer->accepted_mline_indexes),
-                                      std::move(answer->local_ice),
-                                      answer->sdp_session_id,
-                                      answer->sdp_session_version,
-                                      std::move(rewriter_target));
-
-    WEBRTC_LOG_INFO(
-        "WHEP SDP ICE restart accepted stream={} session={} rtp_session=preserved offer_size={} answer_size={} accepted_media_count={} "
-        "accepted_mline_count={} outbound_media_source_count={}",
-        session->stream_id(),
-        session->session_id(),
-        offer.size(),
-        answer->sdp.size(),
-        session->remote_offer_summary().media.size(),
-        session->accepted_remote_media_mline_indexes().size(),
-        session->outbound_media_sources().size());
-    auto response = make_sdp_http_response(request, 200, answer->sdp);
-
-    set_session_resource_headers(response, *session);
-
-    return response;
-}
-
 http_response_ptr whep_handler::patch_session(http_request_t& request, std::string_view session_id)
 {
     auto session = registry_->find_subscriber_by_session_id(session_id);
@@ -698,11 +485,6 @@ http_response_ptr whep_handler::patch_session(http_request_t& request, std::stri
         {
             return json_error_response(request, 410, "whep_session_gone", "subscriber session already deleted");
         }
-    }
-
-    if (is_application_sdp_restart_request(request))
-    {
-        return patch_sdp_restart(request, session_id, session);
     }
 
     return handle_trickle_ice_patch_request(
@@ -727,10 +509,9 @@ http_response_ptr whep_handler::patch_session(http_request_t& request, std::stri
         },
         [&request](const auto& updated_session) -> http_response_ptr
         {
+            (void)updated_session;
             auto response = create_response(request, 204, "");
             add_http_common_headers(response);
-
-            set_session_resource_headers(response, updated_session);
 
             return response;
         });
@@ -753,14 +534,6 @@ http_response_ptr whep_handler::delete_session(http_request_t& request, std::str
 
         return json_error_response(request, 404, k_whep_session_not_found_error, "subscriber session not found");
     }
-    auto precondition = validate_session_if_match(request, *session);
-    if (!precondition)
-    {
-        WEBRTC_LOG_WARN("WHEP delete session precondition failed session={} error={}", session_id, precondition.error());
-
-        return json_error_response(request, 412, k_whep_precondition_failed_error, precondition.error());
-    }
-
     auto result = registry_->remove_subscriber_session(session_id);
     if (!result)
     {

@@ -37,7 +37,6 @@ namespace webrtc
 namespace
 {
 using namespace std::chrono_literals;
-constexpr auto k_ice_restart_timeout = 30s;
 constexpr auto k_media_log_interval = 5s;
 constexpr auto k_transport_feedback_interval = 100ms;
 constexpr std::size_t k_maximum_transport_feedback_datagrams_per_interval = 8;
@@ -131,7 +130,6 @@ whip_session_transport::whip_session_transport(boost::asio::io_context& io_conte
                                                std::uint16_t dtls_ip_mtu,
                                                std::shared_ptr<media_fanout_router> media_fanout_router)
     : udp_server_(io_context, std::move(bind_host)),
-      ice_restart_timer_(io_context),
       media_log_timer_(io_context),
       rtcp_receiver_report_timer_(io_context),
       transport_feedback_timer_(io_context),
@@ -162,7 +160,6 @@ void whip_session_transport::close(std::string_view reason)
         transport_feedback_timer_started_ = false;
         started_ = false;
         transport_feedback_timer_.cancel();
-        ice_restart_timer_.cancel();
         send_rtcp_bye_locked(reason);
     }
 
@@ -1886,68 +1883,12 @@ void whip_session_transport::set_peer_context(
         configure_remote_media_locked(remote_offer,
                                       accepted_remote_media_mline_indexes);
         dtls_identity_ = std::move(identity);
-        ++ice_generation_;
         schedule_feedback = started_ && transport_feedback_enabled_;
     }
 
     if (schedule_feedback)
     {
         schedule_transport_feedback(true);
-    }
-}
-
-void whip_session_transport::restart_peer_context(
-    std::string local_ice_pwd,
-    dtls_peer_identity identity,
-    const sdp::webrtc_offer_summary& remote_offer,
-    std::span<const int> accepted_remote_media_mline_indexes)
-{
-    uint64_t generation = 0;
-    bool has_pending_association = false;
-
-    {
-        std::lock_guard lock(peer_mutex_);
-
-        std::optional<boost::asio::ip::udp::endpoint> association_endpoint;
-        std::optional<dtls_peer_identity> association_identity;
-
-        if (pending_ice_restart_.has_value())
-        {
-            association_endpoint = pending_ice_restart_->association_endpoint;
-            association_identity = pending_ice_restart_->association_identity;
-        }
-        else if (selected_remote_endpoint_.has_value() && dtls_identity_.has_value())
-        {
-            association_endpoint = selected_remote_endpoint_;
-            association_identity = dtls_identity_;
-        }
-
-        selected_remote_endpoint_.reset();
-        local_ice_pwd_ = std::move(local_ice_pwd);
-        configure_remote_media_locked(remote_offer, accepted_remote_media_mline_indexes);
-        dtls_identity_ = std::move(identity);
-        generation = ++ice_generation_;
-
-        if (association_endpoint.has_value() && association_identity.has_value())
-        {
-            pending_ice_restart_ = pending_ice_restart{
-                .generation = generation,
-                .association_endpoint = *association_endpoint,
-                .association_identity = std::move(*association_identity),
-            };
-            has_pending_association = true;
-        }
-        else
-        {
-            pending_ice_restart_.reset();
-        }
-    }
-
-    ice_restart_timer_.cancel();
-
-    if (has_pending_association)
-    {
-        schedule_ice_restart_timeout(generation);
     }
 }
 
@@ -2083,15 +2024,6 @@ void whip_session_transport::clear_peer_state()
 
 void whip_session_transport::clear_peer_state_locked()
 {
-    ice_restart_timer_.cancel();
-
-    std::optional<boost::asio::ip::udp::endpoint> pending_endpoint;
-
-    if (pending_ice_restart_.has_value())
-    {
-        pending_endpoint = pending_ice_restart_->association_endpoint;
-    }
-
     if (selected_remote_endpoint_.has_value())
     {
         const std::string remote_address = format_udp_endpoint(*selected_remote_endpoint_);
@@ -2099,57 +2031,7 @@ void whip_session_transport::clear_peer_state_locked()
         dtls_transport_->forget_peer(remote_address);
     }
 
-    if (pending_endpoint.has_value() &&
-        (!selected_remote_endpoint_.has_value() || *pending_endpoint != *selected_remote_endpoint_))
-    {
-        const std::string remote_address = format_udp_endpoint(*pending_endpoint);
-        srtp_transport_->forget_peer(remote_address);
-        dtls_transport_->forget_peer(remote_address);
-    }
-
     selected_remote_endpoint_.reset();
-    pending_ice_restart_.reset();
-}
-
-void whip_session_transport::schedule_ice_restart_timeout(uint64_t generation)
-{
-    ice_restart_timer_.expires_after(k_ice_restart_timeout);
-    const std::weak_ptr<whip_session_transport> weak_transport = weak_from_this();
-
-    ice_restart_timer_.async_wait(
-        [weak_transport, generation](const boost::system::error_code& error)
-        {
-            if (error == boost::asio::error::operation_aborted)
-            {
-                return;
-            }
-
-            if (const auto transport = weak_transport.lock())
-            {
-                transport->handle_ice_restart_timeout(generation);
-            }
-        });
-}
-
-void whip_session_transport::handle_ice_restart_timeout(uint64_t generation)
-{
-    std::lock_guard lock(peer_mutex_);
-
-    if (!pending_ice_restart_.has_value() || pending_ice_restart_->generation != generation)
-    {
-        return;
-    }
-
-    const std::string remote_address = format_udp_endpoint(pending_ice_restart_->association_endpoint);
-    srtp_transport_->forget_peer(remote_address);
-    dtls_transport_->forget_peer(remote_address);
-    pending_ice_restart_.reset();
-
-    WEBRTC_LOG_WARN("WHIP ICE restart timed out stream={} session={} ice_generation={} association_remote={}",
-                    stream_id_,
-                    session_id_,
-                    generation,
-                    remote_address);
 }
 
 whip_session_transport::peer_nomination_result whip_session_transport::nominate_remote_endpoint(
@@ -2162,8 +2044,7 @@ whip_session_transport::peer_nomination_result whip_session_transport::nominate_
         return std::unexpected(std::string("WHIP DTLS identity is unavailable"));
     }
 
-    if (!pending_ice_restart_.has_value() && selected_remote_endpoint_.has_value() &&
-        *selected_remote_endpoint_ == remote_endpoint)
+    if (selected_remote_endpoint_.has_value() && *selected_remote_endpoint_ == remote_endpoint)
     {
         return peer_nomination_state::unchanged;
     }
@@ -2171,12 +2052,7 @@ whip_session_transport::peer_nomination_result whip_session_transport::nominate_
     std::optional<boost::asio::ip::udp::endpoint> association_endpoint;
     std::optional<dtls_peer_identity> association_identity;
 
-    if (pending_ice_restart_.has_value())
-    {
-        association_endpoint = pending_ice_restart_->association_endpoint;
-        association_identity = pending_ice_restart_->association_identity;
-    }
-    else if (selected_remote_endpoint_.has_value())
+    if (selected_remote_endpoint_.has_value())
     {
         association_endpoint = selected_remote_endpoint_;
         association_identity = dtls_identity_;
@@ -2205,13 +2081,10 @@ whip_session_transport::peer_nomination_result whip_session_transport::nominate_
     }
 
     selected_remote_endpoint_ = remote_endpoint;
-    pending_ice_restart_.reset();
-    ice_restart_timer_.cancel();
 
-    WEBRTC_LOG_INFO("WHIP ICE endpoint nominated stream={} session={} ice_generation={} remote={} association_reused={}",
+    WEBRTC_LOG_INFO("WHIP ICE endpoint nominated stream={} session={} remote={} association_reused={}",
                     stream_id_,
                     session_id_,
-                    ice_generation_,
                     format_udp_endpoint(remote_endpoint),
                     state == peer_nomination_state::association_rebound ? 1 : 0);
 
