@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -645,8 +644,6 @@ struct dtls_transport::impl
             return;
         }
 
-        std::lock_guard lock(mutex_);
-
         const std::string endpoint_key(remote_endpoint);
         const auto existing = peers_by_endpoint_.find(endpoint_key);
 
@@ -708,7 +705,6 @@ struct dtls_transport::impl
             return;
         }
 
-        std::lock_guard lock(mutex_);
         peers_by_endpoint_.erase(std::string(remote_endpoint));
     }
 
@@ -735,8 +731,6 @@ struct dtls_transport::impl
         {
             return std::unexpected(udp_payload_mtu.error());
         }
-
-        std::lock_guard lock(mutex_);
 
         const std::string previous_key(previous_remote_endpoint);
         const std::string next_key(next_remote_endpoint);
@@ -835,9 +829,7 @@ struct dtls_transport::impl
             return packets;
         }
 
-        std::lock_guard lock(mutex_);
-
-        auto* peer = find_peer_locked(remote_endpoint);
+        auto* peer = find_peer(remote_endpoint);
 
         if (peer == nullptr)
         {
@@ -867,7 +859,7 @@ struct dtls_transport::impl
             error.append(" new=");
             error.append(dtls_network_family_to_string(network_family));
 
-            mark_handshake_failed_locked(*peer, error, remote_endpoint);
+            mark_handshake_failed(*peer, error, remote_endpoint);
 
             return std::unexpected(std::move(error));
         }
@@ -880,7 +872,7 @@ struct dtls_transport::impl
             {
                 const std::string error = udp_payload_mtu_result.error();
 
-                mark_handshake_failed_locked(*peer, error, remote_endpoint);
+                mark_handshake_failed(*peer, error, remote_endpoint);
 
                 return std::unexpected(error);
             }
@@ -894,7 +886,7 @@ struct dtls_transport::impl
             {
                 const std::string error = ssl_result.error();
 
-                mark_handshake_failed_locked(*peer, error, remote_endpoint);
+                mark_handshake_failed(*peer, error, remote_endpoint);
 
                 return std::unexpected(error);
             }
@@ -918,12 +910,12 @@ struct dtls_transport::impl
         {
             const std::string error = write_result.error();
 
-            mark_handshake_failed_locked(*peer, error, remote_endpoint);
+            mark_handshake_failed(*peer, error, remote_endpoint);
 
             return std::unexpected(error);
         }
 
-        log_packet_locked(*peer, data, remote_endpoint, *header);
+        log_packet(*peer, data, remote_endpoint, *header);
 
         auto handshake_result = run_dtls_handshake(peer->ssl.get(), ip_mtu_, peer->udp_payload_mtu, packets);
 
@@ -931,12 +923,12 @@ struct dtls_transport::impl
         {
             const std::string error = handshake_result.error();
 
-            mark_handshake_failed_locked(*peer, error, remote_endpoint);
+            mark_handshake_failed(*peer, error, remote_endpoint);
 
             return std::unexpected(error);
         }
 
-        auto complete_result = complete_handshake_if_ready_locked(*peer, remote_endpoint);
+        auto complete_result = complete_handshake_if_ready(*peer, remote_endpoint);
 
         if (!complete_result)
         {
@@ -975,9 +967,7 @@ struct dtls_transport::impl
 
     std::optional<srtp_keying_material> get_srtp_keying_material(std::string_view remote_endpoint, const dtls_peer_identity& expected_identity) const
     {
-        std::lock_guard lock(mutex_);
-
-        const auto* peer = find_peer_locked_const(remote_endpoint);
+        const auto* peer = find_peer(remote_endpoint);
 
         if (peer == nullptr || !same_srtp_generation(peer->identity, expected_identity))
         {
@@ -988,9 +978,7 @@ struct dtls_transport::impl
     }
     std::optional<dtls_peer_identity> get_peer_identity(std::string_view remote_endpoint) const
     {
-        std::lock_guard lock(mutex_);
-
-        const auto* peer = find_peer_locked_const(remote_endpoint);
+        const auto* peer = find_peer(remote_endpoint);
 
         if (peer == nullptr)
         {
@@ -1000,7 +988,7 @@ struct dtls_transport::impl
         return peer->identity;
     }
 
-    dtls_peer_state* find_peer_locked(std::string_view remote_endpoint)
+    dtls_peer_state* find_peer(std::string_view remote_endpoint)
     {
         const auto iterator = peers_by_endpoint_.find(std::string(remote_endpoint));
 
@@ -1012,7 +1000,7 @@ struct dtls_transport::impl
         return &iterator->second;
     }
 
-    const dtls_peer_state* find_peer_locked_const(std::string_view remote_endpoint) const
+    const dtls_peer_state* find_peer(std::string_view remote_endpoint) const
     {
         const auto iterator = peers_by_endpoint_.find(std::string(remote_endpoint));
 
@@ -1024,7 +1012,7 @@ struct dtls_transport::impl
         return &iterator->second;
     }
 
-    void mark_handshake_failed_locked(dtls_peer_state& peer, std::string error, std::string_view remote_endpoint)
+    void mark_handshake_failed(dtls_peer_state& peer, std::string error, std::string_view remote_endpoint)
     {
         if (error.empty())
         {
@@ -1045,7 +1033,7 @@ struct dtls_transport::impl
         peer.ssl.reset();
     }
 
-    std::expected<void, std::string> verify_remote_certificate_locked(dtls_peer_state& peer, std::string_view remote_endpoint)
+    std::expected<void, std::string> verify_remote_certificate(dtls_peer_state& peer, std::string_view remote_endpoint)
     {
         if (peer.ssl == nullptr)
         {
@@ -1075,7 +1063,7 @@ struct dtls_transport::impl
         return {};
     }
 
-    std::expected<void, std::string> complete_handshake_if_ready_locked(dtls_peer_state& peer, std::string_view remote_endpoint)
+    std::expected<void, std::string> complete_handshake_if_ready(dtls_peer_state& peer, std::string_view remote_endpoint)
     {
         if (peer.ssl == nullptr)
         {
@@ -1092,13 +1080,13 @@ struct dtls_transport::impl
             return {};
         }
 
-        auto fingerprint_result = verify_remote_certificate_locked(peer, remote_endpoint);
+        auto fingerprint_result = verify_remote_certificate(peer, remote_endpoint);
 
         if (!fingerprint_result)
         {
             const std::string error = fingerprint_result.error();
 
-            mark_handshake_failed_locked(peer, error, remote_endpoint);
+            mark_handshake_failed(peer, error, remote_endpoint);
 
             return std::unexpected(error);
         }
@@ -1109,7 +1097,7 @@ struct dtls_transport::impl
         {
             const std::string error = material.error();
 
-            mark_handshake_failed_locked(peer, error, remote_endpoint);
+            mark_handshake_failed(peer, error, remote_endpoint);
 
             return std::unexpected(error);
         }
@@ -1135,7 +1123,7 @@ struct dtls_transport::impl
         return {};
     }
 
-    void log_packet_locked(dtls_peer_state& peer, std::span<const uint8_t> data, std::string_view remote_endpoint, const dtls_record_header& header)
+    void log_packet(dtls_peer_state& peer, std::span<const uint8_t> data, std::string_view remote_endpoint, const dtls_record_header& header)
     {
         if (header.content_type == dtls_record_content_type::handshake)
         {
@@ -1182,8 +1170,6 @@ struct dtls_transport::impl
     std::shared_ptr<dtls_context> context_;
 
     std::uint16_t ip_mtu_ = k_default_dtls_ip_mtu;
-
-    mutable std::mutex mutex_;
 
     std::unordered_map<std::string, dtls_peer_state> peers_by_endpoint_;
 };

@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -145,7 +144,7 @@ struct srtp_transport::impl
         bind_peer_identity(peer, identity);
     }
 
-    std::expected<srtp_peer_state*, std::string> find_ready_peer_locked(std::string_view remote_endpoint, std::string& ignored_reason)
+    std::expected<srtp_peer_state*, std::string> find_ready_peer(std::string_view remote_endpoint, std::string& ignored_reason)
     {
         if (dtls_transport_ == nullptr)
         {
@@ -188,7 +187,7 @@ struct srtp_transport::impl
             bind_peer_identity(peer, *identity);
         }
 
-        auto ready_result = ensure_sessions_ready_locked(peer, remote_endpoint, *identity);
+        auto ready_result = ensure_sessions_ready(peer, remote_endpoint, *identity);
 
         if (!ready_result)
         {
@@ -211,7 +210,6 @@ struct srtp_transport::impl
             return;
         }
 
-        std::lock_guard lock(mutex_);
         peers_by_endpoint_.erase(std::string(remote_endpoint));
     }
 
@@ -223,8 +221,6 @@ struct srtp_transport::impl
         {
             return std::unexpected("srtp peer rebind endpoint is empty");
         }
-
-        std::lock_guard lock(mutex_);
 
         const std::string previous_key(previous_remote_endpoint);
         const std::string next_key(next_remote_endpoint);
@@ -287,9 +283,8 @@ struct srtp_transport::impl
             return false;
         }
 
-        std::lock_guard lock(mutex_);
         std::string ignored_reason;
-        auto peer_result = find_ready_peer_locked(remote_endpoint, ignored_reason);
+        auto peer_result = find_ready_peer(remote_endpoint, ignored_reason);
 
         if (!peer_result)
         {
@@ -308,10 +303,8 @@ struct srtp_transport::impl
             return make_ignored_result(kind, "packet is not rtp or rtcp");
         }
 
-        std::lock_guard lock(mutex_);
-
         std::string ignored_reason;
-        auto peer_result = find_ready_peer_locked(remote_endpoint, ignored_reason);
+        auto peer_result = find_ready_peer(remote_endpoint, ignored_reason);
 
         if (!peer_result)
         {
@@ -404,10 +397,8 @@ struct srtp_transport::impl
             return make_ignored_result(kind, "plain packet is empty");
         }
 
-        std::lock_guard lock(mutex_);
-
         std::string ignored_reason;
-        auto peer_result = find_ready_peer_locked(remote_endpoint, ignored_reason);
+        auto peer_result = find_ready_peer(remote_endpoint, ignored_reason);
 
         if (!peer_result)
         {
@@ -453,9 +444,9 @@ struct srtp_transport::impl
         return make_protected_result(kind, std::move(packet));
     }
 
-    std::expected<bool, std::string> ensure_sessions_ready_locked(srtp_peer_state& peer,
-                                                                  std::string_view remote_endpoint,
-                                                                  const dtls_peer_identity& identity)
+    std::expected<bool, std::string> ensure_sessions_ready(srtp_peer_state& peer,
+                                                           std::string_view remote_endpoint,
+                                                           const dtls_peer_identity& identity)
     {
         const bool identity_matches = peer_identity_matches(peer, identity);
 
@@ -522,7 +513,6 @@ struct srtp_transport::impl
         return true;
     }
     std::shared_ptr<dtls_transport> dtls_transport_;
-    mutable std::mutex mutex_;
     std::unordered_map<std::string, srtp_peer_state> peers_by_endpoint_;
 };
 

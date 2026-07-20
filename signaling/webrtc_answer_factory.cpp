@@ -97,7 +97,7 @@ generated_sdp_answer_result webrtc_answer_factory::build_answer(std::string_view
                                                                 std::span<const sdp::sdp_answer_media_source> media_sources,
                                                                 uint16_t local_candidate_port)
 {
-    const uint64_t session_id = next_session_id_.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t session_id = next_session_id_++;
     const uint64_t session_version = 1;
     auto local_ice = generate_ice_credentials();
 

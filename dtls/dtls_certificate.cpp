@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -256,25 +255,7 @@ dtls_certificate_result generate_dtls_certificate()
 
 dtls_certificate_result get_process_dtls_certificate()
 {
-    static std::mutex mutex;
-    static std::shared_ptr<dtls_certificate> certificate;
-
-    std::lock_guard lock(mutex);
-
-    if (certificate != nullptr)
-    {
-        return certificate;
-    }
-
-    auto generated = generate_dtls_certificate();
-
-    if (!generated)
-    {
-        return std::unexpected(generated.error());
-    }
-
-    certificate = std::move(*generated);
-
+    static const dtls_certificate_result certificate = generate_dtls_certificate();
     return certificate;
 }
 }    // namespace webrtc

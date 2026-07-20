@@ -1,7 +1,6 @@
 #ifndef SIMPLE_WEBRTC_SIGNALING_WEBRTC_ANSWER_FACTORY_H
 #define SIMPLE_WEBRTC_SIGNALING_WEBRTC_ANSWER_FACTORY_H
 
-#include <atomic>
 #include <cstdint>
 #include <expected>
 #include <span>
@@ -68,7 +67,7 @@ class webrtc_answer_factory
 
     std::vector<std::string> ice_candidate_addresses_;
 
-    std::atomic<uint64_t> next_session_id_;
+    uint64_t next_session_id_;
 };
 }    // namespace webrtc
 

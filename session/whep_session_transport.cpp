@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -120,19 +119,15 @@ whep_session_transport::~whep_session_transport() { close("transport_destroyed")
 
 void whep_session_transport::close(std::string_view reason)
 {
+    if (closed_)
     {
-        std::unique_lock peer_lock(peer_mutex_);
-
-        if (closed_)
-        {
-            return;
-        }
-
-        closed_ = true;
-        media_log_timer_.cancel();
-        rtcp_sender_report_timer_.cancel();
-        send_rtcp_bye_locked(reason);
+        return;
     }
+
+    closed_ = true;
+    media_log_timer_.cancel();
+    rtcp_sender_report_timer_.cancel();
+    send_rtcp_bye(reason);
 
     if (media_log_interval_started_at_ != std::chrono::steady_clock::time_point{})
     {
@@ -196,7 +191,6 @@ void whep_session_transport::handle_media_log_summary(const boost::system::error
 
 rtcp_interval_input whep_session_transport::make_rtcp_interval_input()
 {
-    std::lock_guard rtp_lock(rtp_rewriter_mutex_);
     bool local_sender_active = false;
 
     for (const auto& [target_ssrc, sender] : outbound_rtcp_senders_)
@@ -221,12 +215,9 @@ void whep_session_transport::schedule_rtcp_sender_reports(bool initial, bool pac
     std::chrono::steady_clock::time_point deadline;
     rtcp_interval_snapshot snapshot;
 
-    {
-        std::lock_guard interval_lock(rtcp_interval_mutex_);
-        deadline =
-            initial ? rtcp_interval_scheduler_.schedule_initial(now, input) : rtcp_interval_scheduler_.schedule_after_fire(now, input, packet_sent);
-        snapshot = rtcp_interval_scheduler_.snapshot();
-    }
+    deadline =
+        initial ? rtcp_interval_scheduler_.schedule_initial(now, input) : rtcp_interval_scheduler_.schedule_after_fire(now, input, packet_sent);
+    snapshot = rtcp_interval_scheduler_.snapshot();
 
     rtcp_sender_report_timer_.expires_at(deadline);
     const std::weak_ptr<whep_session_transport> weak_transport = weak_from_this();
@@ -276,7 +267,6 @@ void whep_session_transport::handle_rtcp_sender_reports(const boost::system::err
 
     if (wire_bytes != 0)
     {
-        std::lock_guard interval_lock(rtcp_interval_mutex_);
         rtcp_interval_scheduler_.note_transmission(wire_bytes);
     }
 
@@ -286,7 +276,6 @@ void whep_session_transport::handle_rtcp_sender_reports(const boost::system::err
 std::size_t whep_session_transport::send_rtcp_sender_reports()
 {
     std::size_t wire_bytes = 0;
-    std::unique_lock peer_lock(peer_mutex_);
 
     if (closed_ || !selected_remote_endpoint_.has_value())
     {
@@ -312,8 +301,6 @@ std::size_t whep_session_transport::send_rtcp_sender_reports()
     {
         return 0;
     }
-
-    std::lock_guard rtp_lock(rtp_rewriter_mutex_);
 
     for (auto& [target_ssrc, sender] : outbound_rtcp_senders_)
     {
@@ -677,12 +664,7 @@ void whep_session_transport::log_media_summary(int64_t interval_ms)
 
 void whep_session_transport::log_retransmission_cache_state()
 {
-    rtp_retransmission_cache_snapshot snapshot;
-
-    {
-        std::lock_guard lock(rtp_rewriter_mutex_);
-        snapshot = retransmission_cache_.snapshot();
-    }
+    const rtp_retransmission_cache_snapshot snapshot = retransmission_cache_.snapshot();
 
     WEBRTC_LOG_DEBUG(
         "WHEP retransmission cache state stream={} session={} packets={} bytes={} inserted={} replaced={} "
@@ -772,12 +754,7 @@ void whep_session_transport::log_transport_feedback_final_summary(std::string_vi
 
 void whep_session_transport::log_rtcp_interval_state()
 {
-    rtcp_interval_snapshot snapshot;
-
-    {
-        std::lock_guard interval_lock(rtcp_interval_mutex_);
-        snapshot = rtcp_interval_scheduler_.snapshot();
-    }
+    const rtcp_interval_snapshot snapshot = rtcp_interval_scheduler_.snapshot();
 
     WEBRTC_LOG_DEBUG("WHEP RTCP interval state stream={} session={} initial={} members={} senders={} average_packet_size={} last_interval_ms={}",
                      stream_id_,
@@ -794,7 +771,6 @@ void whep_session_transport::log_outbound_rtcp_sender_state_snapshot()
     std::vector<outbound_rtcp_sender_state> senders;
 
     {
-        std::lock_guard lock(rtp_rewriter_mutex_);
         senders.reserve(outbound_rtcp_senders_.size());
 
         for (const auto& [target_ssrc, sender] : outbound_rtcp_senders_)
@@ -867,28 +843,21 @@ void whep_session_transport::set_peer_context(std::string local_ice_pwd, dtls_pe
     unsubscribe_media();
     clear_peer_state();
 
-    {
-        std::lock_guard lock(peer_mutex_);
-        stream_id_ = identity.stream_id;
-        session_id_ = identity.session_id;
-        local_ice_pwd_ = std::move(local_ice_pwd);
-        dtls_identity_ = std::move(identity);
-    }
-
-    {
-        std::lock_guard lock(rtp_rewriter_mutex_);
-        configure_outbound_rtcp_senders_locked(target);
-        rtp_rewriter_target_ = std::move(target);
-        publisher_source_.reset();
-        publisher_source_generation_ = 0;
-        clear_publisher_sender_timings_locked();
-        clear_keyframe_feedback_state_locked();
-        retransmission_cache_.clear();
-        transport_feedback_history_.reset();
-        remote_rtcp_participant_ssrcs_.clear();
-        reset_keyframe_recovery_locked();
-        rebuild_rtp_rewriter_locked();
-    }
+    stream_id_ = identity.stream_id;
+    session_id_ = identity.session_id;
+    local_ice_pwd_ = std::move(local_ice_pwd);
+    dtls_identity_ = std::move(identity);
+    configure_outbound_rtcp_senders(target);
+    rtp_rewriter_target_ = std::move(target);
+    publisher_source_.reset();
+    publisher_source_generation_ = 0;
+    clear_publisher_sender_timings();
+    clear_keyframe_feedback_state();
+    retransmission_cache_.clear();
+    transport_feedback_history_.reset();
+    remote_rtcp_participant_ssrcs_.clear();
+    reset_keyframe_recovery();
+    rebuild_rtp_rewriter();
 
     subscribe_media();
 }
@@ -906,7 +875,7 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
     {
         record_media_log_event(media_log_event::source_layout_invalid);
 
-        if (!media_log_stats_.source_layout_invalid_logged.exchange(true, std::memory_order_relaxed))
+        if (!std::exchange(media_log_stats_.source_layout_invalid_logged, true))
         {
             WEBRTC_LOG_WARN("WHEP source RTP layout invalid stream={} session={} error={}", stream_id_, session_id_, layout.error());
         }
@@ -924,7 +893,7 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
     {
         record_media_log_event(media_log_event::source_empty_payload_dropped);
 
-        if (!media_log_stats_.source_empty_payload_logged.exchange(true, std::memory_order_relaxed))
+        if (!std::exchange(media_log_stats_.source_empty_payload_logged, true))
         {
             WEBRTC_LOG_WARN("WHEP source RTP empty media payload dropped stream={} session={}", stream_id_, session_id_);
         }
@@ -933,7 +902,6 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
     }
 
     record_media_log_event(media_log_event::source_rtp_received);
-    std::unique_lock peer_lock(peer_mutex_);
 
     if (closed_)
     {
@@ -962,7 +930,7 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
     {
         record_media_log_event(media_log_event::dropped_srtp_not_ready);
 
-        if (!media_log_stats_.srtp_not_ready_logged.exchange(true, std::memory_order_relaxed))
+        if (!std::exchange(media_log_stats_.srtp_not_ready_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHEP media send waiting for SRTP stream={} session={} remote={}", stream_id_, session_id_, remote_address);
         }
@@ -970,19 +938,13 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
         return;
     }
 
-    whep_rtp_rewrite_packet_result rewritten;
-
+    if (source_generation != publisher_source_generation_)
     {
-        std::lock_guard lock(rtp_rewriter_mutex_);
-
-        if (source_generation != publisher_source_generation_)
-        {
-            record_media_log_event(media_log_event::dropped_stale_generation);
-            return;
-        }
-
-        rewritten = rtp_rewriter_.rewrite(plain_rtp, transport_feedback_history_.next_sequence_number());
+        record_media_log_event(media_log_event::dropped_stale_generation);
+        return;
     }
+
+    whep_rtp_rewrite_packet_result rewritten = rtp_rewriter_.rewrite(plain_rtp, transport_feedback_history_.next_sequence_number());
 
     if (!rewritten)
     {
@@ -996,7 +958,7 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
         ++dropped_rtp_packet_count_;
         record_media_log_event(media_log_event::rewrite_dropped);
 
-        if (!media_log_stats_.rewrite_drop_logged.exchange(true, std::memory_order_relaxed))
+        if (!std::exchange(media_log_stats_.rewrite_drop_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHEP first RTP rewrite drop stream={} session={} source_ssrc={} source_pt={} source_seq={} reason={}",
                              stream_id_,
@@ -1035,7 +997,7 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
     {
         record_media_log_event(media_log_event::protect_ignored);
 
-        if (!media_log_stats_.protect_ignore_logged.exchange(true, std::memory_order_relaxed))
+        if (!std::exchange(media_log_stats_.protect_ignore_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHEP first RTP protect ignore stream={} session={} remote={} state={} reason={}",
                              stream_id_,
@@ -1092,14 +1054,10 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
         rewritten->target_timestamp,
         rewritten_rtp_packet_count_);
 
+    if (source_generation != publisher_source_generation_)
     {
-        std::lock_guard lock(rtp_rewriter_mutex_);
-
-        if (source_generation != publisher_source_generation_)
-        {
-            record_media_log_event(media_log_event::dropped_stale_generation);
-            return;
-        }
+        record_media_log_event(media_log_event::dropped_stale_generation);
+        return;
     }
 
     const std::size_t protected_size = protected_packet->protected_packet.size();
@@ -1114,31 +1072,25 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
         });
     }
 
-    {
-        std::lock_guard lock(rtp_rewriter_mutex_);
-        cache_rewritten_rtp_locked(source_generation, *rewritten);
-        record_outbound_rtp_sent_locked(*rewritten);
-    }
+    cache_rewritten_rtp(source_generation, *rewritten);
+    record_outbound_rtp_sent(*rewritten);
 
     record_media_log_event(media_log_event::send_enqueued);
     record_media_log_event(media_log_event::send_bytes, protected_size);
     record_media_log_event(media_log_event::send_payload_bytes, rewritten->payload_size);
-    peer_lock.unlock();
 
     std::optional<keyframe_request_context> request_context;
     std::optional<keyframe_request_context> completed_context;
 
     if (rewritten->kind == "video" && !rewritten->rtx)
     {
-        std::lock_guard lock(rtp_rewriter_mutex_);
-
         if (source_generation == publisher_source_generation_ && publisher_source_ != nullptr)
         {
             if (rewritten->keyframe_request_needed)
             {
                 // 源 SSRC 发生切换时，旧源上的等待任务已经失去意义。
                 // 仅取消当前 WHEP 的等待集合，其他订阅者仍由共享协调器独立维护。
-                cancel_keyframe_recovery_locked();
+                cancel_keyframe_recovery();
             }
 
             auto observation = keyframe_tracker_.observe(rewritten->codec_name, rewritten->packet);
@@ -1180,7 +1132,7 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
             }
             else if (observation->state == video_keyframe_observation_state::aborted)
             {
-                request_context = prepare_keyframe_request_locked(source_generation, rewritten->source_ssrc, rewritten->target_ssrc, true, false);
+                request_context = prepare_keyframe_request(source_generation, rewritten->source_ssrc, rewritten->target_ssrc, true, false);
             }
             else if (observation->state == video_keyframe_observation_state::unsupported_codec &&
                      unsupported_keyframe_detection_target_ssrcs_.insert(rewritten->target_ssrc).second)
@@ -1195,7 +1147,7 @@ void whep_session_transport::send_rtp(uint64_t source_generation, std::span<cons
 
             if (!keyframe_ready_source_ssrcs_.contains(rewritten->source_ssrc) && !request_context.has_value())
             {
-                request_context = prepare_keyframe_request_locked(source_generation, rewritten->source_ssrc, rewritten->target_ssrc, false, false);
+                request_context = prepare_keyframe_request(source_generation, rewritten->source_ssrc, rewritten->target_ssrc, false, false);
             }
         }
     }
@@ -1258,8 +1210,6 @@ void whep_session_transport::unsubscribe_media()
 
 void whep_session_transport::handle_publisher_source(media_publisher_source_update update)
 {
-    std::lock_guard lock(rtp_rewriter_mutex_);
-
     if (update.generation < publisher_source_generation_)
     {
         WEBRTC_LOG_DEBUG("WHEP ignored stale publisher source update stream={} session={} source_generation={} current_source_generation={}",
@@ -1270,23 +1220,21 @@ void whep_session_transport::handle_publisher_source(media_publisher_source_upda
         return;
     }
 
-    cancel_keyframe_recovery_locked();
+    cancel_keyframe_recovery();
 
     if (update.generation != publisher_source_generation_)
     {
-        clear_publisher_sender_timings_locked();
-        clear_keyframe_feedback_state_locked();
+        clear_publisher_sender_timings();
+        clear_keyframe_feedback_state();
     }
 
     publisher_source_generation_ = update.generation;
     publisher_source_ = std::move(update.source);
-    rebuild_rtp_rewriter_locked();
+    rebuild_rtp_rewriter();
 }
 
 void whep_session_transport::handle_publisher_sender_timing(media_publisher_sender_timing timing)
 {
-    std::lock_guard lock(rtp_rewriter_mutex_);
-
     if (publisher_source_ == nullptr || timing.source_generation != publisher_source_generation_ ||
         timing.publisher_session_id != publisher_source_->session_id)
     {
@@ -1305,10 +1253,10 @@ void whep_session_transport::handle_publisher_sender_timing(media_publisher_send
 
     const uint32_t source_ssrc = timing.source_ssrc;
     publisher_sender_timings_.insert_or_assign(source_ssrc, std::move(timing));
-    refresh_sender_timing_locked(source_ssrc);
+    refresh_sender_timing(source_ssrc);
 }
 
-void whep_session_transport::configure_outbound_rtcp_senders_locked(const whep_rtp_rewriter_target& target)
+void whep_session_transport::configure_outbound_rtcp_senders(const whep_rtp_rewriter_target& target)
 {
     outbound_rtcp_senders_.clear();
     outbound_rtcp_senders_.reserve(target.accepted_media_sources.size() * 2U);
@@ -1350,7 +1298,7 @@ void whep_session_transport::configure_outbound_rtcp_senders_locked(const whep_r
     }
 }
 
-void whep_session_transport::clear_publisher_sender_timings_locked()
+void whep_session_transport::clear_publisher_sender_timings()
 {
     publisher_sender_timings_.clear();
 
@@ -1362,7 +1310,7 @@ void whep_session_transport::clear_publisher_sender_timings_locked()
     }
 }
 
-void whep_session_transport::refresh_sender_timing_locked(uint32_t source_ssrc)
+void whep_session_transport::refresh_sender_timing(uint32_t source_ssrc)
 {
     const auto timing_iterator = publisher_sender_timings_.find(source_ssrc);
 
@@ -1429,20 +1377,20 @@ void whep_session_transport::refresh_sender_timing_locked(uint32_t source_ssrc)
     }
 }
 
-void whep_session_transport::record_outbound_rtp_sent_locked(const whep_rtp_rewrite_result& rewritten)
+void whep_session_transport::record_outbound_rtp_sent(const whep_rtp_rewrite_result& rewritten)
 {
-    record_outbound_rtp_sent_locked(rewritten.target_ssrc, rewritten.payload_size, rewritten.target_timestamp);
+    record_outbound_rtp_sent(rewritten.target_ssrc, rewritten.payload_size, rewritten.target_timestamp);
 
     const auto sender_iterator = outbound_rtcp_senders_.find(rewritten.target_ssrc);
 
     if (sender_iterator != outbound_rtcp_senders_.end() && !sender_iterator->second.sender_timing.has_value() &&
         publisher_sender_timings_.contains(rewritten.source_ssrc))
     {
-        refresh_sender_timing_locked(rewritten.source_ssrc);
+        refresh_sender_timing(rewritten.source_ssrc);
     }
 }
 
-void whep_session_transport::record_outbound_rtp_sent_locked(uint32_t target_ssrc, std::size_t payload_size, uint32_t target_timestamp)
+void whep_session_transport::record_outbound_rtp_sent(uint32_t target_ssrc, std::size_t payload_size, uint32_t target_timestamp)
 {
     const auto sender_iterator = outbound_rtcp_senders_.find(target_ssrc);
 
@@ -1461,7 +1409,7 @@ void whep_session_transport::record_outbound_rtp_sent_locked(uint32_t target_ssr
     }
 }
 
-void whep_session_transport::cache_rewritten_rtp_locked(uint64_t source_generation, const whep_rtp_rewrite_result& rewritten)
+void whep_session_transport::cache_rewritten_rtp(uint64_t source_generation, const whep_rtp_rewrite_result& rewritten)
 {
     if (rewritten.rtx || rewritten.packet.empty() || !rtp_rewriter_.nack_enabled(rewritten.target_ssrc, rewritten.target_payload_type))
     {
@@ -1480,11 +1428,11 @@ void whep_session_transport::cache_rewritten_rtp_locked(uint64_t source_generati
     });
 }
 
-void whep_session_transport::rebuild_rtp_rewriter_locked()
+void whep_session_transport::rebuild_rtp_rewriter()
 {
     if (publisher_source_ == nullptr)
     {
-        reset_keyframe_recovery_locked();
+        reset_keyframe_recovery();
         rtp_rewriter_.clear_source();
         WEBRTC_LOG_INFO(
             "WHEP RTP publisher source unavailable stream={} session={} source_generation={}", stream_id_, session_id_, publisher_source_generation_);
@@ -1495,7 +1443,7 @@ void whep_session_transport::rebuild_rtp_rewriter_locked()
 
     if (!config)
     {
-        reset_keyframe_recovery_locked();
+        reset_keyframe_recovery();
         rtp_rewriter_.clear_source();
         WEBRTC_LOG_WARN("WHEP RTP publisher source rejected stream={} session={} publisher_session={} source_generation={} error={}",
                         stream_id_,
@@ -1515,7 +1463,7 @@ void whep_session_transport::rebuild_rtp_rewriter_locked()
                     publisher_source_generation_);
 }
 
-void whep_session_transport::reset_keyframe_recovery_locked()
+void whep_session_transport::reset_keyframe_recovery()
 {
     keyframe_tracker_.reset();
     keyframe_waiting_source_ssrcs_.clear();
@@ -1523,15 +1471,15 @@ void whep_session_transport::reset_keyframe_recovery_locked()
     unsupported_keyframe_detection_target_ssrcs_.clear();
 }
 
-void whep_session_transport::clear_keyframe_feedback_state_locked() { fir_sequence_tracker_.clear(); }
+void whep_session_transport::clear_keyframe_feedback_state() { fir_sequence_tracker_.clear(); }
 
-void whep_session_transport::cancel_keyframe_recovery_locked()
+void whep_session_transport::cancel_keyframe_recovery()
 {
     media_fanout_router_->cancel_keyframe_requests(session_id_);
-    reset_keyframe_recovery_locked();
+    reset_keyframe_recovery();
 }
 
-std::optional<whep_session_transport::keyframe_request_context> whep_session_transport::prepare_keyframe_request_locked(
+std::optional<whep_session_transport::keyframe_request_context> whep_session_transport::prepare_keyframe_request(
     uint64_t source_generation, uint32_t source_ssrc, uint32_t target_ssrc, bool force_dispatch, bool coalesce_if_waiting)
 {
     if (source_generation == 0 || source_ssrc == 0 || target_ssrc == 0 || source_generation != publisher_source_generation_ ||
@@ -1574,8 +1522,6 @@ std::optional<whep_session_transport::keyframe_request_context> whep_session_tra
 
 bool whep_session_transport::dispatch_keyframe_request(const keyframe_request_context& context, std::string_view reason)
 {
-    std::lock_guard lock(rtp_rewriter_mutex_);
-
     if (context.source_generation != publisher_source_generation_ || publisher_source_ == nullptr ||
         publisher_source_->session_id != context.publisher_session_id || !keyframe_waiting_source_ssrcs_.contains(context.source_ssrc))
     {
@@ -1613,8 +1559,6 @@ bool whep_session_transport::dispatch_keyframe_request(const keyframe_request_co
 
 void whep_session_transport::complete_keyframe_request(const keyframe_request_context& context)
 {
-    std::lock_guard lock(rtp_rewriter_mutex_);
-
     if (context.source_generation != publisher_source_generation_ || publisher_source_ == nullptr ||
         publisher_source_->session_id != context.publisher_session_id || !keyframe_ready_source_ssrcs_.contains(context.source_ssrc))
     {
@@ -1635,8 +1579,6 @@ void whep_session_transport::complete_keyframe_request(const keyframe_request_co
 
 void whep_session_transport::handle_publisher_source_bye(media_publisher_source_bye bye)
 {
-    std::lock_guard lock(rtp_rewriter_mutex_);
-
     if (publisher_source_ == nullptr || bye.publisher_session_id != publisher_source_->session_id ||
         bye.source_generation != publisher_source_generation_ || bye.source_ssrc == 0)
     {
@@ -1675,7 +1617,7 @@ void whep_session_transport::handle_publisher_source_bye(media_publisher_source_
         affected_senders);
 }
 
-void whep_session_transport::record_receiver_byes_locked(std::span<const rtcp_bye_packet> bye_packets)
+void whep_session_transport::record_receiver_byes(std::span<const rtcp_bye_packet> bye_packets)
 {
     for (const auto& bye : bye_packets)
     {
@@ -1700,7 +1642,7 @@ void whep_session_transport::record_receiver_byes_locked(std::span<const rtcp_by
     }
 }
 
-void whep_session_transport::send_rtcp_bye_locked(std::string_view reason)
+void whep_session_transport::send_rtcp_bye(std::string_view reason)
 {
     if (!selected_remote_endpoint_.has_value())
     {
@@ -1724,8 +1666,6 @@ void whep_session_transport::send_rtcp_bye_locked(std::string_view reason)
         }
         return;
     }
-
-    std::lock_guard rtp_lock(rtp_rewriter_mutex_);
 
     for (auto& [target_ssrc, sender] : outbound_rtcp_senders_)
     {
@@ -1846,7 +1786,7 @@ void whep_session_transport::send_rtcp_bye_locked(std::string_view reason)
     }
 }
 
-void whep_session_transport::record_receiver_reports_locked(std::span<const rtcp_report_packet> reports)
+void whep_session_transport::record_receiver_reports(std::span<const rtcp_report_packet> reports)
 {
     const auto now = std::chrono::steady_clock::now();
 
@@ -1935,8 +1875,6 @@ void whep_session_transport::handle_generic_nacks(const rtcp_compound_packet& co
     std::size_t retransmission_limited = 0;
 
     {
-        std::lock_guard lock(rtp_rewriter_mutex_);
-
         for (const auto& block : compound.blocks)
         {
             if (!block.has_generic_nack)
@@ -2007,7 +1945,7 @@ void whep_session_transport::handle_generic_nacks(const rtcp_compound_packet& co
     record_media_log_event(media_log_event::rtcp_nack_target_ignored, target_ignored);
     record_media_log_event(media_log_event::rtp_retransmission_limited, retransmission_limited);
 
-    if (!media_log_stats_.generic_nack_logged.exchange(true, std::memory_order_relaxed))
+    if (!std::exchange(media_log_stats_.generic_nack_logged, true))
     {
         WEBRTC_LOG_DEBUG(
             "WHEP first Generic NACK processed stream={} session={} blocks={} requested={} unique={} target_ignored={} "
@@ -2030,12 +1968,8 @@ void whep_session_transport::handle_generic_nacks(const rtcp_compound_packet& co
 
 void whep_session_transport::send_retransmission(rtp_retransmission_cache_packet cached)
 {
-    whep_rtp_retransmission_result_type retransmission;
-
-    {
-        std::lock_guard lock(rtp_rewriter_mutex_);
-        retransmission = rtp_rewriter_.build_retransmission(cached.packet, transport_feedback_history_.next_sequence_number());
-    }
+    whep_rtp_retransmission_result_type retransmission =
+        rtp_rewriter_.build_retransmission(cached.packet, transport_feedback_history_.next_sequence_number());
 
     if (!retransmission)
     {
@@ -2049,8 +1983,6 @@ void whep_session_transport::send_retransmission(rtp_retransmission_cache_packet
                         retransmission.error());
         return;
     }
-
-    std::unique_lock peer_lock(peer_mutex_);
 
     if (closed_ || !selected_remote_endpoint_.has_value())
     {
@@ -2098,16 +2030,13 @@ void whep_session_transport::send_retransmission(rtp_retransmission_cache_packet
         });
     }
 
-    {
-        std::lock_guard lock(rtp_rewriter_mutex_);
-        record_outbound_rtp_sent_locked(retransmission->target_ssrc, retransmission->payload_size, retransmission->target_timestamp);
-    }
+    record_outbound_rtp_sent(retransmission->target_ssrc, retransmission->payload_size, retransmission->target_timestamp);
 
     record_media_log_event(retransmission->rtx ? media_log_event::rtp_retransmission_rtx_sent : media_log_event::rtp_retransmission_original_sent);
     record_media_log_event(media_log_event::rtp_retransmission_send_bytes, protected_size);
     record_media_log_event(media_log_event::rtp_retransmission_payload_bytes, retransmission->payload_size);
 
-    if (!media_log_stats_.retransmission_logged.exchange(true, std::memory_order_relaxed))
+    if (!std::exchange(media_log_stats_.retransmission_logged, true))
     {
         WEBRTC_LOG_DEBUG(
             "WHEP first RTP retransmission sent stream={} session={} kind={} codec={} mode={} original_ssrc={} "
@@ -2141,7 +2070,7 @@ void whep_session_transport::handle_transport_feedback(const rtcp_compound_packe
         const auto observation = transport_feedback_history_.observe(*block.transport_feedback, std::chrono::steady_clock::now());
         record_media_log_event(media_log_event::rtcp_transport_feedback_received);
 
-        if (!media_log_stats_.transport_feedback_logged.exchange(true, std::memory_order_relaxed))
+        if (!std::exchange(media_log_stats_.transport_feedback_logged, true))
         {
             WEBRTC_LOG_DEBUG(
                 "WHEP first transport-cc feedback observed stream={} session={} sender_ssrc={} media_ssrc={} "
@@ -2186,7 +2115,7 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
     {
         record_media_log_event(media_log_event::rtcp_parse_failed);
 
-        if (!media_log_stats_.rtcp_parse_failure_logged.exchange(true, std::memory_order_relaxed))
+        if (!std::exchange(media_log_stats_.rtcp_parse_failure_logged, true))
         {
             WEBRTC_LOG_WARN("WHEP first inbound RTCP parse failure stream={} session={} error={}", stream_id_, session_id_, compound.error());
         }
@@ -2207,8 +2136,6 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
     record_media_log_event(media_log_event::rtcp_unknown_block_ignored, compound->unknown_block_count);
 
     {
-        std::lock_guard lock(rtp_rewriter_mutex_);
-
         for (const auto& chunk : compound->sdes_chunks)
         {
             if (chunk.ssrc != 0)
@@ -2217,8 +2144,8 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
             }
         }
 
-        record_receiver_reports_locked(compound->report_packets);
-        record_receiver_byes_locked(compound->bye_packets);
+        record_receiver_reports(compound->report_packets);
+        record_receiver_byes(compound->bye_packets);
     }
 
     handle_generic_nacks(*compound);
@@ -2226,7 +2153,7 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
 
     for (const auto& block : compound->blocks)
     {
-        if (block.has_remb && !media_log_stats_.remb_ignored_logged.exchange(true, std::memory_order_relaxed))
+        if (block.has_remb && !std::exchange(media_log_stats_.remb_ignored_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHEP first REMB ignored stream={} session={} sender_ssrc={} media_ssrc={} bitrate_bps={} action=ignored",
                              stream_id_,
@@ -2239,7 +2166,7 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
         const bool other_feedback = block.is_feedback && block.feedback_name != "pli" && block.feedback_name != "fir" && !block.has_generic_nack &&
                                     !block.transport_feedback.has_value() && !block.has_remb;
 
-        if (other_feedback && !media_log_stats_.other_feedback_ignored_logged.exchange(true, std::memory_order_relaxed))
+        if (other_feedback && !std::exchange(media_log_stats_.other_feedback_ignored_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHEP first other RTCP feedback ignored stream={} session={} type={} sender_ssrc={} media_ssrc={} action=ignored",
                              stream_id_,
@@ -2249,7 +2176,7 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
                              block.feedback_media_ssrc);
         }
 
-        if (block.is_unknown && !media_log_stats_.unknown_rtcp_block_ignored_logged.exchange(true, std::memory_order_relaxed))
+        if (block.is_unknown && !std::exchange(media_log_stats_.unknown_rtcp_block_ignored_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHEP first unknown RTCP block ignored stream={} session={} packet_type={} packet_type_name={} count={} action=ignored",
                              stream_id_,
@@ -2322,8 +2249,6 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
     std::size_t duplicate_fir = 0;
 
     {
-        std::lock_guard lock(rtp_rewriter_mutex_);
-
         for (const auto& feedback : feedback_requests)
         {
             std::string_view rejection_reason;
@@ -2366,7 +2291,7 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
             {
                 target_ignored += 1;
 
-                if (!media_log_stats_.invalid_keyframe_feedback_target_logged.exchange(true, std::memory_order_relaxed))
+                if (!std::exchange(media_log_stats_.invalid_keyframe_feedback_target_logged, true))
                 {
                     WEBRTC_LOG_DEBUG(
                         "WHEP first keyframe feedback target ignored stream={} session={} type={} sender_ssrc={} target_ssrc={} "
@@ -2399,7 +2324,7 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
                 {
                     duplicate_fir += 1;
 
-                    if (!media_log_stats_.duplicate_fir_logged.exchange(true, std::memory_order_relaxed))
+                    if (!std::exchange(media_log_stats_.duplicate_fir_logged, true))
                     {
                         WEBRTC_LOG_DEBUG(
                             "WHEP first duplicate FIR ignored stream={} session={} sender_ssrc={} target_ssrc={} "
@@ -2432,7 +2357,7 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
             }
 
             const bool already_waiting = keyframe_waiting_source_ssrcs_.contains(*source_ssrc);
-            auto request = prepare_keyframe_request_locked(publisher_source_generation_, *source_ssrc, feedback.target_ssrc, true, true);
+            auto request = prepare_keyframe_request(publisher_source_generation_, *source_ssrc, feedback.target_ssrc, true, true);
 
             if (!request.has_value())
             {
@@ -2467,7 +2392,7 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
 
     record_media_log_event(media_log_event::rtcp_keyframe_feedback_forwarded, forwarded);
 
-    if (!media_log_stats_.keyframe_feedback_logged.exchange(true, std::memory_order_relaxed))
+    if (!std::exchange(media_log_stats_.keyframe_feedback_logged, true))
     {
         WEBRTC_LOG_DEBUG(
             "WHEP first inbound keyframe feedback stream={} session={} requested={} forwarded={} coalesced={} target_ignored={} "
@@ -2501,12 +2426,6 @@ void whep_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
 
 void whep_session_transport::clear_peer_state()
 {
-    std::lock_guard lock(peer_mutex_);
-    clear_peer_state_locked();
-}
-
-void whep_session_transport::clear_peer_state_locked()
-{
     if (selected_remote_endpoint_.has_value())
     {
         const std::string remote_address = format_udp_endpoint(*selected_remote_endpoint_);
@@ -2519,8 +2438,6 @@ void whep_session_transport::clear_peer_state_locked()
 
 whep_session_transport::peer_nomination_result whep_session_transport::nominate_remote_endpoint(const boost::asio::ip::udp::endpoint& remote_endpoint)
 {
-    std::lock_guard lock(peer_mutex_);
-
     if (!dtls_identity_.has_value())
     {
         return std::unexpected(std::string("WHEP DTLS identity is unavailable"));
@@ -2579,8 +2496,6 @@ session_udp_outbound_packet_list whep_session_transport::handle_udp_packet(const
     std::string remote_ice_ufrag;
 
     {
-        std::lock_guard lock(peer_mutex_);
-
         if (dtls_identity_.has_value())
         {
             local_ice_ufrag = dtls_identity_->local_ice_ufrag;
@@ -2621,8 +2536,7 @@ session_udp_outbound_packet_list whep_session_transport::handle_udp_packet(const
                 }
                 else if (*nomination != peer_nomination_state::unchanged)
                 {
-                    std::lock_guard lock(rtp_rewriter_mutex_);
-                    cancel_keyframe_recovery_locked();
+                    cancel_keyframe_recovery();
                 }
             }
 
@@ -2631,8 +2545,6 @@ session_udp_outbound_packet_list whep_session_transport::handle_udp_packet(const
 
         return result;
     }
-
-    std::unique_lock peer_lock(peer_mutex_);
 
     if (!selected_remote_endpoint_.has_value() || *selected_remote_endpoint_ != packet.remote_endpoint)
     {
@@ -2684,7 +2596,6 @@ session_udp_outbound_packet_list whep_session_transport::handle_udp_packet(const
 
     const std::string remote_address = format_udp_endpoint(packet.remote_endpoint);
     auto inbound = srtp_transport_->handle_inbound_packet(packet.data, remote_address);
-    peer_lock.unlock();
 
     if (!inbound)
     {

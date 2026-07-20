@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -100,18 +99,16 @@ class stream_registry
     };
 
     [[nodiscard]]
-    bool is_removed_session_tombstone_expired_locked(const removed_session_tombstone& tombstone, uint64_t current_time_milliseconds) const;
+    bool is_removed_session_tombstone_expired(const removed_session_tombstone& tombstone, uint64_t current_time_milliseconds) const;
 
-    void remember_removed_session_locked(stream_session_kind kind, std::string_view session_id);
+    void remember_removed_session(stream_session_kind kind, std::string_view session_id);
 
-    void prune_removed_session_tombstones_locked(uint64_t current_time_milliseconds);
+    void prune_removed_session_tombstones(uint64_t current_time_milliseconds);
 
-    [[nodiscard]] std::string make_unique_session_id_locked() const;
+    [[nodiscard]] std::string make_unique_session_id() const;
     [[nodiscard]] static uint64_t now_milliseconds();
 
    private:
-    mutable std::mutex mutex_;
-
     std::unordered_map<std::string, std::shared_ptr<publisher_session>> publishers_by_stream_id_;
     std::unordered_map<std::string, std::shared_ptr<publisher_session>> publishers_by_session_id_;
     std::unordered_map<std::string, std::shared_ptr<subscriber_session>> subscribers_by_session_id_;

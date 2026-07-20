@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -154,18 +153,16 @@ class media_fanout_router : public std::enable_shared_from_this<media_fanout_rou
         bool retry_active = false;
     };
 
-    [[nodiscard]] uint64_t allocate_source_generation_locked();
+    [[nodiscard]] uint64_t allocate_source_generation();
 
-    void schedule_keyframe_retry_locked(const keyframe_request_key& key, keyframe_request_state& state);
+    void schedule_keyframe_retry(const keyframe_request_key& key, keyframe_request_state& state);
     void handle_keyframe_retry(keyframe_request_key key, uint64_t timer_token);
-    void cancel_keyframe_requests_locked(std::string_view subscriber_session_id);
-    void cancel_stream_keyframe_requests_locked(std::string_view stream_id);
-    void cancel_keyframe_request_state_locked(keyframe_request_state& state);
+    void cancel_keyframe_requests_for_subscriber(std::string_view subscriber_session_id);
+    void cancel_stream_keyframe_requests(std::string_view stream_id);
+    void cancel_keyframe_request_state(keyframe_request_state& state);
 
    private:
     boost::asio::io_context& io_context_;
-    std::mutex mutex_;
-
     uint64_t next_source_generation_ = 1;
 
     std::unordered_map<std::string, subscription> subscriptions_by_session_id_;

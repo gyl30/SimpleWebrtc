@@ -2,13 +2,11 @@
 #define SIMPLE_WEBRTC_SESSION_WHIP_SESSION_TRANSPORT_H
 
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -174,48 +172,47 @@ class whip_session_transport : public session_ice_udp_packet_handler, public std
     struct media_log_stats
     {
         session_transport_log_counters<media_log_event> counters;
-        std::atomic<bool> rtcp_parse_failure_logged{false};
-        std::atomic<bool> pli_ignored_logged{false};
-        std::atomic<bool> fir_ignored_logged{false};
-        std::atomic<bool> generic_nack_ignored_logged{false};
-        std::atomic<bool> transport_cc_ignored_logged{false};
-        std::atomic<bool> remb_ignored_logged{false};
-        std::atomic<bool> other_feedback_ignored_logged{false};
-        std::atomic<bool> unknown_rtcp_block_ignored_logged{false};
-        std::atomic<bool> keyframe_feedback_sent_logged{false};
-        std::atomic<bool> transport_cc_feedback_sent_logged{false};
-        std::atomic<bool> transport_cc_invalid_logged{false};
-        std::atomic<bool> rtp_layout_invalid_logged{false};
-        std::atomic<bool> rtp_empty_payload_logged{false};
-        std::array<std::atomic<bool>, 128> unmapped_payload_type_logged{};
-        std::array<std::atomic<uint32_t>, 16> logged_source_ssrcs{};
-        std::array<std::atomic<uint32_t>, 16> logged_sender_timing_ssrcs{};
+        bool rtcp_parse_failure_logged = false;
+        bool pli_ignored_logged = false;
+        bool fir_ignored_logged = false;
+        bool generic_nack_ignored_logged = false;
+        bool transport_cc_ignored_logged = false;
+        bool remb_ignored_logged = false;
+        bool other_feedback_ignored_logged = false;
+        bool unknown_rtcp_block_ignored_logged = false;
+        bool keyframe_feedback_sent_logged = false;
+        bool transport_cc_feedback_sent_logged = false;
+        bool transport_cc_invalid_logged = false;
+        bool rtp_layout_invalid_logged = false;
+        bool rtp_empty_payload_logged = false;
+        std::array<bool, 128> unmapped_payload_type_logged{};
+        std::array<uint32_t, 16> logged_source_ssrcs{};
+        std::array<uint32_t, 16> logged_sender_timing_ssrcs{};
     };
 
     struct transport_feedback_lifetime_stats
     {
-        std::atomic<uint64_t> transport_cc_observed{0};
-        std::atomic<uint64_t> transport_cc_missing{0};
-        std::atomic<uint64_t> transport_cc_invalid{0};
-        std::atomic<uint64_t> transport_cc_duplicate{0};
-        std::atomic<uint64_t> transport_cc_discontinuity{0};
-        std::atomic<uint64_t> feedback_sent{0};
-        std::atomic<uint64_t> status_sent{0};
-        std::atomic<uint64_t> received_reported{0};
-        std::atomic<uint64_t> lost_reported{0};
-        std::atomic<uint64_t> reduced_size_sent{0};
-        std::atomic<uint64_t> compound_sent{0};
-        std::atomic<uint64_t> send_bytes{0};
-        std::atomic<uint64_t> padding_received{0};
-        std::atomic<uint64_t> padding_bytes{0};
-        std::atomic<uint64_t> padding_not_published{0};
-        std::atomic<uint64_t> empty_payload_dropped{0};
-        std::atomic<uint64_t> layout_invalid{0};
+        uint64_t transport_cc_observed = 0;
+        uint64_t transport_cc_missing = 0;
+        uint64_t transport_cc_invalid = 0;
+        uint64_t transport_cc_duplicate = 0;
+        uint64_t transport_cc_discontinuity = 0;
+        uint64_t feedback_sent = 0;
+        uint64_t status_sent = 0;
+        uint64_t received_reported = 0;
+        uint64_t lost_reported = 0;
+        uint64_t reduced_size_sent = 0;
+        uint64_t compound_sent = 0;
+        uint64_t send_bytes = 0;
+        uint64_t padding_received = 0;
+        uint64_t padding_bytes = 0;
+        uint64_t padding_not_published = 0;
+        uint64_t empty_payload_dropped = 0;
+        uint64_t layout_invalid = 0;
     };
 
     void clear_peer_state();
-    void clear_peer_state_locked();
-    void configure_remote_media_locked(const sdp::webrtc_offer_summary& remote_offer, std::span<const int> accepted_remote_media_mline_indexes);
+    void configure_remote_media(const sdp::webrtc_offer_summary& remote_offer, std::span<const int> accepted_remote_media_mline_indexes);
     void record_inbound_rtp(uint32_t source_ssrc,
                             uint8_t payload_type,
                             uint16_t sequence_number,
@@ -223,7 +220,7 @@ class whip_session_transport : public session_ice_udp_packet_handler, public std
                             std::chrono::steady_clock::time_point arrival_time,
                             std::span<const uint8_t> plain_packet);
     void handle_inbound_byes(std::span<const rtcp_bye_packet> bye_packets);
-    void send_rtcp_bye_locked(std::string_view reason);
+    void send_rtcp_bye(std::string_view reason);
     void update_receiver_sender_report(uint32_t source_ssrc, uint64_t ntp_timestamp, std::chrono::steady_clock::time_point received_at);
     void record_media_log_event(media_log_event event, uint64_t value = 1);
     void schedule_media_log_summary();
@@ -239,8 +236,8 @@ class whip_session_transport : public session_ice_udp_packet_handler, public std
     [[nodiscard]] std::size_t send_transport_feedback();
     void handle_rtcp_receiver_reports(const boost::system::error_code& error);
     [[nodiscard]] std::size_t send_rtcp_receiver_reports();
-    [[nodiscard]] rtcp_interval_input make_rtcp_interval_input_locked() const;
-    void note_rtcp_transmission_locked(std::size_t protected_size, const boost::asio::ip::udp::endpoint& remote_endpoint);
+    [[nodiscard]] rtcp_interval_input make_rtcp_interval_input() const;
+    void note_rtcp_transmission(std::size_t protected_size, const boost::asio::ip::udp::endpoint& remote_endpoint);
     void handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp);
     [[nodiscard]] peer_nomination_result nominate_remote_endpoint(const boost::asio::ip::udp::endpoint& remote_endpoint);
 
@@ -252,7 +249,6 @@ class whip_session_transport : public session_ice_udp_packet_handler, public std
     boost::asio::steady_timer rtcp_receiver_report_timer_;
     boost::asio::steady_timer transport_feedback_timer_;
     std::chrono::steady_clock::time_point media_log_interval_started_at_;
-    std::mutex rtcp_interval_mutex_;
     rtcp_interval_scheduler rtcp_interval_scheduler_;
     bool rtcp_interval_logged_ = false;
     std::chrono::steady_clock::time_point transport_feedback_deadline_;
@@ -264,7 +260,6 @@ class whip_session_transport : public session_ice_udp_packet_handler, public std
     std::shared_ptr<srtp_transport> srtp_transport_;
     std::shared_ptr<media_fanout_router> media_fanout_router_;
 
-    std::mutex peer_mutex_;
     std::string stream_id_;
     std::string session_id_;
     std::string local_ice_pwd_;
@@ -282,7 +277,7 @@ class whip_session_transport : public session_ice_udp_packet_handler, public std
 
     media_log_stats media_log_stats_;
     transport_feedback_lifetime_stats transport_feedback_lifetime_stats_;
-    std::atomic<bool> transport_feedback_final_summary_logged_{false};
+    bool transport_feedback_final_summary_logged_ = false;
     bool closed_ = false;
 
     // 仅由当前 ICE generation 中携带 USE-CANDIDATE 的完整 STUN 校验结果更新。

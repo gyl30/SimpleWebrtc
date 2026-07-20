@@ -133,22 +133,18 @@ whip_session_transport::~whip_session_transport() { close("transport_destroyed")
 
 void whip_session_transport::close(std::string_view reason)
 {
+    if (closed_)
     {
-        std::unique_lock peer_lock(peer_mutex_);
-
-        if (closed_)
-        {
-            return;
-        }
-
-        closed_ = true;
-        media_log_timer_.cancel();
-        rtcp_receiver_report_timer_.cancel();
-        transport_feedback_timer_started_ = false;
-        started_ = false;
-        transport_feedback_timer_.cancel();
-        send_rtcp_bye_locked(reason);
+        return;
     }
+
+    closed_ = true;
+    media_log_timer_.cancel();
+    rtcp_receiver_report_timer_.cancel();
+    transport_feedback_timer_started_ = false;
+    started_ = false;
+    transport_feedback_timer_.cancel();
+    send_rtcp_bye(reason);
 
     if (media_log_interval_started_at_ != std::chrono::steady_clock::time_point{})
     {
@@ -171,13 +167,8 @@ whip_session_transport_result whip_session_transport::start(uint16_t local_port)
         return result;
     }
 
-    bool schedule_feedback = false;
-
-    {
-        std::lock_guard lock(peer_mutex_);
-        started_ = true;
-        schedule_feedback = transport_feedback_enabled_;
-    }
+    started_ = true;
+    const bool schedule_feedback = transport_feedback_enabled_;
 
     media_log_interval_started_at_ = std::chrono::steady_clock::now();
     schedule_media_log_summary();
@@ -192,7 +183,7 @@ whip_session_transport_result whip_session_transport::start(uint16_t local_port)
 
 void whip_session_transport::record_media_log_event(media_log_event event, uint64_t value)
 {
-    std::atomic<uint64_t>* lifetime_counter = nullptr;
+    uint64_t* lifetime_counter = nullptr;
     bool interval_event = true;
 
     switch (event)
@@ -264,7 +255,7 @@ void whip_session_transport::record_media_log_event(media_log_event event, uint6
 
     if (lifetime_counter != nullptr)
     {
-        lifetime_counter->fetch_add(value, std::memory_order_relaxed);
+        *lifetime_counter += value;
     }
 }
 
@@ -297,7 +288,7 @@ void whip_session_transport::handle_media_log_summary(const boost::system::error
     schedule_media_log_summary();
 }
 
-rtcp_interval_input whip_session_transport::make_rtcp_interval_input_locked() const
+rtcp_interval_input whip_session_transport::make_rtcp_interval_input() const
 {
     std::size_t remote_sender_count = 0;
 
@@ -317,23 +308,15 @@ rtcp_interval_input whip_session_transport::make_rtcp_interval_input_locked() co
 
 void whip_session_transport::schedule_rtcp_receiver_reports(bool initial, bool packet_sent)
 {
-    rtcp_interval_input input;
-
-    {
-        std::lock_guard peer_lock(peer_mutex_);
-        input = make_rtcp_interval_input_locked();
-    }
+    const rtcp_interval_input input = make_rtcp_interval_input();
 
     const auto now = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point deadline;
     rtcp_interval_snapshot snapshot;
 
-    {
-        std::lock_guard interval_lock(rtcp_interval_mutex_);
-        deadline =
-            initial ? rtcp_interval_scheduler_.schedule_initial(now, input) : rtcp_interval_scheduler_.schedule_after_fire(now, input, packet_sent);
-        snapshot = rtcp_interval_scheduler_.snapshot();
-    }
+    deadline =
+        initial ? rtcp_interval_scheduler_.schedule_initial(now, input) : rtcp_interval_scheduler_.schedule_after_fire(now, input, packet_sent);
+    snapshot = rtcp_interval_scheduler_.snapshot();
 
     rtcp_receiver_report_timer_.expires_at(deadline);
     const std::weak_ptr<whip_session_transport> weak_transport = weak_from_this();
@@ -382,7 +365,6 @@ void whip_session_transport::handle_rtcp_receiver_reports(const boost::system::e
 
     if (wire_bytes != 0)
     {
-        std::lock_guard interval_lock(rtcp_interval_mutex_);
         rtcp_interval_scheduler_.note_transmission(wire_bytes);
     }
 
@@ -391,22 +373,18 @@ void whip_session_transport::handle_rtcp_receiver_reports(const boost::system::e
 
 void whip_session_transport::schedule_transport_feedback(bool initial)
 {
+    if (closed_ || !started_ || !transport_feedback_enabled_)
     {
-        std::lock_guard lock(peer_mutex_);
-
-        if (closed_ || !started_ || !transport_feedback_enabled_)
-        {
-            transport_feedback_timer_started_ = false;
-            return;
-        }
-
-        if (initial && transport_feedback_timer_started_)
-        {
-            return;
-        }
-
-        transport_feedback_timer_started_ = true;
+        transport_feedback_timer_started_ = false;
+        return;
     }
+
+    if (initial && transport_feedback_timer_started_)
+    {
+        return;
+    }
+
+    transport_feedback_timer_started_ = true;
 
     const auto now = std::chrono::steady_clock::now();
 
@@ -447,7 +425,6 @@ void whip_session_transport::handle_transport_feedback_timer(const boost::system
 
 std::size_t whip_session_transport::send_transport_feedback()
 {
-    std::lock_guard lock(peer_mutex_);
     transport_feedback_generator_.expire(std::chrono::steady_clock::now());
 
     if (closed_ || !rtcp_mux_enabled_ || rtcp_sender_ssrc_ == 0 || rtcp_cname_.empty() || !selected_remote_endpoint_.has_value() ||
@@ -543,7 +520,7 @@ std::size_t whip_session_transport::send_transport_feedback()
         const std::size_t protected_size = protected_packet->protected_packet.size();
         udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
         transport_feedback_generator_.commit_feedback(packet);
-        note_rtcp_transmission_locked(protected_size, remote_endpoint);
+        note_rtcp_transmission(protected_size, remote_endpoint);
         record_media_log_event(media_log_event::rtcp_transport_cc_feedback_sent);
         record_media_log_event(media_log_event::rtcp_transport_cc_status_sent, packet.packet_status_count);
         record_media_log_event(media_log_event::rtcp_transport_cc_received_reported, packet.received_packet_count);
@@ -554,7 +531,7 @@ std::size_t whip_session_transport::send_transport_feedback()
         wire_bytes += protected_size + (remote_endpoint.address().is_v6() ? k_ipv6_udp_overhead : k_ipv4_udp_overhead);
         ++datagram_count;
 
-        if (!media_log_stats_.transport_cc_feedback_sent_logged.exchange(true, std::memory_order_relaxed))
+        if (!std::exchange(media_log_stats_.transport_cc_feedback_sent_logged, true))
         {
             WEBRTC_LOG_INFO(
                 "WHIP first transport feedback sent stream={} session={} remote={} media_ssrc={} base_sequence={} status_count={} received={} "
@@ -591,15 +568,14 @@ std::size_t whip_session_transport::send_transport_feedback()
     return wire_bytes;
 }
 
-void whip_session_transport::note_rtcp_transmission_locked(std::size_t protected_size, const boost::asio::ip::udp::endpoint& remote_endpoint)
+void whip_session_transport::note_rtcp_transmission(std::size_t protected_size, const boost::asio::ip::udp::endpoint& remote_endpoint)
 {
     const std::size_t wire_bytes = protected_size + (remote_endpoint.address().is_v6() ? k_ipv6_udp_overhead : k_ipv4_udp_overhead);
-    std::lock_guard interval_lock(rtcp_interval_mutex_);
     rtcp_interval_scheduler_.note_transmission(wire_bytes);
 }
 
-void whip_session_transport::configure_remote_media_locked(const sdp::webrtc_offer_summary& remote_offer,
-                                                           std::span<const int> accepted_remote_media_mline_indexes)
+void whip_session_transport::configure_remote_media(const sdp::webrtc_offer_summary& remote_offer,
+                                                    std::span<const int> accepted_remote_media_mline_indexes)
 {
     std::unordered_map<uint8_t, inbound_payload_type_context> payload_types;
     std::unordered_set<uint8_t> ambiguous_payload_types;
@@ -674,14 +650,13 @@ void whip_session_transport::record_inbound_rtp(uint32_t source_ssrc,
                                                 std::chrono::steady_clock::time_point arrival_time,
                                                 std::span<const uint8_t> plain_packet)
 {
-    std::lock_guard lock(peer_mutex_);
     const auto payload_iterator = inbound_payload_types_.find(payload_type);
 
     if (payload_iterator == inbound_payload_types_.end())
     {
         record_media_log_event(media_log_event::rtp_receive_stats_unmapped);
 
-        if (!media_log_stats_.unmapped_payload_type_logged[payload_type].exchange(true, std::memory_order_relaxed))
+        if (!std::exchange(media_log_stats_.unmapped_payload_type_logged[payload_type], true))
         {
             WEBRTC_LOG_DEBUG(
                 "WHIP RTP receive statistics unavailable stream={} session={} source_ssrc={} payload_type={} reason=unmapped_or_ambiguous",
@@ -702,7 +677,7 @@ void whip_session_transport::record_inbound_rtp(uint32_t source_ssrc,
         {
             record_media_log_event(media_log_event::rtp_transport_cc_invalid);
 
-            if (!media_log_stats_.transport_cc_invalid_logged.exchange(true, std::memory_order_relaxed))
+            if (!std::exchange(media_log_stats_.transport_cc_invalid_logged, true))
             {
                 WEBRTC_LOG_WARN(
                     "WHIP first transport sequence parse failure stream={} session={} source_ssrc={} payload_type={} extension_id={} error={}",
@@ -722,7 +697,7 @@ void whip_session_transport::record_inbound_rtp(uint32_t source_ssrc,
         {
             record_media_log_event(media_log_event::rtp_transport_cc_invalid);
 
-            if (!media_log_stats_.transport_cc_invalid_logged.exchange(true, std::memory_order_relaxed))
+            if (!std::exchange(media_log_stats_.transport_cc_invalid_logged, true))
             {
                 WEBRTC_LOG_WARN(
                     "WHIP first transport sequence invalid stream={} session={} source_ssrc={} payload_type={} extension_id={} extension_size={}",
@@ -819,7 +794,6 @@ void whip_session_transport::handle_inbound_byes(std::span<const rtcp_bye_packet
     uint64_t source_generation = 0;
 
     {
-        std::lock_guard lock(peer_mutex_);
         source_generation = publisher_source_generation_;
 
         for (const auto& bye : bye_packets)
@@ -866,7 +840,7 @@ void whip_session_transport::handle_inbound_byes(std::span<const rtcp_bye_packet
     }
 }
 
-void whip_session_transport::send_rtcp_bye_locked(std::string_view reason)
+void whip_session_transport::send_rtcp_bye(std::string_view reason)
 {
     if (!rtcp_mux_enabled_ || rtcp_sender_ssrc_ == 0 || rtcp_cname_.empty() || !selected_remote_endpoint_.has_value())
     {
@@ -961,7 +935,6 @@ void whip_session_transport::update_receiver_sender_report(uint32_t source_ssrc,
                                                            uint64_t ntp_timestamp,
                                                            std::chrono::steady_clock::time_point received_at)
 {
-    std::lock_guard lock(peer_mutex_);
     auto receiver_iterator = inbound_rtcp_receivers_.find(source_ssrc);
 
     if (receiver_iterator == inbound_rtcp_receivers_.end())
@@ -983,7 +956,6 @@ void whip_session_transport::update_receiver_sender_report(uint32_t source_ssrc,
 std::size_t whip_session_transport::send_rtcp_receiver_reports()
 {
     std::size_t wire_bytes = 0;
-    std::lock_guard lock(peer_mutex_);
 
     if (closed_ || !rtcp_mux_enabled_ || rtcp_sender_ssrc_ == 0 || rtcp_cname_.empty() || !selected_remote_endpoint_.has_value())
     {
@@ -1344,12 +1316,8 @@ void whip_session_transport::log_media_summary(int64_t interval_ms)
 void whip_session_transport::log_transport_feedback_state()
 {
     transport_feedback_generator_snapshot snapshot;
-
-    {
-        std::lock_guard lock(peer_mutex_);
-        transport_feedback_generator_.expire(std::chrono::steady_clock::now());
-        snapshot = transport_feedback_generator_.snapshot();
-    }
+    transport_feedback_generator_.expire(std::chrono::steady_clock::now());
+    snapshot = transport_feedback_generator_.snapshot();
 
     WEBRTC_LOG_DEBUG(
         "WHIP transport feedback state stream={} session={} history_packets={} pending_packets={} observed_packets={} duplicates={} "
@@ -1367,7 +1335,7 @@ void whip_session_transport::log_transport_feedback_state()
 
 void whip_session_transport::log_transport_feedback_final_summary(std::string_view reason)
 {
-    if (transport_feedback_final_summary_logged_.exchange(true, std::memory_order_relaxed))
+    if (std::exchange(transport_feedback_final_summary_logged_, true))
     {
         return;
     }
@@ -1375,12 +1343,9 @@ void whip_session_transport::log_transport_feedback_final_summary(std::string_vi
     transport_feedback_generator_snapshot snapshot;
     bool enabled = false;
 
-    {
-        std::lock_guard lock(peer_mutex_);
-        transport_feedback_generator_.expire(std::chrono::steady_clock::now());
-        snapshot = transport_feedback_generator_.snapshot();
-        enabled = transport_feedback_enabled_;
-    }
+    transport_feedback_generator_.expire(std::chrono::steady_clock::now());
+    snapshot = transport_feedback_generator_.snapshot();
+    enabled = transport_feedback_enabled_;
 
     WEBRTC_LOG_INFO(
         "WHIP transport feedback final summary stream={} session={} reason={} enabled={} "
@@ -1394,36 +1359,31 @@ void whip_session_transport::log_transport_feedback_final_summary(std::string_vi
         session_id_,
         reason,
         enabled ? 1 : 0,
-        transport_feedback_lifetime_stats_.transport_cc_observed.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.transport_cc_missing.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.transport_cc_invalid.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.transport_cc_duplicate.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.transport_cc_discontinuity.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.feedback_sent.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.status_sent.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.received_reported.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.lost_reported.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.reduced_size_sent.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.compound_sent.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.send_bytes.load(std::memory_order_relaxed),
+        transport_feedback_lifetime_stats_.transport_cc_observed,
+        transport_feedback_lifetime_stats_.transport_cc_missing,
+        transport_feedback_lifetime_stats_.transport_cc_invalid,
+        transport_feedback_lifetime_stats_.transport_cc_duplicate,
+        transport_feedback_lifetime_stats_.transport_cc_discontinuity,
+        transport_feedback_lifetime_stats_.feedback_sent,
+        transport_feedback_lifetime_stats_.status_sent,
+        transport_feedback_lifetime_stats_.received_reported,
+        transport_feedback_lifetime_stats_.lost_reported,
+        transport_feedback_lifetime_stats_.reduced_size_sent,
+        transport_feedback_lifetime_stats_.compound_sent,
+        transport_feedback_lifetime_stats_.send_bytes,
         snapshot.feedback_packets_built,
         snapshot.history_packets,
         snapshot.pending_packets,
-        transport_feedback_lifetime_stats_.padding_received.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.padding_bytes.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.padding_not_published.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.empty_payload_dropped.load(std::memory_order_relaxed),
-        transport_feedback_lifetime_stats_.layout_invalid.load(std::memory_order_relaxed));
+        transport_feedback_lifetime_stats_.padding_received,
+        transport_feedback_lifetime_stats_.padding_bytes,
+        transport_feedback_lifetime_stats_.padding_not_published,
+        transport_feedback_lifetime_stats_.empty_payload_dropped,
+        transport_feedback_lifetime_stats_.layout_invalid);
 }
 
 void whip_session_transport::log_rtcp_interval_state()
 {
-    rtcp_interval_snapshot snapshot;
-
-    {
-        std::lock_guard interval_lock(rtcp_interval_mutex_);
-        snapshot = rtcp_interval_scheduler_.snapshot();
-    }
+    const rtcp_interval_snapshot snapshot = rtcp_interval_scheduler_.snapshot();
 
     WEBRTC_LOG_DEBUG("WHIP RTCP interval state stream={} session={} initial={} members={} senders={} average_packet_size={} last_interval_ms={}",
                      stream_id_,
@@ -1437,7 +1397,6 @@ void whip_session_transport::log_rtcp_interval_state()
 
 void whip_session_transport::log_receiver_states()
 {
-    std::lock_guard lock(peer_mutex_);
     std::vector<uint32_t> source_ssrcs;
     source_ssrcs.reserve(inbound_rtcp_receivers_.size());
 
@@ -1500,7 +1459,7 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
     {
         record_media_log_event(media_log_event::rtcp_parse_failed);
 
-        if (!media_log_stats_.rtcp_parse_failure_logged.exchange(true, std::memory_order_relaxed))
+        if (!std::exchange(media_log_stats_.rtcp_parse_failure_logged, true))
         {
             WEBRTC_LOG_WARN("WHIP first inbound RTCP parse failure stream={} session={} error={}", stream_id_, session_id_, compound.error());
         }
@@ -1522,12 +1481,7 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
     record_media_log_event(media_log_event::rtcp_other_feedback_ignored, compound->other_feedback_block_count);
     record_media_log_event(media_log_event::rtcp_unknown_block_ignored, compound->unknown_block_count);
 
-    uint64_t publisher_source_generation = 0;
-
-    {
-        std::lock_guard lock(peer_mutex_);
-        publisher_source_generation = publisher_source_generation_;
-    }
+    const uint64_t publisher_source_generation = publisher_source_generation_;
 
     const auto sender_report_received_at = std::chrono::steady_clock::now();
 
@@ -1573,7 +1527,7 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
 
     for (const auto& block : compound->blocks)
     {
-        if (block.feedback_name == "pli" && !media_log_stats_.pli_ignored_logged.exchange(true, std::memory_order_relaxed))
+        if (block.feedback_name == "pli" && !std::exchange(media_log_stats_.pli_ignored_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHIP first inbound PLI ignored stream={} session={} sender_ssrc={} media_ssrc={} action=ignored",
                              stream_id_,
@@ -1582,7 +1536,7 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
                              block.feedback_media_ssrc);
         }
 
-        if (block.feedback_name == "fir" && !media_log_stats_.fir_ignored_logged.exchange(true, std::memory_order_relaxed))
+        if (block.feedback_name == "fir" && !std::exchange(media_log_stats_.fir_ignored_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHIP first inbound FIR ignored stream={} session={} sender_ssrc={} media_ssrc={} fir_entries={} action=ignored",
                              stream_id_,
@@ -1592,7 +1546,7 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
                              block.fir_count);
         }
 
-        if (block.has_generic_nack && !media_log_stats_.generic_nack_ignored_logged.exchange(true, std::memory_order_relaxed))
+        if (block.has_generic_nack && !std::exchange(media_log_stats_.generic_nack_ignored_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHIP first Generic NACK ignored stream={} session={} sender_ssrc={} media_ssrc={} fci_entries={} action=ignored",
                              stream_id_,
@@ -1602,7 +1556,7 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
                              block.nack_count);
         }
 
-        if (block.transport_feedback.has_value() && !media_log_stats_.transport_cc_ignored_logged.exchange(true, std::memory_order_relaxed))
+        if (block.transport_feedback.has_value() && !std::exchange(media_log_stats_.transport_cc_ignored_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHIP first transport-cc feedback ignored stream={} session={} sender_ssrc={} media_ssrc={} action=ignored",
                              stream_id_,
@@ -1611,7 +1565,7 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
                              block.feedback_media_ssrc);
         }
 
-        if (block.has_remb && !media_log_stats_.remb_ignored_logged.exchange(true, std::memory_order_relaxed))
+        if (block.has_remb && !std::exchange(media_log_stats_.remb_ignored_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHIP first REMB ignored stream={} session={} sender_ssrc={} media_ssrc={} bitrate_bps={} action=ignored",
                              stream_id_,
@@ -1624,7 +1578,7 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
         const bool other_feedback = block.is_feedback && block.feedback_name != "pli" && block.feedback_name != "fir" && !block.has_generic_nack &&
                                     !block.transport_feedback.has_value() && !block.has_remb;
 
-        if (other_feedback && !media_log_stats_.other_feedback_ignored_logged.exchange(true, std::memory_order_relaxed))
+        if (other_feedback && !std::exchange(media_log_stats_.other_feedback_ignored_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHIP first other RTCP feedback ignored stream={} session={} type={} sender_ssrc={} media_ssrc={} action=ignored",
                              stream_id_,
@@ -1634,7 +1588,7 @@ void whip_session_transport::handle_inbound_rtcp(std::span<const uint8_t> plain_
                              block.feedback_media_ssrc);
         }
 
-        if (block.is_unknown && !media_log_stats_.unknown_rtcp_block_ignored_logged.exchange(true, std::memory_order_relaxed))
+        if (block.is_unknown && !std::exchange(media_log_stats_.unknown_rtcp_block_ignored_logged, true))
         {
             WEBRTC_LOG_DEBUG("WHIP first unknown RTCP block ignored stream={} session={} packet_type={} packet_type_name={} count={} action=ignored",
                              stream_id_,
@@ -1675,7 +1629,6 @@ void whip_session_transport::set_peer_context(std::string local_ice_pwd,
     bool schedule_feedback = false;
 
     {
-        std::lock_guard lock(peer_mutex_);
         stream_id_ = identity.stream_id;
         session_id_ = identity.session_id;
         local_ice_pwd_ = std::move(local_ice_pwd);
@@ -1684,7 +1637,7 @@ void whip_session_transport::set_peer_context(std::string local_ice_pwd,
         publisher_source_generation_ = 0;
         inbound_rtcp_receivers_.clear();
         transport_feedback_generator_.reset();
-        configure_remote_media_locked(remote_offer, accepted_remote_media_mline_indexes);
+        configure_remote_media(remote_offer, accepted_remote_media_mline_indexes);
         dtls_identity_ = std::move(identity);
         schedule_feedback = started_ && transport_feedback_enabled_;
     }
@@ -1695,16 +1648,10 @@ void whip_session_transport::set_peer_context(std::string local_ice_pwd,
     }
 }
 
-void whip_session_transport::set_publisher_source_generation(uint64_t source_generation)
-{
-    std::lock_guard lock(peer_mutex_);
-    publisher_source_generation_ = source_generation;
-}
+void whip_session_transport::set_publisher_source_generation(uint64_t source_generation) { publisher_source_generation_ = source_generation; }
 
 void whip_session_transport::send_keyframe_request(uint32_t media_ssrc)
 {
-    std::lock_guard lock(peer_mutex_);
-
     if (closed_ || media_ssrc == 0 || rtcp_sender_ssrc_ == 0 || rtcp_cname_.empty() || !rtcp_mux_enabled_ || !selected_remote_endpoint_.has_value())
     {
         return;
@@ -1774,10 +1721,10 @@ void whip_session_transport::send_keyframe_request(uint32_t media_ssrc)
     record_media_log_event(reduced_size ? media_log_event::rtcp_keyframe_feedback_reduced_size_sent
                                         : media_log_event::rtcp_keyframe_feedback_compound_sent);
     record_media_log_event(media_log_event::rtcp_keyframe_feedback_send_bytes, protected_size);
-    note_rtcp_transmission_locked(protected_size, remote_endpoint);
+    note_rtcp_transmission(protected_size, remote_endpoint);
     udp_server_.send(std::move(protected_packet->protected_packet), remote_endpoint);
 
-    if (!media_log_stats_.keyframe_feedback_sent_logged.exchange(true, std::memory_order_relaxed))
+    if (!std::exchange(media_log_stats_.keyframe_feedback_sent_logged, true))
     {
         WEBRTC_LOG_INFO(
             "WHIP first keyframe request sent stream={} session={} remote={} media_ssrc={} format={} rtcp_rsize={} "
@@ -1810,12 +1757,6 @@ void whip_session_transport::send_keyframe_request(uint32_t media_ssrc)
 
 void whip_session_transport::clear_peer_state()
 {
-    std::lock_guard lock(peer_mutex_);
-    clear_peer_state_locked();
-}
-
-void whip_session_transport::clear_peer_state_locked()
-{
     if (selected_remote_endpoint_.has_value())
     {
         const std::string remote_address = format_udp_endpoint(*selected_remote_endpoint_);
@@ -1828,8 +1769,6 @@ void whip_session_transport::clear_peer_state_locked()
 
 whip_session_transport::peer_nomination_result whip_session_transport::nominate_remote_endpoint(const boost::asio::ip::udp::endpoint& remote_endpoint)
 {
-    std::lock_guard lock(peer_mutex_);
-
     if (!dtls_identity_.has_value())
     {
         return std::unexpected(std::string("WHIP DTLS identity is unavailable"));
@@ -1888,8 +1827,6 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
     std::string remote_ice_ufrag;
 
     {
-        std::lock_guard lock(peer_mutex_);
-
         if (dtls_identity_.has_value())
         {
             local_ice_ufrag = dtls_identity_->local_ice_ufrag;
@@ -1935,8 +1872,6 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
 
         return result;
     }
-
-    std::unique_lock peer_lock(peer_mutex_);
 
     if (closed_)
     {
@@ -1992,7 +1927,6 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
 
     const std::string remote_address = format_udp_endpoint(packet.remote_endpoint);
     auto srtp_packet = srtp_transport_->handle_inbound_packet(packet.data, remote_address);
-    peer_lock.unlock();
 
     if (!srtp_packet)
     {
@@ -2021,7 +1955,7 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
         {
             record_media_log_event(media_log_event::rtp_layout_invalid);
 
-            if (!media_log_stats_.rtp_layout_invalid_logged.exchange(true, std::memory_order_relaxed))
+            if (!std::exchange(media_log_stats_.rtp_layout_invalid_logged, true))
             {
                 WEBRTC_LOG_WARN("WHIP RTP layout invalid stream={} session={} remote={} ssrc={} pt={} error={}",
                                 stream_id_,
@@ -2046,7 +1980,7 @@ session_udp_outbound_packet_list whip_session_transport::handle_udp_packet(const
         {
             record_media_log_event(media_log_event::rtp_empty_payload_dropped);
 
-            if (!media_log_stats_.rtp_empty_payload_logged.exchange(true, std::memory_order_relaxed))
+            if (!std::exchange(media_log_stats_.rtp_empty_payload_logged, true))
             {
                 WEBRTC_LOG_WARN("WHIP RTP empty media payload dropped stream={} session={} remote={} ssrc={} pt={}",
                                 stream_id_,

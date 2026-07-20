@@ -2,14 +2,12 @@
 #define SIMPLE_WEBRTC_SESSION_WHEP_SESSION_TRANSPORT_H
 
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <expected>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -216,22 +214,22 @@ class whep_session_transport : public session_ice_udp_packet_handler, public std
     struct media_log_stats
     {
         session_transport_log_counters<media_log_event> counters;
-        std::atomic<bool> source_layout_invalid_logged{false};
-        std::atomic<bool> source_empty_payload_logged{false};
-        std::atomic<bool> rewrite_drop_logged{false};
-        std::atomic<bool> srtp_not_ready_logged{false};
-        std::atomic<bool> protect_ignore_logged{false};
-        std::atomic<bool> rtcp_parse_failure_logged{false};
-        std::atomic<bool> generic_nack_logged{false};
-        std::atomic<bool> retransmission_logged{false};
-        std::atomic<bool> transport_feedback_logged{false};
-        std::atomic<bool> remb_ignored_logged{false};
-        std::atomic<bool> other_feedback_ignored_logged{false};
-        std::atomic<bool> unknown_rtcp_block_ignored_logged{false};
-        std::atomic<bool> keyframe_feedback_logged{false};
-        std::atomic<bool> invalid_keyframe_feedback_target_logged{false};
-        std::atomic<bool> duplicate_fir_logged{false};
-        std::array<std::atomic<uint32_t>, 16> logged_target_ssrcs{};
+        bool source_layout_invalid_logged = false;
+        bool source_empty_payload_logged = false;
+        bool rewrite_drop_logged = false;
+        bool srtp_not_ready_logged = false;
+        bool protect_ignore_logged = false;
+        bool rtcp_parse_failure_logged = false;
+        bool generic_nack_logged = false;
+        bool retransmission_logged = false;
+        bool transport_feedback_logged = false;
+        bool remb_ignored_logged = false;
+        bool other_feedback_ignored_logged = false;
+        bool unknown_rtcp_block_ignored_logged = false;
+        bool keyframe_feedback_logged = false;
+        bool invalid_keyframe_feedback_target_logged = false;
+        bool duplicate_fir_logged = false;
+        std::array<uint32_t, 16> logged_target_ssrcs{};
     };
 
     void subscribe_media();
@@ -239,33 +237,32 @@ class whep_session_transport : public session_ice_udp_packet_handler, public std
     void handle_publisher_source(media_publisher_source_update update);
     void handle_publisher_sender_timing(media_publisher_sender_timing timing);
     void handle_publisher_source_bye(media_publisher_source_bye bye);
-    void configure_outbound_rtcp_senders_locked(const whep_rtp_rewriter_target& target);
-    void clear_publisher_sender_timings_locked();
-    void refresh_sender_timing_locked(uint32_t source_ssrc);
-    void record_outbound_rtp_sent_locked(const whep_rtp_rewrite_result& rewritten);
-    void record_outbound_rtp_sent_locked(uint32_t target_ssrc, std::size_t payload_size, uint32_t target_timestamp);
-    void cache_rewritten_rtp_locked(uint64_t source_generation, const whep_rtp_rewrite_result& rewritten);
+    void configure_outbound_rtcp_senders(const whep_rtp_rewriter_target& target);
+    void clear_publisher_sender_timings();
+    void refresh_sender_timing(uint32_t source_ssrc);
+    void record_outbound_rtp_sent(const whep_rtp_rewrite_result& rewritten);
+    void record_outbound_rtp_sent(uint32_t target_ssrc, std::size_t payload_size, uint32_t target_timestamp);
+    void cache_rewritten_rtp(uint64_t source_generation, const whep_rtp_rewrite_result& rewritten);
     void handle_generic_nacks(const rtcp_compound_packet& compound);
     void handle_transport_feedback(const rtcp_compound_packet& compound);
     void send_retransmission(rtp_retransmission_cache_packet cached);
-    void rebuild_rtp_rewriter_locked();
-    void cancel_keyframe_recovery_locked();
-    void reset_keyframe_recovery_locked();
-    void clear_keyframe_feedback_state_locked();
+    void rebuild_rtp_rewriter();
+    void cancel_keyframe_recovery();
+    void reset_keyframe_recovery();
+    void clear_keyframe_feedback_state();
 
-    [[nodiscard]] std::optional<keyframe_request_context> prepare_keyframe_request_locked(
+    [[nodiscard]] std::optional<keyframe_request_context> prepare_keyframe_request(
         uint64_t source_generation, uint32_t source_ssrc, uint32_t target_ssrc, bool force_dispatch, bool coalesce_if_waiting);
 
     [[nodiscard]] bool dispatch_keyframe_request(const keyframe_request_context& context, std::string_view reason);
 
     void complete_keyframe_request(const keyframe_request_context& context);
     void handle_inbound_rtcp(std::span<const uint8_t> plain_rtcp);
-    void record_receiver_reports_locked(std::span<const rtcp_report_packet> reports);
-    void record_receiver_byes_locked(std::span<const rtcp_bye_packet> bye_packets);
-    void send_rtcp_bye_locked(std::string_view reason);
+    void record_receiver_reports(std::span<const rtcp_report_packet> reports);
+    void record_receiver_byes(std::span<const rtcp_bye_packet> bye_packets);
+    void send_rtcp_bye(std::string_view reason);
 
     void clear_peer_state();
-    void clear_peer_state_locked();
     void record_media_log_event(media_log_event event, uint64_t value = 1);
     void schedule_media_log_summary();
     void schedule_rtcp_sender_reports(bool initial, bool packet_sent);
@@ -288,7 +285,6 @@ class whep_session_transport : public session_ice_udp_packet_handler, public std
     boost::asio::steady_timer media_log_timer_;
     boost::asio::steady_timer rtcp_sender_report_timer_;
     std::chrono::steady_clock::time_point media_log_interval_started_at_;
-    std::mutex rtcp_interval_mutex_;
     rtcp_interval_scheduler rtcp_interval_scheduler_;
     bool rtcp_interval_logged_ = false;
 
@@ -296,13 +292,11 @@ class whep_session_transport : public session_ice_udp_packet_handler, public std
     std::shared_ptr<srtp_transport> srtp_transport_;
     std::shared_ptr<media_fanout_router> media_fanout_router_;
 
-    std::mutex peer_mutex_;
     std::string stream_id_;
     std::string session_id_;
     std::string local_ice_pwd_;
     std::optional<dtls_peer_identity> dtls_identity_;
 
-    std::mutex rtp_rewriter_mutex_;
     whep_rtp_rewriter_target rtp_rewriter_target_;
     media_publisher_source_ptr publisher_source_;
     uint64_t publisher_source_generation_ = 0;
