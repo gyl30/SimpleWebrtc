@@ -21,7 +21,6 @@
 #include "server/signaling_json.h"
 #include "server/trickle_ice_http.h"
 #include "server/http_error_response.h"
-#include "server/runtime_offer_filter.h"
 #include "server/trickle_ice_patch_handler.h"
 #include "session/whep_session_transport.h"
 #include "signaling/sdp/sdp_offer_validator.h"
@@ -404,7 +403,7 @@ http_response_ptr whep_handler::create_subscriber(http_request_t& request, std::
             request, 400, k_whep_sdp_answer_failed_error, make_prefixed_error("failed to build sdp answer: ", generated_answer.error()));
     }
 
-    auto runtime_offer = make_runtime_offer_summary(*offer_summary, generated_answer->accepted_mline_indexes);
+    auto runtime_offer = sdp::make_offer_summary(*offer_summary, generated_answer->accepted_mline_indexes);
 
     if (!runtime_offer)
     {
@@ -621,7 +620,7 @@ http_response_ptr whep_handler::patch_sdp_restart(http_request_t& request,
             request, 400, k_whep_ice_restart_sdp_answer_failed_error, make_prefixed_error("cannot build sdp answer: ", answer.error()));
     }
 
-    auto runtime_offer = make_runtime_offer_summary(*offer_summary, answer->accepted_mline_indexes);
+    auto runtime_offer = sdp::make_offer_summary(*offer_summary, answer->accepted_mline_indexes);
     if (!runtime_offer)
     {
         WEBRTC_LOG_WARN("WHEP runtime restart offer summary failed session={} error={}", session_id, runtime_offer.error());

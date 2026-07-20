@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "signaling/sdp/sdp_types.h"
@@ -81,6 +82,10 @@ struct webrtc_offer_summary
 };
 
 using webrtc_offer_summary_result = std::expected<webrtc_offer_summary, std::string>;
+
+[[nodiscard]]
+std::expected<webrtc_offer_summary, std::string> make_offer_summary(
+    const webrtc_offer_summary& original_offer, std::span<const int> accepted_mline_indexes);
 
 [[nodiscard]]
 bool media_has_rtx_codec(const media_summary& media);

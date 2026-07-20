@@ -17,7 +17,6 @@
 #include "server/signaling_json.h"
 #include "server/trickle_ice_http.h"
 #include "server/http_error_response.h"
-#include "server/runtime_offer_filter.h"
 #include "server/trickle_ice_patch_handler.h"
 #include "session/whip_session_transport.h"
 #include "signaling/sdp/sdp_offer_validator.h"
@@ -249,7 +248,7 @@ http_response_ptr whip_handler::create_publisher(http_request_t& request, std::s
         return json_error_response(request, 400, k_whip_sdp_answer_failed_error, make_prefixed_error("cannot build sdp answer: ", answer.error()));
     }
 
-    auto runtime_offer = make_runtime_offer_summary(*offer_summary, answer->accepted_mline_indexes);
+    auto runtime_offer = sdp::make_offer_summary(*offer_summary, answer->accepted_mline_indexes);
 
     if (!runtime_offer)
     {
@@ -444,7 +443,7 @@ http_response_ptr whip_handler::patch_sdp_restart(http_request_t& request,
         return json_error_response(request, 400, make_prefixed_error("cannot build sdp answer: ", answer.error()));
     }
 
-    auto runtime_offer = make_runtime_offer_summary(*offer_summary, answer->accepted_mline_indexes);
+    auto runtime_offer = sdp::make_offer_summary(*offer_summary, answer->accepted_mline_indexes);
 
     if (!runtime_offer)
     {
